@@ -21,7 +21,7 @@ A self-hosted music acquisition service. Search YouTube, tap a result, and it do
    ```
 
 2. **Edit docker-compose.yml**
-   
+
    Update the music volume path:
    ```yaml
    volumes:
@@ -34,7 +34,7 @@ A self-hosted music acquisition service. Search YouTube, tap a result, and it do
    ```
 
 4. **Access the UI**
-   
+
    Open `http://your-server:8080` on your phone or browser.
 
 ## Configuration
