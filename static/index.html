@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Music Grabber</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a0b;
+            --bg-secondary: #141416;
+            --bg-tertiary: #1c1c1f;
+            --text-primary: #f5f5f5;
+            --text-secondary: #888;
+            --accent: #22c55e;
+            --accent-dim: #166534;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --border: #2a2a2d;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Space Grotesk', -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            min-height: 100dvh;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            padding-bottom: env(safe-area-inset-bottom, 20px);
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 24px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .logo {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+
+        h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+
+        .search-box {
+            position: relative;
+            margin-bottom: 24px;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 16px 20px;
+            padding-right: 100px;
+            font-size: 16px;
+            font-family: inherit;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-primary);
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .search-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
+        }
+
+        .search-input::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .search-btn {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            padding: 10px 20px;
+            font-size: 14px;
+            font-family: inherit;
+            font-weight: 600;
+            background: var(--accent);
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+
+        .search-btn:hover {
+            background: #16a34a;
+        }
+
+        .search-btn:active {
+            transform: translateY(-50%) scale(0.98);
+        }
+
+        .search-btn:disabled {
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            cursor: not-allowed;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            padding: 8px 16px;
+            font-size: 14px;
+            font-family: inherit;
+            font-weight: 600;
+            background: transparent;
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border-color: var(--accent);
+        }
+
+        .tab:hover:not(.active) {
+            color: var(--text-primary);
+        }
+
+        .results {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .result-item {
+            display: flex;
+            gap: 14px;
+            padding: 14px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .result-item:hover {
+            background: var(--bg-tertiary);
+            border-color: var(--accent);
+        }
+
+        .result-item:active {
+            transform: scale(0.99);
+        }
+
+        .result-item.downloading {
+            border-color: var(--warning);
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        .result-thumb {
+            width: 64px;
+            height: 64px;
+            border-radius: 8px;
+            object-fit: cover;
+            background: var(--bg-tertiary);
+            flex-shrink: 0;
+        }
+
+        .result-info {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 4px;
+        }
+
+        .result-title {
+            font-size: 15px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .result-meta {
+            font-size: 13px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .result-duration {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: var(--text-secondary);
+            background: var(--bg-tertiary);
+            padding: 2px 8px;
+            border-radius: 4px;
+            align-self: flex-start;
+        }
+
+        .job-item {
+            display: flex;
+            gap: 14px;
+            padding: 14px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .job-status {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin-top: 6px;
+        }
+
+        .job-status.queued { background: var(--warning); }
+        .job-status.downloading { 
+            background: var(--warning);
+            animation: pulse 1s infinite;
+        }
+        .job-status.completed { background: var(--accent); }
+        .job-status.failed { background: var(--error); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .job-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .job-title {
+            font-size: 14px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .job-meta {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .job-error {
+            font-size: 12px;
+            color: var(--error);
+            margin-top: 4px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            padding: 40px;
+        }
+
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--bg-tertiary);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            padding: 14px 24px;
+            background: var(--accent);
+            color: #000;
+            font-weight: 600;
+            border-radius: 10px;
+            opacity: 0;
+            transition: all 0.3s ease;
+            z-index: 100;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+
+        .toast.error {
+            background: var(--error);
+            color: #fff;
+        }
+
+        @media (max-width: 400px) {
+            .container {
+                padding: 16px;
+            }
+
+            .result-thumb {
+                width: 56px;
+                height: 56px;
+            }
+
+            .result-title {
+                font-size: 14px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">🎵</div>
+            <h1>Music Grabber</h1>
+        </header>
+
+        <div class="search-box">
+            <input 
+                type="text" 
+                class="search-input" 
+                id="searchInput" 
+                placeholder="Search for a song..."
+                autocomplete="off"
+                autocapitalize="off"
+            >
+            <button class="search-btn" id="searchBtn">Search</button>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="results">Results</button>
+            <button class="tab" data-tab="queue">Queue</button>
+        </div>
+
+        <div id="resultsTab" class="results"></div>
+        <div id="queueTab" class="results" style="display: none;"></div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const searchInput = document.getElementById('searchInput');
+        const searchBtn = document.getElementById('searchBtn');
+        const resultsTab = document.getElementById('resultsTab');
+        const queueTab = document.getElementById('queueTab');
+        const toast = document.getElementById('toast');
+        const tabs = document.querySelectorAll('.tab');
+
+        let currentTab = 'results';
+        let downloadingIds = new Set();
+
+        // Tab switching
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                tabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                currentTab = tab.dataset.tab;
+                
+                if (currentTab === 'results') {
+                    resultsTab.style.display = 'flex';
+                    queueTab.style.display = 'none';
+                } else {
+                    resultsTab.style.display = 'none';
+                    queueTab.style.display = 'flex';
+                    loadJobs();
+                }
+            });
+        });
+
+        // Search
+        async function search() {
+            const query = searchInput.value.trim();
+            if (!query) return;
+
+            searchBtn.disabled = true;
+            resultsTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+            try {
+                const response = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, limit: 15 })
+                });
+
+                if (!response.ok) throw new Error('Search failed');
+
+                const data = await response.json();
+                renderResults(data.results);
+            } catch (error) {
+                resultsTab.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">😕</div>
+                        <p>Search failed. Try again.</p>
+                    </div>
+                `;
+                showToast('Search failed', true);
+            } finally {
+                searchBtn.disabled = false;
+            }
+        }
+
+        function renderResults(results) {
+            if (!results.length) {
+                resultsTab.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🔍</div>
+                        <p>No results found</p>
+                    </div>
+                `;
+                return;
+            }
+
+            resultsTab.innerHTML = results.map(r => `
+                <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''}" 
+                     data-video-id="${r.video_id}" 
+                     data-title="${escapeHtml(r.title)}">
+                    <img class="result-thumb" src="${r.thumbnail}" alt="" loading="lazy">
+                    <div class="result-info">
+                        <div class="result-title">${escapeHtml(r.title)}</div>
+                        <div class="result-meta">${escapeHtml(r.channel)}</div>
+                        <div class="result-duration">${r.duration}</div>
+                    </div>
+                </div>
+            `).join('');
+
+            // Add click handlers
+            resultsTab.querySelectorAll('.result-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    const videoId = item.dataset.videoId;
+                    const title = item.dataset.title;
+                    if (!downloadingIds.has(videoId)) {
+                        downloadTrack(videoId, title, item);
+                    }
+                });
+            });
+        }
+
+        async function downloadTrack(videoId, title, element) {
+            downloadingIds.add(videoId);
+            element.classList.add('downloading');
+
+            try {
+                const response = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ video_id: videoId, title })
+                });
+
+                if (!response.ok) throw new Error('Download failed');
+
+                showToast('Added to queue ✓');
+            } catch (error) {
+                downloadingIds.delete(videoId);
+                element.classList.remove('downloading');
+                showToast('Failed to queue', true);
+            }
+        }
+
+        async function loadJobs() {
+            queueTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+            try {
+                const response = await fetch('/api/jobs?limit=30');
+                if (!response.ok) throw new Error('Failed to load jobs');
+
+                const data = await response.json();
+                renderJobs(data.jobs);
+            } catch (error) {
+                queueTab.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">😕</div>
+                        <p>Failed to load queue</p>
+                    </div>
+                `;
+            }
+        }
+
+        function renderJobs(jobs) {
+            if (!jobs.length) {
+                queueTab.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📭</div>
+                        <p>No downloads yet</p>
+                    </div>
+                `;
+                return;
+            }
+
+            queueTab.innerHTML = jobs.map(job => `
+                <div class="job-item">
+                    <div class="job-status ${job.status}"></div>
+                    <div class="job-info">
+                        <div class="job-title">${escapeHtml(job.artist ? `${job.artist} - ${job.title}` : job.title)}</div>
+                        <div class="job-meta">${job.status} • ${formatTime(job.created_at)}</div>
+                        ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ''}
+                    </div>
+                </div>
+            `).join('');
+
+            // If there are active jobs, poll for updates
+            const hasActive = jobs.some(j => j.status === 'queued' || j.status === 'downloading');
+            if (hasActive && currentTab === 'queue') {
+                setTimeout(loadJobs, 3000);
+            }
+        }
+
+        function formatTime(isoString) {
+            if (!isoString) return '';
+            const date = new Date(isoString);
+            const now = new Date();
+            const diff = now - date;
+
+            if (diff < 60000) return 'just now';
+            if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+            if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+            return date.toLocaleDateString();
+        }
+
+        function showToast(message, isError = false) {
+            toast.textContent = message;
+            toast.className = 'toast' + (isError ? ' error' : '');
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2500);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Event listeners
+        searchBtn.addEventListener('click', search);
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') search();
+        });
+
+        // Initial empty state
+        resultsTab.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">🎧</div>
+                <p>Search for music to get started</p>
+            </div>
+        `;
+    </script>
+</body>
+</html>
