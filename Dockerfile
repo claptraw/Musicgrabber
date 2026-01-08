@@ -24,9 +24,13 @@ WORKDIR /app
 # Copy application files
 COPY app.py /app/
 COPY static /app/static/
+COPY entrypoint.sh /app/
 
 # Create data directory for SQLite
 RUN mkdir -p /data
+
+# Make entrypoint executable
+RUN chmod +x /app/entrypoint.sh
 
 # Expose port
 EXPOSE 8080
@@ -36,4 +40,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/ || exit 1
 
 # Run the application
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["/app/entrypoint.sh"]

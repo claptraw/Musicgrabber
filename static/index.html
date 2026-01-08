@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Music Grabber</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;600&display=swap" rel="stylesheet">
@@ -95,6 +96,79 @@
 
         .search-input::placeholder {
             color: var(--text-secondary);
+        }
+
+        .search-history {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 50;
+            display: none;
+        }
+
+        .search-history.show {
+            display: block;
+        }
+
+        .history-item {
+            padding: 12px 16px;
+            font-size: 14px;
+            color: var(--text-primary);
+            cursor: pointer;
+            border-bottom: 1px solid var(--border);
+            transition: background 0.2s;
+        }
+
+        .history-item:last-child {
+            border-bottom: none;
+        }
+
+        .history-item:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .related-suggestions {
+            margin-top: 16px;
+            padding: 14px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .related-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .suggestion-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .suggestion-chip {
+            padding: 6px 12px;
+            font-size: 13px;
+            font-family: inherit;
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .suggestion-chip:hover {
+            border-color: var(--accent);
+            color: var(--accent);
         }
 
         .search-btn {
@@ -344,6 +418,90 @@
             color: #fff;
         }
 
+        .queue-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .clear-btn {
+            padding: 8px 16px;
+            font-size: 13px;
+            font-family: inherit;
+            font-weight: 600;
+            background: transparent;
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .clear-btn:hover {
+            color: var(--error);
+            border-color: var(--error);
+        }
+
+        .clear-btn:active {
+            transform: scale(0.98);
+        }
+
+        .clear-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .bulk-textarea {
+            width: 100%;
+            min-height: 200px;
+            max-height: 400px;
+            padding: 14px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-primary);
+            resize: vertical;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .bulk-textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
+        }
+
+        .bulk-textarea::placeholder {
+            color: var(--text-secondary);
+            opacity: 0.5;
+        }
+
+        .file-upload {
+            display: inline-block;
+            padding: 10px 20px;
+            font-size: 13px;
+            font-family: inherit;
+            font-weight: 600;
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .file-upload:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .file-upload input[type="file"] {
+            display: none;
+        }
+
         @media (max-width: 400px) {
             .container {
                 padding: 16px;
@@ -368,24 +526,77 @@
         </header>
 
         <div class="search-box">
-            <input 
-                type="text" 
-                class="search-input" 
-                id="searchInput" 
+            <input
+                type="text"
+                class="search-input"
+                id="searchInput"
                 placeholder="Search for a song..."
                 autocomplete="off"
                 autocapitalize="off"
             >
             <button class="search-btn" id="searchBtn">Search</button>
+            <div class="search-history" id="searchHistory"></div>
         </div>
 
         <div class="tabs">
             <button class="tab active" data-tab="results">Results</button>
+            <button class="tab" data-tab="bulk">Bulk Import</button>
             <button class="tab" data-tab="queue">Queue</button>
         </div>
 
+        <div id="relatedSuggestions" style="display: none;"></div>
         <div id="resultsTab" class="results"></div>
-        <div id="queueTab" class="results" style="display: none;"></div>
+
+        <div id="bulkTabContainer" style="display: none;">
+            <div style="margin-bottom: 12px;">
+                <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 12px;">
+                    Upload a text file or paste your song list below (one per line in format: Artist - Song Title). Maximum 70 songs.
+                </p>
+                <div style="margin-bottom: 12px;">
+                    <label class="file-upload">
+                        <input type="file" id="fileUpload" accept=".txt">
+                        📁 Choose File
+                    </label>
+                    <span id="fileName" style="margin-left: 12px; font-size: 13px; color: var(--text-secondary);"></span>
+                </div>
+                <div style="position: relative;">
+                    <textarea
+                        id="bulkInput"
+                        placeholder="ABBA – Dancing Queen&#10;ABBA – Super Trouper&#10;Backstreet Boys – I Want It That Way"
+                        class="bulk-textarea"
+                        maxlength="7000"
+                    ></textarea>
+                    <div id="lineCounter" style="position: absolute; bottom: 8px; right: 12px; font-size: 11px; color: var(--text-secondary); background: var(--bg-tertiary); padding: 4px 8px; border-radius: 4px;">0/70 lines</div>
+                </div>
+                <div style="margin-top: 12px; margin-bottom: 12px;">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); cursor: pointer;">
+                        <input type="checkbox" id="createPlaylistCheckbox" style="width: 16px; height: 16px; cursor: pointer;">
+                        <span>Create M3U playlist from these songs</span>
+                    </label>
+                    <input
+                        type="text"
+                        id="playlistNameInput"
+                        placeholder="Playlist name (e.g., My Mixtape 2026)"
+                        style="width: 100%; margin-top: 8px; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); display: none;"
+                    >
+                </div>
+                <button
+                    id="bulkImportBtn"
+                    style="width: 100%; padding: 14px; font-size: 14px; font-family: inherit; font-weight: 600; background: var(--accent); color: #000; border: none; border-radius: 12px; cursor: pointer; transition: all 0.2s;"
+                >
+                    Import & Download All
+                </button>
+            </div>
+            <div id="bulkResults" class="results"></div>
+        </div>
+
+        <div id="queueTabContainer" style="display: none;">
+            <div class="queue-header">
+                <h2 style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Download Queue</h2>
+                <button class="clear-btn" id="clearQueueBtn">Clear Queue</button>
+            </div>
+            <div id="queueTab" class="results"></div>
+        </div>
     </div>
 
     <div class="toast" id="toast"></div>
@@ -393,13 +604,76 @@
     <script>
         const searchInput = document.getElementById('searchInput');
         const searchBtn = document.getElementById('searchBtn');
+        const searchHistory = document.getElementById('searchHistory');
+        const relatedSuggestions = document.getElementById('relatedSuggestions');
         const resultsTab = document.getElementById('resultsTab');
+        const bulkTabContainer = document.getElementById('bulkTabContainer');
+        const bulkInput = document.getElementById('bulkInput');
+        const bulkImportBtn = document.getElementById('bulkImportBtn');
+        const bulkResults = document.getElementById('bulkResults');
+        const fileUpload = document.getElementById('fileUpload');
+        const fileName = document.getElementById('fileName');
+        const queueTabContainer = document.getElementById('queueTabContainer');
         const queueTab = document.getElementById('queueTab');
+        const clearQueueBtn = document.getElementById('clearQueueBtn');
         const toast = document.getElementById('toast');
         const tabs = document.querySelectorAll('.tab');
+        const lineCounter = document.getElementById('lineCounter');
+        const createPlaylistCheckbox = document.getElementById('createPlaylistCheckbox');
+        const playlistNameInput = document.getElementById('playlistNameInput');
 
         let currentTab = 'results';
         let downloadingIds = new Set();
+        let lastResults = [];
+        const MAX_QUEUE_SIZE = 100;
+        const MAX_BULK_LINES = 70;
+
+        // Search history management
+        function getSearchHistory() {
+            const history = localStorage.getItem('searchHistory');
+            return history ? JSON.parse(history) : [];
+        }
+
+        function saveSearchHistory(query) {
+            let history = getSearchHistory();
+            // Remove duplicates
+            history = history.filter(q => q !== query);
+            // Add to front
+            history.unshift(query);
+            // Keep last 10
+            history = history.slice(0, 10);
+            localStorage.setItem('searchHistory', JSON.stringify(history));
+        }
+
+        function showSearchHistory() {
+            const history = getSearchHistory();
+            if (history.length === 0) {
+                searchHistory.classList.remove('show');
+                return;
+            }
+
+            searchHistory.innerHTML = history.map(q => `
+                <div class="history-item" data-query="${escapeHtml(q)}">
+                    ${escapeHtml(q)}
+                </div>
+            `).join('');
+
+            searchHistory.querySelectorAll('.history-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    searchInput.value = item.dataset.query;
+                    searchHistory.classList.remove('show');
+                    search();
+                });
+            });
+
+            searchHistory.classList.add('show');
+        }
+
+        function hideSearchHistory() {
+            setTimeout(() => {
+                searchHistory.classList.remove('show');
+            }, 200);
+        }
 
         // Tab switching
         tabs.forEach(tab => {
@@ -407,13 +681,12 @@
                 tabs.forEach(t => t.classList.remove('active'));
                 tab.classList.add('active');
                 currentTab = tab.dataset.tab;
-                
-                if (currentTab === 'results') {
-                    resultsTab.style.display = 'flex';
-                    queueTab.style.display = 'none';
-                } else {
-                    resultsTab.style.display = 'none';
-                    queueTab.style.display = 'flex';
+
+                resultsTab.style.display = currentTab === 'results' ? 'flex' : 'none';
+                bulkTabContainer.style.display = currentTab === 'bulk' ? 'block' : 'none';
+                queueTabContainer.style.display = currentTab === 'queue' ? 'block' : 'none';
+
+                if (currentTab === 'queue') {
                     loadJobs();
                 }
             });
@@ -424,8 +697,13 @@
             const query = searchInput.value.trim();
             if (!query) return;
 
+            // Save to history
+            saveSearchHistory(query);
+            hideSearchHistory();
+
             searchBtn.disabled = true;
             resultsTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            relatedSuggestions.style.display = 'none';
 
             try {
                 const response = await fetch('/api/search', {
@@ -437,7 +715,9 @@
                 if (!response.ok) throw new Error('Search failed');
 
                 const data = await response.json();
+                lastResults = data.results;
                 renderResults(data.results);
+                showRelatedSuggestions(data.results);
             } catch (error) {
                 resultsTab.innerHTML = `
                     <div class="empty-state">
@@ -449,6 +729,38 @@
             } finally {
                 searchBtn.disabled = false;
             }
+        }
+
+        // Show related search suggestions based on artists
+        function showRelatedSuggestions(results) {
+            if (!results || results.length === 0) return;
+
+            // Extract unique artists/channels
+            const artists = [...new Set(results.map(r => r.channel))].slice(0, 5);
+
+            if (artists.length === 0) return;
+
+            relatedSuggestions.innerHTML = `
+                <div class="related-suggestions">
+                    <div class="related-title">Related searches</div>
+                    <div class="suggestion-chips">
+                        ${artists.map(artist => `
+                            <button class="suggestion-chip" data-query="${escapeHtml(artist)}">
+                                ${escapeHtml(artist)}
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+
+            relatedSuggestions.querySelectorAll('.suggestion-chip').forEach(chip => {
+                chip.addEventListener('click', () => {
+                    searchInput.value = chip.dataset.query;
+                    search();
+                });
+            });
+
+            relatedSuggestions.style.display = 'block';
         }
 
         function renderResults(results) {
@@ -488,8 +800,18 @@
         }
 
         async function downloadTrack(videoId, title, element) {
+            // Check queue size limit
+            const queueSize = await getQueueSize();
+            if (queueSize >= MAX_QUEUE_SIZE) {
+                showToast(`Queue limit reached (max ${MAX_QUEUE_SIZE})`, true);
+                return;
+            }
+
             downloadingIds.add(videoId);
             element.classList.add('downloading');
+
+            // Show processing state immediately
+            showToast('Processing...', false);
 
             try {
                 const response = await fetch('/api/download', {
@@ -500,6 +822,9 @@
 
                 if (!response.ok) throw new Error('Download failed');
 
+                const data = await response.json();
+
+                // Update toast with success message
                 showToast('Added to queue ✓');
             } catch (error) {
                 downloadingIds.delete(videoId);
@@ -508,8 +833,22 @@
             }
         }
 
-        async function loadJobs() {
-            queueTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+        async function getQueueSize() {
+            try {
+                const response = await fetch('/api/jobs?limit=100');
+                if (!response.ok) return 0;
+                const data = await response.json();
+                // Count queued and downloading jobs
+                return data.jobs.filter(j => j.status === 'queued' || j.status === 'downloading').length;
+            } catch (error) {
+                return 0;
+            }
+        }
+
+        async function loadJobs(showLoading = true) {
+            if (showLoading) {
+                queueTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            }
 
             try {
                 const response = await fetch('/api/jobs?limit=30');
@@ -518,12 +857,14 @@
                 const data = await response.json();
                 renderJobs(data.jobs);
             } catch (error) {
-                queueTab.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">😕</div>
-                        <p>Failed to load queue</p>
-                    </div>
-                `;
+                if (showLoading) {
+                    queueTab.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">😕</div>
+                            <p>Failed to load queue</p>
+                        </div>
+                    `;
+                }
             }
         }
 
@@ -539,7 +880,7 @@
             }
 
             queueTab.innerHTML = jobs.map(job => `
-                <div class="job-item">
+                <div class="job-item" data-job-id="${job.id}">
                     <div class="job-status ${job.status}"></div>
                     <div class="job-info">
                         <div class="job-title">${escapeHtml(job.artist ? `${job.artist} - ${job.title}` : job.title)}</div>
@@ -552,7 +893,7 @@
             // If there are active jobs, poll for updates
             const hasActive = jobs.some(j => j.status === 'queued' || j.status === 'downloading');
             if (hasActive && currentTab === 'queue') {
-                setTimeout(loadJobs, 3000);
+                setTimeout(() => loadJobs(false), 3000);
             }
         }
 
@@ -575,16 +916,237 @@
             setTimeout(() => toast.classList.remove('show'), 2500);
         }
 
+        async function bulkImport() {
+            const songs = bulkInput.value.trim();
+            if (!songs) {
+                showToast('Please enter some songs', true);
+                return;
+            }
+
+            const songLines = songs.split('\n').filter(line => line.trim());
+
+            // Check line limit
+            if (songLines.length > MAX_BULK_LINES) {
+                showToast(`Maximum ${MAX_BULK_LINES} songs allowed`, true);
+                return;
+            }
+
+            // Check queue size limit
+            const queueSize = await getQueueSize();
+            if (queueSize + songLines.length > MAX_QUEUE_SIZE) {
+                showToast(`Queue limit would be exceeded (max ${MAX_QUEUE_SIZE})`, true);
+                return;
+            }
+
+            // Validate playlist name if checkbox is checked
+            const createPlaylist = createPlaylistCheckbox.checked;
+            const playlistName = playlistNameInput.value.trim();
+
+            if (createPlaylist && !playlistName) {
+                showToast('Please enter a playlist name', true);
+                playlistNameInput.focus();
+                return;
+            }
+
+            bulkImportBtn.disabled = true;
+            bulkImportBtn.textContent = 'Processing...';
+            bulkResults.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+            try {
+                const requestBody = { songs };
+                if (createPlaylist) {
+                    requestBody.create_playlist = true;
+                    requestBody.playlist_name = playlistName;
+                }
+
+                const response = await fetch('/api/bulk-import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+
+                if (!response.ok) throw new Error('Bulk import failed');
+
+                const data = await response.json();
+
+                // Show results
+                let html = `
+                    <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px;">
+                        <div style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">Import Summary</div>
+                        <div style="font-size: 13px; color: var(--text-secondary);">
+                            ✓ ${data.queued} songs queued<br>
+                            ${data.failed > 0 ? `✗ ${data.failed} songs failed` : ''}
+                        </div>
+                    </div>
+                `;
+
+                if (data.failures.length > 0) {
+                    html += `
+                        <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--error); border-radius: 12px;">
+                            <div style="font-size: 14px; font-weight: 600; color: var(--error); margin-bottom: 8px;">Failed Lines</div>
+                            ${data.failures.map(f => `
+                                <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px;">
+                                    Line ${f.line}: ${escapeHtml(f.text)}<br>
+                                    <span style="color: var(--error);">→ ${escapeHtml(f.reason)}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                }
+
+                bulkResults.innerHTML = html;
+
+                if (createPlaylist) {
+                    showToast(`Queued ${data.queued} song(s) - Playlist will be created`);
+                } else {
+                    showToast(`Queued ${data.queued} song(s)`);
+                }
+
+                // Clear the textarea and inputs
+                bulkInput.value = '';
+                playlistNameInput.value = '';
+                createPlaylistCheckbox.checked = false;
+                playlistNameInput.style.display = 'none';
+                updateLineCounter();
+            } catch (error) {
+                bulkResults.innerHTML = '';
+                showToast('Bulk import failed', true);
+            } finally {
+                bulkImportBtn.disabled = false;
+                bulkImportBtn.textContent = 'Import & Download All';
+            }
+        }
+
+        async function clearQueue() {
+            if (!confirm('Clear all completed and failed downloads from the queue?')) {
+                return;
+            }
+
+            clearQueueBtn.disabled = true;
+
+            try {
+                const response = await fetch('/api/jobs/cleanup', {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) throw new Error('Failed to clear queue');
+
+                const data = await response.json();
+                showToast(`Cleared ${data.deleted} job(s)`);
+                loadJobs();
+            } catch (error) {
+                showToast('Failed to clear queue', true);
+            } finally {
+                clearQueueBtn.disabled = false;
+            }
+        }
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         }
 
+        // Line counter and limit enforcement
+        function updateLineCounter() {
+            const lines = bulkInput.value.split('\n').filter(line => line.trim());
+            const count = lines.length;
+            lineCounter.textContent = `${count}/${MAX_BULK_LINES} lines`;
+
+            if (count > MAX_BULK_LINES) {
+                lineCounter.style.color = 'var(--error)';
+                lineCounter.style.background = 'var(--bg-secondary)';
+            } else {
+                lineCounter.style.color = 'var(--text-secondary)';
+                lineCounter.style.background = 'var(--bg-tertiary)';
+            }
+        }
+
+        function limitLines(text) {
+            const lines = text.split('\n');
+            if (lines.length > MAX_BULK_LINES) {
+                return lines.slice(0, MAX_BULK_LINES).join('\n');
+            }
+            return text;
+        }
+
+        bulkInput.addEventListener('input', updateLineCounter);
+
+        bulkInput.addEventListener('paste', (e) => {
+            e.preventDefault();
+            const pastedText = (e.clipboardData || window.clipboardData).getData('text');
+            const limitedText = limitLines(pastedText);
+
+            // Insert at cursor position
+            const start = bulkInput.selectionStart;
+            const end = bulkInput.selectionEnd;
+            const currentValue = bulkInput.value;
+            const newValue = currentValue.substring(0, start) + limitedText + currentValue.substring(end);
+
+            bulkInput.value = limitLines(newValue);
+            updateLineCounter();
+
+            if (pastedText.split('\n').length > MAX_BULK_LINES) {
+                showToast(`Content limited to ${MAX_BULK_LINES} lines`, true);
+            }
+        });
+
+        // File upload handler
+        fileUpload.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            fileName.textContent = file.name;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const content = event.target.result;
+                bulkInput.value = limitLines(content);
+                updateLineCounter();
+
+                if (content.split('\n').length > MAX_BULK_LINES) {
+                    showToast(`File content limited to ${MAX_BULK_LINES} lines`, true);
+                }
+            };
+            reader.readAsText(file);
+        });
+
         // Event listeners
         searchBtn.addEventListener('click', search);
         searchInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') search();
+            if (e.key === 'Enter') {
+                search();
+            }
+        });
+        searchInput.addEventListener('focus', () => {
+            if (searchInput.value.trim() === '') {
+                showSearchHistory();
+            }
+        });
+        searchInput.addEventListener('blur', hideSearchHistory);
+        searchInput.addEventListener('input', () => {
+            if (searchInput.value.trim() === '') {
+                showSearchHistory();
+            } else {
+                hideSearchHistory();
+            }
+        });
+        bulkImportBtn.addEventListener('click', bulkImport);
+        clearQueueBtn.addEventListener('click', clearQueue);
+
+        // Show/hide playlist name input when checkbox is toggled
+        createPlaylistCheckbox.addEventListener('change', () => {
+            playlistNameInput.style.display = createPlaylistCheckbox.checked ? 'block' : 'none';
+            if (createPlaylistCheckbox.checked) {
+                playlistNameInput.focus();
+            }
+        });
+
+        // Close search history when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!searchInput.contains(e.target) && !searchHistory.contains(e.target)) {
+                searchHistory.classList.remove('show');
+            }
         });
 
         // Initial empty state

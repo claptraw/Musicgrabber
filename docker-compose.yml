@@ -4,10 +4,10 @@ services:
     container_name: music-grabber
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "38274:8080"
     volumes:
       # Mount your music library - adjust path as needed
-      - /path/to/your/music:/music
+      - /mnt/music:/music
       # Persist the job database
       - ./data:/data
     environment:
@@ -15,6 +15,8 @@ services:
       - MUSIC_DIR=/music
       # Database path
       - DB_PATH=/data/music_grabber.db
+      # Enable MusicBrainz metadata lookup (true/false)
+      - ENABLE_MUSICBRAINZ=true
       # Optional: Navidrome API for auto-rescan
       # - NAVIDROME_URL=http://navidrome:4533
       # - NAVIDROME_USER=admin
