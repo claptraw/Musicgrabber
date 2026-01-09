@@ -102,6 +102,58 @@ def parse_duration(seconds: float) -> str:
     return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
 
 
+def score_search_result(title: str, channel: str) -> int:
+    """Score a search result to prioritise official content over live versions
+
+    Higher score = better match
+    Lower score = worse match (live, cover, remix, etc.)
+    """
+    title_lower = title.lower()
+    channel_lower = channel.lower()
+    score = 100  # Start with base score
+
+    # Penalties for live performances
+    if re.search(r'\b(live|concert|tour|performance|unplugged)\b', title_lower):
+        score -= 50
+
+    # Penalties for covers, remixes, instrumentals
+    if re.search(r'\b(cover|remix|instrumental|karaoke|acoustic version)\b', title_lower):
+        score -= 40
+
+    # Penalties for lyric videos (usually lower quality)
+    if re.search(r'\b(lyric|lyrics)\b', title_lower):
+        score -= 20
+
+    # Penalties for fan uploads or unofficial
+    if re.search(r'\b(fan|unofficial|tribute)\b', title_lower):
+        score -= 30
+
+    # Bonuses for official content
+    if re.search(r'\b(official|vevo)\b', title_lower):
+        score += 30
+
+    if re.search(r'\b(official|vevo)\b', channel_lower):
+        score += 40
+
+    # Bonus for "official music video" or "official video"
+    if re.search(r'official\s*(music)?\s*video', title_lower):
+        score += 25
+
+    # Bonus for official audio
+    if re.search(r'official\s*audio', title_lower):
+        score += 20
+
+    # Penalty for reaction videos, compilations
+    if re.search(r'\b(reaction|react|compilation|mashup|vs)\b', title_lower):
+        score -= 60
+
+    # Penalty for extended versions (often DJ mixes)
+    if re.search(r'\b(extended|extended mix|extended version)\b', title_lower):
+        score -= 15
+
+    return score
+
+
 def sanitize_filename(name: str) -> str:
     """Remove/replace characters that are problematic in filenames"""
     # Remove or replace problematic characters
@@ -270,13 +322,16 @@ async def root():
 async def search(request: SearchRequest):
     """Search YouTube for music"""
     try:
-        # Use yt-dlp to search YouTube Music first, fallback to regular YouTube
+        # Fetch more results than requested so we can filter and re-rank
+        fetch_limit = max(request.limit * 3, 30)
+
+        # Use yt-dlp to search YouTube
         cmd = [
             "yt-dlp",
             "--dump-json",
             "--flat-playlist",
             "--no-warnings",
-            f"ytsearch{request.limit}:{request.query}",
+            f"ytsearch{fetch_limit}:{request.query}",
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -293,19 +348,42 @@ async def search(request: SearchRequest):
                 is_playlist = data.get("_type") == "playlist" or "playlist" in data.get("ie_key", "").lower()
                 video_count = data.get("playlist_count") or data.get("n_entries")
 
-                results.append(SearchResult(
-                    video_id=data.get("id", ""),
-                    title=data.get("title", "Unknown"),
-                    channel=data.get("channel", data.get("uploader", "Unknown")),
-                    duration=parse_duration(data.get("duration", 0) or 0) if not is_playlist else "",
-                    thumbnail=data.get("thumbnail", f"https://i.ytimg.com/vi/{data.get('id')}/mqdefault.jpg"),
-                    is_playlist=is_playlist,
-                    video_count=video_count
-                ))
+                title = data.get("title", "Unknown")
+                channel = data.get("channel", data.get("uploader", "Unknown"))
+
+                # Calculate quality score
+                quality_score = score_search_result(title, channel)
+
+                results.append({
+                    "video_id": data.get("id", ""),
+                    "title": title,
+                    "channel": channel,
+                    "duration": parse_duration(data.get("duration", 0) or 0) if not is_playlist else "",
+                    "thumbnail": data.get("thumbnail", f"https://i.ytimg.com/vi/{data.get('id')}/mqdefault.jpg"),
+                    "is_playlist": is_playlist,
+                    "video_count": video_count,
+                    "score": quality_score
+                })
             except json.JSONDecodeError:
                 continue
 
-        return {"results": results}
+        # Sort by score (highest first) and return top results
+        results.sort(key=lambda x: x["score"], reverse=True)
+
+        # Convert to SearchResult objects
+        final_results = []
+        for item in results[:request.limit]:
+            final_results.append(SearchResult(
+                video_id=item["video_id"],
+                title=item["title"],
+                channel=item["channel"],
+                duration=item["duration"],
+                thumbnail=item["thumbnail"],
+                is_playlist=item["is_playlist"],
+                video_count=item["video_count"]
+            ))
+
+        return {"results": final_results}
 
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Search timed out")
@@ -919,7 +997,7 @@ async def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTa
             failed_lines.append({"line": line_num, "text": original_line, "reason": "Artist or song too short"})
             continue
 
-        # Search for the song
+        # Search for the song - fetch multiple results to find best match
         try:
             search_query = f"{artist} {song}"
             cmd = [
@@ -927,7 +1005,7 @@ async def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTa
                 "--dump-json",
                 "--flat-playlist",
                 "--no-warnings",
-                f"ytsearch1:{search_query}",
+                f"ytsearch10:{search_query}",  # Fetch 10 results to find best match
             ]
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -936,17 +1014,40 @@ async def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTa
                 failed_lines.append({"line": line_num, "text": original_line, "reason": "Search failed"})
                 continue
 
-            # Get first result
+            # Parse all results and score them
             if not result.stdout.strip():
                 failed_lines.append({"line": line_num, "text": original_line, "reason": "No results found"})
                 continue
 
-            data = json.loads(result.stdout.strip().split('\n')[0])
-            video_id = data.get("id")
+            search_results = []
+            for search_line in result.stdout.strip().split('\n'):
+                if not search_line:
+                    continue
+                try:
+                    data = json.loads(search_line)
+                    title = data.get("title", "")
+                    channel = data.get("channel", data.get("uploader", ""))
+                    video_id = data.get("id")
 
-            if not video_id:
-                failed_lines.append({"line": line_num, "text": original_line, "reason": "No video ID"})
+                    if video_id:
+                        score = score_search_result(title, channel)
+                        search_results.append({
+                            "video_id": video_id,
+                            "title": title,
+                            "channel": channel,
+                            "score": score
+                        })
+                except json.JSONDecodeError:
+                    continue
+
+            if not search_results:
+                failed_lines.append({"line": line_num, "text": original_line, "reason": "No valid results"})
                 continue
+
+            # Sort by score and pick the best match
+            search_results.sort(key=lambda x: x["score"], reverse=True)
+            best_match = search_results[0]
+            video_id = best_match["video_id"]
 
             # Create job
             job_id = str(uuid.uuid4())[:8]
