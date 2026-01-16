@@ -1,10 +1,13 @@
 # Music Grabber 🎵
 
+**v1.1.0**
+
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
 ## Features
 
 - **Mobile-friendly UI** — designed for quick searches from your phone
+- **Hover to preview** — on desktop, hover over a result for 2 seconds to hear a preview
 - **YouTube search** — finds tracks and playlists via yt-dlp
 - **Playlist support** — download entire playlists with automatic M3U generation
 - **Bulk import** — paste or upload a text file of songs to auto-search and queue
@@ -78,9 +81,10 @@ music.yourdomain.com {
 
 ### Search and Download
 
-1. **Single tracks** — Search for a song, tap the result to download
-2. **Playlists** — Search for a playlist URL or name, tap the playlist result to download all tracks
-3. **Processing feedback** — Shows "Processing..." immediately when tapped, then "Added to queue ✓"
+1. **Single tracks** — Search for a song, tap/click the result to download
+2. **Preview** — On desktop, hover over a result for 2 seconds to hear a preview (cached for quick replays)
+3. **Playlists** — Search for a playlist URL or name, tap the playlist result to download all tracks
+4. **Processing feedback** — Shows "Processing..." immediately when tapped, then "Added to queue ✓"
 
 ### Bulk Import
 
@@ -144,8 +148,9 @@ Before downloading, checks if the track already exists:
 |--------|----------|-------------|
 | `GET` | `/` | Web UI |
 | `POST` | `/api/search` | Search YouTube (`{"query": "...", "limit": 15}`) |
+| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview |
 | `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "download_type": "single/playlist"}`) |
-| `POST` | `/api/bulk-import` | Bulk import songs (`{"lines": ["Artist - Song", ...]}`) |
+| `POST` | `/api/bulk-import` | Bulk import songs (`{"songs": "Artist - Song\n..."}`) |
 | `GET` | `/api/jobs` | List recent jobs |
 | `GET` | `/api/jobs/{id}` | Get job status |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
@@ -193,6 +198,13 @@ docker compose up -d
 - MusicBrainz lookups are rate-limited (1 request/second)
 - Some tracks may not be in the MusicBrainz database
 - YouTube metadata is used as fallback
+
+## Contributors
+
+Built with a mix of human creativity and AI assistance.
+
+- **Karl** — Creator and maintainer
+- **Claude (Anthropic)** — AI pair programmer
 
 ## License
 

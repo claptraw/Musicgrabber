@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from mutagen.flac import FLAC
 from mutagen.id3 import APIC
 
-app = FastAPI(title="Music Grabber", version="1.0.0")
+app = FastAPI(title="Music Grabber", version="1.1.0")
 
 # Configuration from environment
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
