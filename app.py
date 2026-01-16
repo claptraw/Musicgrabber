@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from mutagen.flac import FLAC
 from mutagen.id3 import APIC
 
-app = FastAPI(title="Music Grabber", version="1.2.0")
+app = FastAPI(title="Music Grabber", version="1.3.0")
 
 # Configuration from environment
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
@@ -77,12 +77,14 @@ class DownloadRequest(BaseModel):
     title: str
     artist: Optional[str] = None
     download_type: str = "single"  # "single" or "playlist"
+    convert_to_flac: bool = True  # Whether to convert to FLAC or keep original format
 
 
 class BulkImportRequest(BaseModel):
     songs: str  # Multi-line text with "Artist - Song" format
     create_playlist: bool = False
     playlist_name: Optional[str] = None
+    convert_to_flac: bool = True  # Whether to convert to FLAC or keep original format
 
 
 class SearchResult(BaseModel):
@@ -336,41 +338,92 @@ def save_lyrics_file(flac_path: Path, lyrics: str):
 
 
 def apply_metadata_to_file(file_path: Path, artist: str, title: str, album: str = "Singles", year: str = None):
-    """Apply metadata to FLAC file using mutagen"""
+    """Apply metadata to audio file using mutagen (supports multiple formats)"""
     try:
-        audio = FLAC(str(file_path))
+        suffix = file_path.suffix.lower()
 
-        # Set basic metadata
-        audio["ARTIST"] = artist
-        audio["TITLE"] = title
-        audio["ALBUM"] = album
+        if suffix == '.flac':
+            audio = FLAC(str(file_path))
+            audio["ARTIST"] = artist
+            audio["TITLE"] = title
+            audio["ALBUM"] = album
+            if year:
+                audio["DATE"] = year
+            audio.save()
 
-        if year:
-            audio["DATE"] = year
+        elif suffix == '.mp3':
+            from mutagen.easyid3 import EasyID3
+            from mutagen.mp3 import MP3
+            try:
+                audio = EasyID3(str(file_path))
+            except Exception:
+                # If no ID3 tag exists, create one
+                mp3 = MP3(str(file_path))
+                mp3.add_tags()
+                mp3.save()
+                audio = EasyID3(str(file_path))
+            audio["artist"] = artist
+            audio["title"] = title
+            audio["album"] = album
+            if year:
+                audio["date"] = year
+            audio.save()
 
-        audio.save()
+        elif suffix in ['.m4a', '.mp4']:
+            from mutagen.mp4 import MP4
+            audio = MP4(str(file_path))
+            audio["\xa9ART"] = [artist]
+            audio["\xa9nam"] = [title]
+            audio["\xa9alb"] = [album]
+            if year:
+                audio["\xa9day"] = [year]
+            audio.save()
+
+        elif suffix in ['.ogg', '.opus']:
+            from mutagen.oggopus import OggOpus
+            from mutagen.oggvorbis import OggVorbis
+            try:
+                if suffix == '.opus':
+                    audio = OggOpus(str(file_path))
+                else:
+                    audio = OggVorbis(str(file_path))
+                audio["ARTIST"] = artist
+                audio["TITLE"] = title
+                audio["ALBUM"] = album
+                if year:
+                    audio["DATE"] = year
+                audio.save()
+            except Exception:
+                pass  # Some ogg variants may not be supported
+
+        # For .webm and other unsupported formats, skip metadata (yt-dlp handles it)
+
     except Exception:
         # If metadata application fails, continue anyway
         pass
 
 
 def check_duplicate(artist: str, title: str) -> Optional[Path]:
-    """Check if a track already exists in the library"""
+    """Check if a track already exists in the library (any audio format)"""
     try:
         artist_dir = SINGLES_DIR / sanitize_filename(artist)
         if not artist_dir.exists():
             return None
 
-        # Check for exact filename match
-        expected_file = artist_dir / f"{sanitize_filename(title)}.flac"
-        if expected_file.exists():
-            return expected_file
+        sanitized_title = sanitize_filename(title)
 
-        # Check for similar files (case-insensitive)
-        title_lower = sanitize_filename(title).lower()
-        for file in artist_dir.glob("*.flac"):
-            if file.stem.lower() == title_lower:
-                return file
+        # Check for exact filename match in any supported format
+        for ext in ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']:
+            expected_file = artist_dir / f"{sanitized_title}{ext}"
+            if expected_file.exists():
+                return expected_file
+
+        # Check for similar files (case-insensitive) in any audio format
+        title_lower = sanitized_title.lower()
+        for ext in ['*.flac', '*.opus', '*.m4a', '*.webm', '*.mp3', '*.ogg']:
+            for file in artist_dir.glob(ext):
+                if file.stem.lower() == title_lower:
+                    return file
 
         return None
     except Exception:
@@ -520,14 +573,14 @@ async def download(request: DownloadRequest, background_tasks: BackgroundTasks):
 
     # Queue the download
     if request.download_type == "playlist":
-        background_tasks.add_task(process_playlist_download, job_id, request.video_id, title)
+        background_tasks.add_task(process_playlist_download, job_id, request.video_id, title, request.convert_to_flac)
     else:
-        background_tasks.add_task(process_download, job_id, request.video_id)
+        background_tasks.add_task(process_download, job_id, request.video_id, request.convert_to_flac)
 
     return {"job_id": job_id, "status": "queued"}
 
 
-async def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str):
+async def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str, convert_to_flac: bool = True):
     """Process a playlist download job"""
     conn = sqlite3.connect(DB_PATH)
 
@@ -613,13 +666,12 @@ async def process_playlist_download(job_id: str, playlist_id: str, playlist_name
                 artist_dir = SINGLES_DIR / sanitize_filename(artist)
                 artist_dir.mkdir(parents=True, exist_ok=True)
 
-                # Download with best audio quality, convert to FLAC
+                # Download with best audio quality
                 output_template = str(artist_dir / f"{sanitize_filename(title)}.%(ext)s")
 
                 download_cmd = [
                     "yt-dlp",
                     "-x",
-                    "--audio-format", "flac",
                     "--audio-quality", "0",
                     "--embed-metadata",
                     "--embed-thumbnail",
@@ -633,6 +685,11 @@ async def process_playlist_download(job_id: str, playlist_id: str, playlist_name
                     f"https://www.youtube.com/watch?v={video_id}"
                 ]
 
+                # Only convert to FLAC if requested
+                if convert_to_flac:
+                    download_cmd.insert(2, "--audio-format")
+                    download_cmd.insert(3, "flac")
+
                 download_result = subprocess.run(
                     download_cmd,
                     capture_output=True,
@@ -641,15 +698,22 @@ async def process_playlist_download(job_id: str, playlist_id: str, playlist_name
                 )
 
                 if download_result.returncode == 0:
-                    # Track downloaded file
-                    flac_file = artist_dir / f"{sanitize_filename(title)}.flac"
-                    if flac_file.exists():
+                    # Find the downloaded file (extension depends on convert_to_flac setting)
+                    audio_file = None
+                    sanitized_title = sanitize_filename(title)
+                    for ext in ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']:
+                        candidate = artist_dir / f"{sanitized_title}{ext}"
+                        if candidate.exists():
+                            audio_file = candidate
+                            break
+
+                    if audio_file:
                         # Try to enrich metadata with MusicBrainz
                         mb_metadata = await lookup_musicbrainz(artist, title)
                         if mb_metadata:
                             # Use MusicBrainz metadata
                             apply_metadata_to_file(
-                                flac_file,
+                                audio_file,
                                 mb_metadata.get("artist", artist),
                                 mb_metadata.get("title", title),
                                 mb_metadata.get("album", "Singles"),
@@ -657,9 +721,9 @@ async def process_playlist_download(job_id: str, playlist_id: str, playlist_name
                             )
                         else:
                             # Use cleaned YouTube metadata
-                            apply_metadata_to_file(flac_file, artist, title, "Singles")
+                            apply_metadata_to_file(audio_file, artist, title, "Singles")
 
-                        downloaded_files.append(str(flac_file.relative_to(SINGLES_DIR)))
+                        downloaded_files.append(str(audio_file.relative_to(SINGLES_DIR)))
 
                     # Update progress
                     conn.execute(
@@ -708,7 +772,7 @@ async def process_playlist_download(job_id: str, playlist_id: str, playlist_name
         conn.close()
 
 
-async def process_download(job_id: str, video_id: str):
+async def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
     """Process a download job"""
     conn = sqlite3.connect(DB_PATH)
     
@@ -757,14 +821,13 @@ async def process_download(job_id: str, video_id: str):
         # Create artist directory under Singles
         artist_dir = SINGLES_DIR / sanitize_filename(artist)
         artist_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Download with best audio quality, convert to FLAC
+
+        # Download with best audio quality
         output_template = str(artist_dir / f"{sanitize_filename(title)}.%(ext)s")
-        
+
         download_cmd = [
             "yt-dlp",
             "-x",  # Extract audio
-            "--audio-format", "flac",
             "--audio-quality", "0",  # Best quality
             "--embed-metadata",
             "--embed-thumbnail",
@@ -777,6 +840,11 @@ async def process_download(job_id: str, video_id: str):
             "--no-warnings",
             f"https://www.youtube.com/watch?v={video_id}"
         ]
+
+        # Only convert to FLAC if requested
+        if convert_to_flac:
+            download_cmd.insert(2, "--audio-format")
+            download_cmd.insert(3, "flac")
         
         download_result = subprocess.run(
             download_cmd, 
@@ -788,15 +856,22 @@ async def process_download(job_id: str, video_id: str):
         if download_result.returncode != 0:
             raise Exception(f"Download failed: {download_result.stderr}")
 
-        # Apply enhanced metadata to downloaded file
-        flac_file = artist_dir / f"{sanitize_filename(title)}.flac"
-        if flac_file.exists():
+        # Find the downloaded file (extension depends on convert_to_flac setting)
+        audio_file = None
+        sanitized_title = sanitize_filename(title)
+        for ext in ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']:
+            candidate = artist_dir / f"{sanitized_title}{ext}"
+            if candidate.exists():
+                audio_file = candidate
+                break
+
+        if audio_file:
             # Try to enrich metadata with MusicBrainz
             mb_metadata = await lookup_musicbrainz(artist, title)
             if mb_metadata:
                 # Use MusicBrainz metadata
                 apply_metadata_to_file(
-                    flac_file,
+                    audio_file,
                     mb_metadata.get("artist", artist),
                     mb_metadata.get("title", title),
                     mb_metadata.get("album", "Singles"),
@@ -804,12 +879,12 @@ async def process_download(job_id: str, video_id: str):
                 )
             else:
                 # Use cleaned YouTube metadata
-                apply_metadata_to_file(flac_file, artist, title, "Singles")
+                apply_metadata_to_file(audio_file, artist, title, "Singles")
 
             # Fetch and save lyrics
             lyrics = await fetch_lyrics(artist, title)
             if lyrics:
-                save_lyrics_file(flac_file, lyrics)
+                save_lyrics_file(audio_file, lyrics)
                 print(f"Saved lyrics for {artist} - {title}")
             else:
                 print(f"No lyrics found for {artist} - {title}")
@@ -1175,7 +1250,7 @@ async def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTa
             conn.close()
 
             # Queue download
-            background_tasks.add_task(process_download, job_id, video_id)
+            background_tasks.add_task(process_download, job_id, video_id, request.convert_to_flac)
 
             queued_jobs.append({
                 "job_id": job_id,

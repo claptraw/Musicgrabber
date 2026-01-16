@@ -537,6 +537,53 @@
             display: none;
         }
 
+        .toggle-switch {
+            position: relative;
+            width: 36px;
+            height: 20px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            transition: 0.3s;
+            border-radius: 20px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 2px;
+            bottom: 2px;
+            background-color: var(--text-secondary);
+            transition: 0.3s;
+            border-radius: 50%;
+        }
+
+        .toggle-switch input:checked + .toggle-slider {
+            background-color: var(--accent-dim);
+            border-color: var(--accent);
+        }
+
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(16px);
+            background-color: var(--accent);
+        }
+
         @media (max-width: 400px) {
             .container {
                 padding: 16px;
@@ -558,7 +605,16 @@
         <header>
             <div class="logo">🎵</div>
             <h1>Music Grabber</h1>
-            <span style="font-size: 11px; color: var(--text-secondary); margin-left: auto;">v1.2.0</span>
+            <div style="margin-left: auto; display: flex; align-items: center; gap: 12px;">
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer;" title="When enabled, converts all downloads to FLAC format. When disabled, keeps the original format (usually opus/m4a).">
+                    <span>FLAC</span>
+                    <div class="toggle-switch" id="flacToggle">
+                        <input type="checkbox" id="convertToFlac" checked>
+                        <span class="toggle-slider"></span>
+                    </div>
+                </label>
+                <span style="font-size: 11px; color: var(--text-secondary);">v1.3.0</span>
+            </div>
         </header>
 
         <div class="search-box">
@@ -658,6 +714,18 @@
         const lineCounter = document.getElementById('lineCounter');
         const createPlaylistCheckbox = document.getElementById('createPlaylistCheckbox');
         const playlistNameInput = document.getElementById('playlistNameInput');
+        const convertToFlacCheckbox = document.getElementById('convertToFlac');
+
+        // Load FLAC preference from localStorage
+        const savedFlacPref = localStorage.getItem('convertToFlac');
+        if (savedFlacPref !== null) {
+            convertToFlacCheckbox.checked = savedFlacPref === 'true';
+        }
+
+        // Save FLAC preference when changed
+        convertToFlacCheckbox.addEventListener('change', () => {
+            localStorage.setItem('convertToFlac', convertToFlacCheckbox.checked);
+        });
 
         let currentTab = 'results';
         let downloadingIds = new Set();
@@ -951,7 +1019,11 @@
                 const response = await fetch('/api/download', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ video_id: videoId, title })
+                    body: JSON.stringify({
+                        video_id: videoId,
+                        title,
+                        convert_to_flac: convertToFlacCheckbox.checked
+                    })
                 });
 
                 if (!response.ok) throw new Error('Download failed');
@@ -959,7 +1031,8 @@
                 const data = await response.json();
 
                 // Update toast with success message
-                showToast('Added to queue ✓');
+                const formatMsg = convertToFlacCheckbox.checked ? '' : ' (original format)';
+                showToast('Added to queue ✓' + formatMsg);
             } catch (error) {
                 downloadingIds.delete(videoId);
                 element.classList.remove('downloading');
@@ -1087,7 +1160,10 @@
             bulkResults.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
             try {
-                const requestBody = { songs };
+                const requestBody = {
+                    songs,
+                    convert_to_flac: convertToFlacCheckbox.checked
+                };
                 if (createPlaylist) {
                     requestBody.create_playlist = true;
                     requestBody.playlist_name = playlistName;
