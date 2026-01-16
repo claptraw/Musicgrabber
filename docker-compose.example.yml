@@ -1,0 +1,26 @@
+services:
+  music-grabber:
+    build: .
+    container_name: music-grabber
+    restart: unless-stopped
+    ports:
+      - "38274:8080"
+    volumes:
+      # Mount your music library - adjust path as needed
+      - /path/to/your/music:/music
+      # Persist the job database
+      - ./data:/data
+    environment:
+      # Music directory inside container
+      - MUSIC_DIR=/music
+      # Database path
+      - DB_PATH=/data/music_grabber.db
+      # Enable MusicBrainz metadata lookup (true/false)
+      - ENABLE_MUSICBRAINZ=true
+      # Optional: Navidrome API for auto-rescan (remove if not using Navidrome)
+      # - NAVIDROME_URL=http://navidrome:4533
+      # - NAVIDROME_USER=admin
+      # - NAVIDROME_PASS=yourpassword
+    # Optional: add to your existing network if running with Navidrome
+    # networks:
+    #   - your-network

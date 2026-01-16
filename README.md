@@ -30,14 +30,15 @@ A self-hosted music acquisition service. Search YouTube, tap a result, and it do
    ```bash
    git clone <your-repo> music-grabber
    cd music-grabber
+   cp docker-compose.example.yml docker-compose.yml
    ```
 
 2. **Edit docker-compose.yml**
 
-   Update the music volume path:
+   Update the music volume path and optionally add Navidrome credentials:
    ```yaml
    volumes:
-     - /mnt/music:/music  # <-- your music directory
+     - /path/to/your/music:/music  # <-- your music directory
    ```
 
 3. **Build and run**
