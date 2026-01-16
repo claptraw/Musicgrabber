@@ -18,6 +18,12 @@ A self-hosted music acquisition service. Search YouTube, tap a result, and it do
 - **Job queue** — track download progress, retry failed jobs, manage history
 - **Optional Navidrome integration** — auto-triggers library rescan
 
+## Screenshots
+
+| Search & Results | Bulk Import | Queue |
+|:---:|:---:|:---:|
+| ![Search and Results](assets/SearchAndResults.png) | ![Bulk Import](assets/BulkImport.png) | ![Queue](assets/Queue.png) |
+
 ## Quick Start
 
 1. **Clone and configure**
