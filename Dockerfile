@@ -16,7 +16,8 @@ RUN pip install --no-cache-dir \
     uvicorn[standard] \
     httpx \
     pydantic \
-    mutagen
+    mutagen \
+    beautifulsoup4
 
 # Create app directory
 WORKDIR /app

@@ -7,7 +7,7 @@ services:
       - "38274:8080"
     volumes:
       # Mount your music library - adjust path as needed
-      - /path/to/your/music:/music
+      - /mnt/music:/music
       # Persist the job database
       - ./data:/data
     environment:
@@ -17,12 +17,12 @@ services:
       - DB_PATH=/data/music_grabber.db
       # Enable MusicBrainz metadata lookup (true/false)
       - ENABLE_MUSICBRAINZ=true
-      # Enable automatic lyrics fetching from LRClib (true/false)
-      - ENABLE_LYRICS=true
-      # Optional: Navidrome API for auto-rescan (remove if not using Navidrome)
-      # - NAVIDROME_URL=http://navidrome:4533
-      # - NAVIDROME_USER=admin
-      # - NAVIDROME_PASS=yourpassword
+      # Default FLAC conversion setting in the UI (true/false)
+      - DEFAULT_CONVERT_TO_FLAC=true
+      # Optional: Navidrome API for auto-rescan
+      # - NAVIDROME_URL=https://navidrome.URL.com
+      # - NAVIDROME_USER=username
+      # - NAVIDROME_PASS=NavidromePassword!
     # Optional: add to your existing network if running with Navidrome
     # networks:
     #   - your-network

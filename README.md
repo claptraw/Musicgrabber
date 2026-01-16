@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.2.0**
+**v1.3.2**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -23,6 +23,10 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
 - **Job queue** — track download progress, retry failed jobs, manage history
 - **Optional Navidrome integration** — auto-triggers library rescan
 
+## Why FLAC?
+
+This project uses FLAC primarily for standardisation and consistent tagging across your library. Converting to FLAC does not improve audio quality beyond the source; it only preserves what is already there. If you prefer to keep the original format, disable FLAC conversion and files will be saved as-is.
+
 ## Screenshots
 
 | Search & Results | Bulk Import | Queue |
@@ -35,7 +39,6 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
    ```bash
    git clone <your-repo> music-grabber
    cd music-grabber
-   cp docker-compose.example.yml docker-compose.yml
    ```
 
 2. **Edit docker-compose.yml**
@@ -44,6 +47,13 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
    ```yaml
    volumes:
      - /path/to/your/music:/music  # <-- your music directory
+     - ./data:/data                # <-- keep the job database
+   ```
+   ```yaml
+   environment:
+     - NAVIDROME_URL=http://navidrome:4533
+     - NAVIDROME_USER=admin
+     - NAVIDROME_PASS=yourpassword
    ```
 
 3. **Build and run**

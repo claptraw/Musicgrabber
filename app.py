@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
 Music Grabber - A self-hosted music acquisition service
-Searches YouTube, downloads best quality audio as FLAC, drops into Navidrome library
+Searches YouTube, downloads best quality audio with optional conversion to FLAC, drops into Navidrome library
 """
 
-import asyncio
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sqlite3
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -18,12 +18,11 @@ from typing import Optional
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from mutagen.flac import FLAC
-from mutagen.id3 import APIC
+import httpx
 
-app = FastAPI(title="Music Grabber", version="1.3.0")
+app = FastAPI(title="Music Grabber", version="1.3.2")
 
 # Configuration from environment
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
@@ -34,15 +33,23 @@ NAVIDROME_USER = os.getenv("NAVIDROME_USER", "")
 NAVIDROME_PASS = os.getenv("NAVIDROME_PASS", "")
 ENABLE_MUSICBRAINZ = os.getenv("ENABLE_MUSICBRAINZ", "true").lower() == "true"
 ENABLE_LYRICS = os.getenv("ENABLE_LYRICS", "true").lower() == "true"
+DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"
 
 # Ensure directories exist
 SINGLES_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+# Initialise DB
+def get_db() -> sqlite3.Connection:
+    """Create a SQLite connection with basic concurrency settings"""
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 def init_db():
     """Initialize SQLite database for job tracking"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
             id TEXT PRIMARY KEY,
@@ -63,29 +70,28 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 init_db()
 
-
+# Classes
 class SearchRequest(BaseModel):
     query: str
     limit: int = 15
-
 
 class DownloadRequest(BaseModel):
     video_id: str
     title: str
     artist: Optional[str] = None
     download_type: str = "single"  # "single" or "playlist"
-    convert_to_flac: bool = True  # Whether to convert to FLAC or keep original format
-
+    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
 
 class BulkImportRequest(BaseModel):
     songs: str  # Multi-line text with "Artist - Song" format
     create_playlist: bool = False
     playlist_name: Optional[str] = None
-    convert_to_flac: bool = True  # Whether to convert to FLAC or keep original format
+    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
 
+class SpotifyPlaylistRequest(BaseModel):
+    url: str  # Spotify playlist URL
 
 class SearchResult(BaseModel):
     video_id: str
@@ -96,14 +102,12 @@ class SearchResult(BaseModel):
     is_playlist: bool = False
     video_count: Optional[int] = None
 
-
 def parse_duration(seconds: float) -> str:
     """Convert seconds to MM:SS or HH:MM:SS format"""
     seconds = int(seconds)
     if seconds < 3600:
         return f"{seconds // 60}:{seconds % 60:02d}"
     return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
-
 
 def score_search_result(title: str, channel: str) -> int:
     """Score a search result to prioritise official content over live versions
@@ -127,7 +131,7 @@ def score_search_result(title: str, channel: str) -> int:
     if re.search(r'\b(lyric|lyrics)\b', title_lower):
         score -= 20
 
-    # Penalties for fan uploads or unofficial
+    # Penalties for fan uploads or unofficial - no cell phone video, thanks
     if re.search(r'\b(fan|unofficial|tribute)\b', title_lower):
         score -= 30
 
@@ -215,82 +219,75 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
     return artist.strip(), clean_title(full_title)
 
 
-async def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
+def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
     """Look up track metadata from MusicBrainz"""
     if not ENABLE_MUSICBRAINZ:
         return None
 
     try:
-        import httpx
-
         # Search for recording
-        async with httpx.AsyncClient(timeout=10) as client:
-            # MusicBrainz requires a User-Agent
-            headers = {"User-Agent": "MusicGrabber/1.0.0 (https://github.com/yourrepo)"}
+        headers = {"User-Agent": "MusicGrabber/1.3.2 (https://github.com/yourrepo)"}
 
-            # Search for the recording
-            search_url = "https://musicbrainz.org/ws/2/recording/"
-            params = {
-                "query": f'artist:"{artist}" AND recording:"{title}"',
-                "fmt": "json",
-                "limit": 1
-            }
+        search_url = "https://musicbrainz.org/ws/2/recording/"
+        params = {
+            "query": f'artist:"{artist}" AND recording:"{title}"',
+            "fmt": "json",
+            "limit": 1
+        }
 
-            response = await client.get(search_url, params=params, headers=headers)
+        with httpx.Client(timeout=10) as client:
+            response = client.get(search_url, params=params, headers=headers)
 
-            if response.status_code != 200:
-                return None
+        if response.status_code != 200:
+            return None
 
-            data = response.json()
+        data = response.json()
 
-            if not data.get("recordings"):
-                return None
+        if not data.get("recordings"):
+            return None
 
-            recording = data["recordings"][0]
+        recording = data["recordings"][0]
 
-            # Extract metadata
-            metadata = {
-                "title": recording.get("title"),
-                "artist": recording["artist-credit"][0]["name"] if recording.get("artist-credit") else None,
-            }
+        # Extract metadata
+        metadata = {
+            "title": recording.get("title"),
+            "artist": recording["artist-credit"][0]["name"] if recording.get("artist-credit") else None,
+        }
 
-            # Get release information for album and date
-            if recording.get("releases"):
-                release = recording["releases"][0]
-                metadata["album"] = release.get("title")
-                metadata["date"] = release.get("date")
+        # Get release information for album and date
+        if recording.get("releases"):
+            release = recording["releases"][0]
+            metadata["album"] = release.get("title")
+            metadata["date"] = release.get("date")
 
-                # Extract year from date
-                if metadata.get("date"):
-                    year_match = re.match(r'(\d{4})', metadata["date"])
-                    if year_match:
-                        metadata["year"] = year_match.group(1)
+            # Extract year from date
+            if metadata.get("date"):
+                year_match = re.match(r'(\d{4})', metadata["date"])
+                if year_match:
+                    metadata["year"] = year_match.group(1)
 
-            return metadata
+        return metadata
 
     except Exception:
         # If MusicBrainz lookup fails, just continue without it
         return None
 
-
-async def fetch_lyrics(artist: str, title: str) -> Optional[str]:
+def fetch_lyrics(artist: str, title: str) -> Optional[str]:
     """Fetch synced lyrics from LRClib API"""
     if not ENABLE_LYRICS:
         return None
 
     try:
-        import httpx
+        headers = {"User-Agent": "MusicGrabber/1.1.0 (https://gitlab.com/g33kphr33k/musicgrabber)"}
 
-        async with httpx.AsyncClient(timeout=10) as client:
-            headers = {"User-Agent": "MusicGrabber/1.1.0 (https://gitlab.com/g33kphr33k/musicgrabber)"}
-
+        with httpx.Client(timeout=10) as client:
             # Try the get endpoint first (exact match)
             params = {
                 "artist_name": artist,
                 "track_name": title
             }
 
-            response = await client.get(
+            response = client.get(
                 "https://lrclib.net/api/get",
                 params=params,
                 headers=headers
@@ -306,7 +303,7 @@ async def fetch_lyrics(artist: str, title: str) -> Optional[str]:
 
             # If exact match fails, try search
             search_params = {"q": f"{artist} {title}"}
-            search_response = await client.get(
+            search_response = client.get(
                 "https://lrclib.net/api/search",
                 params=search_params,
                 headers=headers
@@ -323,19 +320,17 @@ async def fetch_lyrics(artist: str, title: str) -> Optional[str]:
                         if result.get("plainLyrics"):
                             return result["plainLyrics"]
 
-            return None
+        return None
 
     except Exception as e:
         # If lyrics lookup fails, log and continue without
         print(f"Lyrics lookup failed for {artist} - {title}: {e}")
         return None
 
-
 def save_lyrics_file(flac_path: Path, lyrics: str):
     """Save lyrics as .lrc file alongside the FLAC"""
     lrc_path = flac_path.with_suffix(".lrc")
     lrc_path.write_text(lyrics, encoding="utf-8")
-
 
 def apply_metadata_to_file(file_path: Path, artist: str, title: str, album: str = "Singles", year: str = None):
     """Apply metadata to audio file using mutagen (supports multiple formats)"""
@@ -402,7 +397,6 @@ def apply_metadata_to_file(file_path: Path, artist: str, title: str, album: str 
         # If metadata application fails, continue anyway
         pass
 
-
 def check_duplicate(artist: str, title: str) -> Optional[Path]:
     """Check if a track already exists in the library (any audio format)"""
     try:
@@ -429,15 +423,18 @@ def check_duplicate(artist: str, title: str) -> Optional[Path]:
     except Exception:
         return None
 
-
 @app.get("/", response_class=HTMLResponse)
-async def root():
+def root():
     """Serve the main UI"""
     return FileResponse("/app/static/index.html")
 
+@app.get("/api/config")
+def get_config():
+    """Expose server defaults for the UI"""
+    return {"default_convert_to_flac": DEFAULT_CONVERT_TO_FLAC}
 
 @app.get("/api/preview/{video_id}")
-async def get_preview_url(video_id: str):
+def get_preview_url(video_id: str):
     """Get a streamable audio URL for preview playback
 
     Uses yt-dlp to extract a direct audio stream URL that can be played in the browser.
@@ -469,9 +466,8 @@ async def get_preview_url(video_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/api/search")
-async def search(request: SearchRequest):
+def search(request: SearchRequest):
     """Search YouTube for music"""
     try:
         # Fetch more results than requested so we can filter and re-rank
@@ -544,7 +540,7 @@ async def search(request: SearchRequest):
 
 
 @app.post("/api/download")
-async def download(request: DownloadRequest, background_tasks: BackgroundTasks):
+def download(request: DownloadRequest, background_tasks: BackgroundTasks):
     """Queue a download job"""
     job_id = str(uuid.uuid4())[:8]
 
@@ -557,7 +553,7 @@ async def download(request: DownloadRequest, background_tasks: BackgroundTasks):
         pass
 
     # Create job record
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
     if request.download_type == "playlist":
         conn.execute(
             "INSERT INTO jobs (id, video_id, title, status, download_type, playlist_name) VALUES (?, ?, ?, ?, ?, ?)",
@@ -580,9 +576,9 @@ async def download(request: DownloadRequest, background_tasks: BackgroundTasks):
     return {"job_id": job_id, "status": "queued"}
 
 
-async def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str, convert_to_flac: bool = True):
+def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str, convert_to_flac: bool = True):
     """Process a playlist download job"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
 
     try:
         # Update status to downloading
@@ -709,7 +705,7 @@ async def process_playlist_download(job_id: str, playlist_id: str, playlist_name
 
                     if audio_file:
                         # Try to enrich metadata with MusicBrainz
-                        mb_metadata = await lookup_musicbrainz(artist, title)
+                        mb_metadata = lookup_musicbrainz(artist, title)
                         if mb_metadata:
                             # Use MusicBrainz metadata
                             apply_metadata_to_file(
@@ -752,7 +748,7 @@ async def process_playlist_download(job_id: str, playlist_id: str, playlist_name
 
         # Trigger Navidrome rescan if configured
         if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
-            await trigger_navidrome_scan()
+            trigger_navidrome_scan()
 
         # Update job status
         conn.execute(
@@ -772,9 +768,9 @@ async def process_playlist_download(job_id: str, playlist_id: str, playlist_name
         conn.close()
 
 
-async def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
+def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
     """Process a download job"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
     
     try:
         # Update status to downloading
@@ -867,7 +863,7 @@ async def process_download(job_id: str, video_id: str, convert_to_flac: bool = T
 
         if audio_file:
             # Try to enrich metadata with MusicBrainz
-            mb_metadata = await lookup_musicbrainz(artist, title)
+            mb_metadata = lookup_musicbrainz(artist, title)
             if mb_metadata:
                 # Use MusicBrainz metadata
                 apply_metadata_to_file(
@@ -882,7 +878,7 @@ async def process_download(job_id: str, video_id: str, convert_to_flac: bool = T
                 apply_metadata_to_file(audio_file, artist, title, "Singles")
 
             # Fetch and save lyrics
-            lyrics = await fetch_lyrics(artist, title)
+            lyrics = fetch_lyrics(artist, title)
             if lyrics:
                 save_lyrics_file(audio_file, lyrics)
                 print(f"Saved lyrics for {artist} - {title}")
@@ -891,7 +887,7 @@ async def process_download(job_id: str, video_id: str, convert_to_flac: bool = T
 
         # Trigger Navidrome rescan if configured
         if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
-            await trigger_navidrome_scan()
+            trigger_navidrome_scan()
 
         # Update job status
         conn.execute(
@@ -911,12 +907,9 @@ async def process_download(job_id: str, video_id: str, convert_to_flac: bool = T
         conn.close()
 
 
-async def trigger_navidrome_scan():
+def trigger_navidrome_scan():
     """Trigger a Navidrome library scan via API"""
     try:
-        import hashlib
-        import httpx
-
         # Navidrome uses subsonic API
         salt = uuid.uuid4().hex[:8]
         token = hashlib.md5(f"{NAVIDROME_PASS}{salt}".encode()).hexdigest()
@@ -930,17 +923,16 @@ async def trigger_navidrome_scan():
             "f": "json"
         }
 
-        async with httpx.AsyncClient() as client:
-            await client.get(
+        with httpx.Client(timeout=10) as client:
+            client.get(
                 f"{NAVIDROME_URL}/rest/startScan",
-                params=params,
-                timeout=10
+                params=params
             )
     except Exception:
         pass  # Non-critical, scan will happen on schedule anyway
 
 
-async def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count: int):
+def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count: int):
     """Create an M3U playlist from a bulk import after all downloads complete
 
     Waits for all jobs with the matching playlist_name to complete, then generates the M3U file.
@@ -951,7 +943,7 @@ async def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected
     waited = 0
 
     while waited < max_wait_time:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db()
         cursor = conn.execute(
             "SELECT COUNT(*) as total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed FROM jobs WHERE playlist_name = ?",
             (bulk_import_id,)
@@ -966,11 +958,11 @@ async def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected
         if completed >= expected_count or total == completed:
             break
 
-        await asyncio.sleep(check_interval)
+        time.sleep(check_interval)
         waited += check_interval
 
     # Gather all successfully downloaded files
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
     conn.row_factory = sqlite3.Row
     cursor = conn.execute(
         "SELECT artist, title FROM jobs WHERE playlist_name = ? AND status = 'completed' AND error IS NULL ORDER BY created_at",
@@ -988,13 +980,18 @@ async def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected
         artist = job.get("artist", "Unknown")
         title = job.get("title", "Unknown")
 
-        # Construct expected file path
+        # Construct expected file path (any supported format)
         artist_dir = SINGLES_DIR / sanitize_filename(artist)
-        flac_file = artist_dir / f"{sanitize_filename(title)}.flac"
+        audio_file = None
+        for ext in ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']:
+            candidate = artist_dir / f"{sanitize_filename(title)}{ext}"
+            if candidate.exists():
+                audio_file = candidate
+                break
 
-        if flac_file.exists():
+        if audio_file:
             # Store relative path from Singles directory
-            rel_path = flac_file.relative_to(SINGLES_DIR)
+            rel_path = audio_file.relative_to(SINGLES_DIR)
             playlist_files.append(str(rel_path))
 
     if playlist_files:
@@ -1007,9 +1004,9 @@ async def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected
 
 
 @app.get("/api/jobs")
-async def get_jobs(limit: int = 20):
+def get_jobs(limit: int = 20):
     """Get recent jobs"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
     conn.row_factory = sqlite3.Row
     cursor = conn.execute(
         "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
@@ -1021,9 +1018,9 @@ async def get_jobs(limit: int = 20):
 
 
 @app.get("/api/jobs/{job_id}")
-async def get_job(job_id: str):
+def get_job(job_id: str):
     """Get a specific job"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
     conn.row_factory = sqlite3.Row
     cursor = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
     row = cursor.fetchone()
@@ -1036,9 +1033,9 @@ async def get_job(job_id: str):
 
 
 @app.post("/api/jobs/{job_id}/retry")
-async def retry_job(job_id: str, background_tasks: BackgroundTasks):
+def retry_job(job_id: str, background_tasks: BackgroundTasks):
     """Retry a failed job"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
     conn.row_factory = sqlite3.Row
     cursor = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
     row = cursor.fetchone()
@@ -1072,13 +1069,13 @@ async def retry_job(job_id: str, background_tasks: BackgroundTasks):
 
 
 @app.delete("/api/jobs/cleanup")
-async def cleanup_jobs(status: Optional[str] = None):
+def cleanup_jobs(status: Optional[str] = None):
     """Delete completed or failed jobs
 
     Args:
         status: Optional filter - 'completed', 'failed', or None for both
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
 
     if status == "completed":
         cursor = conn.execute("DELETE FROM jobs WHERE status = 'completed'")
@@ -1125,8 +1122,83 @@ def clean_bulk_import_line(line: str) -> str:
     return line.strip()
 
 
+@app.post("/api/spotify-playlist")
+def fetch_spotify_playlist(request: SpotifyPlaylistRequest):
+    """Fetch track list from a public Spotify playlist URL
+
+    Uses Spotify's embed endpoint which contains track data in a parseable format.
+    Returns tracks in "Artist - Song" format ready for bulk import.
+    """
+    # Validate and extract playlist ID from URL
+    match = re.match(r'https?://open\.spotify\.com/playlist/([a-zA-Z0-9]+)', request.url)
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid Spotify playlist URL")
+
+    playlist_id = match.group(1)
+
+    # Fetch the embed page - this contains track data unlike the main page
+    try:
+        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            response = client.get(
+                f"https://open.spotify.com/embed/playlist/{playlist_id}",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+            )
+            response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Playlist not found or is private")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch playlist: {e}")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to connect to Spotify: {e}")
+
+    html_content = response.text
+
+    # Extract playlist name - first "title" match is usually the playlist name
+    playlist_name = "Spotify Playlist"
+    title_matches = re.findall(r'"title":"([^"]+)"', html_content)
+    if title_matches:
+        playlist_name = title_matches[0]
+
+    # Extract tracks using title/subtitle pattern
+    # The embed page has tracks as alternating "title":"SONG","subtitle":"ARTIST" pairs
+    # We need to find these pairs and combine them
+    tracks = []
+
+    # Find all title and subtitle values
+    titles = re.findall(r'"title":"([^"]+)"', html_content)
+    subtitles = re.findall(r'"subtitle":"([^"]+)"', html_content)
+
+    # Skip the first title (playlist name) and first subtitle (usually "Spotify")
+    if len(titles) > 1 and len(subtitles) > 1:
+        # The titles and subtitles should align: titles[1] is first track, subtitles[1] is its artist
+        track_titles = titles[1:]  # Skip playlist name
+        track_artists = subtitles[1:]  # Skip "Spotify"
+
+        # Pair them up
+        for title, artist in zip(track_titles, track_artists):
+            # Decode unicode escapes like \u0026 -> &
+            # Use utf-8 encoding to avoid mojibake (Â characters)
+            title = title.encode('utf-8').decode('unicode_escape').encode('latin-1').decode('utf-8')
+            artist = artist.encode('utf-8').decode('unicode_escape').encode('latin-1').decode('utf-8')
+            tracks.append(f"{artist} - {title}")
+
+    if not tracks:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not extract tracks from playlist. The playlist may be empty or Spotify's page structure may have changed."
+        )
+
+    return {
+        "tracks": tracks,
+        "playlist_name": playlist_name,
+        "count": len(tracks)
+    }
+
+
 @app.post("/api/bulk-import")
-async def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTasks):
+def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTasks):
     """Import a list of songs and automatically search/download them
 
     Accepts text in format:
@@ -1233,7 +1305,7 @@ async def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTa
 
             # Create job
             job_id = str(uuid.uuid4())[:8]
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_db()
 
             # Store playlist info if creating a playlist
             if request.create_playlist:

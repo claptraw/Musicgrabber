@@ -30,6 +30,3 @@ Thumbs.db
 
 # Application data
 /data/
-
-# Local Docker configuration
-docker-compose.yml

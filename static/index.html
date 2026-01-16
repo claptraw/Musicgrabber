@@ -613,7 +613,7 @@
                         <span class="toggle-slider"></span>
                     </div>
                 </label>
-                <span style="font-size: 11px; color: var(--text-secondary);">v1.3.0</span>
+                <span style="font-size: 11px; color: var(--text-secondary);">v1.3.2</span>
             </div>
         </header>
 
@@ -650,6 +650,23 @@
                         📁 Choose File
                     </label>
                     <span id="fileName" style="margin-left: 12px; font-size: 13px; color: var(--text-secondary);"></span>
+                </div>
+                <div style="margin-bottom: 12px;">
+                    <div style="display: flex; gap: 8px;">
+                        <input
+                            type="text"
+                            id="spotifyUrlInput"
+                            placeholder="Spotify playlist URL (e.g., https://open.spotify.com/playlist/...)"
+                            style="flex: 1; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);"
+                        >
+                        <button
+                            id="fetchSpotifyBtn"
+                            style="padding: 10px 16px; font-size: 13px; font-family: inherit; font-weight: 600; background: #1DB954; color: #000; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s; white-space: nowrap;"
+                        >
+                            Fetch Playlist
+                        </button>
+                    </div>
+                    <div id="spotifyError" style="margin-top: 8px; font-size: 12px; color: var(--error); display: none;"></div>
                 </div>
                 <div style="position: relative;">
                     <textarea
@@ -706,6 +723,9 @@
         const bulkResults = document.getElementById('bulkResults');
         const fileUpload = document.getElementById('fileUpload');
         const fileName = document.getElementById('fileName');
+        const spotifyUrlInput = document.getElementById('spotifyUrlInput');
+        const fetchSpotifyBtn = document.getElementById('fetchSpotifyBtn');
+        const spotifyError = document.getElementById('spotifyError');
         const queueTabContainer = document.getElementById('queueTabContainer');
         const queueTab = document.getElementById('queueTab');
         const clearQueueBtn = document.getElementById('clearQueueBtn');
@@ -716,10 +736,19 @@
         const playlistNameInput = document.getElementById('playlistNameInput');
         const convertToFlacCheckbox = document.getElementById('convertToFlac');
 
-        // Load FLAC preference from localStorage
+        // Load FLAC preference from localStorage or server defaults
         const savedFlacPref = localStorage.getItem('convertToFlac');
         if (savedFlacPref !== null) {
             convertToFlacCheckbox.checked = savedFlacPref === 'true';
+        } else {
+            fetch('/api/config')
+                .then((response) => response.ok ? response.json() : null)
+                .then((config) => {
+                    if (config && typeof config.default_convert_to_flac === 'boolean') {
+                        convertToFlacCheckbox.checked = config.default_convert_to_flac;
+                    }
+                })
+                .catch(() => {});
         }
 
         // Save FLAC preference when changed
@@ -1343,6 +1372,77 @@
         });
         bulkImportBtn.addEventListener('click', bulkImport);
         clearQueueBtn.addEventListener('click', clearQueue);
+
+        // Spotify playlist fetch handler
+        async function fetchSpotifyPlaylist() {
+            const url = spotifyUrlInput.value.trim();
+            if (!url) {
+                spotifyError.textContent = 'Please enter a Spotify playlist URL';
+                spotifyError.style.display = 'block';
+                return;
+            }
+
+            // Basic URL validation
+            if (!url.match(/^https?:\/\/open\.spotify\.com\/playlist\//)) {
+                spotifyError.textContent = 'Invalid Spotify playlist URL. Expected format: https://open.spotify.com/playlist/...';
+                spotifyError.style.display = 'block';
+                return;
+            }
+
+            spotifyError.style.display = 'none';
+            fetchSpotifyBtn.disabled = true;
+            fetchSpotifyBtn.textContent = 'Fetching...';
+
+            try {
+                const response = await fetch('/api/spotify-playlist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Failed to fetch playlist');
+                }
+
+                if (data.tracks && data.tracks.length > 0) {
+                    // Populate the textarea with tracks
+                    const trackLines = data.tracks.slice(0, MAX_BULK_LINES).join('\n');
+                    bulkInput.value = trackLines;
+                    updateLineCounter();
+
+                    // Auto-fill playlist name if checkbox is checked
+                    if (createPlaylistCheckbox.checked && data.playlist_name) {
+                        playlistNameInput.value = data.playlist_name;
+                    }
+
+                    // Show toast with result
+                    const truncated = data.tracks.length > MAX_BULK_LINES
+                        ? ` (limited to ${MAX_BULK_LINES})`
+                        : '';
+                    showToast(`Loaded ${Math.min(data.tracks.length, MAX_BULK_LINES)} tracks from "${data.playlist_name}"${truncated}`);
+
+                    // Clear the URL input
+                    spotifyUrlInput.value = '';
+                } else {
+                    throw new Error('No tracks found in playlist');
+                }
+            } catch (error) {
+                spotifyError.textContent = error.message;
+                spotifyError.style.display = 'block';
+            } finally {
+                fetchSpotifyBtn.disabled = false;
+                fetchSpotifyBtn.textContent = 'Fetch Playlist';
+            }
+        }
+
+        fetchSpotifyBtn.addEventListener('click', fetchSpotifyPlaylist);
+        spotifyUrlInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                fetchSpotifyPlaylist();
+            }
+        });
 
         // Show/hide playlist name input when checkbox is toggled
         createPlaylistCheckbox.addEventListener('change', () => {
