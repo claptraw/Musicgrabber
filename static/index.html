@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Music Grabber</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="icon" type="image/png" href="/static/favicon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;600&display=swap" rel="stylesheet">
@@ -135,6 +135,7 @@
 
         .related-suggestions {
             margin-top: 16px;
+            margin-bottom: 20px;
             padding: 14px;
             background: var(--bg-secondary);
             border: 1px solid var(--border);
@@ -261,6 +262,40 @@
             border-color: var(--warning);
             opacity: 0.7;
             pointer-events: none;
+        }
+
+        .result-item.previewing {
+            border-color: var(--accent);
+            background: var(--bg-tertiary);
+        }
+
+        .result-item.loading-preview {
+            border-color: var(--text-secondary);
+        }
+
+        .preview-indicator {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 24px;
+            height: 24px;
+            background: var(--accent);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .result-item.previewing .preview-indicator {
+            opacity: 1;
+            animation: pulse 1s infinite;
+        }
+
+        .result-item {
+            position: relative;
         }
 
         .result-thumb {
@@ -600,6 +635,7 @@
     </div>
 
     <div class="toast" id="toast"></div>
+    <audio id="previewAudio" preload="none"></audio>
 
     <script>
         const searchInput = document.getElementById('searchInput');
@@ -627,6 +663,82 @@
         let lastResults = [];
         const MAX_QUEUE_SIZE = 100;
         const MAX_BULK_LINES = 70;
+
+        // Preview state
+        const previewAudio = document.getElementById('previewAudio');
+        let hoverTimeout = null;
+        let currentPreviewId = null;
+        let previewCache = new Map(); // Cache preview URLs
+        const HOVER_DELAY = 2000; // 3 seconds before preview starts
+
+        // Preview functions
+        function startHoverTimer(videoId, element) {
+            clearHoverTimer();
+            hoverTimeout = setTimeout(() => {
+                startPreview(videoId, element);
+            }, HOVER_DELAY);
+        }
+
+        function clearHoverTimer() {
+            if (hoverTimeout) {
+                clearTimeout(hoverTimeout);
+                hoverTimeout = null;
+            }
+        }
+
+        async function startPreview(videoId, element) {
+            // Don't preview if already downloading
+            if (downloadingIds.has(videoId)) return;
+
+            // Stop any current preview
+            stopPreview();
+
+            element.classList.add('loading-preview');
+
+            try {
+                let audioUrl = previewCache.get(videoId);
+
+                if (!audioUrl) {
+                    // Fetch preview URL from backend
+                    const response = await fetch(`/api/preview/${videoId}`);
+                    if (!response.ok) throw new Error('Failed to get preview');
+
+                    const data = await response.json();
+                    audioUrl = data.url;
+                    previewCache.set(videoId, audioUrl);
+                }
+
+                element.classList.remove('loading-preview');
+                element.classList.add('previewing');
+                currentPreviewId = videoId;
+
+                previewAudio.src = audioUrl;
+                previewAudio.volume = 0.5;
+                previewAudio.play().catch(() => {
+                    // Autoplay blocked or other error
+                    stopPreview();
+                });
+
+            } catch (error) {
+                element.classList.remove('loading-preview');
+                // Silently fail - preview is a nice-to-have
+            }
+        }
+
+        function stopPreview() {
+            clearHoverTimer();
+            previewAudio.pause();
+            previewAudio.src = '';
+            currentPreviewId = null;
+
+            // Remove previewing class from all items
+            document.querySelectorAll('.result-item.previewing').forEach(item => {
+                item.classList.remove('previewing');
+            });
+            document.querySelectorAll('.result-item.loading-preview').forEach(item => {
+                item.classList.remove('loading-preview');
+            });
+        }
 
         // Search history management
         function getSearchHistory() {
@@ -686,6 +798,11 @@
                 bulkTabContainer.style.display = currentTab === 'bulk' ? 'block' : 'none';
                 queueTabContainer.style.display = currentTab === 'queue' ? 'block' : 'none';
 
+                // Stop preview when leaving results tab
+                if (currentTab !== 'results') {
+                    stopPreview();
+                }
+
                 if (currentTab === 'queue') {
                     loadJobs();
                 }
@@ -704,6 +821,7 @@
             searchBtn.disabled = true;
             resultsTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
             relatedSuggestions.style.display = 'none';
+            stopPreview(); // Stop any playing preview
 
             try {
                 const response = await fetch('/api/search', {
@@ -775,9 +893,10 @@
             }
 
             resultsTab.innerHTML = results.map(r => `
-                <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''}" 
-                     data-video-id="${r.video_id}" 
+                <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''}"
+                     data-video-id="${r.video_id}"
                      data-title="${escapeHtml(r.title)}">
+                    <div class="preview-indicator">▶</div>
                     <img class="result-thumb" src="${r.thumbnail}" alt="" loading="lazy">
                     <div class="result-info">
                         <div class="result-title">${escapeHtml(r.title)}</div>
@@ -787,14 +906,28 @@
                 </div>
             `).join('');
 
-            // Add click handlers
+            // Add click and hover handlers
             resultsTab.querySelectorAll('.result-item').forEach(item => {
+                const videoId = item.dataset.videoId;
+                const title = item.dataset.title;
+
+                // Click to download
                 item.addEventListener('click', () => {
-                    const videoId = item.dataset.videoId;
-                    const title = item.dataset.title;
                     if (!downloadingIds.has(videoId)) {
+                        stopPreview();
                         downloadTrack(videoId, title, item);
                     }
+                });
+
+                // Hover to preview (desktop only)
+                item.addEventListener('mouseenter', () => {
+                    if (!downloadingIds.has(videoId)) {
+                        startHoverTimer(videoId, item);
+                    }
+                });
+
+                item.addEventListener('mouseleave', () => {
+                    stopPreview();
                 });
             });
         }
@@ -1154,6 +1287,7 @@
             <div class="empty-state">
                 <div class="empty-state-icon">🎧</div>
                 <p>Search for music to get started</p>
+                <p style="font-size: 12px; margin-top: 8px; opacity: 0.6;">Hover over results to preview</p>
             </div>
         `;
     </script>

@@ -318,6 +318,40 @@ async def root():
     return FileResponse("/app/static/index.html")
 
 
+@app.get("/api/preview/{video_id}")
+async def get_preview_url(video_id: str):
+    """Get a streamable audio URL for preview playback
+
+    Uses yt-dlp to extract a direct audio stream URL that can be played in the browser.
+    """
+    try:
+        # Get the best audio stream URL (without downloading)
+        cmd = [
+            "yt-dlp",
+            "-f", "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
+            "-g",  # Get URL only, don't download
+            "--no-warnings",
+            f"https://www.youtube.com/watch?v={video_id}"
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail="Failed to get preview URL")
+
+        audio_url = result.stdout.strip()
+
+        if not audio_url:
+            raise HTTPException(status_code=404, detail="No audio stream found")
+
+        return {"url": audio_url, "video_id": video_id}
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Preview request timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/search")
 async def search(request: SearchRequest):
     """Search YouTube for music"""
