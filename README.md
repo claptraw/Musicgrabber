@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.1.0**
+**v1.2.0**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -13,6 +13,7 @@ A self-hosted music acquisition service. Search YouTube, tap a result, and it do
 - **Bulk import** — paste or upload a text file of songs to auto-search and queue
 - **Best quality FLAC** — extracts highest available audio quality
 - **Enhanced metadata** — MusicBrainz lookups with fallback to cleaned YouTube data
+- **Synced lyrics** — automatic lyrics fetching from LRClib, saved as `.lrc` files
 - **Auto-organise** — creates `Singles/Artist/Title.flac` structure
 - **Duplicate detection** — skips already-downloaded tracks
 - **Job queue** — track download progress, retry failed jobs, manage history
@@ -59,6 +60,7 @@ A self-hosted music acquisition service. Search YouTube, tap a result, and it do
 | `MUSIC_DIR` | `/music` | Music library root inside container |
 | `DB_PATH` | `/data/music_grabber.db` | SQLite database path |
 | `ENABLE_MUSICBRAINZ` | `true` | Enable MusicBrainz metadata lookups |
+| `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
 | `NAVIDROME_USER` | - | Navidrome username for API |
 | `NAVIDROME_PASS` | - | Navidrome password for API |

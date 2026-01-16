@@ -17,6 +17,8 @@ services:
       - DB_PATH=/data/music_grabber.db
       # Enable MusicBrainz metadata lookup (true/false)
       - ENABLE_MUSICBRAINZ=true
+      # Enable automatic lyrics fetching from LRClib (true/false)
+      - ENABLE_LYRICS=true
       # Optional: Navidrome API for auto-rescan (remove if not using Navidrome)
       # - NAVIDROME_URL=http://navidrome:4533
       # - NAVIDROME_USER=admin

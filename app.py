@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from mutagen.flac import FLAC
 from mutagen.id3 import APIC
 
-app = FastAPI(title="Music Grabber", version="1.1.0")
+app = FastAPI(title="Music Grabber", version="1.2.0")
 
 # Configuration from environment
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
@@ -33,6 +33,7 @@ NAVIDROME_URL = os.getenv("NAVIDROME_URL", "")
 NAVIDROME_USER = os.getenv("NAVIDROME_USER", "")
 NAVIDROME_PASS = os.getenv("NAVIDROME_PASS", "")
 ENABLE_MUSICBRAINZ = os.getenv("ENABLE_MUSICBRAINZ", "true").lower() == "true"
+ENABLE_LYRICS = os.getenv("ENABLE_LYRICS", "true").lower() == "true"
 
 # Ensure directories exist
 SINGLES_DIR.mkdir(parents=True, exist_ok=True)
@@ -268,6 +269,69 @@ async def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
     except Exception:
         # If MusicBrainz lookup fails, just continue without it
         return None
+
+
+async def fetch_lyrics(artist: str, title: str) -> Optional[str]:
+    """Fetch synced lyrics from LRClib API"""
+    if not ENABLE_LYRICS:
+        return None
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            headers = {"User-Agent": "MusicGrabber/1.1.0 (https://gitlab.com/g33kphr33k/musicgrabber)"}
+
+            # Try the get endpoint first (exact match)
+            params = {
+                "artist_name": artist,
+                "track_name": title
+            }
+
+            response = await client.get(
+                "https://lrclib.net/api/get",
+                params=params,
+                headers=headers
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                # Prefer synced lyrics, fall back to plain
+                if data.get("syncedLyrics"):
+                    return data["syncedLyrics"]
+                elif data.get("plainLyrics"):
+                    return data["plainLyrics"]
+
+            # If exact match fails, try search
+            search_params = {"q": f"{artist} {title}"}
+            search_response = await client.get(
+                "https://lrclib.net/api/search",
+                params=search_params,
+                headers=headers
+            )
+
+            if search_response.status_code == 200:
+                results = search_response.json()
+                if results:
+                    # Return first match with synced lyrics, or first with plain
+                    for result in results:
+                        if result.get("syncedLyrics"):
+                            return result["syncedLyrics"]
+                    for result in results:
+                        if result.get("plainLyrics"):
+                            return result["plainLyrics"]
+
+            return None
+
+    except Exception:
+        # If lyrics lookup fails, just continue without
+        return None
+
+
+def save_lyrics_file(flac_path: Path, lyrics: str):
+    """Save lyrics as .lrc file alongside the FLAC"""
+    lrc_path = flac_path.with_suffix(".lrc")
+    lrc_path.write_text(lyrics, encoding="utf-8")
 
 
 def apply_metadata_to_file(file_path: Path, artist: str, title: str, album: str = "Singles", year: str = None):
@@ -740,6 +804,11 @@ async def process_download(job_id: str, video_id: str):
             else:
                 # Use cleaned YouTube metadata
                 apply_metadata_to_file(flac_file, artist, title, "Singles")
+
+            # Fetch and save lyrics
+            lyrics = await fetch_lyrics(artist, title)
+            if lyrics:
+                save_lyrics_file(flac_file, lyrics)
 
         # Trigger Navidrome rescan if configured
         if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
