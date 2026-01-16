@@ -323,8 +323,9 @@ async def fetch_lyrics(artist: str, title: str) -> Optional[str]:
 
             return None
 
-    except Exception:
-        # If lyrics lookup fails, just continue without
+    except Exception as e:
+        # If lyrics lookup fails, log and continue without
+        print(f"Lyrics lookup failed for {artist} - {title}: {e}")
         return None
 
 
@@ -809,6 +810,9 @@ async def process_download(job_id: str, video_id: str):
             lyrics = await fetch_lyrics(artist, title)
             if lyrics:
                 save_lyrics_file(flac_file, lyrics)
+                print(f"Saved lyrics for {artist} - {title}")
+            else:
+                print(f"No lyrics found for {artist} - {title}")
 
         # Trigger Navidrome rescan if configured
         if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
