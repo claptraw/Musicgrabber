@@ -342,6 +342,63 @@
             align-self: flex-start;
         }
 
+        .result-badges {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            margin-top: 4px;
+        }
+
+        .source-badge {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 3px;
+            text-transform: uppercase;
+        }
+
+        .source-badge.youtube {
+            background: #ff0000;
+            color: white;
+        }
+
+        .source-badge.soulseek {
+            background: #4a9eff;
+            color: white;
+        }
+
+        .quality-badge {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: var(--accent);
+            color: white;
+        }
+
+        .quality-badge.flac {
+            background: #ffc107;
+            color: #000;
+        }
+
+        .quality-badge.mp3-high {
+            background: #28a745;
+            color: white;
+        }
+
+        .result-item.soulseek .result-thumb {
+            /* Placeholder for missing thumbnails */
+            background: linear-gradient(135deg, #4a9eff 0%, #2d7dd2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+        }
+
+        .result-item.soulseek .result-thumb::before {
+            content: '🎵';
+        }
+
         .job-item {
             display: flex;
             gap: 14px;
@@ -613,7 +670,7 @@
                         <span class="toggle-slider"></span>
                     </div>
                 </label>
-                <span style="font-size: 11px; color: var(--text-secondary);">v1.3.2</span>
+                <span style="font-size: 11px; color: var(--text-secondary);">v1.4.0</span>
             </div>
         </header>
 
@@ -979,7 +1036,17 @@
             relatedSuggestions.style.display = 'block';
         }
 
+        function getQualityBadgeClass(quality) {
+            if (!quality) return '';
+            if (quality.includes('FLAC')) return 'flac';
+            if (quality.includes('320') || quality.includes('256')) return 'mp3-high';
+            return '';
+        }
+
         function renderResults(results) {
+            // Store results for later access (needed for slskd fields on download)
+            lastResults = results;
+
             if (!results.length) {
                 resultsTab.innerHTML = `
                     <div class="empty-state">
@@ -990,16 +1057,21 @@
                 return;
             }
 
-            resultsTab.innerHTML = results.map(r => `
-                <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''}"
+            resultsTab.innerHTML = results.map((r, index) => `
+                <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''} ${r.source === 'soulseek' ? 'soulseek' : ''}"
                      data-video-id="${r.video_id}"
+                     data-index="${index}"
                      data-title="${escapeHtml(r.title)}">
                     <div class="preview-indicator">▶</div>
-                    <img class="result-thumb" src="${r.thumbnail}" alt="" loading="lazy">
+                    ${r.thumbnail ? `<img class="result-thumb" src="${r.thumbnail}" alt="" loading="lazy">` : '<div class="result-thumb"></div>'}
                     <div class="result-info">
                         <div class="result-title">${escapeHtml(r.title)}</div>
                         <div class="result-meta">${escapeHtml(r.channel)}</div>
-                        <div class="result-duration">${r.duration}</div>
+                        <div class="result-badges">
+                            <span class="source-badge ${r.source}">${r.source === 'soulseek' ? 'SLK' : 'YT'}</span>
+                            ${r.quality ? `<span class="quality-badge ${getQualityBadgeClass(r.quality)}">${r.quality}</span>` : ''}
+                            ${r.duration ? `<span class="result-duration">${r.duration}</span>` : ''}
+                        </div>
                     </div>
                 </div>
             `).join('');
@@ -1007,19 +1079,20 @@
             // Add click and hover handlers
             resultsTab.querySelectorAll('.result-item').forEach(item => {
                 const videoId = item.dataset.videoId;
-                const title = item.dataset.title;
+                const index = parseInt(item.dataset.index);
+                const result = lastResults[index];
 
                 // Click to download
                 item.addEventListener('click', () => {
                     if (!downloadingIds.has(videoId)) {
                         stopPreview();
-                        downloadTrack(videoId, title, item);
+                        downloadTrack(result, item);
                     }
                 });
 
-                // Hover to preview (desktop only)
+                // Hover to preview (desktop only, YouTube only)
                 item.addEventListener('mouseenter', () => {
-                    if (!downloadingIds.has(videoId)) {
+                    if (!downloadingIds.has(videoId) && result.source === 'youtube') {
                         startHoverTimer(videoId, item);
                     }
                 });
@@ -1030,7 +1103,7 @@
             });
         }
 
-        async function downloadTrack(videoId, title, element) {
+        async function downloadTrack(result, element) {
             // Check queue size limit
             const queueSize = await getQueueSize();
             if (queueSize >= MAX_QUEUE_SIZE) {
@@ -1038,21 +1111,35 @@
                 return;
             }
 
-            downloadingIds.add(videoId);
+            downloadingIds.add(result.video_id);
             element.classList.add('downloading');
 
             // Show processing state immediately
-            showToast('Processing...', false);
+            const sourceLabel = result.source === 'soulseek' ? 'Soulseek' : 'YouTube';
+            showToast(`Processing (${sourceLabel})...`, false);
 
             try {
+                const payload = {
+                    video_id: result.video_id,
+                    title: result.title,
+                    convert_to_flac: convertToFlacCheckbox.checked,
+                    source: result.source || 'youtube'
+                };
+
+                // Add slskd-specific fields if this is a Soulseek result
+                if (result.source === 'soulseek') {
+                    payload.slskd_username = result.slskd_username;
+                    payload.slskd_filename = result.slskd_filename;
+                    // Extract artist from the result if available
+                    if (result.channel) {
+                        payload.artist = result.channel;
+                    }
+                }
+
                 const response = await fetch('/api/download', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        video_id: videoId,
-                        title,
-                        convert_to_flac: convertToFlacCheckbox.checked
-                    })
+                    body: JSON.stringify(payload)
                 });
 
                 if (!response.ok) throw new Error('Download failed');
@@ -1061,9 +1148,10 @@
 
                 // Update toast with success message
                 const formatMsg = convertToFlacCheckbox.checked ? '' : ' (original format)';
-                showToast('Added to queue ✓' + formatMsg);
+                const qualityMsg = result.quality ? ` [${result.quality}]` : '';
+                showToast(`Added to queue ✓${qualityMsg}${formatMsg}`);
             } catch (error) {
-                downloadingIds.delete(videoId);
+                downloadingIds.delete(result.video_id);
                 element.classList.remove('downloading');
                 showToast('Failed to queue', true);
             }

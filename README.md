@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.3.2**
+**v1.4.0**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -13,6 +13,7 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
 - **Mobile-friendly UI** — designed for quick searches from your phone
 - **Hover to preview** — on desktop, hover over a result for 2 seconds to hear a preview
 - **YouTube search** — finds tracks and playlists via yt-dlp
+- **Soulseek integration** — optional slskd support for higher quality sources (FLAC from P2P)
 - **Playlist support** — download entire playlists with automatic M3U generation
 - **Bulk import** — paste or upload a text file of songs to auto-search and queue
 - **Best quality FLAC** — extracts highest available audio quality
@@ -78,6 +79,9 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
 | `NAVIDROME_USER` | - | Navidrome username for API |
 | `NAVIDROME_PASS` | - | Navidrome password for API |
+| `SLSKD_URL` | - | slskd API URL (e.g., `http://slskd:5030`) |
+| `SLSKD_USER` | - | slskd username |
+| `SLSKD_PASS` | - | slskd password |
 
 ### Navidrome Auto-Rescan
 
@@ -91,6 +95,23 @@ environment:
 ```
 
 If running on the same Docker network as Navidrome, use the container name as the hostname.
+
+### Soulseek Integration (Optional)
+
+MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When configured, search results from both YouTube and Soulseek are displayed, sorted by quality — FLAC files from Soulseek appear at the top.
+
+```yaml
+environment:
+  - SLSKD_URL=http://slskd:5030
+  - SLSKD_USER=your-slskd-username
+  - SLSKD_PASS=your-slskd-password
+```
+
+**Requirements:**
+- slskd must be running and accessible from the MusicGrabber container
+- For downloads to work, slskd's download directory must be accessible to MusicGrabber (shared volume or network path)
+
+**Note:** Soulseek is a P2P network. Most users run slskd behind a VPN. This integration only talks to your slskd instance — it doesn't connect directly to the Soulseek network.
 
 ### Reverse Proxy (Caddy example)
 

@@ -19,6 +19,10 @@ services:
       - ENABLE_MUSICBRAINZ=true
       # Default FLAC conversion setting in the UI (true/false)
       - DEFAULT_CONVERT_TO_FLAC=true
+      # Optional: slskd/Soulseek integration
+      - SLSKD_URL=http://192.168.122.109:5030
+      - SLSKD_USER=karl
+      - SLSKD_PASS=k
       # Optional: Navidrome API for auto-rescan
       # - NAVIDROME_URL=https://navidrome.URL.com
       # - NAVIDROME_USER=username

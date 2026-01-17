@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from mutagen.flac import FLAC
 import httpx
 
-app = FastAPI(title="Music Grabber", version="1.3.2")
+app = FastAPI(title="Music Grabber", version="1.4.0")
 
 # Configuration from environment
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
@@ -34,6 +34,15 @@ NAVIDROME_PASS = os.getenv("NAVIDROME_PASS", "")
 ENABLE_MUSICBRAINZ = os.getenv("ENABLE_MUSICBRAINZ", "true").lower() == "true"
 ENABLE_LYRICS = os.getenv("ENABLE_LYRICS", "true").lower() == "true"
 DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"
+
+# Soulseek/slskd configuration (optional)
+SLSKD_URL = os.getenv("SLSKD_URL", "")  # e.g., http://slskd:5030
+SLSKD_USER = os.getenv("SLSKD_USER", "")
+SLSKD_PASS = os.getenv("SLSKD_PASS", "")
+
+# slskd auth token cache
+_slskd_token = None
+_slskd_token_expires = 0
 
 # Ensure directories exist
 SINGLES_DIR.mkdir(parents=True, exist_ok=True)
@@ -83,6 +92,10 @@ class DownloadRequest(BaseModel):
     artist: Optional[str] = None
     download_type: str = "single"  # "single" or "playlist"
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
+    # Soulseek-specific fields
+    source: str = "youtube"  # "youtube" or "soulseek"
+    slskd_username: Optional[str] = None
+    slskd_filename: Optional[str] = None
 
 class BulkImportRequest(BaseModel):
     songs: str  # Multi-line text with "Artist - Song" format
@@ -101,6 +114,12 @@ class SearchResult(BaseModel):
     thumbnail: str
     is_playlist: bool = False
     video_count: Optional[int] = None
+    # New fields for multi-source support
+    source: str = "youtube"  # "youtube" or "soulseek"
+    quality: Optional[str] = None  # e.g., "FLAC", "MP3 320", None for YouTube
+    quality_score: int = 40  # For sorting (higher = better)
+    slskd_username: Optional[str] = None
+    slskd_filename: Optional[str] = None
 
 def parse_duration(seconds: float) -> str:
     """Convert seconds to MM:SS or HH:MM:SS format"""
@@ -226,7 +245,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
 
     try:
         # Search for recording
-        headers = {"User-Agent": "MusicGrabber/1.3.2 (https://github.com/yourrepo)"}
+        headers = {"User-Agent": "MusicGrabber/1.4.0 (https://github.com/yourrepo)"}
 
         search_url = "https://musicbrainz.org/ws/2/recording/"
         params = {
@@ -331,6 +350,356 @@ def save_lyrics_file(flac_path: Path, lyrics: str):
     """Save lyrics as .lrc file alongside the FLAC"""
     lrc_path = flac_path.with_suffix(".lrc")
     lrc_path.write_text(lyrics, encoding="utf-8")
+
+
+# =============================================================================
+# Soulseek/slskd Integration
+# =============================================================================
+
+def slskd_enabled() -> bool:
+    """Check if slskd integration is configured"""
+    return bool(SLSKD_URL and SLSKD_USER and SLSKD_PASS)
+
+
+def get_slskd_token() -> Optional[str]:
+    """Get a valid slskd auth token, refreshing if needed"""
+    global _slskd_token, _slskd_token_expires
+
+    if not slskd_enabled():
+        return None
+
+    # Return cached token if still valid (with 60s buffer)
+    if _slskd_token and time.time() < _slskd_token_expires - 60:
+        return _slskd_token
+
+    try:
+        with httpx.Client(timeout=10) as client:
+            response = client.post(
+                f"{SLSKD_URL}/api/v0/session",
+                json={"username": SLSKD_USER, "password": SLSKD_PASS}
+            )
+            if response.status_code == 200:
+                data = response.json()
+                _slskd_token = data["token"]
+                _slskd_token_expires = data["expires"]
+                return _slskd_token
+    except Exception as e:
+        print(f"slskd auth failed: {e}")
+
+    return None
+
+
+def parse_slskd_quality(file_info: dict) -> tuple[str, int]:
+    """
+    Parse quality info from slskd file response.
+    Returns (quality_label, sort_score) where higher score = better quality.
+    """
+    filename = file_info.get("filename", "").lower()
+    bit_depth = file_info.get("bitDepth", 0)
+    sample_rate = file_info.get("sampleRate", 0)
+    bit_rate = file_info.get("bitRate", 0)
+
+    # Determine format from filename extension
+    if filename.endswith(".flac"):
+        if bit_depth >= 24:
+            return (f"FLAC {bit_depth}bit/{sample_rate//1000}kHz", 150)
+        return ("FLAC", 100)
+    elif filename.endswith(".wav"):
+        return ("WAV", 95)
+    elif filename.endswith(".mp3"):
+        if bit_rate >= 320:
+            return ("MP3 320", 80)
+        elif bit_rate >= 256:
+            return ("MP3 256", 70)
+        elif bit_rate >= 192:
+            return ("MP3 192", 60)
+        else:
+            return (f"MP3 {bit_rate}", 50)
+    elif filename.endswith(".m4a") or filename.endswith(".aac"):
+        if bit_rate >= 256:
+            return ("AAC 256", 75)
+        return (f"AAC {bit_rate}", 65)
+    elif filename.endswith(".ogg") or filename.endswith(".opus"):
+        return ("OGG/Opus", 70)
+    else:
+        return ("Unknown", 30)
+
+
+def extract_track_info_from_path(filepath: str) -> tuple[str, str]:
+    """
+    Extract artist and title from a Soulseek file path.
+    Tries common patterns like 'Artist/Album/## - Title.ext'
+    """
+    # Get just the filename
+    filename = filepath.split("\\")[-1]
+    # Remove extension
+    name = re.sub(r'\.[^.]+$', '', filename)
+    # Remove track number prefix like "01 - " or "01. "
+    name = re.sub(r'^\d+[\s.\-]+', '', name)
+
+    # Try to extract artist from path
+    parts = filepath.replace("\\", "/").split("/")
+    artist = "Unknown"
+
+    # Look for artist in path (usually 2-3 levels up from file)
+    for i, part in enumerate(parts):
+        # Skip common folder names
+        if part.lower() in ["music", "main", "albums", "singles", "anthologies", "instrumental", "@@*"]:
+            continue
+        if part.startswith("@@"):
+            continue
+        if re.match(r'^\[\d{4}\]', part):  # Album folder like [1976] Arrival
+            continue
+        if re.match(r'^cd\d*$', part.lower()):  # CD1, CD2, etc.
+            continue
+        # First real folder name is likely the artist
+        if i > 0 and not part.startswith("["):
+            artist = part
+            break
+
+    return artist, name
+
+
+def search_slskd(query: str, timeout_secs: int = 8) -> list[dict]:
+    """
+    Search slskd and return normalized results.
+    Returns list of dicts with: id, title, artist, quality, score, source, slskd_* fields
+    """
+    token = get_slskd_token()
+    if not token:
+        return []
+
+    results = []
+
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+
+        with httpx.Client(timeout=30) as client:
+            # Start search
+            search_response = client.post(
+                f"{SLSKD_URL}/api/v0/searches",
+                headers=headers,
+                json={"searchText": query}
+            )
+
+            if search_response.status_code != 200:
+                print(f"slskd search failed: {search_response.status_code}")
+                return []
+
+            search_data = search_response.json()
+            search_id = search_data["id"]
+            print(f"slskd: Search started, ID: {search_id}")
+
+            # Poll for results - wait for completion or timeout
+            # Don't break early on file count as responses may not be ready
+            start_time = time.time()
+            last_file_count = 0
+            final_status = None
+            while time.time() - start_time < timeout_secs:
+                time.sleep(1)
+
+                status_response = client.get(
+                    f"{SLSKD_URL}/api/v0/searches/{search_id}",
+                    headers=headers
+                )
+
+                if status_response.status_code == 200:
+                    final_status = status_response.json()
+                    file_count = final_status.get("fileCount", 0)
+                    if file_count != last_file_count:
+                        print(f"slskd: Polling... {file_count} files, {final_status.get('responseCount', 0)} responses")
+                        last_file_count = file_count
+                    if final_status.get("isComplete"):
+                        print(f"slskd: Search complete. {file_count} files total")
+                        break
+
+            if final_status:
+                print(f"slskd: Final status - {final_status.get('fileCount', 0)} files, {final_status.get('responseCount', 0)} responses")
+
+            # Small delay to allow responses to be fully indexed
+            time.sleep(1)
+
+            # Get responses
+            responses_response = client.get(
+                f"{SLSKD_URL}/api/v0/searches/{search_id}/responses",
+                headers=headers
+            )
+
+            if responses_response.status_code != 200:
+                return []
+
+            responses = responses_response.json()
+            print(f"slskd: Got {len(responses)} user responses")
+
+            # Process results - pick best file from each user
+            seen_tracks = set()
+            skipped_locked = 0
+            skipped_quality = 0
+
+            for response in responses:
+                username = response.get("username", "")
+                has_free_slot = response.get("hasFreeUploadSlot", False)
+                upload_speed = response.get("uploadSpeed", 0)
+
+                for file_info in response.get("files", []):
+                    if file_info.get("isLocked", False):
+                        skipped_locked += 1
+                        continue
+
+                    filepath = file_info.get("filename", "")
+                    quality_label, quality_score = parse_slskd_quality(file_info)
+
+                    # Skip low quality
+                    if quality_score < 50:
+                        skipped_quality += 1
+                        continue
+
+                    artist, title = extract_track_info_from_path(filepath)
+
+                    # Dedupe by artist+title+quality
+                    track_key = f"{artist.lower()}|{title.lower()}|{quality_label}"
+                    if track_key in seen_tracks:
+                        continue
+                    seen_tracks.add(track_key)
+
+                    # Boost score for free slots and fast uploaders
+                    adjusted_score = quality_score
+                    if has_free_slot:
+                        adjusted_score += 10
+                    if upload_speed > 1000000:  # > 1MB/s
+                        adjusted_score += 5
+
+                    results.append({
+                        "id": f"slskd_{uuid.uuid4().hex[:8]}",
+                        "title": title,
+                        "artist": artist,
+                        "channel": username,  # Show username as "channel"
+                        "quality": quality_label,
+                        "quality_score": adjusted_score,
+                        "source": "soulseek",
+                        "duration": str(file_info.get("length", 0)),
+                        "size": file_info.get("size", 0),
+                        "slskd_username": username,
+                        "slskd_filename": filepath,
+                    })
+
+            print(f"slskd: Skipped {skipped_locked} locked, {skipped_quality} low quality, kept {len(results)}")
+
+            # Clean up search
+            try:
+                client.delete(f"{SLSKD_URL}/api/v0/searches/{search_id}", headers=headers)
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"slskd search error: {e}")
+
+    # Sort by quality score (descending)
+    results.sort(key=lambda x: x["quality_score"], reverse=True)
+
+    return results[:20]  # Return top 20
+
+
+def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_secs: int = 300) -> Optional[Path]:
+    """
+    Download a file from Soulseek via slskd.
+    Returns the path to the downloaded file, or None on failure.
+    """
+    token = get_slskd_token()
+    if not token:
+        raise Exception("slskd authentication failed")
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            # Enqueue the download
+            # slskd expects files as a list of objects
+            enqueue_response = client.post(
+                f"{SLSKD_URL}/api/v0/transfers/downloads/{username}",
+                headers=headers,
+                json=[{"filename": filename}]
+            )
+
+            if enqueue_response.status_code not in [200, 201]:
+                raise Exception(f"Failed to enqueue download: {enqueue_response.status_code}")
+
+            print(f"slskd: Enqueued download from {username}")
+
+            # Poll for download completion
+            start_time = time.time()
+            downloaded_path = None
+
+            while time.time() - start_time < timeout_secs:
+                time.sleep(3)
+
+                # Get download status for this user
+                status_response = client.get(
+                    f"{SLSKD_URL}/api/v0/transfers/downloads/{username}",
+                    headers=headers
+                )
+
+                if status_response.status_code != 200:
+                    continue
+
+                downloads = status_response.json()
+
+                # Find our file in the downloads
+                for dl in downloads:
+                    if dl.get("filename") == filename:
+                        state = dl.get("state", "")
+                        print(f"slskd: Download state: {state}")
+
+                        if state == "Completed, Succeeded":
+                            # File should be in slskd's download directory
+                            # We need to find it and copy to our destination
+                            downloaded_path = dl.get("filename", "")
+                            break
+                        elif "Failed" in state or "Cancelled" in state or "Rejected" in state:
+                            raise Exception(f"Download failed: {state}")
+
+                if downloaded_path:
+                    break
+
+            if not downloaded_path:
+                raise Exception("Download timed out")
+
+            # The file is now in slskd's downloads folder
+            # We need to get it via the API or from a shared volume
+            # For now, we'll use the transfers endpoint to get file info
+            # and expect the file to be accessible via a shared volume
+
+            # Extract just the filename for the destination
+            source_filename = filename.split("\\")[-1]
+
+            # Check common slskd download locations
+            # This depends on how slskd is configured - may need adjustment
+            slskd_download_dirs = [
+                Path("/slskd/downloads"),  # Docker default
+                Path("/app/downloads"),
+                Path("/downloads"),
+            ]
+
+            for slskd_dir in slskd_download_dirs:
+                # slskd organizes by username
+                potential_path = slskd_dir / username / source_filename
+                if potential_path.exists():
+                    # Copy to our destination
+                    import shutil
+                    dest_path = dest_dir / source_filename
+                    shutil.copy2(potential_path, dest_path)
+                    print(f"slskd: Copied {potential_path} to {dest_path}")
+                    return dest_path
+
+            # If we can't find the file locally, the volumes aren't shared
+            raise Exception(
+                f"Downloaded file not found. Ensure slskd downloads are accessible to MusicGrabber. "
+                f"Looking for: {source_filename} in slskd download directories"
+            )
+
+    except Exception as e:
+        print(f"slskd download error: {e}")
+        raise
 
 def apply_metadata_to_file(file_path: Path, artist: str, title: str, album: str = "Singles", year: str = None):
     """Apply metadata to audio file using mutagen (supports multiple formats)"""
@@ -466,26 +835,23 @@ def get_preview_url(video_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/search")
-def search(request: SearchRequest):
-    """Search YouTube for music"""
+def search_youtube(query: str, limit: int) -> list[dict]:
+    """Search YouTube and return normalized results"""
     try:
-        # Fetch more results than requested so we can filter and re-rank
-        fetch_limit = max(request.limit * 3, 30)
+        fetch_limit = max(limit * 3, 30)
 
-        # Use yt-dlp to search YouTube
         cmd = [
             "yt-dlp",
             "--dump-json",
             "--flat-playlist",
             "--no-warnings",
-            f"ytsearch{fetch_limit}:{request.query}",
+            f"ytsearch{fetch_limit}:{query}",
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
         if result.returncode != 0:
-            raise HTTPException(status_code=500, detail="Search failed")
+            return []
 
         results = []
         for line in result.stdout.strip().split('\n'):
@@ -498,8 +864,6 @@ def search(request: SearchRequest):
 
                 title = data.get("title", "Unknown")
                 channel = data.get("channel", data.get("uploader", "Unknown"))
-
-                # Calculate quality score
                 quality_score = score_search_result(title, channel)
 
                 results.append({
@@ -510,17 +874,62 @@ def search(request: SearchRequest):
                     "thumbnail": data.get("thumbnail", f"https://i.ytimg.com/vi/{data.get('id')}/mqdefault.jpg"),
                     "is_playlist": is_playlist,
                     "video_count": video_count,
-                    "score": quality_score
+                    "source": "youtube",
+                    "quality": None,
+                    "quality_score": quality_score,
+                    "slskd_username": None,
+                    "slskd_filename": None,
                 })
             except json.JSONDecodeError:
                 continue
 
-        # Sort by score (highest first) and return top results
-        results.sort(key=lambda x: x["score"], reverse=True)
+        results.sort(key=lambda x: x["quality_score"], reverse=True)
+        return results[:limit]
+
+    except Exception as e:
+        print(f"YouTube search error: {e}")
+        return []
+
+
+@app.post("/api/search")
+def search(request: SearchRequest):
+    """Search YouTube and optionally Soulseek for music"""
+    try:
+        all_results = []
+
+        # Always search YouTube
+        yt_results = search_youtube(request.query, request.limit)
+        all_results.extend(yt_results)
+
+        # Search slskd if configured
+        print(f"slskd_enabled: {slskd_enabled()}")
+        if slskd_enabled():
+            print(f"Searching slskd for: {request.query}")
+            slskd_results = search_slskd(request.query, timeout_secs=6)
+            print(f"slskd returned {len(slskd_results)} results")
+            # Convert slskd results to include all fields
+            for r in slskd_results:
+                all_results.append({
+                    "video_id": r["id"],
+                    "title": r["title"],
+                    "channel": r["channel"],
+                    "duration": parse_duration(int(r["duration"])) if r["duration"].isdigit() else r["duration"],
+                    "thumbnail": "",  # No thumbnails for Soulseek
+                    "is_playlist": False,
+                    "video_count": None,
+                    "source": "soulseek",
+                    "quality": r["quality"],
+                    "quality_score": r["quality_score"],
+                    "slskd_username": r["slskd_username"],
+                    "slskd_filename": r["slskd_filename"],
+                })
+
+        # Sort all results by quality score (highest first)
+        all_results.sort(key=lambda x: x["quality_score"], reverse=True)
 
         # Convert to SearchResult objects
         final_results = []
-        for item in results[:request.limit]:
+        for item in all_results[:request.limit]:
             final_results.append(SearchResult(
                 video_id=item["video_id"],
                 title=item["title"],
@@ -528,10 +937,15 @@ def search(request: SearchRequest):
                 duration=item["duration"],
                 thumbnail=item["thumbnail"],
                 is_playlist=item["is_playlist"],
-                video_count=item["video_count"]
+                video_count=item["video_count"],
+                source=item["source"],
+                quality=item["quality"],
+                quality_score=item["quality_score"],
+                slskd_username=item["slskd_username"],
+                slskd_filename=item["slskd_filename"],
             ))
 
-        return {"results": final_results}
+        return {"results": final_results, "slskd_enabled": slskd_enabled()}
 
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Search timed out")
@@ -567,9 +981,19 @@ def download(request: DownloadRequest, background_tasks: BackgroundTasks):
     conn.commit()
     conn.close()
 
-    # Queue the download
+    # Queue the download based on source
     if request.download_type == "playlist":
         background_tasks.add_task(process_playlist_download, job_id, request.video_id, title, request.convert_to_flac)
+    elif request.source == "soulseek" and request.slskd_username and request.slskd_filename:
+        background_tasks.add_task(
+            process_slskd_download,
+            job_id,
+            request.slskd_username,
+            request.slskd_filename,
+            artist or "",
+            title,
+            request.convert_to_flac
+        )
     else:
         background_tasks.add_task(process_download, job_id, request.video_id, request.convert_to_flac)
 
@@ -758,6 +1182,117 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         conn.commit()
 
     except Exception as e:
+        conn.execute(
+            "UPDATE jobs SET status = ?, error = ?, completed_at = ? WHERE id = ?",
+            ("failed", str(e), datetime.now().isoformat(), job_id)
+        )
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_to_flac: bool = True):
+    """Process a Soulseek download job via slskd"""
+    conn = get_db()
+
+    try:
+        # Update status to downloading
+        conn.execute("UPDATE jobs SET status = ? WHERE id = ?", ("downloading", job_id))
+        conn.commit()
+
+        # If artist/title not provided, extract from filename
+        if not artist or not title:
+            artist, title = extract_track_info_from_path(filename)
+
+        # Update job with extracted info
+        conn.execute(
+            "UPDATE jobs SET title = ?, artist = ? WHERE id = ?",
+            (title, artist, job_id)
+        )
+        conn.commit()
+
+        # Check for duplicates
+        existing_file = check_duplicate(artist, title)
+        if existing_file:
+            conn.execute(
+                "UPDATE jobs SET status = ?, completed_at = ?, error = ? WHERE id = ?",
+                ("completed", datetime.now().isoformat(), f"Already exists: {existing_file.name}", job_id)
+            )
+            conn.commit()
+            return
+
+        # Create artist directory under Singles
+        artist_dir = SINGLES_DIR / sanitize_filename(artist)
+        artist_dir.mkdir(parents=True, exist_ok=True)
+
+        # Download from slskd
+        downloaded_file = download_from_slskd(username, filename, artist_dir)
+
+        if not downloaded_file or not downloaded_file.exists():
+            raise Exception("Download completed but file not found")
+
+        # Rename to our standard naming
+        sanitized_title = sanitize_filename(title)
+        source_ext = downloaded_file.suffix.lower()
+
+        # Determine final filename
+        if convert_to_flac and source_ext != '.flac':
+            # Convert to FLAC
+            final_file = artist_dir / f"{sanitized_title}.flac"
+            convert_cmd = [
+                "ffmpeg", "-y", "-i", str(downloaded_file),
+                "-c:a", "flac", str(final_file)
+            ]
+            result = subprocess.run(convert_cmd, capture_output=True, timeout=120)
+            if result.returncode == 0:
+                downloaded_file.unlink()  # Remove original
+            else:
+                # Conversion failed, keep original with new name
+                final_file = artist_dir / f"{sanitized_title}{source_ext}"
+                downloaded_file.rename(final_file)
+        else:
+            # Keep original format
+            final_file = artist_dir / f"{sanitized_title}{source_ext}"
+            if downloaded_file != final_file:
+                downloaded_file.rename(final_file)
+
+        # Apply metadata
+        mb_metadata = lookup_musicbrainz(artist, title)
+        if mb_metadata:
+            apply_metadata_to_file(
+                final_file,
+                mb_metadata.get("artist", artist),
+                mb_metadata.get("title", title),
+                mb_metadata.get("album", "Singles"),
+                mb_metadata.get("year")
+            )
+        else:
+            apply_metadata_to_file(final_file, artist, title, "Singles")
+
+        # Fetch and save lyrics
+        lyrics = fetch_lyrics(artist, title)
+        if lyrics:
+            save_lyrics_file(final_file, lyrics)
+            print(f"Saved lyrics for {artist} - {title}")
+        else:
+            print(f"No lyrics found for {artist} - {title}")
+
+        # Trigger Navidrome rescan if configured
+        if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
+            trigger_navidrome_scan()
+
+        # Update job status
+        conn.execute(
+            "UPDATE jobs SET status = ?, completed_at = ? WHERE id = ?",
+            ("completed", datetime.now().isoformat(), job_id)
+        )
+        conn.commit()
+
+        print(f"slskd: Successfully downloaded {artist} - {title}")
+
+    except Exception as e:
+        print(f"slskd download failed: {e}")
         conn.execute(
             "UPDATE jobs SET status = ?, error = ?, completed_at = ? WHERE id = ?",
             ("failed", str(e), datetime.now().isoformat(), job_id)
