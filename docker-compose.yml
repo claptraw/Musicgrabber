@@ -10,8 +10,8 @@ services:
       - /mnt/music:/music
       # Persist the job database
       - ./data:/data
-      # slskd downloads directory for Soulseek integration (optional)
-      # - /path/to/slskd/downloads:/downloads
+      # slskd downloads directory for Soulseek integration
+      - /mnt/goodies/Downloads/slskd:/downloads
     environment:
       # Music directory inside container
       - MUSIC_DIR=/music
@@ -21,15 +21,18 @@ services:
       - ENABLE_MUSICBRAINZ=true
       # Default FLAC conversion setting in the UI (true/false)
       - DEFAULT_CONVERT_TO_FLAC=true
-      # slskd/Soulseek integration (optional)
-      # - SLSKD_URL=http://slskd:5030
-      # - SLSKD_USER=your-username
-      # - SLSKD_PASS=your-password
-      # - SLSKD_DOWNLOADS_PATH=/downloads
+      # slskd/Soulseek integration
+      - SLSKD_URL=http://192.168.122.109:5030
+      - SLSKD_USER=karl
+      - SLSKD_PASS=k
+      - SLSKD_DOWNLOADS_PATH=/downloads
       # Optional: Navidrome API for auto-rescan
       # - NAVIDROME_URL=https://navidrome.URL.com
       # - NAVIDROME_USER=username
       # - NAVIDROME_PASS=NavidromePassword!
+      # Optional: Jellyfin API for auto-rescan
+      # - JELLYFIN_URL=http://jellyfin:8096
+      # - JELLYFIN_API_KEY=your-jellyfin-api-key
     # Optional: add to your existing network if running with Navidrome
     # networks:
     #   - your-network

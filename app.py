@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sqlite3
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -22,7 +23,11 @@ from pydantic import BaseModel
 from mutagen.flac import FLAC
 import httpx
 
-app = FastAPI(title="Music Grabber", version="1.4.1")
+# Global state for bulk import worker
+_bulk_import_worker_running = False
+_bulk_import_lock = threading.Lock()
+
+app = FastAPI(title="Music Grabber", version="1.5.1")
 
 # Configuration from environment
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
@@ -31,6 +36,8 @@ DB_PATH = Path(os.getenv("DB_PATH", "/data/music_grabber.db"))
 NAVIDROME_URL = os.getenv("NAVIDROME_URL", "")
 NAVIDROME_USER = os.getenv("NAVIDROME_USER", "")
 NAVIDROME_PASS = os.getenv("NAVIDROME_PASS", "")
+JELLYFIN_URL = os.getenv("JELLYFIN_URL", "")
+JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY", "")
 ENABLE_MUSICBRAINZ = os.getenv("ENABLE_MUSICBRAINZ", "true").lower() == "true"
 ENABLE_LYRICS = os.getenv("ENABLE_LYRICS", "true").lower() == "true"
 DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"
@@ -79,6 +86,48 @@ def init_db():
             completed_at TIMESTAMP
         )
     """)
+
+    # Bulk imports table - tracks the overall import job
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bulk_imports (
+            id TEXT PRIMARY KEY,
+            status TEXT DEFAULT 'pending',
+            total_tracks INTEGER DEFAULT 0,
+            searched INTEGER DEFAULT 0,
+            queued INTEGER DEFAULT 0,
+            failed INTEGER DEFAULT 0,
+            skipped INTEGER DEFAULT 0,
+            create_playlist INTEGER DEFAULT 0,
+            playlist_name TEXT,
+            convert_to_flac INTEGER DEFAULT 1,
+            rate_limited_until TIMESTAMP,
+            error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP
+        )
+    """)
+
+    # Individual tracks within a bulk import
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bulk_import_tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_id TEXT NOT NULL,
+            line_num INTEGER,
+            artist TEXT,
+            song TEXT,
+            status TEXT DEFAULT 'pending',
+            job_id TEXT,
+            video_id TEXT,
+            error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (import_id) REFERENCES bulk_imports(id)
+        )
+    """)
+
+    # Index for faster lookups
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bulk_import_tracks_import_id ON bulk_import_tracks(import_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bulk_import_tracks_status ON bulk_import_tracks(status)")
+
     conn.commit()
     conn.close()
 
@@ -108,6 +157,12 @@ class BulkImportRequest(BaseModel):
 
 class SpotifyPlaylistRequest(BaseModel):
     url: str  # Spotify playlist URL
+
+class AsyncBulkImportRequest(BaseModel):
+    songs: str  # Multi-line text with "Artist - Song" format
+    create_playlist: bool = False
+    playlist_name: Optional[str] = None
+    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
 
 class SearchResult(BaseModel):
     video_id: str
@@ -248,7 +303,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
 
     try:
         # Search for recording
-        headers = {"User-Agent": "MusicGrabber/1.4.1 (https://github.com/yourrepo)"}
+        headers = {"User-Agent": "MusicGrabber/1.5.1 (https://github.com/yourrepo)"}
 
         search_url = "https://musicbrainz.org/ws/2/recording/"
         params = {
@@ -1049,51 +1104,12 @@ def search_youtube(query: str, limit: int) -> list[dict]:
 
 @app.post("/api/search")
 def search(request: SearchRequest):
-    """Search YouTube and optionally Soulseek for music"""
+    """Search YouTube for music (fast, no slskd delay)"""
     try:
-        # Always search YouTube
         yt_results = search_youtube(request.query, request.limit)
-        slskd_results_normalized = []
 
-        # Search slskd if configured
-        print(f"slskd_enabled: {slskd_enabled()}")
-        if slskd_enabled():
-            print(f"Searching slskd for: {request.query}")
-            slskd_results = search_slskd(request.query, timeout_secs=12)
-            print(f"slskd returned {len(slskd_results)} results")
-            # Convert slskd results to include all fields
-            for r in slskd_results:
-                slskd_results_normalized.append({
-                    "video_id": r["id"],
-                    "title": r["title"],
-                    "channel": r["channel"],
-                    "duration": parse_duration(int(r["duration"])) if r["duration"].isdigit() else r["duration"],
-                    "thumbnail": "",  # No thumbnails for Soulseek
-                    "is_playlist": False,
-                    "video_count": None,
-                    "source": "soulseek",
-                    "quality": r["quality"],
-                    "quality_score": r["quality_score"],
-                    "slskd_username": r["slskd_username"],
-                    "slskd_filename": r["slskd_filename"],
-                })
-
-        # Interleave results so Soulseek doesn't get pushed out by YouTube scores
-        merged_results = []
-        yt_index = 0
-        slskd_index = 0
-        while len(merged_results) < request.limit and (yt_index < len(yt_results) or slskd_index < len(slskd_results_normalized)):
-            for _ in range(2):
-                if yt_index < len(yt_results) and len(merged_results) < request.limit:
-                    merged_results.append(yt_results[yt_index])
-                    yt_index += 1
-            if slskd_index < len(slskd_results_normalized) and len(merged_results) < request.limit:
-                merged_results.append(slskd_results_normalized[slskd_index])
-                slskd_index += 1
-
-        # Convert to SearchResult objects
         final_results = []
-        for item in merged_results[:request.limit]:
+        for item in yt_results[:request.limit]:
             final_results.append(SearchResult(
                 video_id=item["video_id"],
                 title=item["title"],
@@ -1115,6 +1131,41 @@ def search(request: SearchRequest):
         raise HTTPException(status_code=504, detail="Search timed out")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/search/slskd")
+def search_slskd_endpoint(request: SearchRequest):
+    """Search Soulseek via slskd (slower, called separately)"""
+    if not slskd_enabled():
+        return {"results": [], "slskd_enabled": False}
+
+    try:
+        print(f"Searching slskd for: {request.query}")
+        slskd_results = search_slskd(request.query, timeout_secs=12)
+        print(f"slskd returned {len(slskd_results)} results")
+
+        final_results = []
+        for r in slskd_results[:request.limit]:
+            final_results.append(SearchResult(
+                video_id=r["id"],
+                title=r["title"],
+                channel=r["channel"],
+                duration=parse_duration(int(r["duration"])) if r["duration"].isdigit() else r["duration"],
+                thumbnail="",
+                is_playlist=False,
+                video_count=None,
+                source="soulseek",
+                quality=r["quality"],
+                quality_score=r["quality_score"],
+                slskd_username=r["slskd_username"],
+                slskd_filename=r["slskd_filename"],
+            ))
+
+        return {"results": final_results, "slskd_enabled": True}
+
+    except Exception as e:
+        print(f"slskd search error: {e}")
+        return {"results": [], "slskd_enabled": True, "error": str(e)}
 
 
 @app.post("/api/download")
@@ -1337,6 +1388,8 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         # Trigger Navidrome rescan if configured
         if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
             trigger_navidrome_scan()
+        if JELLYFIN_URL and JELLYFIN_API_KEY:
+            trigger_jellyfin_scan()
 
         # Update job status
         conn.execute(
@@ -1477,6 +1530,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         # Trigger Navidrome rescan if configured
         if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
             trigger_navidrome_scan()
+        if JELLYFIN_URL and JELLYFIN_API_KEY:
+            trigger_jellyfin_scan()
 
         # Update job status
         conn.execute(
@@ -1619,6 +1674,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
         # Trigger Navidrome rescan if configured
         if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
             trigger_navidrome_scan()
+        if JELLYFIN_URL and JELLYFIN_API_KEY:
+            trigger_jellyfin_scan()
 
         # Update job status
         conn.execute(
@@ -1658,6 +1715,18 @@ def trigger_navidrome_scan():
             client.get(
                 f"{NAVIDROME_URL}/rest/startScan",
                 params=params
+            )
+    except Exception:
+        pass  # Non-critical, scan will happen on schedule anyway
+
+
+def trigger_jellyfin_scan():
+    """Trigger a Jellyfin library scan via API"""
+    try:
+        with httpx.Client(timeout=10) as client:
+            client.post(
+                f"{JELLYFIN_URL}/Library/Refresh",
+                headers={"X-Emby-Token": JELLYFIN_API_KEY}
             )
     except Exception:
         pass  # Non-critical, scan will happen on schedule anyway
@@ -1853,25 +1922,440 @@ def clean_bulk_import_line(line: str) -> str:
     return line.strip()
 
 
+def process_bulk_import_worker(import_id: str):
+    """Background worker to process bulk import tracks one by one
+
+    Handles rate limiting with exponential backoff:
+    - 1 second delay between searches
+    - On 429: wait 30s, then 60s, then 120s
+    - Tracks progress in database for resilience
+    """
+    global _bulk_import_worker_running
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    # Get import details
+    cursor = conn.execute("SELECT * FROM bulk_imports WHERE id = ?", (import_id,))
+    import_row = cursor.fetchone()
+    if not import_row:
+        conn.close()
+        return
+
+    convert_to_flac = bool(import_row["convert_to_flac"])
+    create_playlist = bool(import_row["create_playlist"])
+    playlist_name = import_row["playlist_name"]
+
+    # Update status to processing
+    conn.execute("UPDATE bulk_imports SET status = 'processing' WHERE id = ?", (import_id,))
+    conn.commit()
+
+    # Rate limiting state
+    base_delay = 1.0  # 1 second between searches
+    backoff_delays = [30, 60, 120, 300]  # Exponential backoff on 429
+    current_backoff_index = 0
+    consecutive_successes = 0
+
+    try:
+        while True:
+            # Get next pending track
+            cursor = conn.execute(
+                "SELECT * FROM bulk_import_tracks WHERE import_id = ? AND status = 'pending' ORDER BY line_num LIMIT 1",
+                (import_id,)
+            )
+            track = cursor.fetchone()
+
+            if not track:
+                # No more pending tracks - we're done
+                break
+
+            track_id = track["id"]
+            artist = track["artist"]
+            song = track["song"]
+            line_num = track["line_num"]
+
+            # Mark track as searching
+            conn.execute("UPDATE bulk_import_tracks SET status = 'searching' WHERE id = ?", (track_id,))
+            conn.commit()
+
+            # Search for the song
+            try:
+                search_query = f"{artist} {song}"
+                cmd = [
+                    "yt-dlp",
+                    "--dump-json",
+                    "--flat-playlist",
+                    "--no-warnings",
+                    f"ytsearch10:{search_query}",
+                ]
+
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+                # Check for rate limiting (429 in stderr)
+                if "429" in result.stderr or "Too Many Requests" in result.stderr:
+                    # Rate limited - apply backoff
+                    delay = backoff_delays[min(current_backoff_index, len(backoff_delays) - 1)]
+                    current_backoff_index += 1
+                    consecutive_successes = 0
+
+                    # Update import with rate limit info
+                    rate_limited_until = datetime.now().isoformat()
+                    conn.execute(
+                        "UPDATE bulk_imports SET rate_limited_until = ? WHERE id = ?",
+                        (rate_limited_until, import_id)
+                    )
+                    conn.execute("UPDATE bulk_import_tracks SET status = 'pending' WHERE id = ?", (track_id,))
+                    conn.commit()
+
+                    time.sleep(delay)
+                    continue
+
+                # Success - reset backoff
+                consecutive_successes += 1
+                if consecutive_successes >= 5:
+                    current_backoff_index = max(0, current_backoff_index - 1)
+                    consecutive_successes = 0
+
+                # Clear rate limit flag
+                conn.execute("UPDATE bulk_imports SET rate_limited_until = NULL WHERE id = ?", (import_id,))
+
+                if result.returncode != 0 or not result.stdout.strip():
+                    # Search failed
+                    conn.execute(
+                        "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
+                        ("No results found", track_id)
+                    )
+                    conn.execute(
+                        "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                        (import_id,)
+                    )
+                    conn.commit()
+                    time.sleep(base_delay)
+                    continue
+
+                # Parse results and find best match
+                search_results = []
+                for search_line in result.stdout.strip().split('\n'):
+                    if not search_line:
+                        continue
+                    try:
+                        data = json.loads(search_line)
+                        title = data.get("title", "")
+                        channel = data.get("channel", data.get("uploader", ""))
+                        video_id = data.get("id")
+
+                        if video_id:
+                            score = score_search_result(title, channel)
+                            search_results.append({
+                                "video_id": video_id,
+                                "title": title,
+                                "channel": channel,
+                                "score": score
+                            })
+                    except json.JSONDecodeError:
+                        continue
+
+                if not search_results:
+                    conn.execute(
+                        "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
+                        ("No valid results", track_id)
+                    )
+                    conn.execute(
+                        "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                        (import_id,)
+                    )
+                    conn.commit()
+                    time.sleep(base_delay)
+                    continue
+
+                # Sort by score and pick best
+                search_results.sort(key=lambda x: x["score"], reverse=True)
+                best_match = search_results[0]
+                video_id = best_match["video_id"]
+
+                # Create download job
+                job_id = str(uuid.uuid4())[:8]
+
+                if create_playlist:
+                    conn.execute(
+                        "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (job_id, video_id, song, artist, "queued", "single", import_id)
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO jobs (id, video_id, title, artist, status, download_type) VALUES (?, ?, ?, ?, ?, ?)",
+                        (job_id, video_id, song, artist, "queued", "single")
+                    )
+
+                # Update track as queued
+                conn.execute(
+                    "UPDATE bulk_import_tracks SET status = 'queued', job_id = ?, video_id = ? WHERE id = ?",
+                    (job_id, video_id, track_id)
+                )
+                conn.execute(
+                    "UPDATE bulk_imports SET searched = searched + 1, queued = queued + 1 WHERE id = ?",
+                    (import_id,)
+                )
+                conn.commit()
+
+                # Start the download in a thread
+                download_thread = threading.Thread(
+                    target=process_download,
+                    args=(job_id, video_id, convert_to_flac)
+                )
+                download_thread.start()
+
+            except subprocess.TimeoutExpired:
+                conn.execute(
+                    "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
+                    ("Search timeout", track_id)
+                )
+                conn.execute(
+                    "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                    (import_id,)
+                )
+                conn.commit()
+
+            except Exception as e:
+                conn.execute(
+                    "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
+                    (str(e)[:200], track_id)
+                )
+                conn.execute(
+                    "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                    (import_id,)
+                )
+                conn.commit()
+
+            # Standard delay between searches
+            time.sleep(base_delay)
+
+        # All tracks processed - mark import as complete
+        conn.execute(
+            "UPDATE bulk_imports SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (import_id,)
+        )
+        conn.commit()
+
+        # Create playlist if requested
+        if create_playlist:
+            cursor = conn.execute("SELECT queued FROM bulk_imports WHERE id = ?", (import_id,))
+            row = cursor.fetchone()
+            if row and row["queued"] > 0:
+                playlist_thread = threading.Thread(
+                    target=create_bulk_playlist,
+                    args=(import_id, playlist_name or f"Playlist {import_id}", row["queued"])
+                )
+                playlist_thread.start()
+
+    except Exception as e:
+        conn.execute(
+            "UPDATE bulk_imports SET status = 'error', error = ? WHERE id = ?",
+            (str(e)[:500], import_id)
+        )
+        conn.commit()
+
+    finally:
+        conn.close()
+        with _bulk_import_lock:
+            _bulk_import_worker_running = False
+
+
+@app.post("/api/bulk-import-async")
+def bulk_import_async(request: AsyncBulkImportRequest):
+    """Start an async bulk import job
+
+    Returns immediately with import_id. Use /api/bulk-import/{id}/status to poll progress.
+    Downloads start as soon as tracks are found, while searching continues in background.
+    """
+    global _bulk_import_worker_running
+
+    lines = request.songs.strip().split('\n')
+    import_id = str(uuid.uuid4())[:8]
+
+    # Parse and validate all lines first
+    tracks_to_import = []
+    for line_num, line in enumerate(lines, 1):
+        original_line = line
+        line = clean_bulk_import_line(line)
+
+        if not line:
+            continue
+
+        if len(line) > 200:
+            continue
+
+        # Try to parse "Artist - Song" format
+        match = re.match(r'^(.+?)\s*[-–—]\s*(.+)$', line)
+        if not match:
+            continue
+
+        artist, song = match.groups()
+        artist = artist.strip()
+        song = song.strip()
+
+        if not artist or not song:
+            continue
+
+        tracks_to_import.append({
+            "line_num": line_num,
+            "artist": artist,
+            "song": song
+        })
+
+    if not tracks_to_import:
+        raise HTTPException(status_code=400, detail="No valid tracks found in input")
+
+    # Create bulk import record
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO bulk_imports
+           (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac)
+           VALUES (?, 'pending', ?, ?, ?, ?)""",
+        (import_id, len(tracks_to_import), int(request.create_playlist),
+         request.playlist_name, int(request.convert_to_flac))
+    )
+
+    # Insert all tracks
+    for track in tracks_to_import:
+        conn.execute(
+            "INSERT INTO bulk_import_tracks (import_id, line_num, artist, song, status) VALUES (?, ?, ?, ?, 'pending')",
+            (import_id, track["line_num"], track["artist"], track["song"])
+        )
+
+    conn.commit()
+    conn.close()
+
+    # Start background worker
+    with _bulk_import_lock:
+        _bulk_import_worker_running = True
+
+    worker_thread = threading.Thread(target=process_bulk_import_worker, args=(import_id,))
+    worker_thread.daemon = True
+    worker_thread.start()
+
+    return {
+        "import_id": import_id,
+        "total_tracks": len(tracks_to_import),
+        "status": "pending"
+    }
+
+
+@app.get("/api/bulk-import/{import_id}/status")
+def get_bulk_import_status(import_id: str):
+    """Get status of a bulk import job
+
+    Returns progress info for polling UI updates.
+    """
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    cursor = conn.execute("SELECT * FROM bulk_imports WHERE id = ?", (import_id,))
+    import_row = cursor.fetchone()
+
+    if not import_row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Import not found")
+
+    # Get recent track statuses for display - show most recently processed first
+    # Prioritise queued/failed over pending, then by line_num descending within processed
+    cursor = conn.execute(
+        """SELECT artist, song, status, error FROM bulk_import_tracks
+           WHERE import_id = ?
+           ORDER BY
+               CASE status
+                   WHEN 'queued' THEN 0
+                   WHEN 'failed' THEN 0
+                   WHEN 'searching' THEN 1
+                   ELSE 2
+               END,
+               line_num DESC
+           LIMIT 10""",
+        (import_id,)
+    )
+    recent_tracks = [dict(row) for row in cursor.fetchall()]
+
+    # Count download statuses by joining bulk_import_tracks with jobs
+    cursor = conn.execute(
+        """SELECT
+               SUM(CASE WHEN j.status = 'completed' THEN 1 ELSE 0 END) as completed,
+               SUM(CASE WHEN j.status = 'failed' THEN 1 ELSE 0 END) as download_failed,
+               SUM(CASE WHEN j.status IN ('queued', 'downloading') THEN 1 ELSE 0 END) as still_queued
+           FROM bulk_import_tracks t
+           JOIN jobs j ON t.job_id = j.id
+           WHERE t.import_id = ?""",
+        (import_id,)
+    )
+    row = cursor.fetchone()
+    completed_count = row[0] or 0
+    download_failed_count = row[1] or 0
+    still_queued_count = row[2] or 0
+
+    conn.close()
+
+    # "queued" from bulk_imports = tracks that were successfully searched
+    # "still_queued" = tracks waiting to download (not yet completed or failed)
+    # "failed" from bulk_imports = search failures
+    # download_failed_count = download failures (separate from search failures)
+    total_failed = import_row["failed"] + download_failed_count
+
+    return {
+        "import_id": import_id,
+        "status": import_row["status"],
+        "total_tracks": import_row["total_tracks"],
+        "searched": import_row["searched"],
+        "queued": still_queued_count,
+        "completed": completed_count,
+        "failed": total_failed,
+        "skipped": import_row["skipped"],
+        "rate_limited": import_row["rate_limited_until"] is not None,
+        "error": import_row["error"],
+        "recent_tracks": recent_tracks,
+        "complete": import_row["status"] in ("completed", "error")
+    }
+
+
+@app.get("/api/bulk-imports")
+def list_bulk_imports(limit: int = 10):
+    """List recent bulk imports"""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    cursor = conn.execute(
+        "SELECT * FROM bulk_imports ORDER BY created_at DESC LIMIT ?",
+        (limit,)
+    )
+    imports = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+
+    return {"imports": imports}
+
+
 @app.post("/api/spotify-playlist")
 def fetch_spotify_playlist(request: SpotifyPlaylistRequest):
-    """Fetch track list from a public Spotify playlist URL
+    """Fetch track list from a public Spotify playlist or album URL
 
     Uses Spotify's embed endpoint which contains track data in a parseable format.
     Returns tracks in "Artist - Song" format ready for bulk import.
     """
-    # Validate and extract playlist ID from URL
-    match = re.match(r'https?://open\.spotify\.com/playlist/([a-zA-Z0-9]+)', request.url)
-    if not match:
-        raise HTTPException(status_code=400, detail="Invalid Spotify playlist URL")
+    # Validate and extract ID from URL - support both playlists and albums
+    playlist_match = re.match(r'https?://open\.spotify\.com/playlist/([a-zA-Z0-9]+)', request.url)
+    album_match = re.match(r'https?://open\.spotify\.com/album/([a-zA-Z0-9]+)', request.url)
 
-    playlist_id = match.group(1)
+    if playlist_match:
+        spotify_id = playlist_match.group(1)
+        spotify_type = "playlist"
+    elif album_match:
+        spotify_id = album_match.group(1)
+        spotify_type = "album"
+    else:
+        raise HTTPException(status_code=400, detail="Invalid Spotify URL. Expected playlist or album URL.")
 
     # Fetch the embed page - this contains track data unlike the main page
     try:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             response = client.get(
-                f"https://open.spotify.com/embed/playlist/{playlist_id}",
+                f"https://open.spotify.com/embed/{spotify_type}/{spotify_id}",
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 }
@@ -1879,15 +2363,15 @@ def fetch_spotify_playlist(request: SpotifyPlaylistRequest):
             response.raise_for_status()
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
-            raise HTTPException(status_code=404, detail="Playlist not found or is private")
-        raise HTTPException(status_code=502, detail=f"Failed to fetch playlist: {e}")
+            raise HTTPException(status_code=404, detail=f"{spotify_type.title()} not found or is private")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch {spotify_type}: {e}")
     except httpx.RequestError as e:
         raise HTTPException(status_code=502, detail=f"Failed to connect to Spotify: {e}")
 
     html_content = response.text
 
-    # Extract playlist name - first "title" match is usually the playlist name
-    playlist_name = "Spotify Playlist"
+    # Extract name - first "title" match is usually the playlist/album name
+    playlist_name = f"Spotify {spotify_type.title()}"
     title_matches = re.findall(r'"title":"([^"]+)"', html_content)
     if title_matches:
         playlist_name = title_matches[0]
@@ -1909,16 +2393,21 @@ def fetch_spotify_playlist(request: SpotifyPlaylistRequest):
 
         # Pair them up
         for title, artist in zip(track_titles, track_artists):
-            # Decode unicode escapes like \u0026 -> &
-            # Use utf-8 encoding to avoid mojibake (Â characters)
-            title = title.encode('utf-8').decode('unicode_escape').encode('latin-1').decode('utf-8')
-            artist = artist.encode('utf-8').decode('unicode_escape').encode('latin-1').decode('utf-8')
+            # Decode unicode escapes like \u0026 -> & using json.loads (safest method)
+            try:
+                title = json.loads(f'"{title}"')
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass  # Keep original if decode fails
+            try:
+                artist = json.loads(f'"{artist}"')
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass  # Keep original if decode fails
             tracks.append(f"{artist} - {title}")
 
     if not tracks:
         raise HTTPException(
             status_code=422,
-            detail="Could not extract tracks from playlist. The playlist may be empty or Spotify's page structure may have changed."
+            detail=f"Could not extract tracks from {spotify_type}. It may be empty or Spotify's page structure may have changed."
         )
 
     return {

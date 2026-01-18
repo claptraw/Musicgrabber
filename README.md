@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.4.1**
+**v1.5.1**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -83,6 +83,8 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
 | `SLSKD_USER` | - | slskd username |
 | `SLSKD_PASS` | - | slskd password |
 | `SLSKD_DOWNLOADS_PATH` | - | Path where slskd downloads are accessible (required for Soulseek downloads) |
+| `JELLYFIN_URL` | - | Jellyfin server URL (e.g., `http://jellyfin:8096`) |
+| `JELLYFIN_API_KEY` | - | Jellyfin API key for library refresh |
 
 ### Navidrome Auto-Rescan
 
@@ -96,6 +98,18 @@ environment:
 ```
 
 If running on the same Docker network as Navidrome, use the container name as the hostname.
+
+### Jellyfin Auto-Rescan
+
+To automatically trigger a Jellyfin library scan after downloads:
+
+```yaml
+environment:
+  - JELLYFIN_URL=http://jellyfin:8096
+  - JELLYFIN_API_KEY=your-api-key-here
+```
+
+Get your API key from Jellyfin: Dashboard → API Keys → Add.
 
 ### Soulseek Integration (Optional)
 

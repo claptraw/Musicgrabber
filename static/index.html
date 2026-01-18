@@ -670,7 +670,7 @@
                         <span class="toggle-slider"></span>
                     </div>
                 </label>
-                <span style="font-size: 11px; color: var(--text-secondary);">v1.4.1</span>
+                <span style="font-size: 11px; color: var(--text-secondary);">v1.5.1</span>
             </div>
         </header>
 
@@ -699,7 +699,7 @@
         <div id="bulkTabContainer" style="display: none;">
             <div style="margin-bottom: 12px;">
                 <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 12px;">
-                    Upload a text file or paste your song list below (one per line in format: Artist - Song Title). Maximum 70 songs.
+                    Upload a text file or paste your song list below (one per line in format: Artist - Song Title).
                 </p>
                 <div style="margin-bottom: 12px;">
                     <label class="file-upload">
@@ -713,7 +713,7 @@
                         <input
                             type="text"
                             id="spotifyUrlInput"
-                            placeholder="Spotify playlist URL (e.g., https://open.spotify.com/playlist/...)"
+                            placeholder="Spotify playlist or album URL"
                             style="flex: 1; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);"
                         >
                         <button
@@ -730,9 +730,9 @@
                         id="bulkInput"
                         placeholder="ABBA – Dancing Queen&#10;ABBA – Super Trouper&#10;Backstreet Boys – I Want It That Way"
                         class="bulk-textarea"
-                        maxlength="7000"
+                        maxlength="500000"
                     ></textarea>
-                    <div id="lineCounter" style="position: absolute; bottom: 8px; right: 12px; font-size: 11px; color: var(--text-secondary); background: var(--bg-tertiary); padding: 4px 8px; border-radius: 4px;">0/70 lines</div>
+                    <div id="lineCounter" style="position: absolute; bottom: 8px; right: 12px; font-size: 11px; color: var(--text-secondary); background: var(--bg-tertiary); padding: 4px 8px; border-radius: 4px;">0 lines</div>
                 </div>
                 <div style="margin-top: 12px; margin-bottom: 12px;">
                     <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); cursor: pointer;">
@@ -817,7 +817,8 @@
         let downloadingIds = new Set();
         let lastResults = [];
         const MAX_QUEUE_SIZE = 100;
-        const MAX_BULK_LINES = 70;
+        let currentBulkImportId = null;
+        let bulkImportPollInterval = null;
 
         // Preview state
         const previewAudio = document.getElementById('previewAudio');
@@ -965,6 +966,8 @@
         });
 
         // Search
+        let slskdSearchPending = false;
+
         async function search() {
             const query = searchInput.value.trim();
             if (!query) return;
@@ -979,6 +982,7 @@
             stopPreview(); // Stop any playing preview
 
             try {
+                // Fetch YouTube results first (fast)
                 const response = await fetch('/api/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -991,6 +995,12 @@
                 lastResults = data.results;
                 renderResults(data.results);
                 showRelatedSuggestions(data.results);
+
+                // If slskd is enabled, fetch those results in the background
+                if (data.slskd_enabled) {
+                    slskdSearchPending = true;
+                    fetchSlskdResults(query);
+                }
             } catch (error) {
                 resultsTab.innerHTML = `
                     <div class="empty-state">
@@ -1002,6 +1012,50 @@
             } finally {
                 searchBtn.disabled = false;
             }
+        }
+
+        async function fetchSlskdResults(query) {
+            try {
+                const response = await fetch('/api/search/slskd', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, limit: 15 })
+                });
+
+                if (!response.ok) return;
+
+                const data = await response.json();
+                if (data.results && data.results.length > 0 && slskdSearchPending) {
+                    // Merge slskd results with existing results
+                    mergeSlskdResults(data.results);
+                }
+            } catch (error) {
+                console.log('slskd search failed:', error);
+            } finally {
+                slskdSearchPending = false;
+            }
+        }
+
+        function mergeSlskdResults(slskdResults) {
+            // Interleave slskd results with existing YouTube results
+            // Insert 1 slskd result after every 2 YouTube results
+            const merged = [];
+            let ytIndex = 0;
+            let slskdIndex = 0;
+
+            while (ytIndex < lastResults.length || slskdIndex < slskdResults.length) {
+                // Add 2 YouTube results
+                for (let i = 0; i < 2 && ytIndex < lastResults.length; i++) {
+                    merged.push(lastResults[ytIndex++]);
+                }
+                // Add 1 slskd result
+                if (slskdIndex < slskdResults.length) {
+                    merged.push(slskdResults[slskdIndex++]);
+                }
+            }
+
+            lastResults = merged;
+            renderResults(merged);
         }
 
         // Show related search suggestions based on artists
@@ -1247,21 +1301,6 @@
                 return;
             }
 
-            const songLines = songs.split('\n').filter(line => line.trim());
-
-            // Check line limit
-            if (songLines.length > MAX_BULK_LINES) {
-                showToast(`Maximum ${MAX_BULK_LINES} songs allowed`, true);
-                return;
-            }
-
-            // Check queue size limit
-            const queueSize = await getQueueSize();
-            if (queueSize + songLines.length > MAX_QUEUE_SIZE) {
-                showToast(`Queue limit would be exceeded (max ${MAX_QUEUE_SIZE})`, true);
-                return;
-            }
-
             // Validate playlist name if checkbox is checked
             const createPlaylist = createPlaylistCheckbox.checked;
             const playlistName = playlistNameInput.value.trim();
@@ -1273,7 +1312,7 @@
             }
 
             bulkImportBtn.disabled = true;
-            bulkImportBtn.textContent = 'Processing...';
+            bulkImportBtn.textContent = 'Starting...';
             bulkResults.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
             try {
@@ -1286,62 +1325,183 @@
                     requestBody.playlist_name = playlistName;
                 }
 
-                const response = await fetch('/api/bulk-import', {
+                // Start the async import
+                const response = await fetch('/api/bulk-import-async', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(requestBody)
                 });
 
-                if (!response.ok) throw new Error('Bulk import failed');
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Bulk import failed');
+                }
 
                 const data = await response.json();
+                currentBulkImportId = data.import_id;
 
-                // Show results
-                let html = `
-                    <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px;">
-                        <div style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">Import Summary</div>
-                        <div style="font-size: 13px; color: var(--text-secondary);">
-                            ✓ ${data.queued} songs queued<br>
-                            ${data.failed > 0 ? `✗ ${data.failed} songs failed` : ''}
-                        </div>
-                    </div>
-                `;
-
-                if (data.failures.length > 0) {
-                    html += `
-                        <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--error); border-radius: 12px;">
-                            <div style="font-size: 14px; font-weight: 600; color: var(--error); margin-bottom: 8px;">Failed Lines</div>
-                            ${data.failures.map(f => `
-                                <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px;">
-                                    Line ${f.line}: ${escapeHtml(f.text)}<br>
-                                    <span style="color: var(--error);">→ ${escapeHtml(f.reason)}</span>
-                                </div>
-                            `).join('')}
-                        </div>
-                    `;
-                }
-
-                bulkResults.innerHTML = html;
-
-                if (createPlaylist) {
-                    showToast(`Queued ${data.queued} song(s) - Playlist will be created`);
-                } else {
-                    showToast(`Queued ${data.queued} song(s)`);
-                }
-
-                // Clear the textarea and inputs
+                // Clear the textarea
                 bulkInput.value = '';
                 playlistNameInput.value = '';
                 createPlaylistCheckbox.checked = false;
                 playlistNameInput.style.display = 'none';
                 updateLineCounter();
+
+                // Show initial progress
+                showBulkImportProgress({
+                    status: 'pending',
+                    total_tracks: data.total_tracks,
+                    searched: 0,
+                    queued: 0,
+                    failed: 0
+                });
+
+                // Start polling for progress
+                startBulkImportPolling(data.import_id);
+
             } catch (error) {
                 bulkResults.innerHTML = '';
-                showToast('Bulk import failed', true);
-            } finally {
+                showToast(error.message || 'Bulk import failed', true);
                 bulkImportBtn.disabled = false;
                 bulkImportBtn.textContent = 'Import & Download All';
             }
+        }
+
+        function showBulkImportProgress(data) {
+            const percent = data.total_tracks > 0 ? Math.round((data.searched / data.total_tracks) * 100) : 0;
+            const isComplete = data.complete || data.status === 'completed' || data.status === 'error';
+
+            let statusText = 'Processing...';
+            let statusColor = 'var(--accent)';
+            if (data.rate_limited) {
+                statusText = 'Rate limited - waiting...';
+                statusColor = 'var(--warning)';
+            } else if (data.status === 'completed') {
+                statusText = 'Complete';
+                statusColor = 'var(--accent)';
+            } else if (data.status === 'error') {
+                statusText = 'Error';
+                statusColor = 'var(--error)';
+            }
+
+            let html = `
+                <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <div style="font-size: 14px; font-weight: 600;">Import Progress</div>
+                        <div style="font-size: 12px; color: ${statusColor};">${statusText}</div>
+                    </div>
+
+                    <!-- Progress bar -->
+                    <div style="background: var(--bg-tertiary); border-radius: 4px; height: 8px; margin-bottom: 12px; overflow: hidden;">
+                        <div style="background: ${data.rate_limited ? 'var(--warning)' : 'var(--accent)'}; height: 100%; width: ${percent}%; transition: width 0.3s ease;"></div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; text-align: center;">
+                        <div>
+                            <div style="font-size: 16px; font-weight: 600;">${data.searched}</div>
+                            <div style="font-size: 10px; color: var(--text-secondary);">Searched</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 16px; font-weight: 600; color: var(--warning);">${data.queued}</div>
+                            <div style="font-size: 10px; color: var(--text-secondary);">Queued</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 16px; font-weight: 600; color: var(--accent);">${data.completed || 0}</div>
+                            <div style="font-size: 10px; color: var(--text-secondary);">Done</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 16px; font-weight: 600; color: var(--error);">${data.failed}</div>
+                            <div style="font-size: 10px; color: var(--text-secondary);">Failed</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 16px; font-weight: 600;">${data.total_tracks}</div>
+                            <div style="font-size: 10px; color: var(--text-secondary);">Total</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Show recent tracks
+            if (data.recent_tracks && data.recent_tracks.length > 0) {
+                html += `
+                    <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px;">
+                        <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text-secondary);">Recent Activity</div>
+                        ${data.recent_tracks.slice(0, 5).map(track => {
+                            let icon = '...';
+                            let color = 'var(--text-secondary)';
+                            if (track.status === 'queued') {
+                                icon = '✓';
+                                color = 'var(--accent)';
+                            } else if (track.status === 'failed') {
+                                icon = '✗';
+                                color = 'var(--error)';
+                            } else if (track.status === 'searching') {
+                                icon = '🔍';
+                            }
+                            return `
+                                <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: flex; align-items: center; gap: 8px;">
+                                    <span style="color: ${color}; width: 16px;">${icon}</span>
+                                    <span>${escapeHtml(track.artist)} - ${escapeHtml(track.song)}</span>
+                                    ${track.error ? `<span style="color: var(--error); font-size: 11px;">(${escapeHtml(track.error)})</span>` : ''}
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `;
+            }
+
+            // Show error if any
+            if (data.error) {
+                html += `
+                    <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--error); border-radius: 12px; margin-top: 12px;">
+                        <div style="font-size: 13px; color: var(--error);">${escapeHtml(data.error)}</div>
+                    </div>
+                `;
+            }
+
+            bulkResults.innerHTML = html;
+
+            // Update button state
+            if (isComplete) {
+                bulkImportBtn.disabled = false;
+                bulkImportBtn.textContent = 'Import & Download All';
+                if (data.status === 'completed') {
+                    showToast(`Import complete: ${data.queued} queued, ${data.failed} failed`);
+                }
+            } else {
+                bulkImportBtn.disabled = true;
+                bulkImportBtn.textContent = `Processing ${data.searched}/${data.total_tracks}...`;
+            }
+        }
+
+        function startBulkImportPolling(importId) {
+            // Clear any existing polling
+            if (bulkImportPollInterval) {
+                clearInterval(bulkImportPollInterval);
+            }
+
+            // Poll every 2 seconds
+            bulkImportPollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`/api/bulk-import/${importId}/status`);
+                    if (!response.ok) {
+                        throw new Error('Failed to get status');
+                    }
+
+                    const data = await response.json();
+                    showBulkImportProgress(data);
+
+                    // Stop polling when complete
+                    if (data.complete) {
+                        clearInterval(bulkImportPollInterval);
+                        bulkImportPollInterval = null;
+                        currentBulkImportId = null;
+                    }
+                } catch (error) {
+                    console.error('Polling error:', error);
+                    // Keep polling, might be a transient error
+                }
+            }, 2000);
         }
 
         async function clearQueue() {
@@ -1374,49 +1534,16 @@
             return div.innerHTML;
         }
 
-        // Line counter and limit enforcement
+        // Line counter (no limit)
         function updateLineCounter() {
             const lines = bulkInput.value.split('\n').filter(line => line.trim());
             const count = lines.length;
-            lineCounter.textContent = `${count}/${MAX_BULK_LINES} lines`;
-
-            if (count > MAX_BULK_LINES) {
-                lineCounter.style.color = 'var(--error)';
-                lineCounter.style.background = 'var(--bg-secondary)';
-            } else {
-                lineCounter.style.color = 'var(--text-secondary)';
-                lineCounter.style.background = 'var(--bg-tertiary)';
-            }
-        }
-
-        function limitLines(text) {
-            const lines = text.split('\n');
-            if (lines.length > MAX_BULK_LINES) {
-                return lines.slice(0, MAX_BULK_LINES).join('\n');
-            }
-            return text;
+            lineCounter.textContent = `${count} line${count !== 1 ? 's' : ''}`;
+            lineCounter.style.color = 'var(--text-secondary)';
+            lineCounter.style.background = 'var(--bg-tertiary)';
         }
 
         bulkInput.addEventListener('input', updateLineCounter);
-
-        bulkInput.addEventListener('paste', (e) => {
-            e.preventDefault();
-            const pastedText = (e.clipboardData || window.clipboardData).getData('text');
-            const limitedText = limitLines(pastedText);
-
-            // Insert at cursor position
-            const start = bulkInput.selectionStart;
-            const end = bulkInput.selectionEnd;
-            const currentValue = bulkInput.value;
-            const newValue = currentValue.substring(0, start) + limitedText + currentValue.substring(end);
-
-            bulkInput.value = limitLines(newValue);
-            updateLineCounter();
-
-            if (pastedText.split('\n').length > MAX_BULK_LINES) {
-                showToast(`Content limited to ${MAX_BULK_LINES} lines`, true);
-            }
-        });
 
         // File upload handler
         fileUpload.addEventListener('change', (e) => {
@@ -1427,13 +1554,8 @@
 
             const reader = new FileReader();
             reader.onload = (event) => {
-                const content = event.target.result;
-                bulkInput.value = limitLines(content);
+                bulkInput.value = event.target.result;
                 updateLineCounter();
-
-                if (content.split('\n').length > MAX_BULK_LINES) {
-                    showToast(`File content limited to ${MAX_BULK_LINES} lines`, true);
-                }
             };
             reader.readAsText(file);
         });
@@ -1461,18 +1583,18 @@
         bulkImportBtn.addEventListener('click', bulkImport);
         clearQueueBtn.addEventListener('click', clearQueue);
 
-        // Spotify playlist fetch handler
+        // Spotify playlist/album fetch handler
         async function fetchSpotifyPlaylist() {
             const url = spotifyUrlInput.value.trim();
             if (!url) {
-                spotifyError.textContent = 'Please enter a Spotify playlist URL';
+                spotifyError.textContent = 'Please enter a Spotify URL';
                 spotifyError.style.display = 'block';
                 return;
             }
 
-            // Basic URL validation
-            if (!url.match(/^https?:\/\/open\.spotify\.com\/playlist\//)) {
-                spotifyError.textContent = 'Invalid Spotify playlist URL. Expected format: https://open.spotify.com/playlist/...';
+            // Basic URL validation - support playlists and albums
+            if (!url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//)) {
+                spotifyError.textContent = 'Invalid Spotify URL. Expected playlist or album URL.';
                 spotifyError.style.display = 'block';
                 return;
             }
@@ -1488,6 +1610,12 @@
                     body: JSON.stringify({ url })
                 });
 
+                // Check content type before parsing
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    throw new Error('Server error - please check if the app is running');
+                }
+
                 const data = await response.json();
 
                 if (!response.ok) {
@@ -1495,9 +1623,8 @@
                 }
 
                 if (data.tracks && data.tracks.length > 0) {
-                    // Populate the textarea with tracks
-                    const trackLines = data.tracks.slice(0, MAX_BULK_LINES).join('\n');
-                    bulkInput.value = trackLines;
+                    // Populate the textarea with all tracks (no limit)
+                    bulkInput.value = data.tracks.join('\n');
                     updateLineCounter();
 
                     // Auto-fill playlist name if checkbox is checked
@@ -1506,10 +1633,7 @@
                     }
 
                     // Show toast with result
-                    const truncated = data.tracks.length > MAX_BULK_LINES
-                        ? ` (limited to ${MAX_BULK_LINES})`
-                        : '';
-                    showToast(`Loaded ${Math.min(data.tracks.length, MAX_BULK_LINES)} tracks from "${data.playlist_name}"${truncated}`);
+                    showToast(`Loaded ${data.tracks.length} tracks from "${data.playlist_name}"`);
 
                     // Clear the URL input
                     spotifyUrlInput.value = '';
