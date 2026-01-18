@@ -39,6 +39,9 @@ DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() =
 SLSKD_URL = os.getenv("SLSKD_URL", "")  # e.g., http://slskd:5030
 SLSKD_USER = os.getenv("SLSKD_USER", "")
 SLSKD_PASS = os.getenv("SLSKD_PASS", "")
+SLSKD_DOWNLOADS_PATH = os.getenv("SLSKD_DOWNLOADS_PATH", "")  # Path where slskd downloads are accessible
+SLSKD_REQUIRE_FREE_SLOT = os.getenv("SLSKD_REQUIRE_FREE_SLOT", "true").lower() == "true"
+SLSKD_MAX_RETRIES = int(os.getenv("SLSKD_MAX_RETRIES", "5"))
 
 # slskd auth token cache
 _slskd_token = None
@@ -425,6 +428,35 @@ def parse_slskd_quality(file_info: dict) -> tuple[str, int]:
         return ("Unknown", 30)
 
 
+def normalize_slskd_path(path: str) -> str:
+    """Normalize slskd paths for matching"""
+    return path.replace("\\", "/").strip()
+
+
+def get_slskd_local_path(download_info: dict) -> Optional[str]:
+    """Try to pull a local file path from slskd download info"""
+    for key in ("localPath", "localFilename", "downloadedFilePath", "downloadPath", "path", "fullPath"):
+        value = download_info.get(key)
+        if value:
+            return value
+    return None
+
+
+def should_retry_slskd_error(error_message: str) -> bool:
+    """Decide whether to retry based on slskd error text"""
+    msg = error_message.lower()
+    retry_markers = [
+        "aborted",
+        "rejected",
+        "cancelled",
+        "failed",
+        "timed out",
+        "timeout",
+        "queued",
+    ]
+    return any(marker in msg for marker in retry_markers)
+
+
 def extract_track_info_from_path(filepath: str) -> tuple[str, str]:
     """
     Extract artist and title from a Soulseek file path.
@@ -460,7 +492,7 @@ def extract_track_info_from_path(filepath: str) -> tuple[str, str]:
     return artist, name
 
 
-def search_slskd(query: str, timeout_secs: int = 8) -> list[dict]:
+def search_slskd(query: str, timeout_secs: int = 12) -> list[dict]:
     """
     Search slskd and return normalized results.
     Returns list of dicts with: id, title, artist, quality, score, source, slskd_* fields
@@ -519,29 +551,39 @@ def search_slskd(query: str, timeout_secs: int = 8) -> list[dict]:
             # Small delay to allow responses to be fully indexed
             time.sleep(1)
 
-            # Get responses
-            responses_response = client.get(
-                f"{SLSKD_URL}/api/v0/searches/{search_id}/responses",
-                headers=headers
-            )
+            # Get responses with a short retry window in case indexing lags
+            responses = []
+            responses_deadline = time.time() + min(5, timeout_secs)
+            while time.time() < responses_deadline:
+                responses_response = client.get(
+                    f"{SLSKD_URL}/api/v0/searches/{search_id}/responses",
+                    headers=headers
+                )
+                if responses_response.status_code == 200:
+                    responses = responses_response.json()
+                    if responses:
+                        break
+                time.sleep(0.5)
 
-            if responses_response.status_code != 200:
-                return []
-
-            responses = responses_response.json()
             print(f"slskd: Got {len(responses)} user responses")
 
             # Process results - pick best file from each user
             seen_tracks = set()
             skipped_locked = 0
             skipped_quality = 0
+            skipped_no_slot = 0
 
             for response in responses:
                 username = response.get("username", "")
                 has_free_slot = response.get("hasFreeUploadSlot", False)
                 upload_speed = response.get("uploadSpeed", 0)
 
-                for file_info in response.get("files", []):
+                if SLSKD_REQUIRE_FREE_SLOT and not has_free_slot:
+                    skipped_no_slot += 1
+                    continue
+
+                files = response.get("files") or response.get("fileInfos") or response.get("fileInfo") or []
+                for file_info in files:
                     if file_info.get("isLocked", False):
                         skipped_locked += 1
                         continue
@@ -583,7 +625,11 @@ def search_slskd(query: str, timeout_secs: int = 8) -> list[dict]:
                         "slskd_filename": filepath,
                     })
 
-            print(f"slskd: Skipped {skipped_locked} locked, {skipped_quality} low quality, kept {len(results)}")
+            print(
+                "slskd: Skipped "
+                f"{skipped_locked} locked, {skipped_quality} low quality, "
+                f"{skipped_no_slot} no free slot, kept {len(results)}"
+            )
 
             # Clean up search
             try:
@@ -600,10 +646,13 @@ def search_slskd(query: str, timeout_secs: int = 8) -> list[dict]:
     return results[:20]  # Return top 20
 
 
-def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_secs: int = 300) -> Optional[Path]:
+def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_secs: int = 600) -> Optional[Path]:
     """
     Download a file from Soulseek via slskd.
     Returns the path to the downloaded file, or None on failure.
+
+    Uses SLSKD_DOWNLOADS_PATH if set; otherwise falls back to common download locations.
+    slskd typically organises downloads as: {downloads_path}/{username}/{filename}
     """
     token = get_slskd_token()
     if not token:
@@ -611,10 +660,27 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
 
     headers = {"Authorization": f"Bearer {token}"}
 
+    # Extract just the filename from the full path
+    target_norm = normalize_slskd_path(filename)
+    source_filename = Path(target_norm).name
+
+    slskd_download_dirs = []
+    if SLSKD_DOWNLOADS_PATH:
+        slskd_download_dirs.append(Path(SLSKD_DOWNLOADS_PATH))
+    slskd_download_dirs.extend([
+        Path("/slskd/downloads"),
+        Path("/app/downloads"),
+        Path("/downloads"),
+    ])
+    seen_dirs = set()
+    slskd_download_dirs = [
+        d for d in slskd_download_dirs
+        if not (str(d) in seen_dirs or seen_dirs.add(str(d)))
+    ]
+
     try:
         with httpx.Client(timeout=30) as client:
             # Enqueue the download
-            # slskd expects files as a list of objects
             enqueue_response = client.post(
                 f"{SLSKD_URL}/api/v0/transfers/downloads/{username}",
                 headers=headers,
@@ -624,14 +690,18 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
             if enqueue_response.status_code not in [200, 201]:
                 raise Exception(f"Failed to enqueue download: {enqueue_response.status_code}")
 
-            print(f"slskd: Enqueued download from {username}")
+            print(f"slskd: Enqueued download of '{source_filename}' from {username}")
 
             # Poll for download completion
             start_time = time.time()
+            download_complete = False
             downloaded_path = None
+            abort_count = 0
+            max_abort_requeues = 3  # Re-queue up to 3 times on abort before giving up
+            last_state = ""
 
             while time.time() - start_time < timeout_secs:
-                time.sleep(3)
+                time.sleep(5)
 
                 # Get download status for this user
                 status_response = client.get(
@@ -642,59 +712,145 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                 if status_response.status_code != 200:
                     continue
 
-                downloads = status_response.json()
+                downloads_data = status_response.json()
+
+                # slskd returns { "directories": [...], "files": [...] } structure
+                # Each directory has "files" array with the actual transfer info
+                files_to_check = []
+
+                if isinstance(downloads_data, dict):
+                    # New API format: { directories: [...] }
+                    for directory in downloads_data.get("directories", []):
+                        files_to_check.extend(directory.get("files", []))
+                elif isinstance(downloads_data, list):
+                    # Old API format: direct list of files
+                    files_to_check = downloads_data
 
                 # Find our file in the downloads
-                for dl in downloads:
-                    if dl.get("filename") == filename:
+                file_found = False
+                for dl in files_to_check:
+                    dl_filename = dl.get("filename", "")
+                    dl_norm = normalize_slskd_path(dl_filename)
+                    dl_base = Path(dl_norm).name
+                    if dl_norm == target_norm or dl_base == source_filename or dl_norm.endswith(f"/{source_filename}"):
+                        file_found = True
                         state = dl.get("state", "")
-                        print(f"slskd: Download state: {state}")
+                        progress = dl.get("percentComplete", 0)
 
-                        if state == "Completed, Succeeded":
-                            # File should be in slskd's download directory
-                            # We need to find it and copy to our destination
-                            downloaded_path = dl.get("filename", "")
-                            break
-                        elif "Failed" in state or "Cancelled" in state or "Rejected" in state:
+                        # Only log state changes to reduce noise
+                        if state != last_state:
+                            print(f"slskd: Download state: {state} ({progress}%)")
+                            last_state = state
+
+                        state_lower = state.lower()
+
+                        # Terminal failure states - these won't recover
+                        if any(s in state_lower for s in ("failed", "cancelled", "rejected", "errored")):
                             raise Exception(f"Download failed: {state}")
 
-                if downloaded_path:
+                        # Aborted is often transient - try re-queuing
+                        if "aborted" in state_lower:
+                            abort_count += 1
+                            if abort_count > max_abort_requeues:
+                                raise Exception(f"Download aborted {abort_count} times, giving up")
+
+                            print(f"slskd: Download aborted, re-queuing (attempt {abort_count}/{max_abort_requeues})...")
+                            time.sleep(2)  # Brief pause before re-queue
+
+                            # Re-enqueue the download
+                            requeue_response = client.post(
+                                f"{SLSKD_URL}/api/v0/transfers/downloads/{username}",
+                                headers=headers,
+                                json=[{"filename": filename}]
+                            )
+                            if requeue_response.status_code not in [200, 201]:
+                                print(f"slskd: Re-queue failed with status {requeue_response.status_code}")
+                            else:
+                                print(f"slskd: Re-queued successfully")
+
+                            last_state = ""  # Reset to log new state
+                            break  # Continue polling
+
+                        # Success states
+                        if state_lower.startswith("completed") or state_lower == "succeeded":
+                            # Make sure it's actually completed successfully, not "CompletedWithError"
+                            if "error" not in state_lower:
+                                download_complete = True
+                                downloaded_path = get_slskd_local_path(dl) or dl_filename
+                            else:
+                                raise Exception(f"Download completed with error: {state}")
+                            break
+
+                if download_complete:
                     break
 
-            if not downloaded_path:
-                raise Exception("Download timed out")
+                # If file disappeared from the queue entirely, it might have been
+                # removed or the user went offline - try re-queuing once
+                if not file_found and last_state and "queue" not in last_state.lower():
+                    print(f"slskd: File no longer in transfer queue, attempting re-queue...")
+                    requeue_response = client.post(
+                        f"{SLSKD_URL}/api/v0/transfers/downloads/{username}",
+                        headers=headers,
+                        json=[{"filename": filename}]
+                    )
+                    if requeue_response.status_code in [200, 201]:
+                        print(f"slskd: Re-queued successfully")
+                    last_state = ""
 
-            # The file is now in slskd's downloads folder
-            # We need to get it via the API or from a shared volume
-            # For now, we'll use the transfers endpoint to get file info
-            # and expect the file to be accessible via a shared volume
+            if not download_complete:
+                raise Exception(f"Download timed out after {timeout_secs}s")
 
-            # Extract just the filename for the destination
-            source_filename = filename.split("\\")[-1]
-
-            # Check common slskd download locations
-            # This depends on how slskd is configured - may need adjustment
-            slskd_download_dirs = [
-                Path("/slskd/downloads"),  # Docker default
-                Path("/app/downloads"),
-                Path("/downloads"),
-            ]
+            # File should now be in slskd's downloads folder
+            # slskd typically organises as: {downloads_path}/{username}/{filename}
+            candidate_paths = []
+            if downloaded_path:
+                normalized_path = normalize_slskd_path(downloaded_path)
+                dl_path = Path(normalized_path)
+                if dl_path.is_absolute():
+                    candidate_paths.append(dl_path)
+                else:
+                    for slskd_dir in slskd_download_dirs:
+                        candidate_paths.append(slskd_dir / dl_path)
+                        candidate_paths.append(slskd_dir / username / dl_path)
 
             for slskd_dir in slskd_download_dirs:
-                # slskd organizes by username
-                potential_path = slskd_dir / username / source_filename
+                candidate_paths.append(slskd_dir / username / source_filename)
+
+            for potential_path in candidate_paths:
                 if potential_path.exists():
-                    # Copy to our destination
                     import shutil
                     dest_path = dest_dir / source_filename
                     shutil.copy2(potential_path, dest_path)
                     print(f"slskd: Copied {potential_path} to {dest_path}")
                     return dest_path
 
-            # If we can't find the file locally, the volumes aren't shared
+            # If not found, search recursively in the username folder
+            for slskd_dir in slskd_download_dirs:
+                user_dir = slskd_dir / username
+                if user_dir.exists():
+                    for found_file in user_dir.rglob(source_filename):
+                        if found_file.is_file():
+                            import shutil
+                            dest_path = dest_dir / source_filename
+                            shutil.copy2(found_file, dest_path)
+                            print(f"slskd: Found and copied {found_file} to {dest_path}")
+                            return dest_path
+
+            # List what's actually there for debugging
+            for slskd_dir in slskd_download_dirs:
+                if slskd_dir.exists():
+                    print(f"slskd: Downloads directory contents ({slskd_dir}):")
+                    for item in slskd_dir.iterdir():
+                        print(f"  - {item.name}/")
+                        if item.is_dir():
+                            for subitem in list(item.iterdir())[:5]:
+                                print(f"      {subitem.name}")
+                else:
+                    print(f"slskd: Downloads directory not found: {slskd_dir}")
+
             raise Exception(
-                f"Downloaded file not found. Ensure slskd downloads are accessible to MusicGrabber. "
-                f"Looking for: {source_filename} in slskd download directories"
+                "Downloaded file not found at expected location. "
+                "Check that the slskd downloads path is mounted into MusicGrabber."
             )
 
     except Exception as e:
@@ -895,21 +1051,19 @@ def search_youtube(query: str, limit: int) -> list[dict]:
 def search(request: SearchRequest):
     """Search YouTube and optionally Soulseek for music"""
     try:
-        all_results = []
-
         # Always search YouTube
         yt_results = search_youtube(request.query, request.limit)
-        all_results.extend(yt_results)
+        slskd_results_normalized = []
 
         # Search slskd if configured
         print(f"slskd_enabled: {slskd_enabled()}")
         if slskd_enabled():
             print(f"Searching slskd for: {request.query}")
-            slskd_results = search_slskd(request.query, timeout_secs=6)
+            slskd_results = search_slskd(request.query, timeout_secs=12)
             print(f"slskd returned {len(slskd_results)} results")
             # Convert slskd results to include all fields
             for r in slskd_results:
-                all_results.append({
+                slskd_results_normalized.append({
                     "video_id": r["id"],
                     "title": r["title"],
                     "channel": r["channel"],
@@ -924,12 +1078,22 @@ def search(request: SearchRequest):
                     "slskd_filename": r["slskd_filename"],
                 })
 
-        # Sort all results by quality score (highest first)
-        all_results.sort(key=lambda x: x["quality_score"], reverse=True)
+        # Interleave results so Soulseek doesn't get pushed out by YouTube scores
+        merged_results = []
+        yt_index = 0
+        slskd_index = 0
+        while len(merged_results) < request.limit and (yt_index < len(yt_results) or slskd_index < len(slskd_results_normalized)):
+            for _ in range(2):
+                if yt_index < len(yt_results) and len(merged_results) < request.limit:
+                    merged_results.append(yt_results[yt_index])
+                    yt_index += 1
+            if slskd_index < len(slskd_results_normalized) and len(merged_results) < request.limit:
+                merged_results.append(slskd_results_normalized[slskd_index])
+                slskd_index += 1
 
         # Convert to SearchResult objects
         final_results = []
-        for item in all_results[:request.limit]:
+        for item in merged_results[:request.limit]:
             final_results.append(SearchResult(
                 video_id=item["video_id"],
                 title=item["title"],
@@ -1226,8 +1390,40 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         artist_dir = SINGLES_DIR / sanitize_filename(artist)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
-        # Download from slskd
-        downloaded_file = download_from_slskd(username, filename, artist_dir)
+        # Download from slskd with retries on common queue/abort failures
+        downloaded_file = None
+        attempts = 0
+        tried_candidates = set()
+        candidate_queue = [(username, filename)]
+        last_error = None
+
+        while candidate_queue:
+            cand_username, cand_filename = candidate_queue.pop(0)
+            if (cand_username, cand_filename) in tried_candidates:
+                continue
+            tried_candidates.add((cand_username, cand_filename))
+
+            try:
+                downloaded_file = download_from_slskd(cand_username, cand_filename, artist_dir)
+                break
+            except Exception as e:
+                last_error = str(e)
+                print(f"slskd download attempt failed: {last_error}")
+                if attempts >= SLSKD_MAX_RETRIES or not should_retry_slskd_error(last_error):
+                    break
+                attempts += 1
+
+                # Refresh candidates from a new search if we don't have any left
+                if not candidate_queue:
+                    retry_query = f"{artist} {title}".strip()
+                    retry_results = search_slskd(retry_query, timeout_secs=12)
+                    for r in retry_results:
+                        candidate = (r.get("slskd_username", ""), r.get("slskd_filename", ""))
+                        if candidate[0] and candidate[1] and candidate not in tried_candidates:
+                            candidate_queue.append(candidate)
+
+        if not downloaded_file:
+            raise Exception(last_error or "Soulseek download failed")
 
         if not downloaded_file or not downloaded_file.exists():
             raise Exception("Download completed but file not found")

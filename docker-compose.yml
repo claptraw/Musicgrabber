@@ -10,6 +10,8 @@ services:
       - /mnt/music:/music
       # Persist the job database
       - ./data:/data
+      # slskd downloads directory for Soulseek integration (NAS path)
+      - /mnt/goodies/Downloads/slskd:/downloads
     environment:
       # Music directory inside container
       - MUSIC_DIR=/music
@@ -19,10 +21,11 @@ services:
       - ENABLE_MUSICBRAINZ=true
       # Default FLAC conversion setting in the UI (true/false)
       - DEFAULT_CONVERT_TO_FLAC=true
-      # Optional: slskd/Soulseek integration
+      # slskd/Soulseek integration
       - SLSKD_URL=http://192.168.122.109:5030
       - SLSKD_USER=karl
       - SLSKD_PASS=k
+      - SLSKD_DOWNLOADS_PATH=/downloads
       # Optional: Navidrome API for auto-rescan
       # - NAVIDROME_URL=https://navidrome.URL.com
       # - NAVIDROME_USER=username
