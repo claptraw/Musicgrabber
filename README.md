@@ -36,10 +36,44 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
 
 ## Quick Start
 
+### Option A: Using Docker Hub (Recommended)
+
+1. **Create a docker-compose.yml**
+   ```yaml
+   services:
+     music-grabber:
+       image: g33kphr33k/musicgrabber:latest
+       container_name: music-grabber
+       restart: unless-stopped
+       ports:
+         - "38274:8080"
+       volumes:
+         - /path/to/your/music:/music
+         - ./data:/data
+       environment:
+         - MUSIC_DIR=/music
+         - DB_PATH=/data/music_grabber.db
+         - ENABLE_MUSICBRAINZ=true
+         - DEFAULT_CONVERT_TO_FLAC=true
+         # Optional: Navidrome auto-rescan
+         # - NAVIDROME_URL=http://navidrome:4533
+         # - NAVIDROME_USER=admin
+         # - NAVIDROME_PASS=yourpassword
+   ```
+
+2. **Run**
+   ```bash
+   docker compose up -d
+   ```
+
+3. **Access the UI** at `http://your-server:38274`
+
+### Option B: Build from Source
+
 1. **Clone and configure**
    ```bash
-   git clone <your-repo> music-grabber
-   cd music-grabber
+   git clone https://gitlab.com/g33kphr33k/musicgrabber.git
+   cd musicgrabber
    ```
 
 2. **Edit docker-compose.yml**
