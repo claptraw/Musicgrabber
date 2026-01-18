@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from mutagen.flac import FLAC
 import httpx
 
-app = FastAPI(title="Music Grabber", version="1.4.0")
+app = FastAPI(title="Music Grabber", version="1.4.1")
 
 # Configuration from environment
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
@@ -248,7 +248,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
 
     try:
         # Search for recording
-        headers = {"User-Agent": "MusicGrabber/1.4.0 (https://github.com/yourrepo)"}
+        headers = {"User-Agent": "MusicGrabber/1.4.1 (https://github.com/yourrepo)"}
 
         search_url = "https://musicbrainz.org/ws/2/recording/"
         params = {

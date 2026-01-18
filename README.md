@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.4.0**
+**v1.4.1**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -13,7 +13,7 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
 - **Mobile-friendly UI** — designed for quick searches from your phone
 - **Hover to preview** — on desktop, hover over a result for 2 seconds to hear a preview
 - **YouTube search** — finds tracks and playlists via yt-dlp
-- **Soulseek integration** — optional slskd support for higher quality sources (FLAC from P2P)
+- **Soulseek integration** — optional slskd support for higher quality sources (FLAC from P2P) *(in progress — needs testing)*
 - **Playlist support** — download entire playlists with automatic M3U generation
 - **Bulk import** — paste or upload a text file of songs to auto-search and queue
 - **Best quality FLAC** — extracts highest available audio quality
@@ -131,6 +131,8 @@ environment:
 slskd organises downloads as `{downloads}/{username}/{filename}`, which MusicGrabber will look for automatically.
 
 **Note:** Soulseek is a P2P network. Most users run slskd behind a VPN. This integration only talks to your slskd instance — it doesn't connect directly to the Soulseek network.
+
+**Status:** Soulseek integration is in progress and needs testing. New Soulseek users may experience rejected downloads until they build reputation by sharing files.
 
 ### Reverse Proxy (Caddy example)
 
