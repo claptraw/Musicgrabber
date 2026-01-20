@@ -422,7 +422,18 @@
             animation: pulse 1s infinite;
         }
         .job-status.completed { background: var(--accent); }
+        .job-status.completed_with_errors { background: var(--warning); }
         .job-status.failed { background: var(--error); }
+
+        .job-warning-badge {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: var(--warning);
+            color: #000;
+            margin-left: 6px;
+        }
 
         @keyframes pulse {
             0%, 100% { opacity: 1; }
@@ -670,7 +681,7 @@
                         <span class="toggle-slider"></span>
                     </div>
                 </label>
-                <span style="font-size: 11px; color: var(--text-secondary);">v1.5.1</span>
+                <span id="versionLabel" style="font-size: 11px; color: var(--text-secondary);"></span>
             </div>
         </header>
 
@@ -724,6 +735,9 @@
                         </button>
                     </div>
                     <div id="spotifyError" style="margin-top: 8px; font-size: 12px; color: var(--error); display: none;"></div>
+                    <div style="margin-top: 6px; font-size: 11px; color: var(--text-secondary);">
+                        Large Spotify playlists may take a few seconds to load. YouTube playlists are unlimited.
+                    </div>
                 </div>
                 <div style="position: relative;">
                     <textarea
@@ -793,19 +807,30 @@
         const playlistNameInput = document.getElementById('playlistNameInput');
         const convertToFlacCheckbox = document.getElementById('convertToFlac');
 
-        // Load FLAC preference from localStorage or server defaults
+        const versionLabel = document.getElementById('versionLabel');
+
+        // Load config from server (version, FLAC preference)
+        fetch('/api/config')
+            .then((response) => response.ok ? response.json() : null)
+            .then((config) => {
+                if (config) {
+                    // Set version label
+                    if (config.version) {
+                        versionLabel.textContent = `v${config.version}`;
+                    }
+                    // Set FLAC preference from server if not already saved locally
+                    const savedFlacPref = localStorage.getItem('convertToFlac');
+                    if (savedFlacPref === null && typeof config.default_convert_to_flac === 'boolean') {
+                        convertToFlacCheckbox.checked = config.default_convert_to_flac;
+                    }
+                }
+            })
+            .catch(() => {});
+
+        // Load FLAC preference from localStorage if saved
         const savedFlacPref = localStorage.getItem('convertToFlac');
         if (savedFlacPref !== null) {
             convertToFlacCheckbox.checked = savedFlacPref === 'true';
-        } else {
-            fetch('/api/config')
-                .then((response) => response.ok ? response.json() : null)
-                .then((config) => {
-                    if (config && typeof config.default_convert_to_flac === 'boolean') {
-                        convertToFlacCheckbox.checked = config.default_convert_to_flac;
-                    }
-                })
-                .catch(() => {});
         }
 
         // Save FLAC preference when changed
@@ -816,6 +841,8 @@
         let currentTab = 'results';
         let downloadingIds = new Set();
         let lastResults = [];
+        let currentSearchToken = 0;
+        let pendingSlskdToken = 0;
         const MAX_QUEUE_SIZE = 100;
         let currentBulkImportId = null;
         let bulkImportPollInterval = null;
@@ -825,7 +852,8 @@
         let hoverTimeout = null;
         let currentPreviewId = null;
         let previewCache = new Map(); // Cache preview URLs
-        const HOVER_DELAY = 2000; // 3 seconds before preview starts
+        const MAX_PREVIEW_CACHE = 100;
+        const HOVER_DELAY = 2000; // 2 seconds before preview starts
 
         // Preview functions
         function startHoverTimer(videoId, element) {
@@ -862,6 +890,10 @@
                     const data = await response.json();
                     audioUrl = data.url;
                     previewCache.set(videoId, audioUrl);
+                    if (previewCache.size > MAX_PREVIEW_CACHE) {
+                        const oldestKey = previewCache.keys().next().value;
+                        previewCache.delete(oldestKey);
+                    }
                 }
 
                 element.classList.remove('loading-preview');
@@ -966,11 +998,10 @@
         });
 
         // Search
-        let slskdSearchPending = false;
-
         async function search() {
             const query = searchInput.value.trim();
             if (!query) return;
+            const searchToken = ++currentSearchToken;
 
             // Save to history
             saveSearchHistory(query);
@@ -998,8 +1029,8 @@
 
                 // If slskd is enabled, fetch those results in the background
                 if (data.slskd_enabled) {
-                    slskdSearchPending = true;
-                    fetchSlskdResults(query);
+                    pendingSlskdToken = searchToken;
+                    fetchSlskdResults(query, searchToken);
                 }
             } catch (error) {
                 resultsTab.innerHTML = `
@@ -1014,7 +1045,7 @@
             }
         }
 
-        async function fetchSlskdResults(query) {
+        async function fetchSlskdResults(query, searchToken) {
             try {
                 const response = await fetch('/api/search/slskd', {
                     method: 'POST',
@@ -1025,14 +1056,19 @@
                 if (!response.ok) return;
 
                 const data = await response.json();
-                if (data.results && data.results.length > 0 && slskdSearchPending) {
+                if (searchToken !== currentSearchToken || pendingSlskdToken !== searchToken) {
+                    return;
+                }
+                if (data.results && data.results.length > 0) {
                     // Merge slskd results with existing results
                     mergeSlskdResults(data.results);
                 }
             } catch (error) {
                 console.log('slskd search failed:', error);
             } finally {
-                slskdSearchPending = false;
+                if (pendingSlskdToken === searchToken) {
+                    pendingSlskdToken = 0;
+                }
             }
         }
 
@@ -1097,6 +1133,16 @@
             return '';
         }
 
+        function formatResultMeta(result) {
+            if (result.artist) {
+                if (result.channel && result.channel !== result.artist) {
+                    return `${escapeHtml(result.artist)} • ${escapeHtml(result.channel)}`;
+                }
+                return escapeHtml(result.artist);
+            }
+            return escapeHtml(result.channel || '');
+        }
+
         function renderResults(results) {
             // Store results for later access (needed for slskd fields on download)
             lastResults = results;
@@ -1120,7 +1166,7 @@
                     ${r.thumbnail ? `<img class="result-thumb" src="${r.thumbnail}" alt="" loading="lazy">` : '<div class="result-thumb"></div>'}
                     <div class="result-info">
                         <div class="result-title">${escapeHtml(r.title)}</div>
-                        <div class="result-meta">${escapeHtml(r.channel)}</div>
+                        <div class="result-meta">${formatResultMeta(r)}</div>
                         <div class="result-badges">
                             <span class="source-badge ${r.source}">${r.source === 'soulseek' ? 'SLK' : 'YT'}</span>
                             ${r.quality ? `<span class="quality-badge ${getQualityBadgeClass(r.quality)}">${r.quality}</span>` : ''}
@@ -1184,9 +1230,9 @@
                 if (result.source === 'soulseek') {
                     payload.slskd_username = result.slskd_username;
                     payload.slskd_filename = result.slskd_filename;
-                    // Extract artist from the result if available
-                    if (result.channel) {
-                        payload.artist = result.channel;
+                    // Use parsed artist when available
+                    if (result.artist) {
+                        payload.artist = result.artist;
                     }
                 }
 
@@ -1261,8 +1307,8 @@
                 <div class="job-item" data-job-id="${job.id}">
                     <div class="job-status ${job.status}"></div>
                     <div class="job-info">
-                        <div class="job-title">${escapeHtml(job.artist ? `${job.artist} - ${job.title}` : job.title)}</div>
-                        <div class="job-meta">${job.status} • ${formatTime(job.created_at)}</div>
+                        <div class="job-title">${escapeHtml(job.artist ? `${job.artist} - ${job.title}` : job.title)}${job.status === 'completed_with_errors' ? '<span class="job-warning-badge">ISSUES</span>' : ''}</div>
+                        <div class="job-meta">${formatJobStatus(job.status)} • ${formatTime(job.created_at)}</div>
                         ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ''}
                     </div>
                 </div>
@@ -1273,6 +1319,13 @@
             if (hasActive && currentTab === 'queue') {
                 setTimeout(() => loadJobs(false), 3000);
             }
+        }
+
+        function formatJobStatus(status) {
+            if (status === 'completed_with_errors') {
+                return 'completed (with errors)';
+            }
+            return status;
         }
 
         function formatTime(isoString) {
@@ -1632,8 +1685,16 @@
                         playlistNameInput.value = data.playlist_name;
                     }
 
-                    // Show toast with result
-                    showToast(`Loaded ${data.tracks.length} tracks from "${data.playlist_name}"`);
+                    // Show toast with result (include warning if present)
+                    let toastMsg = `Loaded ${data.tracks.length} tracks from "${data.playlist_name}"`;
+                    if (data.warning) {
+                        toastMsg += ` (Warning: ${data.warning})`;
+                        // Also show in the error area for visibility
+                        spotifyError.textContent = data.warning;
+                        spotifyError.style.color = 'var(--warning, #f59e0b)';
+                        spotifyError.style.display = 'block';
+                    }
+                    showToast(toastMsg);
 
                     // Clear the URL input
                     spotifyUrlInput.value = '';
@@ -1642,6 +1703,7 @@
                 }
             } catch (error) {
                 spotifyError.textContent = error.message;
+                spotifyError.style.color = 'var(--error)';
                 spotifyError.style.display = 'block';
             } finally {
                 fetchSpotifyBtn.disabled = false;

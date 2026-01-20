@@ -16,18 +16,51 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from mutagen.flac import FLAC
 import httpx
 
-# Global state for bulk import worker
-_bulk_import_worker_running = False
-_bulk_import_lock = threading.Lock()
+# =============================================================================
+# Application Constants
+# =============================================================================
 
-app = FastAPI(title="Music Grabber", version="1.5.1")
+VERSION = "1.6.0"
+
+# Timeout values (in seconds)
+TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
+TIMEOUT_YTDLP_SEARCH = 30        # Search queries
+TIMEOUT_YTDLP_DOWNLOAD = 300     # Downloading a track (5 minutes)
+TIMEOUT_YTDLP_PREVIEW = 15       # Getting preview URL
+TIMEOUT_YTDLP_PLAYLIST = 60      # Getting playlist contents
+TIMEOUT_FFMPEG_CONVERT = 120     # Converting audio formats
+TIMEOUT_HTTP_REQUEST = 10        # MusicBrainz, LRClib, Navidrome API calls
+TIMEOUT_HTTP_SPOTIFY = 30        # Spotify embed fetch
+TIMEOUT_SLSKD_SEARCH = 12        # Soulseek search polling
+TIMEOUT_SLSKD_DOWNLOAD = 600     # Soulseek download (10 minutes)
+TIMEOUT_SLSKD_API = 30           # slskd API calls
+TIMEOUT_SPOTIFY_BROWSER = 180    # Headless browser for large playlists (3 minutes)
+
+# Bulk import settings
+BULK_IMPORT_SEARCH_DELAY = 1.0           # Seconds between YouTube searches
+BULK_IMPORT_BACKOFF_DELAYS = [30, 60, 120, 300]  # Rate limit backoff sequence
+BULK_IMPORT_BACKOFF_RESET_AFTER = 5      # Consecutive successes before reducing backoff
+
+# Playlist creation
+PLAYLIST_WAIT_MAX = 3600         # Max seconds to wait for downloads to complete (1 hour)
+PLAYLIST_WAIT_INTERVAL = 10      # Seconds between completion checks
+
+# Search and results
+YOUTUBE_SEARCH_MULTIPLIER = 3    # Fetch N times more results than requested for scoring
+YOUTUBE_SEARCH_MIN_FETCH = 30    # Minimum results to fetch for scoring
+SLSKD_MAX_RESULTS = 20           # Max Soulseek results to return
+SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
+
+# File handling
+MAX_FILENAME_LENGTH = 200        # Maximum characters in sanitised filenames
+
+app = FastAPI(title="Music Grabber", version=VERSION)
 
 # Configuration from environment
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
@@ -67,7 +100,7 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 def init_db():
-    """Initialize SQLite database for job tracking"""
+    """Initialise SQLite database for job tracking"""
     conn = get_db()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
@@ -81,11 +114,43 @@ def init_db():
             playlist_name TEXT,
             total_tracks INTEGER,
             completed_tracks INTEGER DEFAULT 0,
+            failed_tracks INTEGER DEFAULT 0,
+            skipped_tracks INTEGER DEFAULT 0,
             m3u_path TEXT,
+            source TEXT DEFAULT 'youtube',
+            slskd_username TEXT,
+            slskd_filename TEXT,
+            convert_to_flac INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             completed_at TIMESTAMP
         )
     """)
+
+    # Add columns if they don't exist (for existing databases)
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN source TEXT DEFAULT 'youtube'")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN slskd_username TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN slskd_filename TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN convert_to_flac INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN failed_tracks INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN skipped_tracks INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
 
     # Bulk imports table - tracks the overall import job
     conn.execute("""
@@ -167,6 +232,7 @@ class AsyncBulkImportRequest(BaseModel):
 class SearchResult(BaseModel):
     video_id: str
     title: str
+    artist: Optional[str] = None
     channel: str
     duration: str
     thumbnail: str
@@ -219,6 +285,10 @@ def score_search_result(title: str, channel: str) -> int:
     if re.search(r'\b(official|vevo)\b', channel_lower):
         score += 40
 
+    # Bonus for "Topic" channels (often official audio)
+    if channel_lower.endswith(" - topic"):
+        score += 35
+
     # Bonus for "official music video" or "official video"
     if re.search(r'official\s*(music)?\s*video', title_lower):
         score += 25
@@ -226,6 +296,10 @@ def score_search_result(title: str, channel: str) -> int:
     # Bonus for official audio
     if re.search(r'official\s*audio', title_lower):
         score += 20
+
+    # Bonus when channel name appears in title (often "Artist - Title")
+    if channel_lower and channel_lower in title_lower:
+        score += 10
 
     # Penalty for reaction videos, compilations
     if re.search(r'\b(reaction|react|compilation|mashup|vs)\b', title_lower):
@@ -235,6 +309,14 @@ def score_search_result(title: str, channel: str) -> int:
     if re.search(r'\b(extended|extended mix|extended version)\b', title_lower):
         score -= 15
 
+    # Penalties for non-song results or modified audio
+    if re.search(r'\b(full album|album|mix|playlist|soundtrack)\b', title_lower):
+        score -= 40
+    if re.search(r'\b(nightcore|sped up|slowed|8d|reverb|bass boosted)\b', title_lower):
+        score -= 45
+    if re.search(r'\b(cover|remix|instrumental|karaoke|acoustic version|live session)\b', title_lower):
+        score -= 20
+
     return score
 
 
@@ -243,7 +325,7 @@ def sanitize_filename(name: str) -> str:
     # Remove or replace problematic characters
     name = re.sub(r'[<>:"/\\|?*]', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
-    return name[:200]  # Limit length
+    return name[:MAX_FILENAME_LENGTH]
 
 
 def clean_title(title: str) -> str:
@@ -303,7 +385,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
 
     try:
         # Search for recording
-        headers = {"User-Agent": "MusicGrabber/1.5.1 (https://github.com/yourrepo)"}
+        headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://github.com/yourrepo)"}
 
         search_url = "https://musicbrainz.org/ws/2/recording/"
         params = {
@@ -312,7 +394,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
             "limit": 1
         }
 
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             response = client.get(search_url, params=params, headers=headers)
 
         if response.status_code != 200:
@@ -355,9 +437,9 @@ def fetch_lyrics(artist: str, title: str) -> Optional[str]:
         return None
 
     try:
-        headers = {"User-Agent": "MusicGrabber/1.1.0 (https://gitlab.com/g33kphr33k/musicgrabber)"}
+        headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
 
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             # Try the get endpoint first (exact match)
             params = {
                 "artist_name": artist,
@@ -411,8 +493,228 @@ def save_lyrics_file(flac_path: Path, lyrics: str):
 
 
 # =============================================================================
-# Soulseek/slskd Integration
+# Spotify Playlist Fetching via Headless Browser
+#
+# You cannot fetch full playlist contents from Spotify without API credentials,
+# but Spotify has nuked that after the archive theft. The workaround is to use a
+# headless browser to load the playlist page and scroll to load all tracks. Else,
+# you only get the first 100 tracks. 
+
+def fetch_spotify_playlist_via_browser(spotify_id: str, spotify_type: str) -> dict:
+    """Fetch playlist/album tracks using a headless browser
+
+    This method works without API credentials by loading the Spotify page
+    and scrolling to load all tracks (Spotify lazy-loads them).
+
+    Runs Playwright in a completely separate subprocess to avoid any
+    interference from uvicorn's event loop.
+
+    Returns dict with: tracks (list of "Artist - Title"), playlist_name, count
+    """
+    import tempfile
+
+    url = f"https://open.spotify.com/{spotify_type}/{spotify_id}"
+    print(f"Fetching Spotify {spotify_type} via headless browser: {url}")
+
+    # Write the script to a temp file to avoid shell escaping issues
+    # Use double quotes for selectors to avoid escaping issues
+    # Spotify uses "tracklist-row" (not "track-row") for playlist track elements
+    selector = '[data-testid="tracklist-row"]'
+    script_content = f"""
+import json
+import time
+from playwright.sync_api import sync_playwright
+
+url = "https://open.spotify.com/{spotify_type}/{spotify_id}"
+tracks = []
+playlist_name = "Spotify {spotify_type.title()}"
+SELECTOR = '{selector}'
+
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={{"width": 1280, "height": 800}}
+        )
+        page = context.new_page()
+
+        page.goto(url, timeout=60000)
+        time.sleep(3)
+
+        # Accept cookie consent if present - this can block page rendering
+        # Try multiple selectors as Spotify's cookie banner varies
+        cookie_selectors = [
+            "button:has-text('Accept cookies')",
+            "button:has-text('Accept Cookies')",
+            "button:has-text('ACCEPT COOKIES')",
+            "[data-testid='cookie-policy-manage-dialog-accept-button']",
+            "button.onetrust-close-btn-handler"
+        ]
+        for selector in cookie_selectors:
+            try:
+                btn = page.query_selector(selector)
+                if btn:
+                    print(f"DEBUG: Found cookie button with selector: {{selector}}", file=__import__("sys").stderr)
+                    btn.click()
+                    time.sleep(2)
+                    break
+            except Exception as e:
+                print(f"DEBUG: Cookie selector {{selector}} failed: {{e}}", file=__import__("sys").stderr)
+                pass
+
+        import sys as _sys
+
+        # Wait for track list to load
+        page.wait_for_selector(SELECTOR, timeout=30000)
+
+        try:
+            # Get playlist name from the page - try specific selectors first
+            title_elem = page.query_selector('[data-testid="playlist-page"] h1')
+            if not title_elem:
+                title_elem = page.query_selector('[data-testid="entityTitle"] h1')
+            if not title_elem:
+                title_elem = page.query_selector('h1')
+            if title_elem:
+                name = title_elem.inner_text().strip()
+                if name and name != "Your Library":
+                    playlist_name = name
+        except:
+            pass
+
+        # Spotify uses virtualized scrolling - tracks get unloaded as you scroll
+        # We need to extract tracks incrementally while scrolling
+        seen_tracks = set()
+        stale_count = 0
+        last_seen_count = 0
+
+        def extract_visible_tracks():
+            extracted = []
+            for row in page.query_selector_all(SELECTOR):
+                try:
+                    text = row.inner_text().strip()
+                    parts = text.split(chr(10))
+                    parts = [p.strip() for p in parts if p.strip()]
+
+                    # Only extract tracks that have a track number (actual playlist tracks)
+                    # This filters out "Recommended" tracks at the bottom which don't have numbers
+                    if not parts or not parts[0].isdigit():
+                        continue
+
+                    # Skip the track number
+                    parts = parts[1:]
+
+                    # Skip "E" for Explicit marker
+                    if parts and parts[0] == "E":
+                        parts = parts[1:]
+
+                    if len(parts) >= 2:
+                        track_name = parts[0].strip()
+                        artist = parts[1].strip()
+                        # Handle case where "E" slipped through as artist
+                        if artist == "E" and len(parts) >= 3:
+                            artist = parts[2].strip()
+                        if track_name and artist and artist != "E":
+                            track_str = artist + " - " + track_name
+                            if track_str not in seen_tracks:
+                                seen_tracks.add(track_str)
+                                extracted.append(track_str)
+                except:
+                    continue
+            return extracted
+
+        # First extraction before scrolling
+        extract_visible_tracks()
+
+        while stale_count < 20:
+            # Scroll the last visible track row into view to trigger loading more
+            rows = page.query_selector_all(SELECTOR)
+            if rows:
+                rows[-1].scroll_into_view_if_needed()
+            time.sleep(0.3)
+
+            # Extract any new visible tracks
+            extract_visible_tracks()
+
+            if len(seen_tracks) == last_seen_count:
+                stale_count += 1
+            else:
+                stale_count = 0
+                last_seen_count = len(seen_tracks)
+        tracks = list(seen_tracks)
+
+        browser.close()
+
+    print(json.dumps({{"success": True, "tracks": tracks, "playlist_name": playlist_name, "count": len(tracks)}}))
+
+except Exception as e:
+    print(json.dumps({{"success": False, "error": str(e)}}))
+"""
+
+    # Write script to temp file and execute it
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(script_content)
+        script_path = f.name
+
+    print(f"Running browser script: {script_path}")
+
+    try:
+        result = subprocess.run(
+            ["python3", script_path],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SPOTIFY_BROWSER
+        )
+        print(f"Script return code: {result.returncode}")
+        print(f"Script stdout: {result.stdout[:500] if result.stdout else 'empty'}")
+        print(f"Script stderr: {result.stderr[:500] if result.stderr else 'empty'}")
+    finally:
+        # Clean up temp file
+        try:
+            os.unlink(script_path)
+        except:
+            pass
+
+    if result.returncode != 0:
+        error_msg = result.stderr or "Unknown error"
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch Spotify {spotify_type} via browser: {error_msg}"
+        )
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Invalid response from browser subprocess: {result.stdout[:200]}"
+        )
+
+    if not data.get("success"):
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch Spotify {spotify_type} via browser: {data.get('error', 'Unknown error')}"
+        )
+
+    tracks = data["tracks"]
+    playlist_name = data["playlist_name"]
+
+    print(f"Successfully extracted {len(tracks)} tracks via browser")
+
+    if not tracks:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not extract tracks from {spotify_type}. The page structure may have changed."
+        )
+
+    return {
+        "tracks": tracks,
+        "playlist_name": playlist_name,
+        "count": len(tracks)
+    }
+
 # =============================================================================
+# Soulseek/slskd Integration
 
 def slskd_enabled() -> bool:
     """Check if slskd integration is configured"""
@@ -431,7 +733,7 @@ def get_slskd_token() -> Optional[str]:
         return _slskd_token
 
     try:
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             response = client.post(
                 f"{SLSKD_URL}/api/v0/session",
                 json={"username": SLSKD_USER, "password": SLSKD_PASS}
@@ -484,7 +786,7 @@ def parse_slskd_quality(file_info: dict) -> tuple[str, int]:
 
 
 def normalize_slskd_path(path: str) -> str:
-    """Normalize slskd paths for matching"""
+    """Normalise slskd paths for matching"""
     return path.replace("\\", "/").strip()
 
 
@@ -547,7 +849,7 @@ def extract_track_info_from_path(filepath: str) -> tuple[str, str]:
     return artist, name
 
 
-def search_slskd(query: str, timeout_secs: int = 12) -> list[dict]:
+def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[dict]:
     """
     Search slskd and return normalized results.
     Returns list of dicts with: id, title, artist, quality, score, source, slskd_* fields
@@ -561,7 +863,7 @@ def search_slskd(query: str, timeout_secs: int = 12) -> list[dict]:
     try:
         headers = {"Authorization": f"Bearer {token}"}
 
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=TIMEOUT_SLSKD_API) as client:
             # Start search
             search_response = client.post(
                 f"{SLSKD_URL}/api/v0/searches",
@@ -647,7 +949,7 @@ def search_slskd(query: str, timeout_secs: int = 12) -> list[dict]:
                     quality_label, quality_score = parse_slskd_quality(file_info)
 
                     # Skip low quality
-                    if quality_score < 50:
+                    if quality_score < SLSKD_MIN_QUALITY_SCORE:
                         skipped_quality += 1
                         continue
 
@@ -698,10 +1000,10 @@ def search_slskd(query: str, timeout_secs: int = 12) -> list[dict]:
     # Sort by quality score (descending)
     results.sort(key=lambda x: x["quality_score"], reverse=True)
 
-    return results[:20]  # Return top 20
+    return results[:SLSKD_MAX_RESULTS]
 
 
-def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_secs: int = 600) -> Optional[Path]:
+def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_secs: int = TIMEOUT_SLSKD_DOWNLOAD) -> Optional[Path]:
     """
     Download a file from Soulseek via slskd.
     Returns the path to the downloaded file, or None on failure.
@@ -734,7 +1036,7 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
     ]
 
     try:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=TIMEOUT_SLSKD_API) as client:
             # Enqueue the download
             enqueue_response = client.post(
                 f"{SLSKD_URL}/api/v0/transfers/downloads/{username}",
@@ -861,8 +1163,21 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
             if downloaded_path:
                 normalized_path = normalize_slskd_path(downloaded_path)
                 dl_path = Path(normalized_path)
+                # Only allow absolute paths if they're within a known download directory
                 if dl_path.is_absolute():
-                    candidate_paths.append(dl_path)
+                    # Security: verify the path is within allowed download directories
+                    is_safe = False
+                    for slskd_dir in slskd_download_dirs:
+                        try:
+                            dl_path.resolve().relative_to(slskd_dir.resolve())
+                            is_safe = True
+                            break
+                        except ValueError:
+                            continue
+                    if is_safe:
+                        candidate_paths.append(dl_path)
+                    else:
+                        print(f"slskd: Ignoring absolute path outside download dirs: {dl_path}")
                 else:
                     for slskd_dir in slskd_download_dirs:
                         candidate_paths.append(slskd_dir / dl_path)
@@ -872,6 +1187,23 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                 candidate_paths.append(slskd_dir / username / source_filename)
 
             for potential_path in candidate_paths:
+                # Security: resolve and verify the path is within allowed directories
+                try:
+                    resolved = potential_path.resolve()
+                    is_safe = False
+                    for slskd_dir in slskd_download_dirs:
+                        try:
+                            resolved.relative_to(slskd_dir.resolve())
+                            is_safe = True
+                            break
+                        except ValueError:
+                            continue
+                    if not is_safe:
+                        print(f"slskd: Skipping path outside download dirs: {resolved}")
+                        continue
+                except (OSError, ValueError):
+                    continue
+
                 if potential_path.exists():
                     import shutil
                     dest_path = dest_dir / source_filename
@@ -1010,8 +1342,11 @@ def root():
 
 @app.get("/api/config")
 def get_config():
-    """Expose server defaults for the UI"""
-    return {"default_convert_to_flac": DEFAULT_CONVERT_TO_FLAC}
+    """Expose server configuration and version for the UI"""
+    return {
+        "version": VERSION,
+        "default_convert_to_flac": DEFAULT_CONVERT_TO_FLAC
+    }
 
 @app.get("/api/preview/{video_id}")
 def get_preview_url(video_id: str):
@@ -1029,7 +1364,7 @@ def get_preview_url(video_id: str):
             f"https://www.youtube.com/watch?v={video_id}"
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_PREVIEW)
 
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail="Failed to get preview URL")
@@ -1049,7 +1384,7 @@ def get_preview_url(video_id: str):
 def search_youtube(query: str, limit: int) -> list[dict]:
     """Search YouTube and return normalized results"""
     try:
-        fetch_limit = max(limit * 3, 30)
+        fetch_limit = max(limit * YOUTUBE_SEARCH_MULTIPLIER, YOUTUBE_SEARCH_MIN_FETCH)
 
         cmd = [
             "yt-dlp",
@@ -1059,7 +1394,7 @@ def search_youtube(query: str, limit: int) -> list[dict]:
             f"ytsearch{fetch_limit}:{query}",
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_SEARCH)
 
         if result.returncode != 0:
             return []
@@ -1113,6 +1448,7 @@ def search(request: SearchRequest):
             final_results.append(SearchResult(
                 video_id=item["video_id"],
                 title=item["title"],
+                artist=None,
                 channel=item["channel"],
                 duration=item["duration"],
                 thumbnail=item["thumbnail"],
@@ -1141,7 +1477,7 @@ def search_slskd_endpoint(request: SearchRequest):
 
     try:
         print(f"Searching slskd for: {request.query}")
-        slskd_results = search_slskd(request.query, timeout_secs=12)
+        slskd_results = search_slskd(request.query, timeout_secs=TIMEOUT_SLSKD_SEARCH)
         print(f"slskd returned {len(slskd_results)} results")
 
         final_results = []
@@ -1149,6 +1485,7 @@ def search_slskd_endpoint(request: SearchRequest):
             final_results.append(SearchResult(
                 video_id=r["id"],
                 title=r["title"],
+                artist=r["artist"],
                 channel=r["channel"],
                 duration=parse_duration(int(r["duration"])) if r["duration"].isdigit() else r["duration"],
                 thumbnail="",
@@ -1183,15 +1520,24 @@ def download(request: DownloadRequest, background_tasks: BackgroundTasks):
 
     # Create job record
     conn = get_db()
+
+    # Determine source type
+    source = "youtube"
+    if request.source == "soulseek" and request.slskd_username and request.slskd_filename:
+        source = "soulseek"
+
     if request.download_type == "playlist":
         conn.execute(
-            "INSERT INTO jobs (id, video_id, title, status, download_type, playlist_name) VALUES (?, ?, ?, ?, ?, ?)",
-            (job_id, request.video_id, title, "queued", "playlist", title)
+            """INSERT INTO jobs (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (job_id, request.video_id, title, "queued", "playlist", title, "youtube", int(request.convert_to_flac))
         )
     else:
         conn.execute(
-            "INSERT INTO jobs (id, video_id, title, artist, status, download_type) VALUES (?, ?, ?, ?, ?, ?)",
-            (job_id, request.video_id, title, artist or "", "queued", "single")
+            """INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, convert_to_flac)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (job_id, request.video_id, title, artist or "", "queued", "single", source,
+             request.slskd_username, request.slskd_filename, int(request.convert_to_flac))
         )
     conn.commit()
     conn.close()
@@ -1199,7 +1545,7 @@ def download(request: DownloadRequest, background_tasks: BackgroundTasks):
     # Queue the download based on source
     if request.download_type == "playlist":
         background_tasks.add_task(process_playlist_download, job_id, request.video_id, title, request.convert_to_flac)
-    elif request.source == "soulseek" and request.slskd_username and request.slskd_filename:
+    elif source == "soulseek":
         background_tasks.add_task(
             process_slskd_download,
             job_id,
@@ -1233,7 +1579,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
             f"https://www.youtube.com/playlist?list={playlist_id}"
         ]
 
-        info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=60)
+        info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_PLAYLIST)
         if info_result.returncode != 0:
             raise Exception("Failed to get playlist info")
 
@@ -1265,7 +1611,11 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
         # Download each video in the playlist
         downloaded_files = []
-        for idx, video in enumerate(videos, 1):
+        completed_tracks = 0
+        failed_tracks = 0
+        skipped_tracks = 0
+        for _, video in enumerate(videos, 1):
+            track_label = video.get("title", "Unknown")
             try:
                 video_id = video["id"]
 
@@ -1277,8 +1627,9 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     f"https://www.youtube.com/watch?v={video_id}"
                 ]
 
-                detail_result = subprocess.run(detail_cmd, capture_output=True, text=True, timeout=30)
+                detail_result = subprocess.run(detail_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
                 if detail_result.returncode != 0:
+                    failed_tracks += 1
                     continue
 
                 info = json.loads(detail_result.stdout)
@@ -1289,12 +1640,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 # Check for duplicates
                 existing_file = check_duplicate(artist, title)
                 if existing_file:
-                    # Skip download, but count as completed
-                    conn.execute(
-                        "UPDATE jobs SET completed_tracks = ? WHERE id = ?",
-                        (idx, job_id)
-                    )
-                    conn.commit()
+                    skipped_tracks += 1
                     continue
 
                 # Create artist directory under Singles
@@ -1329,47 +1675,56 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     download_cmd,
                     capture_output=True,
                     text=True,
-                    timeout=300
+                    timeout=TIMEOUT_YTDLP_DOWNLOAD
                 )
 
-                if download_result.returncode == 0:
-                    # Find the downloaded file (extension depends on convert_to_flac setting)
-                    audio_file = None
-                    sanitized_title = sanitize_filename(title)
-                    for ext in ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']:
-                        candidate = artist_dir / f"{sanitized_title}{ext}"
-                        if candidate.exists():
-                            audio_file = candidate
-                            break
+                if download_result.returncode != 0:
+                    failed_tracks += 1
+                    continue
 
-                    if audio_file:
-                        # Try to enrich metadata with MusicBrainz
-                        mb_metadata = lookup_musicbrainz(artist, title)
-                        if mb_metadata:
-                            # Use MusicBrainz metadata
-                            apply_metadata_to_file(
-                                audio_file,
-                                mb_metadata.get("artist", artist),
-                                mb_metadata.get("title", title),
-                                mb_metadata.get("album", "Singles"),
-                                mb_metadata.get("year")
-                            )
-                        else:
-                            # Use cleaned YouTube metadata
-                            apply_metadata_to_file(audio_file, artist, title, "Singles")
+                # Find the downloaded file (extension depends on convert_to_flac setting)
+                audio_file = None
+                sanitized_title = sanitize_filename(title)
+                for ext in ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']:
+                    candidate = artist_dir / f"{sanitized_title}{ext}"
+                    if candidate.exists():
+                        audio_file = candidate
+                        break
 
-                        downloaded_files.append(str(audio_file.relative_to(SINGLES_DIR)))
+                if not audio_file:
+                    failed_tracks += 1
+                    continue
 
-                    # Update progress
-                    conn.execute(
-                        "UPDATE jobs SET completed_tracks = ? WHERE id = ?",
-                        (idx, job_id)
+                # Try to enrich metadata with MusicBrainz
+                mb_metadata = lookup_musicbrainz(artist, title)
+                if mb_metadata:
+                    # Use MusicBrainz metadata
+                    apply_metadata_to_file(
+                        audio_file,
+                        mb_metadata.get("artist", artist),
+                        mb_metadata.get("title", title),
+                        mb_metadata.get("album", "Singles"),
+                        mb_metadata.get("year")
                     )
-                    conn.commit()
+                else:
+                    # Use cleaned YouTube metadata
+                    apply_metadata_to_file(audio_file, artist, title, "Singles")
 
-            except Exception:
-                # Continue with next track even if one fails
-                continue
+                downloaded_files.append(str(audio_file.relative_to(SINGLES_DIR)))
+                completed_tracks += 1
+
+            except Exception as track_error:
+                # Track this individual failure and continue
+                print(f"Playlist track failed: {track_label} - {track_error}")
+                failed_tracks += 1
+
+            finally:
+                processed_tracks = completed_tracks + failed_tracks + skipped_tracks
+                conn.execute(
+                    "UPDATE jobs SET completed_tracks = ?, failed_tracks = ?, skipped_tracks = ? WHERE id = ?",
+                    (processed_tracks, failed_tracks, skipped_tracks, job_id)
+                )
+                conn.commit()
 
         # Generate M3U playlist file
         if downloaded_files:
@@ -1391,10 +1746,19 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         if JELLYFIN_URL and JELLYFIN_API_KEY:
             trigger_jellyfin_scan()
 
-        # Update job status
+        # Update job status based on results
+        final_status = "completed"
+        error_message = None
+
+        if failed_tracks:
+            final_status = "completed_with_errors"
+            error_message = f"{failed_tracks} track(s) failed"
+            if skipped_tracks:
+                error_message += f", {skipped_tracks} skipped (duplicates)"
+
         conn.execute(
-            "UPDATE jobs SET status = ?, completed_at = ? WHERE id = ?",
-            ("completed", datetime.now().isoformat(), job_id)
+            "UPDATE jobs SET status = ?, error = ?, completed_at = ? WHERE id = ?",
+            (final_status, error_message, datetime.now().isoformat(), job_id)
         )
         conn.commit()
 
@@ -1469,7 +1833,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 # Refresh candidates from a new search if we don't have any left
                 if not candidate_queue:
                     retry_query = f"{artist} {title}".strip()
-                    retry_results = search_slskd(retry_query, timeout_secs=12)
+                    retry_results = search_slskd(retry_query, timeout_secs=TIMEOUT_SLSKD_SEARCH)
                     for r in retry_results:
                         candidate = (r.get("slskd_username", ""), r.get("slskd_filename", ""))
                         if candidate[0] and candidate[1] and candidate not in tried_candidates:
@@ -1493,7 +1857,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 "ffmpeg", "-y", "-i", str(downloaded_file),
                 "-c:a", "flac", str(final_file)
             ]
-            result = subprocess.run(convert_cmd, capture_output=True, timeout=120)
+            result = subprocess.run(convert_cmd, capture_output=True, timeout=TIMEOUT_FFMPEG_CONVERT)
             if result.returncode == 0:
                 downloaded_file.unlink()  # Remove original
             else:
@@ -1571,10 +1935,10 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
             f"https://www.youtube.com/watch?v={video_id}"
         ]
         
-        info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=30)
+        info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
         if info_result.returncode != 0:
             raise Exception("Failed to get video info")
-        
+
         info = json.loads(info_result.stdout)
         
         # Extract artist and title
@@ -1629,10 +1993,10 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
             download_cmd.insert(3, "flac")
         
         download_result = subprocess.run(
-            download_cmd, 
-            capture_output=True, 
-            text=True, 
-            timeout=300
+            download_cmd,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_YTDLP_DOWNLOAD
         )
         
         if download_result.returncode != 0:
@@ -1711,7 +2075,7 @@ def trigger_navidrome_scan():
             "f": "json"
         }
 
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             client.get(
                 f"{NAVIDROME_URL}/rest/startScan",
                 params=params
@@ -1723,7 +2087,7 @@ def trigger_navidrome_scan():
 def trigger_jellyfin_scan():
     """Trigger a Jellyfin library scan via API"""
     try:
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             client.post(
                 f"{JELLYFIN_URL}/Library/Refresh",
                 headers={"X-Emby-Token": JELLYFIN_API_KEY}
@@ -1738,8 +2102,8 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
     Waits for all jobs with the matching playlist_name to complete, then generates the M3U file.
     """
     # Wait for all downloads to complete (with timeout)
-    max_wait_time = 3600  # 1 hour max
-    check_interval = 10  # Check every 10 seconds
+    max_wait_time = PLAYLIST_WAIT_MAX
+    check_interval = PLAYLIST_WAIT_INTERVAL
     waited = 0
 
     while waited < max_wait_time:
@@ -1859,11 +2223,24 @@ def retry_job(job_id: str, background_tasks: BackgroundTasks):
     conn.commit()
     conn.close()
 
-    # Re-queue the job
+    # Re-queue the job based on source type
+    convert_to_flac = bool(job.get("convert_to_flac", 1))
+
     if job["download_type"] == "playlist":
-        background_tasks.add_task(process_playlist_download, job_id, job["video_id"], job["playlist_name"])
+        background_tasks.add_task(process_playlist_download, job_id, job["video_id"], job["playlist_name"], convert_to_flac)
+    elif job.get("source") == "soulseek" and job.get("slskd_username") and job.get("slskd_filename"):
+        # Retry Soulseek download with stored metadata
+        background_tasks.add_task(
+            process_slskd_download,
+            job_id,
+            job["slskd_username"],
+            job["slskd_filename"],
+            job.get("artist", ""),
+            job.get("title", ""),
+            convert_to_flac
+        )
     else:
-        background_tasks.add_task(process_download, job_id, job["video_id"])
+        background_tasks.add_task(process_download, job_id, job["video_id"], convert_to_flac)
 
     return {"job_id": job_id, "status": "queued"}
 
@@ -1878,11 +2255,11 @@ def cleanup_jobs(status: Optional[str] = None):
     conn = get_db()
 
     if status == "completed":
-        cursor = conn.execute("DELETE FROM jobs WHERE status = 'completed'")
+        cursor = conn.execute("DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors')")
     elif status == "failed":
         cursor = conn.execute("DELETE FROM jobs WHERE status = 'failed'")
     else:
-        cursor = conn.execute("DELETE FROM jobs WHERE status IN ('completed', 'failed')")
+        cursor = conn.execute("DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors', 'failed')")
 
     deleted_count = cursor.rowcount
     conn.commit()
@@ -1916,7 +2293,7 @@ def clean_bulk_import_line(line: str) -> str:
     # Remove common music symbols
     line = re.sub(r'[♫♪🎵🎶]', '', line)
 
-    # Normalize multiple spaces/tabs to single space
+    # Normalise multiple spaces/tabs to single space
     line = re.sub(r'\s+', ' ', line)
 
     return line.strip()
@@ -1930,8 +2307,6 @@ def process_bulk_import_worker(import_id: str):
     - On 429: wait 30s, then 60s, then 120s
     - Tracks progress in database for resilience
     """
-    global _bulk_import_worker_running
-
     conn = get_db()
     conn.row_factory = sqlite3.Row
 
@@ -1951,8 +2326,8 @@ def process_bulk_import_worker(import_id: str):
     conn.commit()
 
     # Rate limiting state
-    base_delay = 1.0  # 1 second between searches
-    backoff_delays = [30, 60, 120, 300]  # Exponential backoff on 429
+    base_delay = BULK_IMPORT_SEARCH_DELAY
+    backoff_delays = BULK_IMPORT_BACKOFF_DELAYS
     current_backoff_index = 0
     consecutive_successes = 0
 
@@ -1989,7 +2364,7 @@ def process_bulk_import_worker(import_id: str):
                     f"ytsearch10:{search_query}",
                 ]
 
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_SEARCH)
 
                 # Check for rate limiting (429 in stderr)
                 if "429" in result.stderr or "Too Many Requests" in result.stderr:
@@ -2012,7 +2387,7 @@ def process_bulk_import_worker(import_id: str):
 
                 # Success - reset backoff
                 consecutive_successes += 1
-                if consecutive_successes >= 5:
+                if consecutive_successes >= BULK_IMPORT_BACKOFF_RESET_AFTER:
                     current_backoff_index = max(0, current_backoff_index - 1)
                     consecutive_successes = 0
 
@@ -2078,13 +2453,15 @@ def process_bulk_import_worker(import_id: str):
 
                 if create_playlist:
                     conn.execute(
-                        "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (job_id, video_id, song, artist, "queued", "single", import_id)
+                        "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name, source, convert_to_flac) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (job_id, video_id, song, artist, "queued", "single", import_id, "youtube", int(convert_to_flac))
                     )
                 else:
                     conn.execute(
-                        "INSERT INTO jobs (id, video_id, title, artist, status, download_type) VALUES (?, ?, ?, ?, ?, ?)",
-                        (job_id, video_id, song, artist, "queued", "single")
+                        "INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, convert_to_flac) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (job_id, video_id, song, artist, "queued", "single", "youtube", int(convert_to_flac))
                     )
 
                 # Update track as queued
@@ -2157,8 +2534,6 @@ def process_bulk_import_worker(import_id: str):
 
     finally:
         conn.close()
-        with _bulk_import_lock:
-            _bulk_import_worker_running = False
 
 
 @app.post("/api/bulk-import-async")
@@ -2167,8 +2542,8 @@ def bulk_import_async(request: AsyncBulkImportRequest):
 
     Returns immediately with import_id. Use /api/bulk-import/{id}/status to poll progress.
     Downloads start as soon as tracks are found, while searching continues in background.
+    Multiple concurrent imports are supported - each has independent state in the database.
     """
-    global _bulk_import_worker_running
 
     lines = request.songs.strip().split('\n')
     import_id = str(uuid.uuid4())[:8]
@@ -2226,10 +2601,7 @@ def bulk_import_async(request: AsyncBulkImportRequest):
     conn.commit()
     conn.close()
 
-    # Start background worker
-    with _bulk_import_lock:
-        _bulk_import_worker_running = True
-
+    # Start background worker for this import
     worker_thread = threading.Thread(target=process_bulk_import_worker, args=(import_id,))
     worker_thread.daemon = True
     worker_thread.start()
@@ -2353,7 +2725,7 @@ def fetch_spotify_playlist(request: SpotifyPlaylistRequest):
 
     # Fetch the embed page - this contains track data unlike the main page
     try:
-        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+        with httpx.Client(timeout=TIMEOUT_HTTP_SPOTIFY, follow_redirects=True) as client:
             response = client.get(
                 f"https://open.spotify.com/embed/{spotify_type}/{spotify_id}",
                 headers={
@@ -2409,6 +2781,29 @@ def fetch_spotify_playlist(request: SpotifyPlaylistRequest):
             status_code=422,
             detail=f"Could not extract tracks from {spotify_type}. It may be empty or Spotify's page structure may have changed."
         )
+
+    # The embed endpoint only returns ~100 tracks max. If we got close to that limit,
+    # the playlist may be truncated. Use headless browser to get the full list.
+    if len(tracks) >= 95:
+        print(f"Spotify embed returned {len(tracks)} tracks (near limit), trying headless browser...")
+
+        try:
+            browser_result = fetch_spotify_playlist_via_browser(spotify_id, spotify_type)
+            if browser_result["count"] > len(tracks):
+                print(f"Headless browser returned {browser_result['count']} tracks (embed had {len(tracks)})")
+                return browser_result
+        except HTTPException as e:
+            print(f"Headless browser failed ({e.detail}), using embed results")
+        except Exception as e:
+            print(f"Headless browser error: {e}, using embed results")
+
+        # If all methods failed or returned same count, return embed with warning
+        return {
+            "tracks": tracks,
+            "playlist_name": playlist_name,
+            "count": len(tracks),
+            "warning": f"Playlist may be truncated at {len(tracks)} tracks. Full extraction failed."
+        }
 
     return {
         "tracks": tracks,
@@ -2482,7 +2877,7 @@ def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTasks):
                 f"ytsearch10:{search_query}",  # Fetch 10 results to find best match
             ]
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_SEARCH)
 
             if result.returncode != 0:
                 failed_lines.append({"line": line_num, "text": original_line, "reason": "Search failed"})
@@ -2530,13 +2925,15 @@ def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTasks):
             # Store playlist info if creating a playlist
             if request.create_playlist:
                 conn.execute(
-                    "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (job_id, video_id, song, artist, "queued", "single", bulk_import_id)
+                    "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name, source, convert_to_flac) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (job_id, video_id, song, artist, "queued", "single", bulk_import_id, "youtube", int(request.convert_to_flac))
                 )
             else:
                 conn.execute(
-                    "INSERT INTO jobs (id, video_id, title, artist, status, download_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    (job_id, video_id, song, artist, "queued", "single")
+                    "INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, convert_to_flac) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (job_id, video_id, song, artist, "queued", "single", "youtube", int(request.convert_to_flac))
                 )
             conn.commit()
             conn.close()

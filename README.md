@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.5.1**
+**v1.6.0**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -182,6 +182,35 @@ slskd organises downloads as `{downloads}/{username}/{filename}`, which MusicGra
 
 **Status:** Soulseek integration is in progress and needs testing. New Soulseek users may experience rejected downloads until they build reputation by sharing files.
 
+### Spotify Playlist Import
+
+MusicGrabber can import tracks from Spotify playlists and albums. Paste a Spotify URL in the Bulk Import tab to fetch the track list, then import them via YouTube.
+
+**How it works:**
+
+1. **Small playlists (under ~100 tracks)**: Uses Spotify's embed endpoint to quickly fetch track data
+2. **Large playlists (100+ tracks)**: Automatically falls back to headless browser scraping
+
+**Headless browser method:**
+
+Spotify's embed API only returns approximately 100 tracks. For larger playlists, MusicGrabber launches a headless Chromium browser (via Playwright) that:
+
+- Loads the full Spotify playlist page
+- Automatically dismisses the cookie consent banner
+- Scrolls through the entire tracklist to load all tracks (Spotify uses virtualised scrolling that lazy-loads content)
+- Extracts track information incrementally during scrolling
+- Filters out "Recommended" tracks at the bottom (only numbered playlist tracks are imported)
+
+This process takes a few seconds for playlists with hundreds of tracks. Very large playlists (1000+) may take 10-20 seconds.
+
+**Docker requirements:**
+
+The headless browser requires additional shared memory. The docker-compose.yml includes:
+
+```yaml
+shm_size: '2gb'  # Required for Chromium
+```
+
 ### Reverse Proxy (Caddy example)
 
 ```
@@ -254,6 +283,27 @@ Before downloading, checks if the track already exists:
 - Exact filename match
 - Case-insensitive matching
 - Skips download and reports as duplicate
+
+## Security
+
+MusicGrabber has **no built-in authentication**. This is intentional for ease of use on a home network.
+
+**Important considerations:**
+
+- Only expose MusicGrabber on trusted networks (LAN, VPN)
+- If exposing externally, put it behind a reverse proxy with authentication (Caddy, nginx, Authelia, etc.)
+- The API allows triggering downloads and file operations, so treat access as administrative
+
+**Example: Adding basic auth with Caddy:**
+
+```
+music.yourdomain.com {
+    basicauth * {
+        username $2a$14$hashed_password_here
+    }
+    reverse_proxy music-grabber:8080
+}
+```
 
 ## API Endpoints
 

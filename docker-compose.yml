@@ -3,6 +3,8 @@ services:
     build: .
     container_name: music-grabber
     restart: unless-stopped
+    # Chromium needs more shared memory for headless browser
+    shm_size: '2gb'
     ports:
       - "38274:8080"
     volumes:

@@ -17,7 +17,11 @@ RUN pip install --no-cache-dir \
     httpx \
     pydantic \
     mutagen \
-    beautifulsoup4
+    beautifulsoup4 \
+    playwright
+
+# Install Playwright browsers (Chromium only to save space)
+RUN playwright install chromium --with-deps
 
 # Create app directory
 WORKDIR /app

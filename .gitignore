@@ -33,3 +33,6 @@ Thumbs.db
 
 # Docker
 .dockerignore
+
+# Claude AI code reviews
+.claude/
