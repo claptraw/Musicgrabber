@@ -4,6 +4,8 @@
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
+If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
+
 ## Why?
 
 Lidarr's great for albums, but grabbing a single track you heard on the radio shouldn't require navigating menus or pulling an artist's entire discography. This is for the "I want one song, not a commitment" use case.
