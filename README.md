@@ -61,6 +61,9 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
          # - NAVIDROME_URL=http://navidrome:4533
          # - NAVIDROME_USER=admin
          # - NAVIDROME_PASS=yourpassword
+         # Optional: Jellyfin API for auto-rescan
+         # - JELLYFIN_URL=http://jellyfin:8096
+         # - JELLYFIN_API_KEY=your-jellyfin-api-key
    ```
 
 2. **Run**
@@ -226,8 +229,8 @@ music.yourdomain.com {
 ### Search and Download
 
 1. **Single tracks** — Search for a song, tap/click the result to download
-2. **Preview** — On desktop, hover over a result for 2 seconds to hear a preview (cached for quick replays)
-3. **Playlists** — Search for a playlist URL or name, tap the playlist result to download all tracks
+2. **Preview** — On desktop, hover over a result for 2 seconds to hear a preview (cached for quick replays, YouTube ONLY)
+3. **Playlists** — Search for a playlist URL or name, tap the playlist result to download all tracks (Best effort for song match from YouTube ONLY)
 4. **Processing feedback** — Shows "Processing..." immediately when tapped, then "Added to queue ✓"
 
 ### Bulk Import
