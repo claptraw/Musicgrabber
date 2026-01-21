@@ -4,7 +4,7 @@ Self-hosted music acquisition service. Search YouTube/Soulseek, download best qu
 
 ## Stack
 
-- **Backend**: Python/FastAPI (`app.py` - single file, ~1600 lines)
+- **Backend**: Python/FastAPI (`app.py` - single file, ~2900 lines)
 - **Frontend**: Vanilla HTML/JS (`static/index.html`)
 - **Database**: SQLite (job queue)
 - **Container**: Docker
@@ -14,10 +14,11 @@ Self-hosted music acquisition service. Search YouTube/Soulseek, download best qu
 - YouTube search + download via yt-dlp
 - Soulseek/slskd integration (in progress - needs VPN port forwarding to work properly)
 - Bulk import (text file of "Artist - Title" lines)
+- Spotify playlist/album import (via embed API or headless browser)
 - Playlist support with M3U generation
 - MusicBrainz metadata lookups
 - LRClib lyrics fetching
-- Navidrome library refresh trigger
+- Navidrome + Jellyfin library refresh triggers
 - Duplicate detection
 
 ## File Structure
@@ -28,9 +29,9 @@ Self-hosted music acquisition service. Search YouTube/Soulseek, download best qu
 
 ## Environment Variables
 
-Key ones: `MUSIC_DIR`, `DB_PATH`, `ENABLE_MUSICBRAINZ`, `ENABLE_LYRICS`, `NAVIDROME_*`, `SLSKD_*`
+Key ones: `MUSIC_DIR`, `DB_PATH`, `ENABLE_MUSICBRAINZ`, `ENABLE_LYRICS`, `DEFAULT_CONVERT_TO_FLAC`, `NAVIDROME_*`, `JELLYFIN_*`, `SLSKD_*`
 
-See `docker-compose.yml` for full list.
+See `docker-compose.yml` and `README.md` for full list.
 
 ## Deployment
 
@@ -40,7 +41,9 @@ See `docker-compose.yml` for full list.
 
 ## Current State
 
-- v1.5.1
+- v1.6.0
+- Centralised constants at top of app.py for easy tuning (timeouts, limits, delays)
+- Dynamic version display (frontend fetches from API)
 - Async bulk import with parallel search/download
 - Soulseek integration code complete but untested due to VPN port forwarding issues
 - YouTube downloading works fine

@@ -115,15 +115,18 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
 | `DB_PATH` | `/data/music_grabber.db` | SQLite database path |
 | `ENABLE_MUSICBRAINZ` | `true` | Enable MusicBrainz metadata lookups |
 | `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
+| `DEFAULT_CONVERT_TO_FLAC` | `true` | Convert downloads to FLAC by default (can be toggled per-download in UI) |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
 | `NAVIDROME_USER` | - | Navidrome username for API |
 | `NAVIDROME_PASS` | - | Navidrome password for API |
+| `JELLYFIN_URL` | - | Jellyfin server URL (e.g., `http://jellyfin:8096`) |
+| `JELLYFIN_API_KEY` | - | Jellyfin API key for library refresh |
 | `SLSKD_URL` | - | slskd API URL (e.g., `http://slskd:5030`) |
 | `SLSKD_USER` | - | slskd username |
 | `SLSKD_PASS` | - | slskd password |
 | `SLSKD_DOWNLOADS_PATH` | - | Path where slskd downloads are accessible (required for Soulseek downloads) |
-| `JELLYFIN_URL` | - | Jellyfin server URL (e.g., `http://jellyfin:8096`) |
-| `JELLYFIN_API_KEY` | - | Jellyfin API key for library refresh |
+| `SLSKD_REQUIRE_FREE_SLOT` | `true` | Only show Soulseek results from users with free upload slots |
+| `SLSKD_MAX_RETRIES` | `5` | Max retry attempts for failed Soulseek downloads |
 
 ### Navidrome Auto-Rescan
 
@@ -315,10 +318,16 @@ music.yourdomain.com {
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/` | Web UI |
+| `GET` | `/api/config` | Get server config (version, defaults) |
 | `POST` | `/api/search` | Search YouTube (`{"query": "...", "limit": 15}`) |
-| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview |
+| `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
+| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (YouTube only) |
 | `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "download_type": "single/playlist"}`) |
-| `POST` | `/api/bulk-import` | Bulk import songs (`{"songs": "Artist - Song\n..."}`) |
+| `POST` | `/api/bulk-import` | Bulk import songs (synchronous, blocks until searched) |
+| `POST` | `/api/bulk-import-async` | Bulk import songs (async, returns immediately) |
+| `GET` | `/api/bulk-import/{id}/status` | Get async bulk import progress |
+| `GET` | `/api/bulk-imports` | List recent bulk imports |
+| `POST` | `/api/spotify-playlist` | Fetch tracks from Spotify playlist/album URL |
 | `GET` | `/api/jobs` | List recent jobs |
 | `GET` | `/api/jobs/{id}` | Get job status |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
