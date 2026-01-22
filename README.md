@@ -17,6 +17,7 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
 - **YouTube search** — finds tracks and playlists via yt-dlp
 - **Soulseek integration** — optional slskd support for higher quality sources (FLAC from P2P) *(in progress — needs testing)*
 - **Playlist support** — download entire playlists with automatic M3U generation
+- **Watched playlists** — monitor Spotify/YouTube playlists and auto-download new tracks
 - **Bulk import** — paste or upload a text file of songs to auto-search and queue
 - **Best quality FLAC** — extracts highest available audio quality
 - **Enhanced metadata** — MusicBrainz lookups with fallback to cleaned YouTube data
@@ -47,6 +48,8 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
        image: g33kphr33k/musicgrabber:latest
        container_name: music-grabber
        restart: unless-stopped
+       # Required for Spotify playlists over 100 tracks (headless browser)
+       shm_size: '2gb'
        ports:
          - "38274:8080"
        volumes:
@@ -61,9 +64,17 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
          # - NAVIDROME_URL=http://navidrome:4533
          # - NAVIDROME_USER=admin
          # - NAVIDROME_PASS=yourpassword
-         # Optional: Jellyfin API for auto-rescan
+         # Optional: Jellyfin auto-rescan
          # - JELLYFIN_URL=http://jellyfin:8096
          # - JELLYFIN_API_KEY=your-jellyfin-api-key
+         # Optional: Notifications
+         # - NOTIFY_ON=playlists,bulk,errors
+         # - TELEGRAM_WEBHOOK_URL=https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}
+         # - SMTP_HOST=smtp.example.com
+         # - SMTP_PORT=587
+         # - SMTP_USER=user@example.com
+         # - SMTP_PASS=password
+         # - SMTP_TO=you@example.com
    ```
 
 2. **Run**
@@ -127,6 +138,16 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
 | `SLSKD_DOWNLOADS_PATH` | - | Path where slskd downloads are accessible (required for Soulseek downloads) |
 | `SLSKD_REQUIRE_FREE_SLOT` | `true` | Only show Soulseek results from users with free upload slots |
 | `SLSKD_MAX_RETRIES` | `5` | Max retry attempts for failed Soulseek downloads |
+| `WATCHED_PLAYLIST_CHECK_HOURS` | `24` | How often to check watched playlists (in hours): 24=daily, 168=weekly, 720=monthly, 0=disabled |
+| `NOTIFY_ON` | `playlists,bulk,errors` | Notification triggers (applies to all channels): `singles`, `playlists`, `bulk`, `errors` |
+| `TELEGRAM_WEBHOOK_URL` | - | Full Telegram webhook URL (see Notifications section below) |
+| `SMTP_HOST` | - | SMTP server hostname |
+| `SMTP_PORT` | `587` | SMTP server port |
+| `SMTP_USER` | - | SMTP username |
+| `SMTP_PASS` | - | SMTP password |
+| `SMTP_FROM` | - | From address (defaults to SMTP_USER) |
+| `SMTP_TO` | - | Recipient address(es), comma-separated |
+| `SMTP_TLS` | `true` | Use STARTTLS |
 
 ### Navidrome Auto-Rescan
 
@@ -152,6 +173,49 @@ environment:
 ```
 
 Get your API key from Jellyfin: Dashboard → API Keys → Add.
+
+### Notifications (Optional)
+
+Get notified when downloads complete or fail via Telegram and/or email. Configure one or both channels, the same triggers apply to all.
+
+**Notification triggers** (`NOTIFY_ON`):
+
+| Value | Description |
+|-------|-------------|
+| `singles` | Notify for each individual track download |
+| `playlists` | Notify when playlist downloads complete |
+| `bulk` | Notify when bulk imports complete |
+| `errors` | Notify when any download fails |
+
+Default is `playlists,bulk,errors` — notifications for playlist/bulk completions and any failures, but not for every single track.
+
+**Telegram setup:**
+
+1. Create a bot via [@BotFather](https://t.me/BotFather) and copy the token
+2. Get your chat ID by messaging [@userinfobot](https://t.me/userinfobot)
+3. Build the webhook URL:
+
+```yaml
+environment:
+  - NOTIFY_ON=playlists,bulk,errors
+  - TELEGRAM_WEBHOOK_URL=https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}
+```
+
+**Email setup (SMTP):**
+
+```yaml
+environment:
+  - NOTIFY_ON=playlists,bulk,errors
+  - SMTP_HOST=smtp.example.com
+  - SMTP_PORT=587
+  - SMTP_USER=user@example.com
+  - SMTP_PASS=password
+  - SMTP_FROM=musicgrabber@example.com
+  - SMTP_TO=you@example.com
+  - SMTP_TLS=true
+```
+
+`SMTP_TO` can be a comma-separated list for multiple recipients.
 
 ### Soulseek Integration (Optional)
 
@@ -217,6 +281,41 @@ The headless browser requires additional shared memory. The docker-compose.yml i
 
 ```yaml
 shm_size: '2gb'  # Required for Chromium
+```
+
+### Watched Playlists
+
+Automatically monitor Spotify or YouTube playlists for new tracks. When new songs are added to a watched playlist, MusicGrabber will detect them and queue them for download.
+
+**How it works:**
+
+1. Add a playlist URL in the "Watched" tab
+2. MusicGrabber fetches the current tracklist and stores hashes of each track
+3. A built-in scheduler checks playlists periodically (default: daily)
+4. New tracks are queued for download via YouTube search
+
+**Configuration:**
+
+The scheduler runs automatically inside the container. Control it with:
+
+```yaml
+environment:
+  - WATCHED_PLAYLIST_CHECK_HOURS=24  # Check daily (default)
+  # Or: 168 for weekly, 720 for monthly, 0 to disable
+```
+
+Each playlist also has its own interval (daily, weekly, or monthly) that you set when adding it. The scheduler runs at the global interval and checks which playlists are due based on their individual settings.
+
+**Manual refresh:**
+
+Click "Check All Now" in the UI, or "Refresh" on individual playlists to check immediately regardless of the interval.
+
+**API endpoint:**
+
+For external automation, you can also trigger checks via API:
+
+```bash
+curl -X POST http://localhost:38274/api/watched-playlists/check-all
 ```
 
 ### Reverse Proxy (Caddy example)
@@ -332,6 +431,13 @@ music.yourdomain.com {
 | `GET` | `/api/jobs/{id}` | Get job status |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
 | `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`) |
+| `GET` | `/api/watched-playlists` | List all watched playlists |
+| `POST` | `/api/watched-playlists` | Add a playlist to watch |
+| `GET` | `/api/watched-playlists/{id}` | Get watched playlist details |
+| `PUT` | `/api/watched-playlists/{id}` | Update watched playlist settings |
+| `DELETE` | `/api/watched-playlists/{id}` | Remove a watched playlist |
+| `POST` | `/api/watched-playlists/{id}/refresh` | Check playlist for new tracks |
+| `POST` | `/api/watched-playlists/check-all` | Check all watched playlists |
 
 ## Updating yt-dlp
 

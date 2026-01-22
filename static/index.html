@@ -701,6 +701,7 @@
         <div class="tabs">
             <button class="tab active" data-tab="results">Results</button>
             <button class="tab" data-tab="bulk">Bulk Import</button>
+            <button class="tab" data-tab="watched">Watched</button>
             <button class="tab" data-tab="queue">Queue</button>
         </div>
 
@@ -770,6 +771,45 @@
             <div id="bulkResults" class="results"></div>
         </div>
 
+        <div id="watchedTabContainer" style="display: none;">
+            <div class="queue-header">
+                <h2 style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Watched Playlists</h2>
+                <button class="clear-btn" id="refreshAllWatchedBtn" style="color: var(--accent); border-color: var(--accent);">Check All Now</button>
+            </div>
+            <div style="margin-bottom: 16px; padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px;">
+                <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+                    Add a Spotify or YouTube playlist to automatically download new tracks when they're added.
+                </p>
+                <p id="watchedScheduleInfo" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 12px; opacity: 0.8;"></p>
+                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                    <input
+                        type="text"
+                        id="watchedUrlInput"
+                        placeholder="Spotify or YouTube playlist URL"
+                        style="flex: 1; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);"
+                    >
+                    <button
+                        id="addWatchedBtn"
+                        style="padding: 10px 16px; font-size: 13px; font-family: inherit; font-weight: 600; background: var(--accent); color: #000; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s; white-space: nowrap;"
+                    >
+                        Watch
+                    </button>
+                </div>
+                <div style="display: flex; gap: 16px; align-items: center;">
+                    <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary);">
+                        Check this playlist:
+                        <select id="watchedIntervalSelect" style="padding: 6px 10px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary);">
+                            <option value="24" selected>Daily</option>
+                            <option value="168">Weekly</option>
+                            <option value="720">Monthly</option>
+                        </select>
+                    </label>
+                </div>
+                <div id="watchedError" style="margin-top: 8px; font-size: 12px; color: var(--error); display: none;"></div>
+            </div>
+            <div id="watchedList" class="results"></div>
+        </div>
+
         <div id="queueTabContainer" style="display: none;">
             <div class="queue-header">
                 <h2 style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Download Queue</h2>
@@ -800,6 +840,14 @@
         const queueTabContainer = document.getElementById('queueTabContainer');
         const queueTab = document.getElementById('queueTab');
         const clearQueueBtn = document.getElementById('clearQueueBtn');
+        const watchedTabContainer = document.getElementById('watchedTabContainer');
+        const watchedList = document.getElementById('watchedList');
+        const watchedUrlInput = document.getElementById('watchedUrlInput');
+        const addWatchedBtn = document.getElementById('addWatchedBtn');
+        const watchedIntervalSelect = document.getElementById('watchedIntervalSelect');
+        const watchedError = document.getElementById('watchedError');
+        const refreshAllWatchedBtn = document.getElementById('refreshAllWatchedBtn');
+        const watchedScheduleInfo = document.getElementById('watchedScheduleInfo');
         const toast = document.getElementById('toast');
         const tabs = document.querySelectorAll('.tab');
         const lineCounter = document.getElementById('lineCounter');
@@ -984,6 +1032,7 @@
 
                 resultsTab.style.display = currentTab === 'results' ? 'flex' : 'none';
                 bulkTabContainer.style.display = currentTab === 'bulk' ? 'block' : 'none';
+                watchedTabContainer.style.display = currentTab === 'watched' ? 'block' : 'none';
                 queueTabContainer.style.display = currentTab === 'queue' ? 'block' : 'none';
 
                 // Stop preview when leaving results tab
@@ -993,6 +1042,10 @@
 
                 if (currentTab === 'queue') {
                     loadJobs();
+                }
+
+                if (currentTab === 'watched') {
+                    loadWatchedPlaylists();
                 }
             });
         });
@@ -1741,6 +1794,279 @@
                 <p style="font-size: 12px; margin-top: 8px; opacity: 0.6;">Hover over results to preview</p>
             </div>
         `;
+
+        // =============================================================================
+        // Watched Playlists
+        // =============================================================================
+
+        async function loadWatchedPlaylists() {
+            watchedList.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+            try {
+                // Fetch schedule info and playlists in parallel
+                const [scheduleRes, playlistsRes] = await Promise.all([
+                    fetch('/api/watched-playlists/schedule'),
+                    fetch('/api/watched-playlists')
+                ]);
+
+                // Update schedule info
+                if (scheduleRes.ok) {
+                    const schedule = await scheduleRes.json();
+                    if (schedule.enabled) {
+                        const hours = schedule.check_interval_hours;
+                        let intervalText = `${hours} hours`;
+                        if (hours === 24) intervalText = 'daily';
+                        else if (hours === 168) intervalText = 'weekly';
+                        else if (hours >= 720) intervalText = 'monthly';
+                        watchedScheduleInfo.textContent = `Automatic checks run ${intervalText}. Per-playlist intervals determine when each is due.`;
+                    } else {
+                        watchedScheduleInfo.textContent = 'Automatic checks disabled. Use "Check All Now" or set WATCHED_PLAYLIST_CHECK_HOURS.';
+                    }
+                }
+
+                if (!playlistsRes.ok) throw new Error('Failed to load watched playlists');
+
+                const data = await playlistsRes.json();
+                renderWatchedPlaylists(data.playlists);
+            } catch (error) {
+                watchedList.innerHTML = `
+                    <div class="empty-state">
+                        <p style="color: var(--error);">Failed to load watched playlists</p>
+                    </div>
+                `;
+            }
+        }
+
+        function renderWatchedPlaylists(playlists) {
+            if (!playlists || playlists.length === 0) {
+                watchedList.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">👁️</div>
+                        <p>No watched playlists yet</p>
+                        <p style="font-size: 12px; margin-top: 8px; opacity: 0.6;">Add a Spotify or YouTube playlist above</p>
+                    </div>
+                `;
+                return;
+            }
+
+            watchedList.innerHTML = playlists.map(p => {
+                const platformIcon = p.platform === 'spotify' ? '🟢' : '🔴';
+                const lastChecked = p.last_checked ? formatTimeAgo(p.last_checked) : 'Never';
+                const statusColor = p.enabled ? 'var(--accent)' : 'var(--text-secondary)';
+                const intervalText = p.refresh_interval_hours === 24 ? 'daily' :
+                                     p.refresh_interval_hours === 168 ? 'weekly' :
+                                     p.refresh_interval_hours >= 720 ? 'monthly' :
+                                     `every ${p.refresh_interval_hours}h`;
+
+                return `
+                    <div class="result-item" style="cursor: default;">
+                        <div style="flex: 1;">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                <span>${platformIcon}</span>
+                                <span style="font-weight: 600;">${escapeHtml(p.name)}</span>
+                                ${!p.enabled ? '<span style="font-size: 11px; color: var(--text-secondary); background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">Paused</span>' : ''}
+                            </div>
+                            <div style="font-size: 12px; color: var(--text-secondary);">
+                                ${p.tracked_count} tracks · ${p.downloaded_count || 0} downloaded · ${intervalText}
+                            </div>
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                                Last checked: ${lastChecked}
+                            </div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 6px;">
+                            <button onclick="refreshWatchedPlaylist('${p.id}')" style="padding: 6px 12px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;" title="Check for new tracks now">
+                                Refresh
+                            </button>
+                            <button onclick="copyWatchedPlaylistUrl('${escapeHtml(p.url)}')" style="padding: 6px 12px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;" title="Copy playlist URL">
+                                Copy URL
+                            </button>
+                            <button onclick="toggleWatchedPlaylist('${p.id}', ${p.enabled ? 'false' : 'true'})" style="padding: 6px 12px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); color: ${statusColor}; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">
+                                ${p.enabled ? 'Pause' : 'Resume'}
+                            </button>
+                            <button onclick="deleteWatchedPlaylist('${p.id}', '${escapeHtml(p.name)}')" style="padding: 6px 12px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function formatTimeAgo(isoString) {
+            const date = new Date(isoString + 'Z'); // Assume UTC if no timezone
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMs / 3600000);
+            const diffDays = Math.floor(diffMs / 86400000);
+
+            if (diffMins < 1) return 'Just now';
+            if (diffMins < 60) return `${diffMins}m ago`;
+            if (diffHours < 24) return `${diffHours}h ago`;
+            if (diffDays < 7) return `${diffDays}d ago`;
+            return date.toLocaleDateString();
+        }
+
+        async function addWatchedPlaylist() {
+            const url = watchedUrlInput.value.trim();
+            if (!url) {
+                watchedError.textContent = 'Please enter a playlist URL';
+                watchedError.style.display = 'block';
+                return;
+            }
+
+            watchedError.style.display = 'none';
+            addWatchedBtn.disabled = true;
+            addWatchedBtn.textContent = 'Adding...';
+
+            try {
+                const response = await fetch('/api/watched-playlists', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: url,
+                        refresh_interval_hours: parseInt(watchedIntervalSelect.value)
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to add playlist');
+                }
+
+                const data = await response.json();
+                showToast(`Now watching "${data.name}" (${data.track_count} tracks)`);
+                watchedUrlInput.value = '';
+                loadWatchedPlaylists();
+            } catch (error) {
+                watchedError.textContent = error.message;
+                watchedError.style.display = 'block';
+            } finally {
+                addWatchedBtn.disabled = false;
+                addWatchedBtn.textContent = 'Watch';
+            }
+        }
+
+        async function refreshWatchedPlaylist(playlistId) {
+            try {
+                showToast('Checking for new tracks...');
+                const response = await fetch(`/api/watched-playlists/${playlistId}/refresh`, {
+                    method: 'POST'
+                });
+
+                if (!response.ok) throw new Error('Refresh failed');
+
+                const data = await response.json();
+                if (data.error) {
+                    showToast(`Error: ${data.error}`, true);
+                } else {
+                    const newCount = data.new_tracks || 0;
+                    const missingCount = data.missing_tracks || 0;
+                    if (newCount > 0 || missingCount > 0) {
+                        const parts = [];
+                        if (newCount > 0) parts.push(`${newCount} new`);
+                        if (missingCount > 0) parts.push(`${missingCount} missing`);
+                        showToast(`Found ${parts.join(' + ')} tracks, queued ${data.queued} for download`);
+                    } else {
+                        showToast('No new tracks found');
+                    }
+                }
+                loadWatchedPlaylists();
+            } catch (error) {
+                showToast('Failed to refresh playlist', true);
+            }
+        }
+
+        async function copyWatchedPlaylistUrl(url) {
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(url);
+                } else {
+                    const tempInput = document.createElement('input');
+                    tempInput.value = url;
+                    document.body.appendChild(tempInput);
+                    tempInput.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(tempInput);
+                }
+                showToast('Playlist URL copied');
+            } catch (error) {
+                showToast('Failed to copy playlist URL', true);
+            }
+        }
+
+        async function toggleWatchedPlaylist(playlistId, enabled) {
+            try {
+                const response = await fetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: enabled === 'true' })
+                });
+
+                if (!response.ok) throw new Error('Update failed');
+
+                loadWatchedPlaylists();
+                showToast(enabled === 'true' ? 'Playlist watching resumed' : 'Playlist watching paused');
+            } catch (error) {
+                showToast('Failed to update playlist', true);
+            }
+        }
+
+        async function deleteWatchedPlaylist(playlistId, name) {
+            if (!confirm(`Stop watching "${name}"? This won't delete any downloaded files.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) throw new Error('Delete failed');
+
+                showToast(`Stopped watching "${name}"`);
+                loadWatchedPlaylists();
+            } catch (error) {
+                showToast('Failed to delete playlist', true);
+            }
+        }
+
+        async function refreshAllWatched() {
+            refreshAllWatchedBtn.disabled = true;
+            refreshAllWatchedBtn.textContent = 'Checking...';
+
+            try {
+                const response = await fetch('/api/watched-playlists/check-all', {
+                    method: 'POST'
+                });
+
+                if (!response.ok) throw new Error('Check failed');
+
+                const data = await response.json();
+                if (data.checked === 0) {
+                    showToast('No playlists due for refresh');
+                } else if (data.total_new_tracks > 0) {
+                    showToast(`Checked ${data.checked} playlists: ${data.total_new_tracks} new tracks, ${data.total_queued} queued`);
+                } else {
+                    showToast(`Checked ${data.checked} playlists: no new tracks`);
+                }
+                loadWatchedPlaylists();
+            } catch (error) {
+                showToast('Failed to check playlists', true);
+            } finally {
+                refreshAllWatchedBtn.disabled = false;
+                refreshAllWatchedBtn.textContent = 'Check All Now';
+            }
+        }
+
+        // Event listeners for watched playlists
+        addWatchedBtn.addEventListener('click', addWatchedPlaylist);
+        watchedUrlInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                addWatchedPlaylist();
+            }
+        });
+        refreshAllWatchedBtn.addEventListener('click', refreshAllWatched);
     </script>
 </body>
 </html>

@@ -3,7 +3,7 @@ services:
     build: .
     container_name: music-grabber
     restart: unless-stopped
-    # Chromium needs more shared memory for headless browser
+    # Chromium needs more shared memory for headless browser - spotify over 100 tracks WILL fail without this
     shm_size: '2gb'
     ports:
       - "38274:8080"
@@ -35,6 +35,18 @@ services:
       # Optional: Jellyfin API for auto-rescan
       # - JELLYFIN_URL=http://jellyfin:8096
       # - JELLYFIN_API_KEY=your-jellyfin-api-key
+      # Optional: Notifications (triggers apply to all channels)
+      # - NOTIFY_ON=playlists,bulk,errors  # Options: singles,playlists,bulk,errors
+      # Telegram
+      # - TELEGRAM_WEBHOOK_URL=https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}
+      # Email (SMTP)
+      # - SMTP_HOST=smtp.example.com
+      # - SMTP_PORT=587
+      # - SMTP_USER=user@example.com
+      # - SMTP_PASS=password
+      # - SMTP_FROM=musicgrabber@example.com
+      # - SMTP_TO=you@example.com
+      # - SMTP_TLS=true
     # Optional: add to your existing network if running with Navidrome
     # networks:
     #   - your-network

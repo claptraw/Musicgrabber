@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.6.1 (2026-01-22)
+
+### Added
+- **Copy playlist URL**: Watched playlists now include a "Copy URL" button in the UI
+- **Watched playlist bulk import**: Newly watched playlists now queue downloads via bulk import
+- **Notifications**: Get notified when downloads complete or fail
+  - Telegram support via webhook URL (`TELEGRAM_WEBHOOK_URL`)
+  - Email support via SMTP (`SMTP_HOST`, `SMTP_USER`, etc.)
+  - Shared triggers for all channels (`NOTIFY_ON`): singles, playlists, bulk, errors
+
+### Changed
+- **Watched playlist refresh**: Refresh now requeues missing tracks and only pulls what is not yet downloaded
+
+### Fixed
+- **Watched playlist download tracking**: Completed jobs now update watched track download status
+- **Favicon not showing in browser**: Added mount in FastAPI
+
 ## v1.6.0 (2026-01-20)
 
 ### Added

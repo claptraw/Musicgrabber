@@ -8,16 +8,19 @@ import hashlib
 import json
 import os
 import re
+import smtplib
 import subprocess
 import sqlite3
 import threading
 import time
 import uuid
+from email.mime.text import MIMEText
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from mutagen.flac import FLAC
 import httpx
@@ -26,7 +29,7 @@ import httpx
 # Application Constants
 # =============================================================================
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -61,6 +64,7 @@ SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 MAX_FILENAME_LENGTH = 200        # Maximum characters in sanitised filenames
 
 app = FastAPI(title="Music Grabber", version=VERSION)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Configuration from environment
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
@@ -82,6 +86,28 @@ SLSKD_PASS = os.getenv("SLSKD_PASS", "")
 SLSKD_DOWNLOADS_PATH = os.getenv("SLSKD_DOWNLOADS_PATH", "")  # Path where slskd downloads are accessible
 SLSKD_REQUIRE_FREE_SLOT = os.getenv("SLSKD_REQUIRE_FREE_SLOT", "true").lower() == "true"
 SLSKD_MAX_RETRIES = int(os.getenv("SLSKD_MAX_RETRIES", "5"))
+
+# Watched playlists configuration
+# How often to check playlists (in hours): daily=24, weekly=168, monthly=720
+WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24"))
+
+# Notifications (optional)
+# Triggers: singles, playlists, bulk, errors (comma-separated)
+# e.g., "playlists,bulk,errors" to only notify on playlist/bulk completions and failures
+NOTIFY_ON = os.getenv("NOTIFY_ON", "playlists,bulk,errors")
+
+# Telegram notifications
+# Full webhook URL e.g., https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}
+TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
+
+# Email notifications (SMTP)
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
+SMTP_FROM = os.getenv("SMTP_FROM", "")
+SMTP_TO = os.getenv("SMTP_TO", "")
+SMTP_TLS = os.getenv("SMTP_TLS", "true").lower() == "true"
 
 # slskd auth token cache
 _slskd_token = None
@@ -165,6 +191,7 @@ def init_db():
             create_playlist INTEGER DEFAULT 0,
             playlist_name TEXT,
             convert_to_flac INTEGER DEFAULT 1,
+            watch_playlist_id TEXT,
             rate_limited_until TIMESTAMP,
             error TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -192,6 +219,44 @@ def init_db():
     # Index for faster lookups
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bulk_import_tracks_import_id ON bulk_import_tracks(import_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bulk_import_tracks_status ON bulk_import_tracks(status)")
+
+    try:
+        conn.execute("ALTER TABLE bulk_imports ADD COLUMN watch_playlist_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Watched playlists - playlists to monitor for new tracks
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS watched_playlists (
+            id TEXT PRIMARY KEY,
+            url TEXT NOT NULL UNIQUE,
+            name TEXT,
+            platform TEXT NOT NULL,
+            refresh_interval_hours INTEGER DEFAULT 24,
+            last_checked TIMESTAMP,
+            last_track_count INTEGER DEFAULT 0,
+            enabled INTEGER DEFAULT 1,
+            convert_to_flac INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Tracks seen in watched playlists (for detecting new additions)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS watched_playlist_tracks (
+            playlist_id TEXT NOT NULL,
+            track_hash TEXT NOT NULL,
+            artist TEXT,
+            title TEXT,
+            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            downloaded_at TIMESTAMP,
+            job_id TEXT,
+            PRIMARY KEY (playlist_id, track_hash),
+            FOREIGN KEY (playlist_id) REFERENCES watched_playlists(id) ON DELETE CASCADE
+        )
+    """)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_watched_tracks_playlist ON watched_playlist_tracks(playlist_id)")
 
     conn.commit()
     conn.close()
@@ -228,6 +293,16 @@ class AsyncBulkImportRequest(BaseModel):
     create_playlist: bool = False
     playlist_name: Optional[str] = None
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+
+class WatchedPlaylistRequest(BaseModel):
+    url: str  # Spotify or YouTube playlist URL
+    refresh_interval_hours: int = 24
+    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+
+class WatchedPlaylistUpdate(BaseModel):
+    refresh_interval_hours: Optional[int] = None
+    enabled: Optional[bool] = None
+    convert_to_flac: Optional[bool] = None
 
 class SearchResult(BaseModel):
     video_id: str
@@ -356,6 +431,27 @@ def clean_title(title: str) -> str:
     title = re.sub(r'\s*\[.*?Remaster.*?\]', '', title, flags=re.IGNORECASE)
 
     return title.strip()
+
+
+def normalise_track_for_hash(artist: str, title: str) -> str:
+    """Normalise artist/title for consistent hashing across playlist checks"""
+    text = f"{artist}|{title}".lower()
+    # Remove feat./ft./featuring and everything after
+    text = re.sub(r'\s*(feat\.?|ft\.?|featuring)\s+.*?\|', '|', text)
+    text = re.sub(r'\s*(feat\.?|ft\.?|featuring)\s+.*$', '', text)
+    # Remove common suffixes in parens/brackets
+    text = re.sub(r'\s*[\(\[].*?[\)\]]', '', text)
+    # Remove punctuation except pipe separator
+    text = re.sub(r'[^\w\s|]', '', text)
+    # Collapse whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def hash_track(artist: str, title: str) -> str:
+    """Generate hash for track identification in watched playlists"""
+    normalised = normalise_track_for_hash(artist, title)
+    return hashlib.sha256(normalised.encode()).hexdigest()[:16]
 
 
 def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
@@ -1338,7 +1434,7 @@ def check_duplicate(artist: str, title: str) -> Optional[Path]:
 @app.get("/", response_class=HTMLResponse)
 def root():
     """Serve the main UI"""
-    return FileResponse("/app/static/index.html")
+    return FileResponse("static/index.html")
 
 @app.get("/api/config")
 def get_config():
@@ -1762,12 +1858,35 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         )
         conn.commit()
 
+        # Send Telegram notification for playlist
+        send_telegram_notification(
+            notification_type="playlist",
+            title=playlist_name,
+            playlist_name=playlist_name,
+            source="youtube",
+            status=final_status,
+            error=error_message,
+            track_count=len(videos),
+            failed_count=failed_tracks,
+            skipped_count=skipped_tracks
+        )
+
     except Exception as e:
         conn.execute(
             "UPDATE jobs SET status = ?, error = ?, completed_at = ? WHERE id = ?",
             ("failed", str(e), datetime.now().isoformat(), job_id)
         )
         conn.commit()
+
+        # Send Telegram notification for playlist failure
+        send_telegram_notification(
+            notification_type="error",
+            title=playlist_name,
+            playlist_name=playlist_name,
+            source="youtube",
+            status="failed",
+            error=str(e)
+        )
 
     finally:
         conn.close()
@@ -1902,9 +2021,22 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             "UPDATE jobs SET status = ?, completed_at = ? WHERE id = ?",
             ("completed", datetime.now().isoformat(), job_id)
         )
+        conn.execute(
+            "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now') WHERE job_id = ?",
+            (job_id,)
+        )
         conn.commit()
 
         print(f"slskd: Successfully downloaded {artist} - {title}")
+
+        # Send Telegram notification for Soulseek single
+        send_telegram_notification(
+            notification_type="single",
+            title=title,
+            artist=artist,
+            source="soulseek",
+            status="completed"
+        )
 
     except Exception as e:
         print(f"slskd download failed: {e}")
@@ -1913,6 +2045,16 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             ("failed", str(e), datetime.now().isoformat(), job_id)
         )
         conn.commit()
+
+        # Send Telegram notification for Soulseek failure
+        send_telegram_notification(
+            notification_type="error",
+            title=title if 'title' in dir() else filename,
+            artist=artist if 'artist' in dir() else None,
+            source="soulseek",
+            status="failed",
+            error=str(e)
+        )
 
     finally:
         conn.close()
@@ -1960,6 +2102,10 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
             conn.execute(
                 "UPDATE jobs SET status = ?, completed_at = ?, error = ? WHERE id = ?",
                 ("completed", datetime.now().isoformat(), f"Already exists: {existing_file.name}", job_id)
+            )
+            conn.execute(
+                "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now') WHERE job_id = ?",
+                (job_id,)
             )
             conn.commit()
             return
@@ -2046,15 +2192,38 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
             "UPDATE jobs SET status = ?, completed_at = ? WHERE id = ?",
             ("completed", datetime.now().isoformat(), job_id)
         )
+        conn.execute(
+            "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now') WHERE job_id = ?",
+            (job_id,)
+        )
         conn.commit()
-        
+
+        # Send Telegram notification for single track
+        send_telegram_notification(
+            notification_type="single",
+            title=title,
+            artist=artist,
+            source="youtube",
+            status="completed"
+        )
+
     except Exception as e:
         conn.execute(
             "UPDATE jobs SET status = ?, error = ?, completed_at = ? WHERE id = ?",
             ("failed", str(e), datetime.now().isoformat(), job_id)
         )
         conn.commit()
-    
+
+        # Send Telegram notification for failure
+        send_telegram_notification(
+            notification_type="error",
+            title=title if 'title' in dir() else video_id,
+            artist=artist if 'artist' in dir() else None,
+            source="youtube",
+            status="failed",
+            error=str(e)
+        )
+
     finally:
         conn.close()
 
@@ -2094,6 +2263,160 @@ def trigger_jellyfin_scan():
             )
     except Exception:
         pass  # Non-critical, scan will happen on schedule anyway
+
+
+def _build_notification_message(
+    notification_type: str,
+    title: str,
+    artist: str = None,
+    source: str = None,
+    status: str = "completed",
+    error: str = None,
+    track_count: int = None,
+    failed_count: int = None,
+    skipped_count: int = None,
+    playlist_name: str = None
+) -> tuple[str, str]:
+    """Build notification message text and subject line.
+
+    Returns:
+        Tuple of (message_body, subject_line)
+    """
+    if status == "failed":
+        status_text = "[FAILED]"
+    elif status == "completed_with_errors":
+        status_text = "[PARTIAL]"
+    else:
+        status_text = "[OK]"
+
+    lines = [f"MusicGrabber {status_text}"]
+    subject = f"MusicGrabber {status_text}"
+
+    if notification_type == "single":
+        track_info = f"{artist} - {title}" if artist else title
+        lines.append(track_info)
+        subject = f"{subject} - {track_info}"
+        if source:
+            lines.append(f"Source: {source.capitalize()}")
+    elif notification_type == "playlist":
+        playlist_info = playlist_name or title
+        lines.append(f"Playlist: {playlist_info}")
+        subject = f"{subject} - Playlist: {playlist_info}"
+        if track_count:
+            summary_parts = [f"{track_count} tracks"]
+            if failed_count:
+                summary_parts.append(f"{failed_count} failed")
+            if skipped_count:
+                summary_parts.append(f"{skipped_count} skipped")
+            lines.append(", ".join(summary_parts))
+    elif notification_type == "bulk":
+        lines.append(f"Bulk import: {title}")
+        subject = f"{subject} - Bulk import"
+        if track_count:
+            summary_parts = [f"{track_count} tracks"]
+            if failed_count:
+                summary_parts.append(f"{failed_count} failed")
+            if skipped_count:
+                summary_parts.append(f"{skipped_count} skipped")
+            lines.append(", ".join(summary_parts))
+
+    if error:
+        lines.append(f"Error: {error}")
+
+    return "\n".join(lines), subject
+
+
+def _should_notify(notification_type: str, status: str, error: str = None) -> bool:
+    """Check if notifications should be sent for this type."""
+    enabled_types = [t.strip().lower() for t in NOTIFY_ON.split(",")]
+
+    type_map = {
+        "single": "singles",
+        "playlist": "playlists",
+        "bulk": "bulk",
+        "error": "errors"
+    }
+
+    config_type = type_map.get(notification_type, notification_type)
+    is_error = status == "failed" or error
+
+    return config_type in enabled_types or (is_error and "errors" in enabled_types)
+
+
+def _send_telegram(message: str):
+    """Send notification via Telegram webhook."""
+    if not TELEGRAM_WEBHOOK_URL:
+        return
+
+    try:
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
+            client.post(TELEGRAM_WEBHOOK_URL, json={"text": message})
+    except Exception:
+        pass
+
+
+def _send_email(subject: str, message: str):
+    """Send notification via SMTP email."""
+    if not SMTP_HOST or not SMTP_TO:
+        return
+
+    try:
+        msg = MIMEText(message)
+        msg["Subject"] = subject
+        msg["From"] = SMTP_FROM or SMTP_USER
+        msg["To"] = SMTP_TO
+
+        if SMTP_TLS:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+            server.starttls()
+        else:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+
+        if SMTP_USER and SMTP_PASS:
+            server.login(SMTP_USER, SMTP_PASS)
+
+        server.sendmail(msg["From"], SMTP_TO.split(","), msg.as_string())
+        server.quit()
+    except Exception:
+        pass
+
+
+def send_telegram_notification(
+    notification_type: str,
+    title: str,
+    artist: str = None,
+    source: str = None,
+    status: str = "completed",
+    error: str = None,
+    track_count: int = None,
+    failed_count: int = None,
+    skipped_count: int = None,
+    playlist_name: str = None
+):
+    """Send notifications to all configured channels (Telegram, Email).
+
+    Args:
+        notification_type: One of 'single', 'playlist', 'bulk', 'error'
+        title: Track title or import/playlist name
+        artist: Artist name (for singles)
+        source: Download source (youtube/soulseek)
+        status: Job status (completed/failed/completed_with_errors)
+        error: Error message if failed
+        track_count: Total tracks (for playlists/bulk)
+        failed_count: Number of failed tracks
+        skipped_count: Number of skipped tracks
+        playlist_name: Name of playlist (for playlist downloads)
+    """
+    if not _should_notify(notification_type, status, error):
+        return
+
+    message, subject = _build_notification_message(
+        notification_type, title, artist, source, status,
+        error, track_count, failed_count, skipped_count, playlist_name
+    )
+
+    _send_telegram(message)
+    _send_email(subject, message)
 
 
 def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count: int):
@@ -2299,6 +2622,38 @@ def clean_bulk_import_line(line: str) -> str:
     return line.strip()
 
 
+def start_bulk_import_for_tracks(
+    tracks: list[tuple[str, str]],
+    convert_to_flac: bool,
+    watch_playlist_id: Optional[str] = None,
+) -> str:
+    """Create a bulk import job from a list of (artist, title) tuples."""
+    import_id = str(uuid.uuid4())[:8]
+
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO bulk_imports
+           (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, watch_playlist_id)
+           VALUES (?, 'pending', ?, 0, NULL, ?, ?)""",
+        (import_id, len(tracks), int(convert_to_flac), watch_playlist_id)
+    )
+
+    for line_num, (artist, song) in enumerate(tracks, 1):
+        conn.execute(
+            "INSERT INTO bulk_import_tracks (import_id, line_num, artist, song, status) VALUES (?, ?, ?, ?, 'pending')",
+            (import_id, line_num, artist, song)
+        )
+
+    conn.commit()
+    conn.close()
+
+    worker_thread = threading.Thread(target=process_bulk_import_worker, args=(import_id,))
+    worker_thread.daemon = True
+    worker_thread.start()
+
+    return import_id
+
+
 def process_bulk_import_worker(import_id: str):
     """Background worker to process bulk import tracks one by one
 
@@ -2320,6 +2675,7 @@ def process_bulk_import_worker(import_id: str):
     convert_to_flac = bool(import_row["convert_to_flac"])
     create_playlist = bool(import_row["create_playlist"])
     playlist_name = import_row["playlist_name"]
+    watch_playlist_id = import_row["watch_playlist_id"]
 
     # Update status to processing
     conn.execute("UPDATE bulk_imports SET status = 'processing' WHERE id = ?", (import_id,))
@@ -2469,6 +2825,12 @@ def process_bulk_import_worker(import_id: str):
                     "UPDATE bulk_import_tracks SET status = 'queued', job_id = ?, video_id = ? WHERE id = ?",
                     (job_id, video_id, track_id)
                 )
+                if watch_playlist_id:
+                    track_hash = hash_track(artist, song)
+                    conn.execute(
+                        "UPDATE watched_playlist_tracks SET job_id = ? WHERE playlist_id = ? AND track_hash = ?",
+                        (job_id, watch_playlist_id, track_hash)
+                    )
                 conn.execute(
                     "UPDATE bulk_imports SET searched = searched + 1, queued = queued + 1 WHERE id = ?",
                     (import_id,)
@@ -2514,6 +2876,28 @@ def process_bulk_import_worker(import_id: str):
         )
         conn.commit()
 
+        # Get final counts for notification
+        cursor = conn.execute(
+            "SELECT total_tracks, queued, failed, skipped FROM bulk_imports WHERE id = ?",
+            (import_id,)
+        )
+        final_row = cursor.fetchone()
+        final_queued = final_row["queued"] if final_row else 0
+        final_failed = final_row["failed"] if final_row else 0
+        final_skipped = final_row["skipped"] if final_row else 0
+        final_total = final_row["total_tracks"] if final_row else 0
+
+        # Send Telegram notification for bulk import
+        bulk_status = "completed_with_errors" if final_failed > 0 else "completed"
+        send_telegram_notification(
+            notification_type="bulk",
+            title=playlist_name or f"Bulk import {import_id}",
+            status=bulk_status,
+            track_count=final_total,
+            failed_count=final_failed,
+            skipped_count=final_skipped
+        )
+
         # Create playlist if requested
         if create_playlist:
             cursor = conn.execute("SELECT queued FROM bulk_imports WHERE id = ?", (import_id,))
@@ -2531,6 +2915,14 @@ def process_bulk_import_worker(import_id: str):
             (str(e)[:500], import_id)
         )
         conn.commit()
+
+        # Send Telegram notification for bulk import failure
+        send_telegram_notification(
+            notification_type="error",
+            title=playlist_name or f"Bulk import {import_id}",
+            status="failed",
+            error=str(e)
+        )
 
     finally:
         conn.close()
@@ -2970,6 +3362,563 @@ def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTasks):
         "failures": failed_lines,
         "playlist_id": bulk_import_id if request.create_playlist else None
     }
+
+
+# =============================================================================
+# Watched Playlists API
+# =============================================================================
+
+def detect_playlist_platform(url: str) -> tuple[str, str]:
+    """Detect platform and extract ID from playlist URL
+
+    Returns (platform, id) or raises HTTPException if invalid
+    """
+    # Spotify playlist
+    spotify_playlist = re.match(r'https?://open\.spotify\.com/playlist/([a-zA-Z0-9]+)', url)
+    if spotify_playlist:
+        return "spotify", spotify_playlist.group(1)
+
+    # Spotify album
+    spotify_album = re.match(r'https?://open\.spotify\.com/album/([a-zA-Z0-9]+)', url)
+    if spotify_album:
+        return "spotify", spotify_album.group(1)
+
+    # YouTube playlist
+    youtube_playlist = re.match(r'https?://(www\.)?(youtube\.com|youtu\.be)/playlist\?list=([a-zA-Z0-9_-]+)', url)
+    if youtube_playlist:
+        return "youtube", youtube_playlist.group(3)
+
+    raise HTTPException(status_code=400, detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube playlists.")
+
+
+def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]], str]:
+    """Fetch tracks from a playlist URL
+
+    Returns (list of (artist, title) tuples, playlist_name)
+    """
+    if platform == "spotify":
+        # Reuse existing Spotify fetch logic
+        request = SpotifyPlaylistRequest(url=url)
+        result = fetch_spotify_playlist(request)
+
+        # Parse "Artist - Title" format back to tuples
+        tracks = []
+        for track_str in result["tracks"]:
+            if " - " in track_str:
+                artist, title = track_str.split(" - ", 1)
+                tracks.append((artist.strip(), title.strip()))
+            else:
+                tracks.append(("Unknown", track_str.strip()))
+
+        return tracks, result["playlist_name"]
+
+    elif platform == "youtube":
+        # Use yt-dlp to get playlist info
+        playlist_id = re.search(r'list=([a-zA-Z0-9_-]+)', url).group(1)
+
+        info_cmd = [
+            "yt-dlp",
+            "--dump-json",
+            "--flat-playlist",
+            "--no-warnings",
+            f"https://www.youtube.com/playlist?list={playlist_id}"
+        ]
+
+        try:
+            result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_PLAYLIST)
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="Timeout fetching YouTube playlist")
+
+        if result.returncode != 0:
+            raise HTTPException(status_code=502, detail="Failed to fetch YouTube playlist")
+
+        tracks = []
+        playlist_name = "YouTube Playlist"
+
+        for line in result.stdout.strip().split('\n'):
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                # First entry often has playlist title
+                if data.get("playlist_title") and playlist_name == "YouTube Playlist":
+                    playlist_name = data["playlist_title"]
+
+                if data.get("id"):
+                    title = data.get("title", "Unknown")
+                    channel = data.get("channel", data.get("uploader", "Unknown"))
+                    artist, clean_title = extract_artist_title(title, channel)
+                    tracks.append((artist, clean_title))
+            except json.JSONDecodeError:
+                continue
+
+        if not tracks:
+            raise HTTPException(status_code=422, detail="No tracks found in YouTube playlist")
+
+        return tracks, playlist_name
+
+    raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+
+
+def refresh_watched_playlist(playlist_id: str) -> dict:
+    """Fetch playlist and queue any new tracks for download
+
+    Returns dict with refresh results
+    """
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    playlist = conn.execute(
+        "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+    ).fetchone()
+
+    if not playlist:
+        conn.close()
+        return {"error": "Playlist not found", "playlist_id": playlist_id}
+
+    playlist = dict(playlist)
+
+    try:
+        # Fetch current tracks
+        tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
+
+        # Load existing track state (including job status)
+        track_rows = conn.execute(
+            """SELECT wpt.track_hash, wpt.downloaded_at, wpt.job_id, j.status as job_status
+               FROM watched_playlist_tracks wpt
+               LEFT JOIN jobs j ON wpt.job_id = j.id
+               WHERE wpt.playlist_id = ?""",
+            (playlist_id,)
+        ).fetchall()
+        tracked = {row["track_hash"]: row for row in track_rows}
+
+        new_tracks = []
+        missing_tracks = []
+        for artist, title in tracks:
+            track_hash = hash_track(artist, title)
+            existing = tracked.get(track_hash)
+            if not existing:
+                new_tracks.append((artist, title, track_hash))
+                continue
+
+            if existing["downloaded_at"]:
+                continue
+
+            job_status = existing["job_status"]
+            if job_status == "completed":
+                conn.execute(
+                    "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now') WHERE playlist_id = ? AND track_hash = ?",
+                    (playlist_id, track_hash)
+                )
+                continue
+
+            if job_status in ("queued", "downloading"):
+                continue
+
+            missing_tracks.append((artist, title, track_hash))
+
+        # Insert any new tracks so they are tracked before download
+        for artist, title, track_hash in new_tracks:
+            conn.execute("""
+                INSERT INTO watched_playlist_tracks
+                (playlist_id, track_hash, artist, title)
+                VALUES (?, ?, ?, ?)
+            """, (playlist_id, track_hash, artist, title))
+
+        tracks_to_import = [(artist, title) for artist, title, _ in new_tracks + missing_tracks]
+        import_id = None
+        if tracks_to_import:
+            import_id = start_bulk_import_for_tracks(
+                tracks_to_import,
+                bool(playlist["convert_to_flac"]),
+                watch_playlist_id=playlist_id
+            )
+
+        # Update playlist metadata
+        conn.execute("""
+            UPDATE watched_playlists
+            SET last_checked = datetime('now'), last_track_count = ?
+            WHERE id = ?
+        """, (len(tracks), playlist_id))
+
+        conn.commit()
+        conn.close()
+
+        queued_count = len(tracks_to_import)
+        if queued_count:
+            print(
+                f"Watched playlist '{playlist['name']}': {len(new_tracks)} new tracks, "
+                f"{len(missing_tracks)} missing tracks, {queued_count} queued"
+            )
+
+        return {
+            "playlist_id": playlist_id,
+            "name": playlist["name"],
+            "total_tracks": len(tracks),
+            "new_tracks": len(new_tracks),
+            "missing_tracks": len(missing_tracks),
+            "queued": queued_count,
+            "import_id": import_id,
+            "jobs": []
+        }
+
+    except HTTPException as e:
+        conn.execute(
+            "UPDATE watched_playlists SET last_checked = datetime('now') WHERE id = ?",
+            (playlist_id,)
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "playlist_id": playlist_id,
+            "name": playlist["name"],
+            "error": e.detail
+        }
+    except Exception as e:
+        conn.execute(
+            "UPDATE watched_playlists SET last_checked = datetime('now') WHERE id = ?",
+            (playlist_id,)
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "playlist_id": playlist_id,
+            "name": playlist["name"],
+            "error": str(e)
+        }
+
+
+@app.post("/api/watched-playlists")
+def add_watched_playlist(request: WatchedPlaylistRequest):
+    """Add a new playlist to watch for new tracks"""
+    # Detect platform and validate URL
+    platform, playlist_ext_id = detect_playlist_platform(request.url)
+
+    # Check for duplicate
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    existing = conn.execute(
+        "SELECT id FROM watched_playlists WHERE url = ?", (request.url,)
+    ).fetchone()
+
+    if existing:
+        conn.close()
+        raise HTTPException(status_code=409, detail="This playlist is already being watched")
+
+    # Fetch playlist to get name and initial tracks
+    try:
+        tracks, playlist_name = fetch_playlist_tracks(request.url, platform)
+    except HTTPException:
+        conn.close()
+        raise
+
+    # Create playlist record
+    playlist_id = str(uuid.uuid4())[:8]
+
+    conn.execute("""
+        INSERT INTO watched_playlists
+        (id, url, name, platform, refresh_interval_hours, convert_to_flac, last_track_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (playlist_id, request.url, playlist_name, platform,
+          request.refresh_interval_hours, int(request.convert_to_flac), len(tracks)))
+
+    # Insert all current tracks as "seen" (downloads will be queued via bulk import)
+    for artist, title in tracks:
+        track_hash = hash_track(artist, title)
+        conn.execute("""
+            INSERT OR IGNORE INTO watched_playlist_tracks
+            (playlist_id, track_hash, artist, title)
+            VALUES (?, ?, ?, ?)
+        """, (playlist_id, track_hash, artist, title))
+
+    conn.commit()
+    conn.close()
+
+    import_id = None
+    if tracks:
+        import_id = start_bulk_import_for_tracks(
+            tracks,
+            request.convert_to_flac,
+            watch_playlist_id=playlist_id
+        )
+
+    return {
+        "id": playlist_id,
+        "name": playlist_name,
+        "platform": platform,
+        "track_count": len(tracks),
+        "refresh_interval_hours": request.refresh_interval_hours,
+        "import_id": import_id,
+        "message": f"Now watching '{playlist_name}' with {len(tracks)} tracks queued for download"
+    }
+
+
+@app.get("/api/watched-playlists")
+def list_watched_playlists():
+    """List all watched playlists"""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    playlists = conn.execute("""
+        SELECT
+            wp.*,
+            (SELECT COUNT(*) FROM watched_playlist_tracks wpt WHERE wpt.playlist_id = wp.id) as tracked_count,
+            (SELECT COUNT(*) FROM watched_playlist_tracks wpt WHERE wpt.playlist_id = wp.id AND wpt.downloaded_at IS NOT NULL) as downloaded_count
+        FROM watched_playlists wp
+        ORDER BY wp.created_at DESC
+    """).fetchall()
+
+    conn.close()
+
+    return {
+        "playlists": [dict(p) for p in playlists]
+    }
+
+
+@app.get("/api/watched-playlists/{playlist_id}")
+def get_watched_playlist(playlist_id: str):
+    """Get details of a watched playlist including track history"""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    playlist = conn.execute(
+        "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+    ).fetchone()
+
+    if not playlist:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Watched playlist not found")
+
+    tracks = conn.execute("""
+        SELECT * FROM watched_playlist_tracks
+        WHERE playlist_id = ?
+        ORDER BY first_seen DESC
+    """, (playlist_id,)).fetchall()
+
+    conn.close()
+
+    return {
+        "playlist": dict(playlist),
+        "tracks": [dict(t) for t in tracks]
+    }
+
+
+@app.put("/api/watched-playlists/{playlist_id}")
+def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate):
+    """Update watched playlist settings"""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    playlist = conn.execute(
+        "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+    ).fetchone()
+
+    if not playlist:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Watched playlist not found")
+
+    # Build update query
+    updates = []
+    params = []
+
+    if request.refresh_interval_hours is not None:
+        updates.append("refresh_interval_hours = ?")
+        params.append(request.refresh_interval_hours)
+
+    if request.enabled is not None:
+        updates.append("enabled = ?")
+        params.append(int(request.enabled))
+
+    if request.convert_to_flac is not None:
+        updates.append("convert_to_flac = ?")
+        params.append(int(request.convert_to_flac))
+
+    if updates:
+        params.append(playlist_id)
+        conn.execute(
+            f"UPDATE watched_playlists SET {', '.join(updates)} WHERE id = ?",
+            params
+        )
+        conn.commit()
+
+    # Fetch updated record
+    updated = conn.execute(
+        "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+    ).fetchone()
+
+    conn.close()
+
+    return {"playlist": dict(updated)}
+
+
+@app.delete("/api/watched-playlists/{playlist_id}")
+def delete_watched_playlist(playlist_id: str):
+    """Remove a watched playlist and its track history"""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    playlist = conn.execute(
+        "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+    ).fetchone()
+
+    if not playlist:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Watched playlist not found")
+
+    # Delete tracks first (FK constraint)
+    conn.execute("DELETE FROM watched_playlist_tracks WHERE playlist_id = ?", (playlist_id,))
+    conn.execute("DELETE FROM watched_playlists WHERE id = ?", (playlist_id,))
+    conn.commit()
+    conn.close()
+
+    return {"message": f"Deleted watched playlist '{playlist['name']}'"}
+
+
+@app.post("/api/watched-playlists/{playlist_id}/refresh")
+def refresh_single_playlist(playlist_id: str):
+    """Force an immediate refresh of a specific watched playlist"""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    playlist = conn.execute(
+        "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+    ).fetchone()
+
+    if not playlist:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Watched playlist not found")
+
+    conn.close()
+
+    result = refresh_watched_playlist(playlist_id)
+    return result
+
+
+@app.post("/api/watched-playlists/check-all")
+def check_all_watched_playlists():
+    """Check all playlists due for refresh (called by cron)
+
+    Only refreshes playlists where:
+    - enabled = 1
+    - last_checked is NULL OR last_checked + refresh_interval_hours < now
+    """
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+
+    # Get playlists due for refresh
+    playlists = conn.execute("""
+        SELECT id, name FROM watched_playlists
+        WHERE enabled = 1
+        AND (last_checked IS NULL
+             OR datetime(last_checked, '+' || refresh_interval_hours || ' hours') < datetime('now'))
+    """).fetchall()
+
+    conn.close()
+
+    if not playlists:
+        return {"checked": 0, "message": "No playlists due for refresh", "results": []}
+
+    results = []
+    for playlist in playlists:
+        result = refresh_watched_playlist(playlist["id"])
+        results.append(result)
+
+    total_new = sum(r.get("new_tracks", 0) for r in results)
+    total_queued = sum(r.get("queued", 0) for r in results)
+
+    return {
+        "checked": len(results),
+        "total_new_tracks": total_new,
+        "total_queued": total_queued,
+        "results": results
+    }
+
+
+@app.get("/api/watched-playlists/schedule")
+def get_watched_schedule():
+    """Get the current watched playlist check schedule"""
+    return {
+        "check_interval_hours": WATCHED_PLAYLIST_CHECK_HOURS,
+        "enabled": WATCHED_PLAYLIST_CHECK_HOURS > 0
+    }
+
+
+# =============================================================================
+# Background Scheduler for Watched Playlists
+# =============================================================================
+
+_scheduler_running = False
+
+
+def watched_playlist_scheduler():
+    """Background thread that periodically checks watched playlists"""
+    global _scheduler_running
+    _scheduler_running = True
+
+    print(f"Watched playlist scheduler started (checking every {WATCHED_PLAYLIST_CHECK_HOURS} hours)")
+
+    while _scheduler_running:
+        try:
+            # Sleep for the configured interval (in seconds)
+            # Check every minute if we should stop, but only run the check at the interval
+            sleep_seconds = WATCHED_PLAYLIST_CHECK_HOURS * 3600
+            elapsed = 0
+
+            while elapsed < sleep_seconds and _scheduler_running:
+                time.sleep(60)  # Check every minute if we should stop
+                elapsed += 60
+
+            if not _scheduler_running:
+                break
+
+            # Run the check
+            print(f"Scheduler: Checking watched playlists...")
+            conn = get_db()
+            conn.row_factory = sqlite3.Row
+
+            playlists = conn.execute("""
+                SELECT id, name FROM watched_playlists
+                WHERE enabled = 1
+                AND (last_checked IS NULL
+                     OR datetime(last_checked, '+' || refresh_interval_hours || ' hours') < datetime('now'))
+            """).fetchall()
+
+            conn.close()
+
+            if playlists:
+                print(f"Scheduler: Found {len(playlists)} playlists due for refresh")
+                total_new = 0
+                for playlist in playlists:
+                    result = refresh_watched_playlist(playlist["id"])
+                    total_new += result.get("new_tracks", 0)
+                print(f"Scheduler: Checked {len(playlists)} playlists, {total_new} new tracks found")
+            else:
+                print("Scheduler: No playlists due for refresh")
+
+        except Exception as e:
+            print(f"Scheduler error: {e}")
+            # Continue running even if there's an error
+            time.sleep(60)
+
+
+def start_scheduler():
+    """Start the background scheduler if not already running"""
+    global _scheduler_running
+
+    if WATCHED_PLAYLIST_CHECK_HOURS <= 0:
+        print("Watched playlist scheduler disabled (WATCHED_PLAYLIST_CHECK_HOURS=0)")
+        return
+
+    if _scheduler_running:
+        return
+
+    scheduler_thread = threading.Thread(target=watched_playlist_scheduler, daemon=True)
+    scheduler_thread.start()
+
+
+# Start scheduler on module load (runs in Docker)
+start_scheduler()
 
 
 if __name__ == "__main__":
