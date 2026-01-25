@@ -8,665 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;600&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-primary: #0a0a0b;
-            --bg-secondary: #141416;
-            --bg-tertiary: #1c1c1f;
-            --text-primary: #f5f5f5;
-            --text-secondary: #888;
-            --accent: #22c55e;
-            --accent-dim: #166534;
-            --error: #ef4444;
-            --warning: #f59e0b;
-            --border: #2a2a2d;
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Space Grotesk', -apple-system, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            min-height: 100vh;
-            min-height: 100dvh;
-            line-height: 1.5;
-        }
-
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-            padding-bottom: env(safe-area-inset-bottom, 20px);
-        }
-
-        header {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 24px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .logo {
-            width: 40px;
-            height: 40px;
-            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 20px;
-        }
-
-        h1 {
-            font-size: 1.25rem;
-            font-weight: 600;
-            letter-spacing: -0.02em;
-        }
-
-        .search-box {
-            position: relative;
-            margin-bottom: 24px;
-        }
-
-        .search-input {
-            width: 100%;
-            padding: 16px 20px;
-            padding-right: 100px;
-            font-size: 16px;
-            font-family: inherit;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            color: var(--text-primary);
-            outline: none;
-            transition: border-color 0.2s, box-shadow 0.2s;
-        }
-
-        .search-input:focus {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
-        }
-
-        .search-input::placeholder {
-            color: var(--text-secondary);
-        }
-
-        .search-history {
-            position: absolute;
-            top: calc(100% + 4px);
-            left: 0;
-            right: 0;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            max-height: 300px;
-            overflow-y: auto;
-            z-index: 50;
-            display: none;
-        }
-
-        .search-history.show {
-            display: block;
-        }
-
-        .history-item {
-            padding: 12px 16px;
-            font-size: 14px;
-            color: var(--text-primary);
-            cursor: pointer;
-            border-bottom: 1px solid var(--border);
-            transition: background 0.2s;
-        }
-
-        .history-item:last-child {
-            border-bottom: none;
-        }
-
-        .history-item:hover {
-            background: var(--bg-tertiary);
-        }
-
-        .related-suggestions {
-            margin-top: 16px;
-            margin-bottom: 20px;
-            padding: 14px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-        }
-
-        .related-title {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-secondary);
-            margin-bottom: 8px;
-        }
-
-        .suggestion-chips {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-
-        .suggestion-chip {
-            padding: 6px 12px;
-            font-size: 13px;
-            font-family: inherit;
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .suggestion-chip:hover {
-            border-color: var(--accent);
-            color: var(--accent);
-        }
-
-        .search-btn {
-            position: absolute;
-            right: 8px;
-            top: 50%;
-            transform: translateY(-50%);
-            padding: 10px 20px;
-            font-size: 14px;
-            font-family: inherit;
-            font-weight: 600;
-            background: var(--accent);
-            color: #000;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: background 0.2s, transform 0.1s;
-        }
-
-        .search-btn:hover {
-            background: #16a34a;
-        }
-
-        .search-btn:active {
-            transform: translateY(-50%) scale(0.98);
-        }
-
-        .search-btn:disabled {
-            background: var(--bg-tertiary);
-            color: var(--text-secondary);
-            cursor: not-allowed;
-        }
-
-        .tabs {
-            display: flex;
-            gap: 8px;
-            margin-bottom: 20px;
-        }
-
-        .tab {
-            padding: 8px 16px;
-            font-size: 14px;
-            font-family: inherit;
-            font-weight: 600;
-            background: transparent;
-            color: var(--text-secondary);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .tab.active {
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-            border-color: var(--accent);
-        }
-
-        .tab:hover:not(.active) {
-            color: var(--text-primary);
-        }
-
-        .results {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .result-item {
-            display: flex;
-            gap: 14px;
-            padding: 14px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .result-item:hover {
-            background: var(--bg-tertiary);
-            border-color: var(--accent);
-        }
-
-        .result-item:active {
-            transform: scale(0.99);
-        }
-
-        .result-item.downloading {
-            border-color: var(--warning);
-            opacity: 0.7;
-            pointer-events: none;
-        }
-
-        .result-item.previewing {
-            border-color: var(--accent);
-            background: var(--bg-tertiary);
-        }
-
-        .result-item.loading-preview {
-            border-color: var(--text-secondary);
-        }
-
-        .preview-indicator {
-            position: absolute;
-            top: 8px;
-            right: 8px;
-            width: 24px;
-            height: 24px;
-            background: var(--accent);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 10px;
-            opacity: 0;
-            transition: opacity 0.2s;
-        }
-
-        .result-item.previewing .preview-indicator {
-            opacity: 1;
-            animation: pulse 1s infinite;
-        }
-
-        .result-item {
-            position: relative;
-        }
-
-        .result-thumb {
-            width: 64px;
-            height: 64px;
-            border-radius: 8px;
-            object-fit: cover;
-            background: var(--bg-tertiary);
-            flex-shrink: 0;
-        }
-
-        .result-info {
-            flex: 1;
-            min-width: 0;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            gap: 4px;
-        }
-
-        .result-title {
-            font-size: 15px;
-            font-weight: 600;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .result-meta {
-            font-size: 13px;
-            color: var(--text-secondary);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .result-duration {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-            color: var(--text-secondary);
-            background: var(--bg-tertiary);
-            padding: 2px 8px;
-            border-radius: 4px;
-            align-self: flex-start;
-        }
-
-        .result-badges {
-            display: flex;
-            gap: 6px;
-            align-items: center;
-            margin-top: 4px;
-        }
-
-        .source-badge {
-            font-size: 10px;
-            font-weight: 600;
-            padding: 2px 6px;
-            border-radius: 3px;
-            text-transform: uppercase;
-        }
-
-        .source-badge.youtube {
-            background: #ff0000;
-            color: white;
-        }
-
-        .source-badge.soulseek {
-            background: #4a9eff;
-            color: white;
-        }
-
-        .quality-badge {
-            font-size: 10px;
-            font-weight: 600;
-            padding: 2px 6px;
-            border-radius: 3px;
-            background: var(--accent);
-            color: white;
-        }
-
-        .quality-badge.flac {
-            background: #ffc107;
-            color: #000;
-        }
-
-        .quality-badge.mp3-high {
-            background: #28a745;
-            color: white;
-        }
-
-        .result-item.soulseek .result-thumb {
-            /* Placeholder for missing thumbnails */
-            background: linear-gradient(135deg, #4a9eff 0%, #2d7dd2 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 24px;
-        }
-
-        .result-item.soulseek .result-thumb::before {
-            content: '🎵';
-        }
-
-        .job-item {
-            display: flex;
-            gap: 14px;
-            padding: 14px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-        }
-
-        .job-status {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            flex-shrink: 0;
-            margin-top: 6px;
-        }
-
-        .job-status.queued { background: var(--warning); }
-        .job-status.downloading { 
-            background: var(--warning);
-            animation: pulse 1s infinite;
-        }
-        .job-status.completed { background: var(--accent); }
-        .job-status.completed_with_errors { background: var(--warning); }
-        .job-status.failed { background: var(--error); }
-
-        .job-warning-badge {
-            font-size: 10px;
-            font-weight: 600;
-            padding: 2px 6px;
-            border-radius: 3px;
-            background: var(--warning);
-            color: #000;
-            margin-left: 6px;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
-        }
-
-        .job-info {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .job-title {
-            font-size: 14px;
-            font-weight: 600;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .job-meta {
-            font-size: 13px;
-            color: var(--text-secondary);
-        }
-
-        .job-error {
-            font-size: 12px;
-            color: var(--error);
-            margin-top: 4px;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: var(--text-secondary);
-        }
-
-        .empty-state-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
-            opacity: 0.5;
-        }
-
-        .loading {
-            display: flex;
-            justify-content: center;
-            padding: 40px;
-        }
-
-        .spinner {
-            width: 32px;
-            height: 32px;
-            border: 3px solid var(--bg-tertiary);
-            border-top-color: var(--accent);
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 100px;
-            left: 50%;
-            transform: translateX(-50%) translateY(100px);
-            padding: 14px 24px;
-            background: var(--accent);
-            color: #000;
-            font-weight: 600;
-            border-radius: 10px;
-            opacity: 0;
-            transition: all 0.3s ease;
-            z-index: 100;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
-        }
-
-        .toast.show {
-            transform: translateX(-50%) translateY(0);
-            opacity: 1;
-        }
-
-        .toast.error {
-            background: var(--error);
-            color: #fff;
-        }
-
-        .queue-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-        }
-
-        .clear-btn {
-            padding: 8px 16px;
-            font-size: 13px;
-            font-family: inherit;
-            font-weight: 600;
-            background: transparent;
-            color: var(--text-secondary);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .clear-btn:hover {
-            color: var(--error);
-            border-color: var(--error);
-        }
-
-        .clear-btn:active {
-            transform: scale(0.98);
-        }
-
-        .clear-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .bulk-textarea {
-            width: 100%;
-            min-height: 200px;
-            max-height: 400px;
-            padding: 14px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 13px;
-            line-height: 1.5;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            color: var(--text-primary);
-            resize: vertical;
-            outline: none;
-            transition: border-color 0.2s, box-shadow 0.2s;
-        }
-
-        .bulk-textarea:focus {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
-        }
-
-        .bulk-textarea::placeholder {
-            color: var(--text-secondary);
-            opacity: 0.5;
-        }
-
-        .file-upload {
-            display: inline-block;
-            padding: 10px 20px;
-            font-size: 13px;
-            font-family: inherit;
-            font-weight: 600;
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .file-upload:hover {
-            border-color: var(--accent);
-            color: var(--accent);
-        }
-
-        .file-upload input[type="file"] {
-            display: none;
-        }
-
-        .toggle-switch {
-            position: relative;
-            width: 36px;
-            height: 20px;
-        }
-
-        .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .toggle-slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            transition: 0.3s;
-            border-radius: 20px;
-        }
-
-        .toggle-slider:before {
-            position: absolute;
-            content: "";
-            height: 14px;
-            width: 14px;
-            left: 2px;
-            bottom: 2px;
-            background-color: var(--text-secondary);
-            transition: 0.3s;
-            border-radius: 50%;
-        }
-
-        .toggle-switch input:checked + .toggle-slider {
-            background-color: var(--accent-dim);
-            border-color: var(--accent);
-        }
-
-        .toggle-switch input:checked + .toggle-slider:before {
-            transform: translateX(16px);
-            background-color: var(--accent);
-        }
-
-        @media (max-width: 400px) {
-            .container {
-                padding: 16px;
-            }
-
-            .result-thumb {
-                width: 56px;
-                height: 56px;
-            }
-
-            .result-title {
-                font-size: 14px;
-            }
-        }
-    </style>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="container">
@@ -703,6 +45,7 @@
             <button class="tab" data-tab="bulk">Bulk Import</button>
             <button class="tab" data-tab="watched">Watched</button>
             <button class="tab" data-tab="queue">Queue</button>
+            <button class="tab" data-tab="settings">Settings</button>
         </div>
 
         <div id="relatedSuggestions" style="display: none;"></div>
@@ -817,12 +160,261 @@
             </div>
             <div id="queueTab" class="results"></div>
         </div>
+
+        <div id="settingsTabContainer" style="display: none;">
+            <div class="settings-section">
+                <h3 class="settings-section-title">General</h3>
+                <div class="settings-grid">
+                    <label class="settings-label">
+                        <span>MusicBrainz Metadata</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingEnableMusicbrainz" checked>
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
+                    <label class="settings-label">
+                        <span>Fetch Lyrics (LRClib)</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingEnableLyrics" checked>
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
+                    <label class="settings-label">
+                        <span>Convert to FLAC by Default</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingDefaultFlac" checked>
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3 class="settings-section-title">Soulseek (slskd)</h3>
+                <div class="settings-form">
+                    <div class="settings-row">
+                        <label for="settingSlskdUrl">URL</label>
+                        <input type="text" id="settingSlskdUrl" placeholder="http://192.168.1.100:5030">
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingSlskdUser">Username</label>
+                        <input type="text" id="settingSlskdUser" placeholder="username">
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingSlskdPass">Password</label>
+                        <div class="password-field">
+                            <input type="password" id="settingSlskdPass" placeholder="password">
+                            <button type="button" class="password-toggle" data-target="settingSlskdPass">Show</button>
+                        </div>
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingSlskdDownloads">Downloads Path</label>
+                        <input type="text" id="settingSlskdDownloads" placeholder="/downloads">
+                    </div>
+                    <button type="button" class="test-btn" id="testSlskdBtn">Test Connection</button>
+                    <div id="slskdTestResult" class="test-result"></div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3 class="settings-section-title">Navidrome</h3>
+                <div class="settings-form">
+                    <div class="settings-row">
+                        <label for="settingNavidromeUrl">URL</label>
+                        <input type="text" id="settingNavidromeUrl" placeholder="https://navidrome.example.com">
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingNavidromeUser">Username</label>
+                        <input type="text" id="settingNavidromeUser" placeholder="username">
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingNavidromePass">Password</label>
+                        <div class="password-field">
+                            <input type="password" id="settingNavidromePass" placeholder="password">
+                            <button type="button" class="password-toggle" data-target="settingNavidromePass">Show</button>
+                        </div>
+                    </div>
+                    <button type="button" class="test-btn" id="testNavidromeBtn">Test Connection</button>
+                    <div id="navidromeTestResult" class="test-result"></div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3 class="settings-section-title">Jellyfin</h3>
+                <div class="settings-form">
+                    <div class="settings-row">
+                        <label for="settingJellyfinUrl">URL</label>
+                        <input type="text" id="settingJellyfinUrl" placeholder="http://jellyfin:8096">
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingJellyfinApiKey">API Key</label>
+                        <div class="password-field">
+                            <input type="password" id="settingJellyfinApiKey" placeholder="api-key">
+                            <button type="button" class="password-toggle" data-target="settingJellyfinApiKey">Show</button>
+                        </div>
+                    </div>
+                    <button type="button" class="test-btn" id="testJellyfinBtn">Test Connection</button>
+                    <div id="jellyfinTestResult" class="test-result"></div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3 class="settings-section-title">Notifications</h3>
+                <div class="settings-form">
+                    <div class="settings-row">
+                        <label for="settingNotifyOn">Notify On</label>
+                        <input type="text" id="settingNotifyOn" placeholder="playlists,bulk,errors">
+                        <span class="settings-hint">Options: singles, playlists, bulk, errors</span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingTelegramUrl">Telegram Webhook</label>
+                        <div class="password-field">
+                            <input type="password" id="settingTelegramUrl" placeholder="https://api.telegram.org/bot.../sendMessage?chat_id=...">
+                            <button type="button" class="password-toggle" data-target="settingTelegramUrl">Show</button>
+                        </div>
+                    </div>
+                </div>
+                <details class="settings-details">
+                    <summary>Email (SMTP)</summary>
+                    <div class="settings-form" style="margin-top: 12px;">
+                        <div class="settings-row">
+                            <label for="settingSmtpHost">SMTP Host</label>
+                            <input type="text" id="settingSmtpHost" placeholder="smtp.example.com">
+                        </div>
+                        <div class="settings-row">
+                            <label for="settingSmtpPort">SMTP Port</label>
+                            <input type="number" id="settingSmtpPort" placeholder="587" value="587">
+                        </div>
+                        <div class="settings-row">
+                            <label for="settingSmtpUser">Username</label>
+                            <input type="text" id="settingSmtpUser" placeholder="user@example.com">
+                        </div>
+                        <div class="settings-row">
+                            <label for="settingSmtpPass">Password</label>
+                            <div class="password-field">
+                                <input type="password" id="settingSmtpPass" placeholder="password">
+                                <button type="button" class="password-toggle" data-target="settingSmtpPass">Show</button>
+                            </div>
+                        </div>
+                        <div class="settings-row">
+                            <label for="settingSmtpFrom">From Address</label>
+                            <input type="text" id="settingSmtpFrom" placeholder="musicgrabber@example.com">
+                        </div>
+                        <div class="settings-row">
+                            <label for="settingSmtpTo">To Address</label>
+                            <input type="text" id="settingSmtpTo" placeholder="you@example.com">
+                        </div>
+                        <label class="settings-label">
+                            <span>Use TLS</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="settingSmtpTls" checked>
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+                    </div>
+                </details>
+            </div>
+
+            <div class="settings-section">
+                <h3 class="settings-section-title">Security</h3>
+                <div class="settings-form">
+                    <div class="settings-row">
+                        <label for="settingApiKey">API Key (Server)</label>
+                        <div class="password-field">
+                            <input type="password" id="settingApiKey" placeholder="Leave empty to disable authentication">
+                            <button type="button" class="password-toggle" data-target="settingApiKey">Show</button>
+                        </div>
+                        <span class="settings-hint">When set, all API requests require this key. Rate limit: 60 requests/minute per IP.</span>
+                    </div>
+                    <div class="settings-row">
+                        <label>Browser API Key</label>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <span id="browserApiKeyStatus" style="font-size: 13px; color: var(--text-secondary);"></span>
+                            <button type="button" id="clearApiKeyBtn" class="clear-btn" style="padding: 6px 12px; font-size: 12px;">Clear Stored Key</button>
+                        </div>
+                        <span class="settings-hint">The API key stored in this browser for authentication</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-actions" style="padding-bottom: 20px;">
+                <button type="button" class="save-btn" id="saveSettingsBtn">Save Settings</button>
+                <div id="settingsSaveResult" class="save-result"></div>
+            </div>
+        </div>
     </div>
 
     <div class="toast" id="toast"></div>
     <audio id="previewAudio" preload="none"></audio>
 
     <script>
+        // =============================================================================
+        // API Authentication
+        // =============================================================================
+
+        let authRequired = false;
+
+        function getApiKey() {
+            return localStorage.getItem('apiKey') || '';
+        }
+
+        function setApiKey(key) {
+            if (key) {
+                localStorage.setItem('apiKey', key);
+            } else {
+                localStorage.removeItem('apiKey');
+            }
+        }
+
+        function promptForApiKey(message = 'This server requires an API key to access.') {
+            const key = prompt(message + '\n\nEnter your API key:');
+            if (key) {
+                setApiKey(key);
+                return true;
+            }
+            return false;
+        }
+
+        async function apiFetch(url, options = {}) {
+            const apiKey = getApiKey();
+
+            // Merge headers with API key
+            const headers = {
+                ...options.headers
+            };
+
+            if (apiKey) {
+                headers['X-API-Key'] = apiKey;
+            }
+
+            const response = await fetch(url, {
+                ...options,
+                headers
+            });
+
+            // Handle auth failures
+            if (response.status === 401) {
+                if (promptForApiKey('Authentication failed. Please check your API key.')) {
+                    // Retry with new key
+                    return apiFetch(url, options);
+                }
+                throw new Error('Authentication required');
+            }
+
+            // Handle rate limiting
+            if (response.status === 429) {
+                const retryAfter = response.headers.get('Retry-After') || 60;
+                showToast(`Rate limited. Try again in ${retryAfter} seconds.`, true);
+                throw new Error('Rate limited');
+            }
+
+            return response;
+        }
+
+        // =============================================================================
+        // DOM Elements
+        // =============================================================================
+
         const searchInput = document.getElementById('searchInput');
         const searchBtn = document.getElementById('searchBtn');
         const searchHistory = document.getElementById('searchHistory');
@@ -851,13 +443,14 @@
         const toast = document.getElementById('toast');
         const tabs = document.querySelectorAll('.tab');
         const lineCounter = document.getElementById('lineCounter');
+        const settingsTabContainer = document.getElementById('settingsTabContainer');
         const createPlaylistCheckbox = document.getElementById('createPlaylistCheckbox');
         const playlistNameInput = document.getElementById('playlistNameInput');
         const convertToFlacCheckbox = document.getElementById('convertToFlac');
 
         const versionLabel = document.getElementById('versionLabel');
 
-        // Load config from server (version, FLAC preference)
+        // Load config from server (version, FLAC preference, auth status)
         fetch('/api/config')
             .then((response) => response.ok ? response.json() : null)
             .then((config) => {
@@ -870,6 +463,11 @@
                     const savedFlacPref = localStorage.getItem('convertToFlac');
                     if (savedFlacPref === null && typeof config.default_convert_to_flac === 'boolean') {
                         convertToFlacCheckbox.checked = config.default_convert_to_flac;
+                    }
+                    // Check if auth is required
+                    authRequired = config.auth_required === true;
+                    if (authRequired && !getApiKey()) {
+                        promptForApiKey();
                     }
                 }
             })
@@ -932,7 +530,7 @@
 
                 if (!audioUrl) {
                     // Fetch preview URL from backend
-                    const response = await fetch(`/api/preview/${videoId}`);
+                    const response = await apiFetch(`/api/preview/${videoId}`);
                     if (!response.ok) throw new Error('Failed to get preview');
 
                     const data = await response.json();
@@ -1034,6 +632,7 @@
                 bulkTabContainer.style.display = currentTab === 'bulk' ? 'block' : 'none';
                 watchedTabContainer.style.display = currentTab === 'watched' ? 'block' : 'none';
                 queueTabContainer.style.display = currentTab === 'queue' ? 'block' : 'none';
+                settingsTabContainer.style.display = currentTab === 'settings' ? 'block' : 'none';
 
                 // Stop preview when leaving results tab
                 if (currentTab !== 'results') {
@@ -1046,6 +645,10 @@
 
                 if (currentTab === 'watched') {
                     loadWatchedPlaylists();
+                }
+
+                if (currentTab === 'settings') {
+                    loadSettings();
                 }
             });
         });
@@ -1067,7 +670,7 @@
 
             try {
                 // Fetch YouTube results first (fast)
-                const response = await fetch('/api/search', {
+                const response = await apiFetch('/api/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ query, limit: 15 })
@@ -1100,7 +703,7 @@
 
         async function fetchSlskdResults(query, searchToken) {
             try {
-                const response = await fetch('/api/search/slskd', {
+                const response = await apiFetch('/api/search/slskd', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ query, limit: 15 })
@@ -1289,7 +892,7 @@
                     }
                 }
 
-                const response = await fetch('/api/download', {
+                const response = await apiFetch('/api/download', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -1312,7 +915,7 @@
 
         async function getQueueSize() {
             try {
-                const response = await fetch('/api/jobs?limit=100');
+                const response = await apiFetch('/api/jobs?limit=100');
                 if (!response.ok) return 0;
                 const data = await response.json();
                 // Count queued and downloading jobs
@@ -1328,7 +931,7 @@
             }
 
             try {
-                const response = await fetch('/api/jobs?limit=30');
+                const response = await apiFetch('/api/jobs?limit=30');
                 if (!response.ok) throw new Error('Failed to load jobs');
 
                 const data = await response.json();
@@ -1432,7 +1035,7 @@
                 }
 
                 // Start the async import
-                const response = await fetch('/api/bulk-import-async', {
+                const response = await apiFetch('/api/bulk-import-async', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(requestBody)
@@ -1589,7 +1192,7 @@
             // Poll every 2 seconds
             bulkImportPollInterval = setInterval(async () => {
                 try {
-                    const response = await fetch(`/api/bulk-import/${importId}/status`);
+                    const response = await apiFetch(`/api/bulk-import/${importId}/status`);
                     if (!response.ok) {
                         throw new Error('Failed to get status');
                     }
@@ -1618,7 +1221,7 @@
             clearQueueBtn.disabled = true;
 
             try {
-                const response = await fetch('/api/jobs/cleanup', {
+                const response = await apiFetch('/api/jobs/cleanup', {
                     method: 'DELETE'
                 });
 
@@ -1710,7 +1313,7 @@
             fetchSpotifyBtn.textContent = 'Fetching...';
 
             try {
-                const response = await fetch('/api/spotify-playlist', {
+                const response = await apiFetch('/api/spotify-playlist', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ url })
@@ -1805,8 +1408,8 @@
             try {
                 // Fetch schedule info and playlists in parallel
                 const [scheduleRes, playlistsRes] = await Promise.all([
-                    fetch('/api/watched-playlists/schedule'),
-                    fetch('/api/watched-playlists')
+                    apiFetch('/api/watched-playlists/schedule'),
+                    apiFetch('/api/watched-playlists')
                 ]);
 
                 // Update schedule info
@@ -1920,7 +1523,7 @@
             addWatchedBtn.textContent = 'Adding...';
 
             try {
-                const response = await fetch('/api/watched-playlists', {
+                const response = await apiFetch('/api/watched-playlists', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -1950,7 +1553,7 @@
         async function refreshWatchedPlaylist(playlistId) {
             try {
                 showToast('Checking for new tracks...');
-                const response = await fetch(`/api/watched-playlists/${playlistId}/refresh`, {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}/refresh`, {
                     method: 'POST'
                 });
 
@@ -1997,7 +1600,7 @@
 
         async function toggleWatchedPlaylist(playlistId, enabled) {
             try {
-                const response = await fetch(`/api/watched-playlists/${playlistId}`, {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ enabled: enabled === 'true' })
@@ -2018,7 +1621,7 @@
             }
 
             try {
-                const response = await fetch(`/api/watched-playlists/${playlistId}`, {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
                     method: 'DELETE'
                 });
 
@@ -2036,7 +1639,7 @@
             refreshAllWatchedBtn.textContent = 'Checking...';
 
             try {
-                const response = await fetch('/api/watched-playlists/check-all', {
+                const response = await apiFetch('/api/watched-playlists/check-all', {
                     method: 'POST'
                 });
 
@@ -2067,6 +1670,324 @@
             }
         });
         refreshAllWatchedBtn.addEventListener('click', refreshAllWatched);
+
+        // =============================================================================
+        // Settings Management
+        // =============================================================================
+
+        // Mapping from setting keys to form element IDs
+        const settingsFieldMap = {
+            'enable_musicbrainz': 'settingEnableMusicbrainz',
+            'enable_lyrics': 'settingEnableLyrics',
+            'default_convert_to_flac': 'settingDefaultFlac',
+            'slskd_url': 'settingSlskdUrl',
+            'slskd_user': 'settingSlskdUser',
+            'slskd_pass': 'settingSlskdPass',
+            'slskd_downloads_path': 'settingSlskdDownloads',
+            'navidrome_url': 'settingNavidromeUrl',
+            'navidrome_user': 'settingNavidromeUser',
+            'navidrome_pass': 'settingNavidromePass',
+            'jellyfin_url': 'settingJellyfinUrl',
+            'jellyfin_api_key': 'settingJellyfinApiKey',
+            'notify_on': 'settingNotifyOn',
+            'telegram_webhook_url': 'settingTelegramUrl',
+            'smtp_host': 'settingSmtpHost',
+            'smtp_port': 'settingSmtpPort',
+            'smtp_user': 'settingSmtpUser',
+            'smtp_pass': 'settingSmtpPass',
+            'smtp_from': 'settingSmtpFrom',
+            'smtp_to': 'settingSmtpTo',
+            'smtp_tls': 'settingSmtpTls',
+            'api_key': 'settingApiKey'
+        };
+
+        // Track which fields are locked by env vars
+        let envOverrides = [];
+        let sensitiveFields = [];
+        let settingsLoaded = false;
+        let originalValues = {}; // Track original values to detect changes
+
+        async function loadSettings() {
+            if (settingsLoaded) return; // Only load once per session
+
+            try {
+                const response = await apiFetch('/api/settings');
+                if (!response.ok) throw new Error('Failed to load settings');
+
+                const data = await response.json();
+                const settings = data.settings;
+                envOverrides = data.env_overrides || [];
+                sensitiveFields = data.sensitive_fields || [];
+
+                // Populate form fields and track original values
+                for (const [key, elementId] of Object.entries(settingsFieldMap)) {
+                    const element = document.getElementById(elementId);
+                    if (!element) continue;
+
+                    const value = settings[key];
+                    const isLocked = envOverrides.includes(key);
+
+                    // Store original value for change detection
+                    if (element.type === 'checkbox') {
+                        originalValues[key] = value === true || value === 'true';
+                    } else if (sensitiveFields.includes(key) && value === '••••••••') {
+                        originalValues[key] = null; // Indicates "configured but hidden"
+                    } else {
+                        originalValues[key] = value || '';
+                    }
+
+                    if (element.type === 'checkbox') {
+                        element.checked = value === true || value === 'true';
+                    } else {
+                        // For sensitive fields, only show placeholder if value is masked
+                        if (sensitiveFields.includes(key) && value === '••••••••') {
+                            element.placeholder = 'Configured (hidden)';
+                            element.value = '';
+                        } else {
+                            element.value = value || '';
+                        }
+                    }
+
+                    // Mark fields locked by env vars
+                    if (isLocked) {
+                        element.disabled = true;
+                        const row = element.closest('.settings-row') || element.closest('.settings-label');
+                        if (row) row.classList.add('env-locked');
+                    }
+                }
+
+                settingsLoaded = true;
+
+                // Update browser API key status
+                updateBrowserApiKeyStatus();
+            } catch (error) {
+                console.error('Failed to load settings:', error);
+                showToast('Failed to load settings', true);
+            }
+        }
+
+        function updateBrowserApiKeyStatus() {
+            const statusEl = document.getElementById('browserApiKeyStatus');
+            const clearBtn = document.getElementById('clearApiKeyBtn');
+            const storedKey = getApiKey();
+
+            if (storedKey) {
+                statusEl.textContent = `Key stored (${storedKey.length} chars)`;
+                statusEl.style.color = 'var(--success)';
+                clearBtn.style.display = 'inline-block';
+            } else {
+                statusEl.textContent = 'No key stored';
+                statusEl.style.color = 'var(--text-secondary)';
+                clearBtn.style.display = authRequired ? 'inline-block' : 'none';
+            }
+        }
+
+        // Clear stored API key button
+        document.getElementById('clearApiKeyBtn')?.addEventListener('click', () => {
+            setApiKey('');
+            updateBrowserApiKeyStatus();
+            showToast('Stored API key cleared');
+
+            // If auth is required, prompt for new key
+            if (authRequired) {
+                promptForApiKey('API key cleared. Enter a new key to continue using the app.');
+                updateBrowserApiKeyStatus();
+            }
+        });
+
+        async function saveSettings() {
+            const saveBtn = document.getElementById('saveSettingsBtn');
+            const resultDiv = document.getElementById('settingsSaveResult');
+
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Saving...';
+            resultDiv.textContent = '';
+            resultDiv.classList.remove('error');
+
+            try {
+                const updates = {};
+
+                for (const [key, elementId] of Object.entries(settingsFieldMap)) {
+                    // Skip env-locked fields
+                    if (envOverrides.includes(key)) continue;
+
+                    const element = document.getElementById(elementId);
+                    if (!element) continue;
+
+                    if (element.type === 'checkbox') {
+                        const currentValue = element.checked;
+                        // Only include if changed from original
+                        if (currentValue !== originalValues[key]) {
+                            updates[key] = currentValue;
+                        }
+                    } else {
+                        const value = element.value.trim();
+                        // For sensitive fields with hidden values (null), only send if user entered something
+                        if (sensitiveFields.includes(key)) {
+                            if (originalValues[key] === null) {
+                                // Field was "configured (hidden)" - only send if user typed something new
+                                if (value && value !== '') {
+                                    updates[key] = value;
+                                }
+                            } else if (value !== originalValues[key]) {
+                                // Field had visible value - send if changed (including to empty)
+                                updates[key] = value;
+                            }
+                        } else {
+                            // Non-sensitive field - only send if changed from original
+                            if (value !== originalValues[key]) {
+                                updates[key] = value;
+                            }
+                        }
+                    }
+                }
+
+                // Don't make API call if nothing changed
+                if (Object.keys(updates).length === 0) {
+                    resultDiv.textContent = 'No changes to save';
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = 'Save Settings';
+                    return;
+                }
+
+                const response = await apiFetch('/api/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updates)
+                });
+
+                if (!response.ok) throw new Error('Failed to save settings');
+
+                const data = await response.json();
+                resultDiv.textContent = `Saved ${data.updated.length} setting(s)`;
+                showToast('Settings saved');
+
+                // Update original values and clear sensitive fields after save
+                for (const [key, value] of Object.entries(updates)) {
+                    if (sensitiveFields.includes(key)) {
+                        // Mark as "configured but hidden" and clear the field
+                        originalValues[key] = null;
+                        const elementId = settingsFieldMap[key];
+                        if (elementId) {
+                            const element = document.getElementById(elementId);
+                            if (element && element.type !== 'checkbox') {
+                                element.value = '';
+                                element.placeholder = 'Configured (hidden)';
+                            }
+                        }
+                    } else {
+                        // Update tracked original value
+                        originalValues[key] = value;
+
+                        // Sync FLAC default setting with header toggle
+                        if (key === 'default_convert_to_flac') {
+                            convertToFlacCheckbox.checked = value;
+                            localStorage.setItem('convertToFlac', value);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to save settings:', error);
+                resultDiv.textContent = 'Failed to save settings';
+                resultDiv.classList.add('error');
+                showToast('Failed to save settings', true);
+            } finally {
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Save Settings';
+            }
+        }
+
+        async function testConnection(service) {
+            const btn = document.getElementById(`test${service.charAt(0).toUpperCase() + service.slice(1)}Btn`);
+            const resultDiv = document.getElementById(`${service}TestResult`);
+
+            btn.disabled = true;
+            btn.textContent = 'Testing...';
+            resultDiv.className = 'test-result';
+            resultDiv.style.display = 'none';
+
+            // Gather current form values to test with (before saving)
+            let body = {};
+            if (service === 'slskd') {
+                body = {
+                    url: document.getElementById('settingSlskdUrl').value.trim(),
+                    username: document.getElementById('settingSlskdUser').value.trim(),
+                    password: document.getElementById('settingSlskdPass').value.trim()
+                };
+            } else if (service === 'navidrome') {
+                body = {
+                    url: document.getElementById('settingNavidromeUrl').value.trim(),
+                    username: document.getElementById('settingNavidromeUser').value.trim(),
+                    password: document.getElementById('settingNavidromePass').value.trim()
+                };
+            } else if (service === 'jellyfin') {
+                body = {
+                    url: document.getElementById('settingJellyfinUrl').value.trim(),
+                    api_key: document.getElementById('settingJellyfinApiKey').value.trim()
+                };
+            }
+
+            try {
+                const response = await apiFetch(`/api/settings/test/${service}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    resultDiv.textContent = data.message;
+                    resultDiv.className = 'test-result success';
+                } else {
+                    resultDiv.textContent = data.message || 'Connection failed';
+                    resultDiv.className = 'test-result error';
+                }
+                resultDiv.style.display = 'block';
+            } catch (error) {
+                resultDiv.textContent = 'Connection test failed';
+                resultDiv.className = 'test-result error';
+                resultDiv.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Test Connection';
+            }
+        }
+
+        // Password field toggle
+        document.querySelectorAll('.password-toggle').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const targetId = btn.dataset.target;
+                const input = document.getElementById(targetId);
+                if (input) {
+                    if (input.type === 'password') {
+                        input.type = 'text';
+                        btn.textContent = 'Hide';
+                    } else {
+                        input.type = 'password';
+                        btn.textContent = 'Show';
+                    }
+                }
+            });
+        });
+
+        // Settings event listeners
+        document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
+        document.getElementById('testSlskdBtn').addEventListener('click', () => testConnection('slskd'));
+        document.getElementById('testNavidromeBtn').addEventListener('click', () => testConnection('navidrome'));
+        document.getElementById('testJellyfinBtn').addEventListener('click', () => testConnection('jellyfin'));
+
+        // Sync FLAC toggles: Settings checkbox <-> Header toggle
+        const settingDefaultFlac = document.getElementById('settingDefaultFlac');
+        settingDefaultFlac.addEventListener('change', () => {
+            convertToFlacCheckbox.checked = settingDefaultFlac.checked;
+            localStorage.setItem('convertToFlac', settingDefaultFlac.checked);
+        });
+
+        // Also sync header toggle -> settings checkbox (if Settings tab is visible)
+        convertToFlacCheckbox.addEventListener('change', () => {
+            settingDefaultFlac.checked = convertToFlacCheckbox.checked;
+        });
     </script>
 </body>
 </html>

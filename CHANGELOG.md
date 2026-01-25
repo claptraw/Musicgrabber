@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.7.0 (2026-01-25)
+
+### Added
+- **Settings tab**: New UI tab for configuring all integrations without editing docker-compose.yml
+  - Configure slskd, Navidrome, Jellyfin connections
+  - Set up notification channels (Telegram, SMTP)
+  - Toggle MusicBrainz metadata and lyrics fetching
+  - Test connection buttons for slskd, Navidrome, Jellyfin
+  - Password fields with show/hide toggle
+  - Environment variables override database values (shown as locked in UI)
+- **API authentication**: Optional API key protection for all endpoints
+  - Set API key in Settings or via `API_KEY` environment variable
+  - Frontend prompts for key and stores in browser localStorage
+  - Clear/change stored key via Settings UI
+- **Rate limiting**: 60 requests per minute per IP address
+  - Proper 429 responses with `Retry-After` header
+  - `X-RateLimit-Limit`, `X-RateLimit-Remaining` headers on all API responses
+  - Respects `X-Forwarded-For` for reverse proxy setups
+
+### Changed
+- **Configuration approach**: Settings can now be managed via UI instead of environment variables
+- **Security section in README**: Updated with API key authentication details
+
+### Fixed
+- **Watched playlist scheduler**: Now checks for due playlists immediately on startup instead of waiting for the first interval to elapse
+- **Test connection buttons**: Now use current form values instead of requiring save first
+- **Test connection result display**: Results now properly appear after testing
+- **Settings save**: Only saves fields that have actually changed (prevents saving placeholder text)
+- **FLAC toggle sync**: Header FLAC toggle and Settings FLAC checkbox now stay in sync
+
+### Technical Details
+- Settings stored in SQLite `settings` table
+- `AuthMiddleware` handles API key validation and rate limiting
+- `/api/config` endpoint now returns `auth_required` flag
+- All fetch calls wrapped in `apiFetch()` for automatic auth header injection
+
 ## v1.6.1 (2026-01-22)
 
 ### Added

@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.6.1**
+**v1.7.0**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -13,6 +13,8 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
 ## Features
 
 - **Mobile-friendly UI** — designed for quick searches from your phone
+- **Settings tab** — configure all integrations via UI (no docker-compose editing required)
+- **Optional API authentication** — protect your instance with an API key
 - **Hover to preview** — on desktop, hover over a result for 2 seconds to hear a preview
 - **YouTube search** — finds tracks and playlists via yt-dlp
 - **Soulseek integration** — optional slskd support for higher quality sources (FLAC from P2P) *(in progress — needs testing)*
@@ -118,6 +120,21 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
 
 ## Configuration
 
+### Settings Tab (Recommended)
+
+The easiest way to configure MusicGrabber is via the **Settings tab** in the UI. You can configure:
+
+- **General**: MusicBrainz metadata, lyrics fetching, default FLAC conversion
+- **Soulseek (slskd)**: URL, credentials, downloads path
+- **Navidrome**: URL and credentials for library refresh
+- **Jellyfin**: URL and API key for library refresh
+- **Notifications**: Telegram webhook and SMTP settings
+- **Security**: API key for authentication
+
+Settings are stored in the database and persist across container restarts.
+
+**Environment variable overrides:** If you set a value via environment variable, it takes precedence over the database value and appears as "locked" in the UI.
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -148,6 +165,7 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
 | `SMTP_FROM` | - | From address (defaults to SMTP_USER) |
 | `SMTP_TO` | - | Recipient address(es), comma-separated |
 | `SMTP_TLS` | `true` | Use STARTTLS |
+| `API_KEY` | - | API key for authentication (see Security section) |
 
 ### Navidrome Auto-Rescan
 
@@ -393,15 +411,38 @@ Before downloading, checks if the track already exists:
 
 ## Security
 
-MusicGrabber has **no built-in authentication**. This is intentional for ease of use on a home network.
+MusicGrabber includes **optional API key authentication** for protecting your instance.
 
-**Important considerations:**
+### API Key Authentication
 
-- Only expose MusicGrabber on trusted networks (LAN, VPN)
-- If exposing externally, put it behind a reverse proxy with authentication (Caddy, nginx, Authelia, etc.)
+Enable API authentication by setting an API key in the Settings tab or via environment variable:
+
+```yaml
+environment:
+  - API_KEY=your-secret-key-here
+```
+
+When enabled:
+- All API requests require the `X-API-Key` header
+- The frontend prompts for the key on first visit and stores it in browser localStorage
+- Rate limiting applies: 60 requests per minute per IP address
+
+**Setting up:**
+
+1. Go to Settings → Security
+2. Enter an API key (any string you choose)
+3. Save settings
+4. The browser will prompt you for the key
+
+**Environment variable override:** If `API_KEY` is set in the environment, it overrides the database value and cannot be changed via the UI.
+
+### Additional Security Considerations
+
+- For external access, consider a reverse proxy with additional authentication (Caddy, nginx, Authelia)
 - The API allows triggering downloads and file operations, so treat access as administrative
+- Rate limiting helps prevent abuse but isn't a substitute for proper access control
 
-**Example: Adding basic auth with Caddy:**
+**Example: Adding basic auth with Caddy (in addition to API key):**
 
 ```
 music.yourdomain.com {
@@ -417,7 +458,10 @@ music.yourdomain.com {
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/` | Web UI |
-| `GET` | `/api/config` | Get server config (version, defaults) |
+| `GET` | `/api/config` | Get server config (version, defaults, auth_required) |
+| `GET` | `/api/settings` | Get all settings (requires auth if API key set) |
+| `PUT` | `/api/settings` | Update settings |
+| `POST` | `/api/settings/test/{service}` | Test connection (slskd, navidrome, jellyfin) |
 | `POST` | `/api/search` | Search YouTube (`{"query": "...", "limit": 15}`) |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
 | `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (YouTube only) |

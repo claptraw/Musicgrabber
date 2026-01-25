@@ -18,9 +18,11 @@ from email.mime.text import MIMEText
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
+from collections import defaultdict
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from mutagen.flac import FLAC
 import httpx
@@ -29,7 +31,7 @@ import httpx
 # Application Constants
 # =============================================================================
 
-VERSION = "1.6.1"
+VERSION = "1.7.0"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -63,51 +65,27 @@ SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 # File handling
 MAX_FILENAME_LENGTH = 200        # Maximum characters in sanitised filenames
 
+# Rate limiting
+RATE_LIMIT_REQUESTS = 60         # Max requests per IP per window
+RATE_LIMIT_WINDOW = 60           # Window size in seconds
+
 app = FastAPI(title="Music Grabber", version=VERSION)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Configuration from environment
+# Configuration from environment - these are structural paths that must exist at startup
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
 SINGLES_DIR = MUSIC_DIR / "Singles"
 DB_PATH = Path(os.getenv("DB_PATH", "/data/music_grabber.db"))
-NAVIDROME_URL = os.getenv("NAVIDROME_URL", "")
-NAVIDROME_USER = os.getenv("NAVIDROME_USER", "")
-NAVIDROME_PASS = os.getenv("NAVIDROME_PASS", "")
-JELLYFIN_URL = os.getenv("JELLYFIN_URL", "")
-JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY", "")
-ENABLE_MUSICBRAINZ = os.getenv("ENABLE_MUSICBRAINZ", "true").lower() == "true"
-ENABLE_LYRICS = os.getenv("ENABLE_LYRICS", "true").lower() == "true"
-DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"
 
-# Soulseek/slskd configuration (optional)
-SLSKD_URL = os.getenv("SLSKD_URL", "")  # e.g., http://slskd:5030
-SLSKD_USER = os.getenv("SLSKD_USER", "")
-SLSKD_PASS = os.getenv("SLSKD_PASS", "")
-SLSKD_DOWNLOADS_PATH = os.getenv("SLSKD_DOWNLOADS_PATH", "")  # Path where slskd downloads are accessible
+# Other settings that don't change at runtime (not in UI)
 SLSKD_REQUIRE_FREE_SLOT = os.getenv("SLSKD_REQUIRE_FREE_SLOT", "true").lower() == "true"
 SLSKD_MAX_RETRIES = int(os.getenv("SLSKD_MAX_RETRIES", "5"))
-
-# Watched playlists configuration
-# How often to check playlists (in hours): daily=24, weekly=168, monthly=720
 WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24"))
 
-# Notifications (optional)
-# Triggers: singles, playlists, bulk, errors (comma-separated)
-# e.g., "playlists,bulk,errors" to only notify on playlist/bulk completions and failures
-NOTIFY_ON = os.getenv("NOTIFY_ON", "playlists,bulk,errors")
-
-# Telegram notifications
-# Full webhook URL e.g., https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}
-TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
-
-# Email notifications (SMTP)
-SMTP_HOST = os.getenv("SMTP_HOST", "")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASS = os.getenv("SMTP_PASS", "")
-SMTP_FROM = os.getenv("SMTP_FROM", "")
-SMTP_TO = os.getenv("SMTP_TO", "")
-SMTP_TLS = os.getenv("SMTP_TLS", "true").lower() == "true"
+# Legacy constants - kept for backwards compatibility during migration
+# These will be replaced by get_setting() calls throughout the codebase
+# TODO: Remove these after full migration
+DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"
 
 # slskd auth token cache
 _slskd_token = None
@@ -258,10 +236,173 @@ def init_db():
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_watched_tracks_playlist ON watched_playlist_tracks(playlist_id)")
 
+    # Settings table - stores configuration that can be edited via UI
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
 
 init_db()
+
+
+# =============================================================================
+# Settings Helper - Environment variables override DB values
+# =============================================================================
+
+def get_setting(key: str, default: str = "") -> str:
+    """Get a setting value. Environment variable takes precedence over DB value."""
+    # Check environment variable first (uppercase, with underscores)
+    env_key = key.upper().replace(".", "_")
+    env_value = os.getenv(env_key)
+    if env_value is not None:
+        return env_value
+
+    # Fall back to database
+    try:
+        conn = get_db()
+        cursor = conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0] is not None:
+            return row[0]
+    except Exception:
+        pass
+
+    return default
+
+
+def get_setting_bool(key: str, default: bool = False) -> bool:
+    """Get a boolean setting value."""
+    value = get_setting(key, str(default).lower())
+    return value.lower() in ("true", "1", "yes", "on")
+
+
+def get_setting_int(key: str, default: int = 0) -> int:
+    """Get an integer setting value."""
+    value = get_setting(key, str(default))
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def set_setting(key: str, value: str) -> None:
+    """Set a setting value in the database."""
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO settings (key, value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
+    """, (key, value, value))
+    conn.commit()
+    conn.close()
+
+
+def get_all_settings() -> dict:
+    """Get all settings from the database."""
+    conn = get_db()
+    cursor = conn.execute("SELECT key, value FROM settings")
+    settings = {row[0]: row[1] for row in cursor.fetchall()}
+    conn.close()
+    return settings
+
+
+# =============================================================================
+# API Authentication & Rate Limiting Middleware
+# =============================================================================
+
+# In-memory rate limiting store: {ip: [(timestamp, count), ...]}
+_rate_limit_store: dict[str, list[float]] = defaultdict(list)
+_rate_limit_lock = threading.Lock()
+
+# Paths that don't require authentication (static files, health checks)
+AUTH_EXEMPT_PATHS = {"/", "/static", "/api/config"}
+
+
+def _get_client_ip(request: Request) -> str:
+    """Get client IP, respecting X-Forwarded-For for reverse proxies."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_rate_limit(ip: str) -> tuple[bool, int]:
+    """Check if IP is within rate limit. Returns (allowed, remaining)."""
+    now = time.time()
+    window_start = now - RATE_LIMIT_WINDOW
+
+    with _rate_limit_lock:
+        # Clean old entries
+        _rate_limit_store[ip] = [t for t in _rate_limit_store[ip] if t > window_start]
+
+        current_count = len(_rate_limit_store[ip])
+        if current_count >= RATE_LIMIT_REQUESTS:
+            return False, 0
+
+        _rate_limit_store[ip].append(now)
+        return True, RATE_LIMIT_REQUESTS - current_count - 1
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Middleware for API key authentication and rate limiting."""
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Skip auth for exempt paths
+        if path == "/" or path.startswith("/static"):
+            return await call_next(request)
+
+        # Get configured API key
+        api_key = get_setting("api_key", "")
+
+        # If API key is configured, enforce authentication
+        if api_key:
+            # Config endpoint is always accessible (needed for frontend to know auth is required)
+            if path != "/api/config":
+                request_key = request.headers.get("x-api-key", "")
+                if request_key != api_key:
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Invalid or missing API key"},
+                        headers={"WWW-Authenticate": "API-Key"}
+                    )
+
+        # Rate limiting (applied to all API requests)
+        if path.startswith("/api"):
+            client_ip = _get_client_ip(request)
+            allowed, remaining = _check_rate_limit(client_ip)
+
+            if not allowed:
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Rate limit exceeded. Try again later."},
+                    headers={
+                        "Retry-After": str(RATE_LIMIT_WINDOW),
+                        "X-RateLimit-Limit": str(RATE_LIMIT_REQUESTS),
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": str(int(time.time() + RATE_LIMIT_WINDOW))
+                    }
+                )
+
+            response = await call_next(request)
+            response.headers["X-RateLimit-Limit"] = str(RATE_LIMIT_REQUESTS)
+            response.headers["X-RateLimit-Remaining"] = str(remaining)
+            return response
+
+        return await call_next(request)
+
+
+# Register the middleware
+app.add_middleware(AuthMiddleware)
+
 
 # Classes
 class SearchRequest(BaseModel):
@@ -303,6 +444,38 @@ class WatchedPlaylistUpdate(BaseModel):
     refresh_interval_hours: Optional[int] = None
     enabled: Optional[bool] = None
     convert_to_flac: Optional[bool] = None
+
+class SettingsUpdate(BaseModel):
+    """Settings that can be updated via the UI"""
+    # General
+    music_dir: Optional[str] = None
+    enable_musicbrainz: Optional[bool] = None
+    enable_lyrics: Optional[bool] = None
+    default_convert_to_flac: Optional[bool] = None
+    # Soulseek/slskd
+    slskd_url: Optional[str] = None
+    slskd_user: Optional[str] = None
+    slskd_pass: Optional[str] = None
+    slskd_downloads_path: Optional[str] = None
+    # Navidrome
+    navidrome_url: Optional[str] = None
+    navidrome_user: Optional[str] = None
+    navidrome_pass: Optional[str] = None
+    # Jellyfin
+    jellyfin_url: Optional[str] = None
+    jellyfin_api_key: Optional[str] = None
+    # Notifications
+    notify_on: Optional[str] = None
+    telegram_webhook_url: Optional[str] = None
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    smtp_user: Optional[str] = None
+    smtp_pass: Optional[str] = None
+    smtp_from: Optional[str] = None
+    smtp_to: Optional[str] = None
+    smtp_tls: Optional[bool] = None
+    # Security
+    api_key: Optional[str] = None
 
 class SearchResult(BaseModel):
     video_id: str
@@ -476,7 +649,7 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
 
 def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
     """Look up track metadata from MusicBrainz"""
-    if not ENABLE_MUSICBRAINZ:
+    if not get_setting_bool("enable_musicbrainz", True):
         return None
 
     try:
@@ -529,7 +702,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
 
 def fetch_lyrics(artist: str, title: str) -> Optional[str]:
     """Fetch synced lyrics from LRClib API"""
-    if not ENABLE_LYRICS:
+    if not get_setting_bool("enable_lyrics", True):
         return None
 
     try:
@@ -586,6 +759,15 @@ def save_lyrics_file(flac_path: Path, lyrics: str):
     """Save lyrics as .lrc file alongside the FLAC"""
     lrc_path = flac_path.with_suffix(".lrc")
     lrc_path.write_text(lyrics, encoding="utf-8")
+    set_file_permissions(lrc_path)
+
+
+def set_file_permissions(file_path: Path):
+    """Set file permissions to 777 for NAS/SMB compatibility"""
+    try:
+        os.chmod(file_path, 0o777)
+    except OSError:
+        pass  # Silently ignore permission errors (may not have rights)
 
 
 # =============================================================================
@@ -814,7 +996,10 @@ except Exception as e:
 
 def slskd_enabled() -> bool:
     """Check if slskd integration is configured"""
-    return bool(SLSKD_URL and SLSKD_USER and SLSKD_PASS)
+    url = get_setting("slskd_url")
+    user = get_setting("slskd_user")
+    password = get_setting("slskd_pass")
+    return bool(url and user and password)
 
 
 def get_slskd_token() -> Optional[str]:
@@ -828,11 +1013,15 @@ def get_slskd_token() -> Optional[str]:
     if _slskd_token and time.time() < _slskd_token_expires - 60:
         return _slskd_token
 
+    url = get_setting("slskd_url")
+    user = get_setting("slskd_user")
+    password = get_setting("slskd_pass")
+
     try:
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             response = client.post(
-                f"{SLSKD_URL}/api/v0/session",
-                json={"username": SLSKD_USER, "password": SLSKD_PASS}
+                f"{url}/api/v0/session",
+                json={"username": user, "password": password}
             )
             if response.status_code == 200:
                 data = response.json()
@@ -954,6 +1143,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
     if not token:
         return []
 
+    slskd_url = get_setting("slskd_url")
     results = []
 
     try:
@@ -962,7 +1152,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
         with httpx.Client(timeout=TIMEOUT_SLSKD_API) as client:
             # Start search
             search_response = client.post(
-                f"{SLSKD_URL}/api/v0/searches",
+                f"{slskd_url}/api/v0/searches",
                 headers=headers,
                 json={"searchText": query}
             )
@@ -984,7 +1174,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                 time.sleep(1)
 
                 status_response = client.get(
-                    f"{SLSKD_URL}/api/v0/searches/{search_id}",
+                    f"{slskd_url}/api/v0/searches/{search_id}",
                     headers=headers
                 )
 
@@ -1009,7 +1199,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
             responses_deadline = time.time() + min(5, timeout_secs)
             while time.time() < responses_deadline:
                 responses_response = client.get(
-                    f"{SLSKD_URL}/api/v0/searches/{search_id}/responses",
+                    f"{slskd_url}/api/v0/searches/{search_id}/responses",
                     headers=headers
                 )
                 if responses_response.status_code == 200:
@@ -1086,7 +1276,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
 
             # Clean up search
             try:
-                client.delete(f"{SLSKD_URL}/api/v0/searches/{search_id}", headers=headers)
+                client.delete(f"{slskd_url}/api/v0/searches/{search_id}", headers=headers)
             except Exception:
                 pass
 
@@ -1104,12 +1294,15 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
     Download a file from Soulseek via slskd.
     Returns the path to the downloaded file, or None on failure.
 
-    Uses SLSKD_DOWNLOADS_PATH if set; otherwise falls back to common download locations.
+    Uses slskd_downloads_path setting if set; otherwise falls back to common download locations.
     slskd typically organises downloads as: {downloads_path}/{username}/{filename}
     """
     token = get_slskd_token()
     if not token:
         raise Exception("slskd authentication failed")
+
+    slskd_url = get_setting("slskd_url")
+    slskd_downloads_path = get_setting("slskd_downloads_path")
 
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -1118,8 +1311,8 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
     source_filename = Path(target_norm).name
 
     slskd_download_dirs = []
-    if SLSKD_DOWNLOADS_PATH:
-        slskd_download_dirs.append(Path(SLSKD_DOWNLOADS_PATH))
+    if slskd_downloads_path:
+        slskd_download_dirs.append(Path(slskd_downloads_path))
     slskd_download_dirs.extend([
         Path("/slskd/downloads"),
         Path("/app/downloads"),
@@ -1135,7 +1328,7 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
         with httpx.Client(timeout=TIMEOUT_SLSKD_API) as client:
             # Enqueue the download
             enqueue_response = client.post(
-                f"{SLSKD_URL}/api/v0/transfers/downloads/{username}",
+                f"{slskd_url}/api/v0/transfers/downloads/{username}",
                 headers=headers,
                 json=[{"filename": filename}]
             )
@@ -1158,7 +1351,7 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
 
                 # Get download status for this user
                 status_response = client.get(
-                    f"{SLSKD_URL}/api/v0/transfers/downloads/{username}",
+                    f"{slskd_url}/api/v0/transfers/downloads/{username}",
                     headers=headers
                 )
 
@@ -1212,7 +1405,7 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
 
                             # Re-enqueue the download
                             requeue_response = client.post(
-                                f"{SLSKD_URL}/api/v0/transfers/downloads/{username}",
+                                f"{slskd_url}/api/v0/transfers/downloads/{username}",
                                 headers=headers,
                                 json=[{"filename": filename}]
                             )
@@ -1242,7 +1435,7 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                 if not file_found and last_state and "queue" not in last_state.lower():
                     print(f"slskd: File no longer in transfer queue, attempting re-queue...")
                     requeue_response = client.post(
-                        f"{SLSKD_URL}/api/v0/transfers/downloads/{username}",
+                        f"{slskd_url}/api/v0/transfers/downloads/{username}",
                         headers=headers,
                         json=[{"filename": filename}]
                     )
@@ -1439,10 +1632,249 @@ def root():
 @app.get("/api/config")
 def get_config():
     """Expose server configuration and version for the UI"""
+    api_key = get_setting("api_key", "")
     return {
         "version": VERSION,
-        "default_convert_to_flac": DEFAULT_CONVERT_TO_FLAC
+        "default_convert_to_flac": get_setting_bool("default_convert_to_flac", True),
+        "auth_required": bool(api_key)
     }
+
+
+# =============================================================================
+# Settings API
+# =============================================================================
+
+# Define which settings are sensitive (should be masked in GET response)
+SENSITIVE_SETTINGS = {
+    "slskd_pass", "navidrome_pass", "jellyfin_api_key",
+    "smtp_pass", "telegram_webhook_url", "api_key"
+}
+
+# Define all configurable settings with their types and defaults
+SETTINGS_SCHEMA = {
+    # General
+    "music_dir": {"type": "str", "default": "/music", "env": "MUSIC_DIR"},
+    "enable_musicbrainz": {"type": "bool", "default": True, "env": "ENABLE_MUSICBRAINZ"},
+    "enable_lyrics": {"type": "bool", "default": True, "env": "ENABLE_LYRICS"},
+    "default_convert_to_flac": {"type": "bool", "default": True, "env": "DEFAULT_CONVERT_TO_FLAC"},
+    # Soulseek/slskd
+    "slskd_url": {"type": "str", "default": "", "env": "SLSKD_URL"},
+    "slskd_user": {"type": "str", "default": "", "env": "SLSKD_USER"},
+    "slskd_pass": {"type": "str", "default": "", "env": "SLSKD_PASS", "sensitive": True},
+    "slskd_downloads_path": {"type": "str", "default": "", "env": "SLSKD_DOWNLOADS_PATH"},
+    # Navidrome
+    "navidrome_url": {"type": "str", "default": "", "env": "NAVIDROME_URL"},
+    "navidrome_user": {"type": "str", "default": "", "env": "NAVIDROME_USER"},
+    "navidrome_pass": {"type": "str", "default": "", "env": "NAVIDROME_PASS", "sensitive": True},
+    # Jellyfin
+    "jellyfin_url": {"type": "str", "default": "", "env": "JELLYFIN_URL"},
+    "jellyfin_api_key": {"type": "str", "default": "", "env": "JELLYFIN_API_KEY", "sensitive": True},
+    # Notifications
+    "notify_on": {"type": "str", "default": "playlists,bulk,errors", "env": "NOTIFY_ON"},
+    "telegram_webhook_url": {"type": "str", "default": "", "env": "TELEGRAM_WEBHOOK_URL", "sensitive": True},
+    "smtp_host": {"type": "str", "default": "", "env": "SMTP_HOST"},
+    "smtp_port": {"type": "int", "default": 587, "env": "SMTP_PORT"},
+    "smtp_user": {"type": "str", "default": "", "env": "SMTP_USER"},
+    "smtp_pass": {"type": "str", "default": "", "env": "SMTP_PASS", "sensitive": True},
+    "smtp_from": {"type": "str", "default": "", "env": "SMTP_FROM"},
+    "smtp_to": {"type": "str", "default": "", "env": "SMTP_TO"},
+    "smtp_tls": {"type": "bool", "default": True, "env": "SMTP_TLS"},
+    # Security
+    "api_key": {"type": "str", "default": "", "env": "API_KEY", "sensitive": True},
+}
+
+
+def _get_typed_setting(key: str) -> any:
+    """Get a setting with proper type conversion based on schema."""
+    schema = SETTINGS_SCHEMA.get(key, {"type": "str", "default": ""})
+    default = schema["default"]
+    if schema["type"] == "bool":
+        return get_setting_bool(key, default)
+    elif schema["type"] == "int":
+        return get_setting_int(key, default)
+    return get_setting(key, default)
+
+
+def _is_env_override(key: str) -> bool:
+    """Check if a setting is being overridden by an environment variable."""
+    schema = SETTINGS_SCHEMA.get(key, {})
+    env_key = schema.get("env", key.upper())
+    return os.getenv(env_key) is not None
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Get all settings. Sensitive values are masked unless empty."""
+    settings = {}
+    env_overrides = []
+
+    for key, schema in SETTINGS_SCHEMA.items():
+        value = _get_typed_setting(key)
+        is_sensitive = schema.get("sensitive", False)
+
+        # Track which settings are locked by env vars
+        if _is_env_override(key):
+            env_overrides.append(key)
+
+        # Mask sensitive values (show that something is set, but not what)
+        if is_sensitive and value:
+            settings[key] = "••••••••"
+        else:
+            settings[key] = value
+
+    return {
+        "settings": settings,
+        "env_overrides": env_overrides,  # Frontend can disable these fields
+        "sensitive_fields": list(SENSITIVE_SETTINGS)
+    }
+
+
+@app.put("/api/settings")
+def update_settings(updates: SettingsUpdate):
+    """Update settings. Only non-None values are updated. Returns updated settings."""
+    updated_keys = []
+
+    for key, value in updates.model_dump(exclude_none=True).items():
+        if key not in SETTINGS_SCHEMA:
+            continue
+
+        # Don't allow updating settings that are locked by env vars
+        if _is_env_override(key):
+            continue
+
+        # Convert booleans to string for storage
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        else:
+            value = str(value)
+
+        set_setting(key, value)
+        updated_keys.append(key)
+
+    return {
+        "updated": updated_keys,
+        "settings": get_settings()["settings"]
+    }
+
+
+class TestSlskdRequest(BaseModel):
+    url: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+@app.post("/api/settings/test/slskd")
+async def test_slskd_connection(request: TestSlskdRequest = None):
+    """Test connection to slskd server. Uses form values if provided, otherwise saved settings."""
+    # Use provided values or fall back to saved settings
+    url = (request.url if request and request.url else None) or _get_typed_setting("slskd_url")
+    user = (request.username if request and request.username else None) or _get_typed_setting("slskd_user")
+    password = (request.password if request and request.password else None) or _get_typed_setting("slskd_pass")
+
+    if not url:
+        return {"success": False, "message": "slskd URL not configured"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            # Try to authenticate
+            auth_response = await client.post(
+                f"{url.rstrip('/')}/api/v0/session",
+                json={"username": user, "password": password}
+            )
+            if auth_response.status_code == 200:
+                return {"success": True, "message": "Connected to slskd successfully"}
+            else:
+                return {"success": False, "message": f"Authentication failed: {auth_response.status_code}"}
+    except httpx.TimeoutException:
+        return {"success": False, "message": "Connection timed out"}
+    except Exception as e:
+        return {"success": False, "message": f"Connection failed: {str(e)}"}
+
+
+class TestNavidromeRequest(BaseModel):
+    url: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+@app.post("/api/settings/test/navidrome")
+async def test_navidrome_connection(request: TestNavidromeRequest = None):
+    """Test connection to Navidrome server. Uses form values if provided, otherwise saved settings."""
+    url = (request.url if request and request.url else None) or _get_typed_setting("navidrome_url")
+    user = (request.username if request and request.username else None) or _get_typed_setting("navidrome_user")
+    password = (request.password if request and request.password else None) or _get_typed_setting("navidrome_pass")
+
+    if not url:
+        return {"success": False, "message": "Navidrome URL not configured"}
+
+    try:
+        # Navidrome uses subsonic API - ping endpoint
+        import hashlib
+        import secrets
+        salt = secrets.token_hex(8)
+        token = hashlib.md5((password + salt).encode()).hexdigest()
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{url.rstrip('/')}/rest/ping",
+                params={
+                    "u": user,
+                    "t": token,
+                    "s": salt,
+                    "v": "1.16.0",
+                    "c": "MusicGrabber",
+                    "f": "json"
+                }
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("subsonic-response", {}).get("status") == "ok":
+                    return {"success": True, "message": "Connected to Navidrome successfully"}
+                else:
+                    return {"success": False, "message": "Authentication failed"}
+            else:
+                return {"success": False, "message": f"Connection failed: {response.status_code}"}
+    except httpx.TimeoutException:
+        return {"success": False, "message": "Connection timed out"}
+    except Exception as e:
+        return {"success": False, "message": f"Connection failed: {str(e)}"}
+
+
+class TestJellyfinRequest(BaseModel):
+    url: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+@app.post("/api/settings/test/jellyfin")
+async def test_jellyfin_connection(request: TestJellyfinRequest = None):
+    """Test connection to Jellyfin server. Uses form values if provided, otherwise saved settings."""
+    url = (request.url if request and request.url else None) or _get_typed_setting("jellyfin_url")
+    api_key = (request.api_key if request and request.api_key else None) or _get_typed_setting("jellyfin_api_key")
+
+    if not url:
+        return {"success": False, "message": "Jellyfin URL not configured"}
+    if not api_key:
+        return {"success": False, "message": "Jellyfin API key not configured"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{url.rstrip('/')}/System/Info",
+                headers={"X-Emby-Token": api_key}
+            )
+            if response.status_code == 200:
+                data = response.json()
+                server_name = data.get("ServerName", "Jellyfin")
+                return {"success": True, "message": f"Connected to {server_name} successfully"}
+            elif response.status_code == 401:
+                return {"success": False, "message": "Invalid API key"}
+            else:
+                return {"success": False, "message": f"Connection failed: {response.status_code}"}
+    except httpx.TimeoutException:
+        return {"success": False, "message": "Connection timed out"}
+    except Exception as e:
+        return {"success": False, "message": f"Connection failed: {str(e)}"}
+
 
 @app.get("/api/preview/{video_id}")
 def get_preview_url(video_id: str):
@@ -1829,6 +2261,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 f.write("#EXTM3U\n")
                 for file_path in downloaded_files:
                     f.write(f"{file_path}\n")
+            set_file_permissions(m3u_path)
 
             conn.execute(
                 "UPDATE jobs SET m3u_path = ? WHERE id = ?",
@@ -1836,11 +2269,9 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
             )
             conn.commit()
 
-        # Trigger Navidrome rescan if configured
-        if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
-            trigger_navidrome_scan()
-        if JELLYFIN_URL and JELLYFIN_API_KEY:
-            trigger_jellyfin_scan()
+        # Trigger library rescans if configured
+        trigger_navidrome_scan()
+        trigger_jellyfin_scan()
 
         # Update job status based on results
         final_status = "completed"
@@ -1989,6 +2420,9 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             if downloaded_file != final_file:
                 downloaded_file.rename(final_file)
 
+        # Set permissions for NAS/SMB compatibility
+        set_file_permissions(final_file)
+
         # Apply metadata
         mb_metadata = lookup_musicbrainz(artist, title)
         if mb_metadata:
@@ -2010,11 +2444,9 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         else:
             print(f"No lyrics found for {artist} - {title}")
 
-        # Trigger Navidrome rescan if configured
-        if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
-            trigger_navidrome_scan()
-        if JELLYFIN_URL and JELLYFIN_API_KEY:
-            trigger_jellyfin_scan()
+        # Trigger library rescans if configured
+        trigger_navidrome_scan()
+        trigger_jellyfin_scan()
 
         # Update job status
         conn.execute(
@@ -2158,6 +2590,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
                 break
 
         if audio_file:
+            # Set permissions for NAS/SMB compatibility
+            set_file_permissions(audio_file)
+
             # Try to enrich metadata with MusicBrainz
             mb_metadata = lookup_musicbrainz(artist, title)
             if mb_metadata:
@@ -2181,11 +2616,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
             else:
                 print(f"No lyrics found for {artist} - {title}")
 
-        # Trigger Navidrome rescan if configured
-        if NAVIDROME_URL and NAVIDROME_USER and NAVIDROME_PASS:
-            trigger_navidrome_scan()
-        if JELLYFIN_URL and JELLYFIN_API_KEY:
-            trigger_jellyfin_scan()
+        # Trigger library rescans if configured
+        trigger_navidrome_scan()
+        trigger_jellyfin_scan()
 
         # Update job status
         conn.execute(
@@ -2230,13 +2663,20 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
 
 def trigger_navidrome_scan():
     """Trigger a Navidrome library scan via API"""
+    navidrome_url = get_setting("navidrome_url")
+    navidrome_user = get_setting("navidrome_user")
+    navidrome_pass = get_setting("navidrome_pass")
+
+    if not (navidrome_url and navidrome_user and navidrome_pass):
+        return
+
     try:
         # Navidrome uses subsonic API
         salt = uuid.uuid4().hex[:8]
-        token = hashlib.md5(f"{NAVIDROME_PASS}{salt}".encode()).hexdigest()
+        token = hashlib.md5(f"{navidrome_pass}{salt}".encode()).hexdigest()
 
         params = {
-            "u": NAVIDROME_USER,
+            "u": navidrome_user,
             "t": token,
             "s": salt,
             "v": "1.16.1",
@@ -2246,7 +2686,7 @@ def trigger_navidrome_scan():
 
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             client.get(
-                f"{NAVIDROME_URL}/rest/startScan",
+                f"{navidrome_url}/rest/startScan",
                 params=params
             )
     except Exception:
@@ -2255,11 +2695,17 @@ def trigger_navidrome_scan():
 
 def trigger_jellyfin_scan():
     """Trigger a Jellyfin library scan via API"""
+    jellyfin_url = get_setting("jellyfin_url")
+    jellyfin_api_key = get_setting("jellyfin_api_key")
+
+    if not (jellyfin_url and jellyfin_api_key):
+        return
+
     try:
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             client.post(
-                f"{JELLYFIN_URL}/Library/Refresh",
-                headers={"X-Emby-Token": JELLYFIN_API_KEY}
+                f"{jellyfin_url}/Library/Refresh",
+                headers={"X-Emby-Token": jellyfin_api_key}
             )
     except Exception:
         pass  # Non-critical, scan will happen on schedule anyway
@@ -2328,7 +2774,8 @@ def _build_notification_message(
 
 def _should_notify(notification_type: str, status: str, error: str = None) -> bool:
     """Check if notifications should be sent for this type."""
-    enabled_types = [t.strip().lower() for t in NOTIFY_ON.split(",")]
+    notify_on = get_setting("notify_on", "playlists,bulk,errors")
+    enabled_types = [t.strip().lower() for t in notify_on.split(",")]
 
     type_map = {
         "single": "singles",
@@ -2345,37 +2792,47 @@ def _should_notify(notification_type: str, status: str, error: str = None) -> bo
 
 def _send_telegram(message: str):
     """Send notification via Telegram webhook."""
-    if not TELEGRAM_WEBHOOK_URL:
+    telegram_url = get_setting("telegram_webhook_url")
+    if not telegram_url:
         return
 
     try:
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
-            client.post(TELEGRAM_WEBHOOK_URL, json={"text": message})
+            client.post(telegram_url, json={"text": message})
     except Exception:
         pass
 
 
 def _send_email(subject: str, message: str):
     """Send notification via SMTP email."""
-    if not SMTP_HOST or not SMTP_TO:
+    smtp_host = get_setting("smtp_host")
+    smtp_to = get_setting("smtp_to")
+
+    if not smtp_host or not smtp_to:
         return
+
+    smtp_port = get_setting_int("smtp_port", 587)
+    smtp_user = get_setting("smtp_user")
+    smtp_pass = get_setting("smtp_pass")
+    smtp_from = get_setting("smtp_from")
+    smtp_tls = get_setting_bool("smtp_tls", True)
 
     try:
         msg = MIMEText(message)
         msg["Subject"] = subject
-        msg["From"] = SMTP_FROM or SMTP_USER
-        msg["To"] = SMTP_TO
+        msg["From"] = smtp_from or smtp_user
+        msg["To"] = smtp_to
 
-        if SMTP_TLS:
-            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+        if smtp_tls:
+            server = smtplib.SMTP(smtp_host, smtp_port)
             server.starttls()
         else:
-            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+            server = smtplib.SMTP(smtp_host, smtp_port)
 
-        if SMTP_USER and SMTP_PASS:
-            server.login(SMTP_USER, SMTP_PASS)
+        if smtp_user and smtp_pass:
+            server.login(smtp_user, smtp_pass)
 
-        server.sendmail(msg["From"], SMTP_TO.split(","), msg.as_string())
+        server.sendmail(msg["From"], smtp_to.split(","), msg.as_string())
         server.quit()
     except Exception:
         pass
@@ -2488,6 +2945,7 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
             f.write("#EXTM3U\n")
             for file_path in playlist_files:
                 f.write(f"{file_path}\n")
+        set_file_permissions(m3u_path)
 
 
 @app.get("/api/jobs")
@@ -3858,22 +4316,14 @@ def watched_playlist_scheduler():
 
     print(f"Watched playlist scheduler started (checking every {WATCHED_PLAYLIST_CHECK_HOURS} hours)")
 
+    # Brief delay to let the app fully initialise, then check immediately
+    time.sleep(10)
+    print("Scheduler: Running initial check for overdue playlists...")
+
     while _scheduler_running:
         try:
-            # Sleep for the configured interval (in seconds)
-            # Check every minute if we should stop, but only run the check at the interval
-            sleep_seconds = WATCHED_PLAYLIST_CHECK_HOURS * 3600
-            elapsed = 0
-
-            while elapsed < sleep_seconds and _scheduler_running:
-                time.sleep(60)  # Check every minute if we should stop
-                elapsed += 60
-
-            if not _scheduler_running:
-                break
-
             # Run the check
-            print(f"Scheduler: Checking watched playlists...")
+            print("Scheduler: Checking watched playlists...")
             conn = get_db()
             conn.row_factory = sqlite3.Row
 
@@ -3898,8 +4348,13 @@ def watched_playlist_scheduler():
 
         except Exception as e:
             print(f"Scheduler error: {e}")
-            # Continue running even if there's an error
-            time.sleep(60)
+
+        # Sleep until next check interval
+        sleep_seconds = WATCHED_PLAYLIST_CHECK_HOURS * 3600
+        elapsed = 0
+        while elapsed < sleep_seconds and _scheduler_running:
+            time.sleep(60)  # Check every minute if we should stop
+            elapsed += 60
 
 
 def start_scheduler():

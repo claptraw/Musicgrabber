@@ -52,3 +52,10 @@ See `docker-compose.yml` and `README.md` for full list.
 ## Feature Requests
 
 See `.claude/requests.md`
+
+
+## Git
+Add "built with a human and a grumpy-AI combo" to commits rather than stating co-authored
+
+## Docker
+When pushing, trigger a build "docker push g33kphr33k/musicgrabber:latest", etc.

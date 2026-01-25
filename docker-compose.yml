@@ -3,50 +3,41 @@ services:
     build: .
     container_name: music-grabber
     restart: unless-stopped
-    # Chromium needs more shared memory for headless browser - spotify over 100 tracks WILL fail without this
+    # Chromium needs more shared memory for headless browser - Spotify playlists over 100 tracks WILL fail without this
     shm_size: '2gb'
     ports:
       - "38274:8080"
     volumes:
       # Mount your music library - adjust path as needed
-      - /mnt/music:/music
-      # Persist the job database
+      - /path/to/music:/music
+      # Persist the job database and settings
       - ./data:/data
-      # slskd downloads directory for Soulseek integration
-      - /mnt/goodies/Downloads/slskd:/downloads
+      # Optional: slskd downloads directory for Soulseek integration
+      # - /path/to/slskd/downloads:/downloads
     environment:
-      # Music directory inside container
+      # Required paths
       - MUSIC_DIR=/music
-      # Database path
       - DB_PATH=/data/music_grabber.db
-      # Enable MusicBrainz metadata lookup (true/false)
-      - ENABLE_MUSICBRAINZ=true
-      # Default FLAC conversion setting in the UI (true/false)
-      - DEFAULT_CONVERT_TO_FLAC=true
-      # slskd/Soulseek integration
-      - SLSKD_URL=http://192.168.122.109:5030
-      - SLSKD_USER=karl
-      - SLSKD_PASS=k
-      - SLSKD_DOWNLOADS_PATH=/downloads
-      # Optional: Navidrome API for auto-rescan
-      # - NAVIDROME_URL=https://navidrome.URL.com
-      # - NAVIDROME_USER=username
-      # - NAVIDROME_PASS=NavidromePassword!
-      # Optional: Jellyfin API for auto-rescan
-      # - JELLYFIN_URL=http://jellyfin:8096
-      # - JELLYFIN_API_KEY=your-jellyfin-api-key
-      # Optional: Notifications (triggers apply to all channels)
-      # - NOTIFY_ON=playlists,bulk,errors  # Options: singles,playlists,bulk,errors
-      # Telegram
-      # - TELEGRAM_WEBHOOK_URL=https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}
-      # Email (SMTP)
-      # - SMTP_HOST=smtp.example.com
-      # - SMTP_PORT=587
-      # - SMTP_USER=user@example.com
-      # - SMTP_PASS=password
-      # - SMTP_FROM=musicgrabber@example.com
-      # - SMTP_TO=you@example.com
-      # - SMTP_TLS=true
-    # Optional: add to your existing network if running with Navidrome
+      # Optional: slskd downloads path (if using Soulseek)
+      # - SLSKD_DOWNLOADS_PATH=/downloads
+    # Optional: add to your existing network if running with Navidrome/Jellyfin
     # networks:
     #   - your-network
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+# Most settings can now be configured via the Settings tab in the web UI.
+# Settings are stored in the SQLite database and persist across restarts.
+#
+# Environment variables can still be used to override UI settings:
+#   - SLSKD_URL, SLSKD_USER, SLSKD_PASS
+#   - NAVIDROME_URL, NAVIDROME_USER, NAVIDROME_PASS
+#   - JELLYFIN_URL, JELLYFIN_API_KEY
+#   - TELEGRAM_WEBHOOK_URL
+#   - SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_TO, SMTP_TLS
+#   - NOTIFY_ON (singles,playlists,bulk,errors)
+#   - ENABLE_MUSICBRAINZ, ENABLE_LYRICS, DEFAULT_CONVERT_TO_FLAC
+#   - API_KEY (for authentication)
+#
+# When an env var is set, that setting will be locked in the UI.
