@@ -9,7 +9,7 @@ services:
       - "38274:8080"
     volumes:
       # Mount your music library - adjust path as needed
-      - /path/to/music:/music
+      - /mnt/music:/music
       # Persist the job database and settings
       - ./data:/data
       # Optional: slskd downloads directory for Soulseek integration
@@ -41,3 +41,4 @@ services:
 #   - API_KEY (for authentication)
 #
 # When an env var is set, that setting will be locked in the UI.
+      - DEFAULT_CONVERT_TO_FLAC=true

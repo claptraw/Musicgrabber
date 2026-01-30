@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.7.1 (Will update with release date, not when changes were made)
+
+### Added
+- **Watched playlist FLAC controls**: Per-playlist FLAC toggle plus a "Convert to FLAC" option when adding a watched playlist
+- **Queue job details**: Click completed/failed items in the queue to expand and see source URL, queued/completed timestamps, and download duration
+- **Source URL tracking**: Jobs now store the YouTube URL or Soulseek path they were downloaded from
+- **Stale job detection**: Background monitor marks stuck downloading/queued jobs as failed after 15 minutes of no progress. Also runs at startup to catch jobs orphaned by container restarts
+- **YouTube cookie support**: Paste browser cookies in Settings to authenticate yt-dlp requests and avoid YouTube 403 bot-detection blocks. Includes a "Test Cookies" button that validates against YouTube before saving
+- **YouTube 403 auto-retry**: Downloads that hit a 403/Forbidden error automatically retry up to 2 times with increasing backoff. Failed jobs show a clear hint about cookies in the queue error message
+
+### Changed
+- **Watched playlist creation**: Now honours the FLAC setting selected at creation time
+- **Settings env lock badge**: Replaced "ENV" with a clearer "CONFIG LOCKED" pill
+- **Clear Queue**: Now also cleans up stale/stuck downloads, not just completed and failed jobs
+- **YouTube download client**: Default yt-dlp player client set to Android to reduce bot blocks
+- **Bot backoff**: Queue now applies a randomized delay after bot/403 signals to ease rate limits
+
+### Fixed
+- **Env-locked settings**: Greyed out locked fields and added hover hint explaining they are set via docker-compose.yml
+- **Stuck downloads**: Jobs that were permanently stuck in "downloading" status (e.g. from crashed background tasks or container restarts) are now automatically timed out and can be cleared
+- **Queue errors**: Completed jobs now clear stale error messages
+
+
 ## v1.7.0 (2026-01-25)
 
 ### Added

@@ -13,6 +13,7 @@ import subprocess
 import sqlite3
 import threading
 import time
+import random
 import uuid
 from email.mime.text import MIMEText
 from datetime import datetime
@@ -31,7 +32,7 @@ import httpx
 # Application Constants
 # =============================================================================
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -46,6 +47,8 @@ TIMEOUT_SLSKD_SEARCH = 12        # Soulseek search polling
 TIMEOUT_SLSKD_DOWNLOAD = 600     # Soulseek download (10 minutes)
 TIMEOUT_SLSKD_API = 30           # slskd API calls
 TIMEOUT_SPOTIFY_BROWSER = 180    # Headless browser for large playlists (3 minutes)
+STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
+STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
 
 # Bulk import settings
 BULK_IMPORT_SEARCH_DELAY = 1.0           # Seconds between YouTube searches
@@ -64,6 +67,15 @@ SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 
 # File handling
 MAX_FILENAME_LENGTH = 200        # Maximum characters in sanitised filenames
+COOKIES_FILE = Path("/data/cookies.txt")  # yt-dlp cookies file path
+
+# YouTube 403 retry
+YTDLP_403_MAX_RETRIES = 2       # Retry attempts on 403/Forbidden errors
+YTDLP_403_RETRY_DELAY = 3       # Seconds between retries
+
+# YouTube bot/backoff handling
+BOT_BACKOFF_MIN_SECONDS = 5
+BOT_BACKOFF_MAX_SECONDS = 20
 
 # Rate limiting
 RATE_LIMIT_REQUESTS = 60         # Max requests per IP per window
@@ -90,6 +102,10 @@ DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() =
 # slskd auth token cache
 _slskd_token = None
 _slskd_token_expires = 0
+
+# YouTube bot/backoff state
+_bot_backoff_until = 0.0
+_bot_backoff_lock = threading.Lock()
 
 # Ensure directories exist
 SINGLES_DIR.mkdir(parents=True, exist_ok=True)
@@ -125,6 +141,7 @@ def init_db():
             slskd_username TEXT,
             slskd_filename TEXT,
             convert_to_flac INTEGER DEFAULT 1,
+            source_url TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             completed_at TIMESTAMP
         )
@@ -145,6 +162,10 @@ def init_db():
         pass
     try:
         conn.execute("ALTER TABLE jobs ADD COLUMN convert_to_flac INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN source_url TEXT")
     except sqlite3.OperationalError:
         pass
     try:
@@ -251,6 +272,44 @@ def init_db():
 init_db()
 
 
+def cleanup_stale_jobs():
+    """Mark any downloading/queued jobs older than STALE_JOB_TIMEOUT as failed.
+    Handles cases where the background task crashed or the container restarted."""
+    conn = get_db()
+    try:
+        cutoff = datetime.now().timestamp() - STALE_JOB_TIMEOUT
+        cursor = conn.execute(
+            """UPDATE jobs SET status = 'failed', error = 'Timed out (no progress)',
+               completed_at = ?
+               WHERE status IN ('downloading', 'queued')
+               AND created_at < ?""",
+            (datetime.now().isoformat(), datetime.fromtimestamp(cutoff).isoformat())
+        )
+        if cursor.rowcount > 0:
+            print(f"Cleaned up {cursor.rowcount} stale job(s)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _stale_job_monitor():
+    """Background thread that periodically checks for stale jobs."""
+    while True:
+        time.sleep(STALE_JOB_CHECK_INTERVAL)
+        try:
+            cleanup_stale_jobs()
+        except Exception as e:
+            print(f"Stale job monitor error: {e}")
+
+
+# Run once at startup to catch jobs orphaned by a restart
+cleanup_stale_jobs()
+
+# Start periodic monitor
+_stale_monitor_thread = threading.Thread(target=_stale_job_monitor, daemon=True)
+_stale_monitor_thread.start()
+
+
 # =============================================================================
 # Settings Helper - Environment variables override DB values
 # =============================================================================
@@ -311,6 +370,138 @@ def get_all_settings() -> dict:
     settings = {row[0]: row[1] for row in cursor.fetchall()}
     conn.close()
     return settings
+
+
+# =============================================================================
+# YouTube / yt-dlp Helpers
+# =============================================================================
+
+def _has_valid_cookie_entries(cookies_text: str) -> bool:
+    """Check for at least one Netscape-format cookie entry (tabs-separated)."""
+    for raw_line in cookies_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Netscape format can prefix HttpOnly entries with "#HttpOnly_"
+        if line.startswith("#HttpOnly_"):
+            if line.count("\t") >= 6:
+                return True
+            continue
+        # Skip comments
+        if line.startswith("#"):
+            continue
+        if line.count("\t") >= 6:
+            return True
+    return False
+
+
+def _cookie_lines_for_domain_check(cookies_text: str) -> list[str]:
+    """Return cookie lines (including HttpOnly-prefixed entries) for domain checks."""
+    lines = []
+    for raw_line in cookies_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#HttpOnly_"):
+            lines.append(line)
+            continue
+        if line.startswith("#"):
+            continue
+        lines.append(line)
+    return lines
+
+
+def _sync_cookies_file():
+    """Write YouTube cookies from settings to the cookies file on disk.
+    Called when settings are saved and at startup."""
+    cookies = get_setting("youtube_cookies", "")
+    if cookies.strip():
+        if not _has_valid_cookie_entries(cookies):
+            # Avoid writing invalid cookie data that can break yt-dlp
+            if COOKIES_FILE.exists():
+                COOKIES_FILE.unlink()
+            return
+        COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        COOKIES_FILE.write_text(cookies)
+    elif COOKIES_FILE.exists():
+        COOKIES_FILE.unlink()
+
+
+def _android_client_args() -> list[str]:
+    """Return yt-dlp args to force the Android player client."""
+    return ["--extractor-args", "youtube:player_client=android"]
+
+
+def _ytdlp_base_args():
+    """Return common yt-dlp arguments (cookies, extractor args).
+    These should be prepended after 'yt-dlp' in every command."""
+    args = []
+    if COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
+        args.extend(["--cookies", str(COOKIES_FILE)])
+    args.extend(_android_client_args())
+    return args
+
+
+def _is_ytdlp_403(stderr: str) -> bool:
+    """Check if yt-dlp stderr indicates a YouTube 403/bot-block error."""
+    lower = stderr.lower()
+    return "403" in lower or "forbidden" in lower or "sign in to confirm" in lower
+
+
+def _strip_cookies_args(cmd: list[str]) -> list[str]:
+    """Return a command list with any --cookies args removed."""
+    cleaned = []
+    skip_next = False
+    for arg in cmd:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--cookies":
+            skip_next = True
+            continue
+        cleaned.append(arg)
+    return cleaned
+
+
+def _should_retry_without_cookies(stderr: str) -> bool:
+    """Decide if a download failure likely stems from cookie/auth issues."""
+    lower = stderr.lower()
+    return _is_ytdlp_403(stderr) or "downloaded file is empty" in lower or "http error 403" in lower
+
+
+def _get_bot_backoff_window() -> tuple[float, float]:
+    """Return (min,max) seconds for bot backoff, enforcing sane bounds."""
+    min_seconds = float(get_setting_int("youtube_bot_backoff_min", BOT_BACKOFF_MIN_SECONDS))
+    max_seconds = float(get_setting_int("youtube_bot_backoff_max", BOT_BACKOFF_MAX_SECONDS))
+    if min_seconds < 0:
+        min_seconds = 0.0
+    if max_seconds < 0:
+        max_seconds = 0.0
+    if max_seconds < min_seconds:
+        min_seconds, max_seconds = max_seconds, min_seconds
+    return min_seconds, max_seconds
+
+
+def _note_bot_block() -> None:
+    """Record bot-block and extend the global backoff window."""
+    now = time.time()
+    min_seconds, max_seconds = _get_bot_backoff_window()
+    sleep_for = random.uniform(min_seconds, max_seconds) if max_seconds > 0 else 0
+    with _bot_backoff_lock:
+        global _bot_backoff_until
+        _bot_backoff_until = max(_bot_backoff_until, now + sleep_for)
+
+
+def _sleep_if_botted() -> None:
+    """Sleep if a recent bot-block was detected to reduce request pressure."""
+    with _bot_backoff_lock:
+        wait_for = _bot_backoff_until - time.time()
+    if wait_for > 0:
+        time.sleep(wait_for)
+
+
+# Sync cookies file from settings at startup
+_sync_cookies_file()
 
 
 # =============================================================================
@@ -474,6 +665,8 @@ class SettingsUpdate(BaseModel):
     smtp_from: Optional[str] = None
     smtp_to: Optional[str] = None
     smtp_tls: Optional[bool] = None
+    # YouTube
+    youtube_cookies: Optional[str] = None
     # Security
     api_key: Optional[str] = None
 
@@ -1647,7 +1840,7 @@ def get_config():
 # Define which settings are sensitive (should be masked in GET response)
 SENSITIVE_SETTINGS = {
     "slskd_pass", "navidrome_pass", "jellyfin_api_key",
-    "smtp_pass", "telegram_webhook_url", "api_key"
+    "smtp_pass", "telegram_webhook_url", "api_key", "youtube_cookies"
 }
 
 # Define all configurable settings with their types and defaults
@@ -1679,6 +1872,10 @@ SETTINGS_SCHEMA = {
     "smtp_from": {"type": "str", "default": "", "env": "SMTP_FROM"},
     "smtp_to": {"type": "str", "default": "", "env": "SMTP_TO"},
     "smtp_tls": {"type": "bool", "default": True, "env": "SMTP_TLS"},
+    # YouTube
+    "youtube_cookies": {"type": "str", "default": "", "env": "YOUTUBE_COOKIES", "sensitive": True},
+    "youtube_bot_backoff_min": {"type": "int", "default": BOT_BACKOFF_MIN_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MIN"},
+    "youtube_bot_backoff_max": {"type": "int", "default": BOT_BACKOFF_MAX_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MAX"},
     # Security
     "api_key": {"type": "str", "default": "", "env": "API_KEY", "sensitive": True},
 }
@@ -1748,8 +1945,19 @@ def update_settings(updates: SettingsUpdate):
         else:
             value = str(value)
 
+        # Validate cookie format before saving
+        if key == "youtube_cookies" and value.strip() and not _has_valid_cookie_entries(value):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid cookies format. Paste Netscape-format cookies.txt content."
+            )
+
         set_setting(key, value)
         updated_keys.append(key)
+
+    # Sync cookies file if YouTube cookies were updated
+    if "youtube_cookies" in updated_keys:
+        _sync_cookies_file()
 
     return {
         "updated": updated_keys,
@@ -1876,6 +2084,90 @@ async def test_jellyfin_connection(request: TestJellyfinRequest = None):
         return {"success": False, "message": f"Connection failed: {str(e)}"}
 
 
+class TestYouTubeCookiesRequest(BaseModel):
+    cookies: Optional[str] = None
+
+
+@app.post("/api/settings/test/youtube-cookies")
+def test_youtube_cookies(request: TestYouTubeCookiesRequest = None):
+    """Test YouTube cookies by fetching info for a known public video.
+    Uses form value if provided, otherwise the saved cookies."""
+    import tempfile
+
+    cookies_text = (request.cookies if request and request.cookies else None)
+    if cookies_text is None:
+        cookies_text = get_setting("youtube_cookies", "")
+
+    if not cookies_text.strip():
+        return {"success": False, "message": "No cookies provided"}
+
+    # Basic format validation — Netscape cookies.txt should have tab-separated lines
+    if not _has_valid_cookie_entries(cookies_text):
+        return {"success": False, "message": "No cookie entries found (only comments or blank lines)"}
+
+    lines = _cookie_lines_for_domain_check(cookies_text)
+    has_youtube_cookie = any(".youtube.com" in l or ".google.com" in l for l in lines)
+    if not has_youtube_cookie:
+        return {"success": False, "message": "No YouTube or Google cookies found. Export cookies from youtube.com."}
+
+    # Write to a temp file and test with yt-dlp
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write(cookies_text)
+            tmp_path = f.name
+
+        # Use a short, well-known public video (Rick Astley - official)
+        test_cmd = [
+            "yt-dlp",
+            "--cookies", tmp_path,
+            "--dump-json",
+            "--no-warnings",
+            "--no-download",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        ]
+
+        result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
+
+        # Clean up temp file
+        Path(tmp_path).unlink(missing_ok=True)
+
+        if result.returncode == 0:
+            try:
+                info = json.loads(result.stdout)
+                title = info.get("title", "Unknown")
+                return {"success": True, "message": f"Cookies valid — fetched: {title}"}
+            except json.JSONDecodeError:
+                return {"success": True, "message": "Cookies appear valid (got a response)"}
+        else:
+            stderr = result.stderr
+            if _is_ytdlp_403(stderr):
+                return {"success": False, "message": "Cookies rejected by YouTube (403). They may be expired — try re-exporting."}
+            return {"success": False, "message": f"yt-dlp failed: {stderr[:200]}"}
+
+    except subprocess.TimeoutExpired:
+        Path(tmp_path).unlink(missing_ok=True)
+        return {"success": False, "message": "Test timed out"}
+    except Exception as e:
+        return {"success": False, "message": f"Test failed: {str(e)}"}
+
+
+@app.get("/api/settings/youtube-cookies/status")
+def youtube_cookies_status():
+    """Return non-sensitive status for the cookies file."""
+    cookies_text = get_setting("youtube_cookies", "")
+    has_setting = bool(cookies_text.strip())
+    file_exists = COOKIES_FILE.exists()
+    file_size = COOKIES_FILE.stat().st_size if file_exists else 0
+    file_mtime = COOKIES_FILE.stat().st_mtime if file_exists else None
+    return {
+        "has_setting": has_setting,
+        "file_exists": file_exists,
+        "file_size": file_size,
+        "file_mtime": file_mtime,
+        "file_has_valid_entries": _has_valid_cookie_entries(cookies_text) if has_setting else False
+    }
+
+
 @app.get("/api/preview/{video_id}")
 def get_preview_url(video_id: str):
     """Get a streamable audio URL for preview playback
@@ -1886,7 +2178,8 @@ def get_preview_url(video_id: str):
         # Get the best audio stream URL (without downloading)
         cmd = [
             "yt-dlp",
-            "-f", "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
+            *_ytdlp_base_args(),
+            "-f", "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
             "-g",  # Get URL only, don't download
             "--no-warnings",
             f"https://www.youtube.com/watch?v={video_id}"
@@ -1916,6 +2209,7 @@ def search_youtube(query: str, limit: int) -> list[dict]:
 
         cmd = [
             "yt-dlp",
+            *_ytdlp_base_args(),
             "--dump-json",
             "--flat-playlist",
             "--no-warnings",
@@ -2054,18 +2348,26 @@ def download(request: DownloadRequest, background_tasks: BackgroundTasks):
     if request.source == "soulseek" and request.slskd_username and request.slskd_filename:
         source = "soulseek"
 
+    # Build source URL for tracking
+    if source == "soulseek":
+        source_url = f"soulseek://{request.slskd_username}/{request.slskd_filename}" if request.slskd_username else None
+    elif request.download_type == "playlist":
+        source_url = f"https://www.youtube.com/playlist?list={request.video_id}" if request.video_id else None
+    else:
+        source_url = f"https://www.youtube.com/watch?v={request.video_id}" if request.video_id else None
+
     if request.download_type == "playlist":
         conn.execute(
-            """INSERT INTO jobs (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (job_id, request.video_id, title, "queued", "playlist", title, "youtube", int(request.convert_to_flac))
+            """INSERT INTO jobs (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac, source_url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (job_id, request.video_id, title, "queued", "playlist", title, "youtube", int(request.convert_to_flac), source_url)
         )
     else:
         conn.execute(
-            """INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, convert_to_flac)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, convert_to_flac, source_url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (job_id, request.video_id, title, artist or "", "queued", "single", source,
-             request.slskd_username, request.slskd_filename, int(request.convert_to_flac))
+             request.slskd_username, request.slskd_filename, int(request.convert_to_flac), source_url)
         )
     conn.commit()
     conn.close()
@@ -2101,6 +2403,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         # Get playlist information and extract all video IDs
         info_cmd = [
             "yt-dlp",
+            *_ytdlp_base_args(),
             "--dump-json",
             "--flat-playlist",
             "--no-warnings",
@@ -2150,6 +2453,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 # Get detailed video info
                 detail_cmd = [
                     "yt-dlp",
+                    *_ytdlp_base_args(),
                     "--dump-json",
                     "--no-warnings",
                     f"https://www.youtube.com/watch?v={video_id}"
@@ -2178,9 +2482,13 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 # Download with best audio quality
                 output_template = str(artist_dir / f"{sanitize_filename(title)}.%(ext)s")
 
+                flac_args = ["--audio-format", "flac"] if convert_to_flac else []
                 download_cmd = [
                     "yt-dlp",
+                    *_ytdlp_base_args(),
+                    "-f", "bestaudio/best",
                     "-x",
+                    *flac_args,
                     "--audio-quality", "0",
                     "--embed-metadata",
                     "--embed-thumbnail",
@@ -2194,19 +2502,48 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     f"https://www.youtube.com/watch?v={video_id}"
                 ]
 
-                # Only convert to FLAC if requested
-                if convert_to_flac:
-                    download_cmd.insert(2, "--audio-format")
-                    download_cmd.insert(3, "flac")
+                download_result = None
+                download_timed_out = False
+                for attempt in range(1 + YTDLP_403_MAX_RETRIES):
+                    _sleep_if_botted()
+                    try:
+                        download_result = subprocess.run(
+                            download_cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=TIMEOUT_YTDLP_DOWNLOAD
+                        )
+                    except subprocess.TimeoutExpired:
+                        download_timed_out = True
+                        break
+                    if download_result.returncode == 0:
+                        break
+                    if _is_ytdlp_403(download_result.stderr) and attempt < YTDLP_403_MAX_RETRIES:
+                        print(f"YouTube 403 for {video_id}, retrying (attempt {attempt + 1})")
+                        time.sleep(YTDLP_403_RETRY_DELAY * (attempt + 1))
+                    else:
+                        break
 
-                download_result = subprocess.run(
-                    download_cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=TIMEOUT_YTDLP_DOWNLOAD
-                )
+                if download_timed_out or (download_result and _should_retry_without_cookies(download_result.stderr)):
+                    _note_bot_block()
 
-                if download_result.returncode != 0:
+                # If cookies are present and download failed, try once more without cookies
+                has_cookies = COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
+                if (download_timed_out or (download_result and download_result.returncode != 0)) and has_cookies:
+                    if download_timed_out or _should_retry_without_cookies(download_result.stderr):
+                        download_cmd_no_cookies = _strip_cookies_args(download_cmd)
+                        try:
+                            download_result = subprocess.run(
+                                download_cmd_no_cookies,
+                                capture_output=True,
+                                text=True,
+                                timeout=TIMEOUT_YTDLP_DOWNLOAD
+                            )
+                            download_timed_out = False
+                        except subprocess.TimeoutExpired:
+                            download_timed_out = True
+
+                if download_timed_out or download_result.returncode != 0:
                     failed_tracks += 1
                     continue
 
@@ -2283,6 +2620,8 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
             if skipped_tracks:
                 error_message += f", {skipped_tracks} skipped (duplicates)"
 
+        if final_status == "completed":
+            error_message = None
         conn.execute(
             "UPDATE jobs SET status = ?, error = ?, completed_at = ? WHERE id = ?",
             (final_status, error_message, datetime.now().isoformat(), job_id)
@@ -2450,7 +2789,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
         # Update job status
         conn.execute(
-            "UPDATE jobs SET status = ?, completed_at = ? WHERE id = ?",
+            "UPDATE jobs SET status = ?, error = NULL, completed_at = ? WHERE id = ?",
             ("completed", datetime.now().isoformat(), job_id)
         )
         conn.execute(
@@ -2504,13 +2843,18 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
         # First, get video info for proper metadata
         info_cmd = [
             "yt-dlp",
+            *_ytdlp_base_args(),
             "--dump-json",
             "--no-warnings",
             f"https://www.youtube.com/watch?v={video_id}"
         ]
-        
+
         info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
         if info_result.returncode != 0:
+            if _is_ytdlp_403(info_result.stderr):
+                has_cookies = COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
+                hint = "Your cookies may have expired — try re-exporting them in Settings." if has_cookies else "Add browser cookies in Settings to authenticate."
+                raise Exception(f"YouTube blocked this request (403). {hint}")
             raise Exception("Failed to get video info")
 
         info = json.loads(info_result.stdout)
@@ -2549,9 +2893,13 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
         # Download with best audio quality
         output_template = str(artist_dir / f"{sanitize_filename(title)}.%(ext)s")
 
+        flac_args = ["--audio-format", "flac"] if convert_to_flac else []
         download_cmd = [
             "yt-dlp",
+            *_ytdlp_base_args(),
+            "-f", "bestaudio/best",
             "-x",  # Extract audio
+            *flac_args,
             "--audio-quality", "0",  # Best quality
             "--embed-metadata",
             "--embed-thumbnail",
@@ -2565,20 +2913,59 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
             f"https://www.youtube.com/watch?v={video_id}"
         ]
 
-        # Only convert to FLAC if requested
-        if convert_to_flac:
-            download_cmd.insert(2, "--audio-format")
-            download_cmd.insert(3, "flac")
-        
-        download_result = subprocess.run(
-            download_cmd,
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT_YTDLP_DOWNLOAD
-        )
-        
+        download_result = None
+        download_timed_out = False
+        for attempt in range(1 + YTDLP_403_MAX_RETRIES):
+            _sleep_if_botted()
+            try:
+                download_result = subprocess.run(
+                    download_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=TIMEOUT_YTDLP_DOWNLOAD
+                )
+            except subprocess.TimeoutExpired:
+                download_timed_out = True
+                break
+            if download_result.returncode == 0:
+                break
+            if _is_ytdlp_403(download_result.stderr) and attempt < YTDLP_403_MAX_RETRIES:
+                print(f"YouTube 403 for {video_id}, retrying (attempt {attempt + 1})")
+                time.sleep(YTDLP_403_RETRY_DELAY * (attempt + 1))
+            else:
+                break
+
+        if download_timed_out or (download_result and _should_retry_without_cookies(download_result.stderr)):
+            _note_bot_block()
+
+        # If cookies are present and download failed, try once more without cookies
+        has_cookies = COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
+        if (download_timed_out or (download_result and download_result.returncode != 0)) and has_cookies:
+            if download_timed_out or _should_retry_without_cookies(download_result.stderr):
+                download_cmd_no_cookies = _strip_cookies_args(download_cmd)
+                try:
+                    download_result = subprocess.run(
+                        download_cmd_no_cookies,
+                        capture_output=True,
+                        text=True,
+                        timeout=TIMEOUT_YTDLP_DOWNLOAD
+                    )
+                    download_timed_out = False
+                except subprocess.TimeoutExpired:
+                    download_timed_out = True
+
+        if download_timed_out:
+            raise Exception("Download timed out (no progress)")
+
         if download_result.returncode != 0:
-            raise Exception(f"Download failed: {download_result.stderr}")
+            error_msg = f"Download failed: {download_result.stderr}"
+            if _is_ytdlp_403(download_result.stderr):
+                has_cookies = COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
+                if has_cookies:
+                    error_msg = "YouTube blocked this download (403). Your cookies may have expired — try re-exporting them in Settings."
+                else:
+                    error_msg = "YouTube blocked this download (403). Add browser cookies in Settings to authenticate."
+            raise Exception(error_msg)
 
         # Find the downloaded file (extension depends on convert_to_flac setting)
         audio_file = None
@@ -2622,7 +3009,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
 
         # Update job status
         conn.execute(
-            "UPDATE jobs SET status = ?, completed_at = ? WHERE id = ?",
+            "UPDATE jobs SET status = ?, error = NULL, completed_at = ? WHERE id = ?",
             ("completed", datetime.now().isoformat(), job_id)
         )
         conn.execute(
@@ -3028,17 +3415,23 @@ def retry_job(job_id: str, background_tasks: BackgroundTasks):
 
 @app.delete("/api/jobs/cleanup")
 def cleanup_jobs(status: Optional[str] = None):
-    """Delete completed or failed jobs
+    """Delete completed, failed, or stale jobs
 
     Args:
-        status: Optional filter - 'completed', 'failed', or None for both
+        status: Optional filter - 'completed', 'failed', 'stale', or None for all non-active
     """
     conn = get_db()
+
+    # First, mark any stale jobs as failed so they get cleaned up
+    cleanup_stale_jobs()
 
     if status == "completed":
         cursor = conn.execute("DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors')")
     elif status == "failed":
         cursor = conn.execute("DELETE FROM jobs WHERE status = 'failed'")
+    elif status == "stale":
+        # Force-remove anything still stuck in downloading/queued regardless of age
+        cursor = conn.execute("DELETE FROM jobs WHERE status IN ('downloading', 'queued')")
     else:
         cursor = conn.execute("DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors', 'failed')")
 
@@ -3172,6 +3565,7 @@ def process_bulk_import_worker(import_id: str):
                 search_query = f"{artist} {song}"
                 cmd = [
                     "yt-dlp",
+                    *_ytdlp_base_args(),
                     "--dump-json",
                     "--flat-playlist",
                     "--no-warnings",
@@ -3721,6 +4115,7 @@ def bulk_import(request: BulkImportRequest, background_tasks: BackgroundTasks):
             search_query = f"{artist} {song}"
             cmd = [
                 "yt-dlp",
+                *_ytdlp_base_args(),
                 "--dump-json",
                 "--flat-playlist",
                 "--no-warnings",
@@ -3876,6 +4271,7 @@ def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]
 
         info_cmd = [
             "yt-dlp",
+            *_ytdlp_base_args(),
             "--dump-json",
             "--flat-playlist",
             "--no-warnings",

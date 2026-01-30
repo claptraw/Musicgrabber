@@ -147,6 +147,13 @@
                             <option value="720">Monthly</option>
                         </select>
                     </label>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary);" title="Convert new tracks to FLAC as they are added">
+                        <span>Convert to FLAC</span>
+                        <div class="toggle-switch" id="watchedFlacToggle">
+                            <input type="checkbox" id="watchedConvertToFlac" checked>
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
                 </div>
                 <div id="watchedError" style="margin-top: 8px; font-size: 12px; color: var(--error); display: none;"></div>
             </div>
@@ -255,6 +262,19 @@
                     </div>
                     <button type="button" class="test-btn" id="testJellyfinBtn">Test Connection</button>
                     <div id="jellyfinTestResult" class="test-result"></div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3 class="settings-section-title">YouTube</h3>
+                <div class="settings-form">
+                    <div class="settings-row">
+                        <label for="settingYoutubeCookies">Browser Cookies</label>
+                        <textarea id="settingYoutubeCookies" rows="6" placeholder="Paste cookies.txt content here..."></textarea>
+                        <span class="settings-hint">Paste Netscape-format cookies from your browser to avoid YouTube 403 errors. Use a browser extension like "Get cookies.txt LOCALLY" to export.</span>
+                    </div>
+                    <button type="button" class="test-btn" id="testYoutubeCookiesBtn">Test Cookies</button>
+                    <div id="youtubeCookiesTestResult" class="test-result"></div>
                 </div>
             </div>
 
@@ -440,6 +460,7 @@
         const watchedError = document.getElementById('watchedError');
         const refreshAllWatchedBtn = document.getElementById('refreshAllWatchedBtn');
         const watchedScheduleInfo = document.getElementById('watchedScheduleInfo');
+        const watchedConvertToFlac = document.getElementById('watchedConvertToFlac');
         const toast = document.getElementById('toast');
         const tabs = document.querySelectorAll('.tab');
         const lineCounter = document.getElementById('lineCounter');
@@ -463,6 +484,9 @@
                     const savedFlacPref = localStorage.getItem('convertToFlac');
                     if (savedFlacPref === null && typeof config.default_convert_to_flac === 'boolean') {
                         convertToFlacCheckbox.checked = config.default_convert_to_flac;
+                        if (watchedConvertToFlac && !watchedFlacTouched) {
+                            watchedConvertToFlac.checked = config.default_convert_to_flac;
+                        }
                     }
                     // Check if auth is required
                     authRequired = config.auth_required === true;
@@ -479,9 +503,19 @@
             convertToFlacCheckbox.checked = savedFlacPref === 'true';
         }
 
+        if (watchedConvertToFlac) {
+            watchedConvertToFlac.checked = convertToFlacCheckbox.checked;
+            watchedConvertToFlac.addEventListener('change', () => {
+                watchedFlacTouched = true;
+            });
+        }
+
         // Save FLAC preference when changed
         convertToFlacCheckbox.addEventListener('change', () => {
             localStorage.setItem('convertToFlac', convertToFlacCheckbox.checked);
+            if (watchedConvertToFlac && !watchedFlacTouched) {
+                watchedConvertToFlac.checked = convertToFlacCheckbox.checked;
+            }
         });
 
         let currentTab = 'results';
@@ -492,6 +526,7 @@
         const MAX_QUEUE_SIZE = 100;
         let currentBulkImportId = null;
         let bulkImportPollInterval = null;
+        let watchedFlacTouched = false;
 
         // Preview state
         const previewAudio = document.getElementById('previewAudio');
@@ -959,16 +994,29 @@
                 return;
             }
 
-            queueTab.innerHTML = jobs.map(job => `
-                <div class="job-item" data-job-id="${job.id}">
+            queueTab.innerHTML = jobs.map(job => {
+                const hasDetails = job.status === 'completed' || job.status === 'completed_with_errors' || job.status === 'failed';
+                const sourceLabel = job.source === 'soulseek' ? 'Soulseek' : 'YouTube';
+                const sourceUrl = job.source_url || '';
+                const isYouTubeUrl = sourceUrl.startsWith('https://www.youtube.com/');
+                return `
+                <div class="job-item ${hasDetails ? 'has-details' : ''}" data-job-id="${job.id}" ${hasDetails ? 'onclick="toggleJobDetails(this)"' : ''}>
                     <div class="job-status ${job.status}"></div>
                     <div class="job-info">
                         <div class="job-title">${escapeHtml(job.artist ? `${job.artist} - ${job.title}` : job.title)}${job.status === 'completed_with_errors' ? '<span class="job-warning-badge">ISSUES</span>' : ''}</div>
                         <div class="job-meta">${formatJobStatus(job.status)} • ${formatTime(job.created_at)}</div>
                         ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ''}
+                        ${hasDetails ? `
+                        <div class="job-details" style="display:none;">
+                            <div class="job-details-row"><span class="job-details-label">Source:</span> ${escapeHtml(sourceLabel)}</div>
+                            ${sourceUrl ? `<div class="job-details-row"><span class="job-details-label">URL:</span> ${isYouTubeUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sourceUrl)}</a>` : `<span class="job-details-url">${escapeHtml(sourceUrl)}</span>`}</div>` : ''}
+                            <div class="job-details-row"><span class="job-details-label">Queued:</span> ${formatTimeFull(job.created_at)}</div>
+                            ${job.completed_at ? `<div class="job-details-row"><span class="job-details-label">Completed:</span> ${formatTimeFull(job.completed_at)}</div>` : ''}
+                            ${job.completed_at && job.created_at ? `<div class="job-details-row"><span class="job-details-label">Duration:</span> ${formatDuration(job.created_at, job.completed_at)}</div>` : ''}
+                        </div>` : ''}
                     </div>
-                </div>
-            `).join('');
+                </div>`;
+            }).join('');
 
             // If there are active jobs, poll for updates
             const hasActive = jobs.some(j => j.status === 'queued' || j.status === 'downloading');
@@ -994,6 +1042,37 @@
             if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
             if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
             return date.toLocaleDateString();
+        }
+
+        function toggleJobDetails(el) {
+            const details = el.querySelector('.job-details');
+            if (details) {
+                const isOpen = details.style.display !== 'none';
+                details.style.display = isOpen ? 'none' : 'block';
+                el.classList.toggle('expanded', !isOpen);
+            }
+        }
+
+        function formatTimeFull(isoString) {
+            if (!isoString) return '';
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+
+        function formatDuration(startIso, endIso) {
+            if (!startIso || !endIso) return '';
+            const start = new Date(startIso);
+            const end = new Date(endIso);
+            const diffMs = end - start;
+            if (diffMs < 0) return '';
+            const secs = Math.floor(diffMs / 1000);
+            if (secs < 60) return `${secs}s`;
+            const mins = Math.floor(secs / 60);
+            const remainSecs = secs % 60;
+            if (mins < 60) return `${mins}m ${remainSecs}s`;
+            const hrs = Math.floor(mins / 60);
+            const remainMins = mins % 60;
+            return `${hrs}h ${remainMins}m`;
         }
 
         function showToast(message, isError = false) {
@@ -1214,7 +1293,7 @@
         }
 
         async function clearQueue() {
-            if (!confirm('Clear all completed and failed downloads from the queue?')) {
+            if (!confirm('Clear all completed, failed, and stale downloads from the queue?')) {
                 return;
             }
 
@@ -1477,6 +1556,13 @@
                             </div>
                         </div>
                         <div style="display: flex; flex-direction: column; gap: 6px;">
+                            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 11px; color: var(--text-secondary);">
+                                <span>FLAC</span>
+                                <label class="toggle-switch" title="Convert new tracks to FLAC">
+                                    <input type="checkbox" ${p.convert_to_flac ? 'checked' : ''} onchange="updateWatchedPlaylistFlac('${p.id}', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
                             <button onclick="refreshWatchedPlaylist('${p.id}')" style="padding: 6px 12px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;" title="Check for new tracks now">
                                 Refresh
                             </button>
@@ -1528,7 +1614,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         url: url,
-                        refresh_interval_hours: parseInt(watchedIntervalSelect.value)
+                        refresh_interval_hours: parseInt(watchedIntervalSelect.value),
+                        convert_to_flac: watchedConvertToFlac ? watchedConvertToFlac.checked : convertToFlacCheckbox.checked
                     })
                 });
 
@@ -1615,6 +1702,23 @@
             }
         }
 
+        async function updateWatchedPlaylistFlac(playlistId, convertToFlac) {
+            try {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ convert_to_flac: convertToFlac })
+                });
+
+                if (!response.ok) throw new Error('Update failed');
+
+                showToast(convertToFlac ? 'Convert to FLAC enabled' : 'Convert to FLAC disabled');
+            } catch (error) {
+                showToast('Failed to update FLAC setting', true);
+                loadWatchedPlaylists();
+            }
+        }
+
         async function deleteWatchedPlaylist(playlistId, name) {
             if (!confirm(`Stop watching "${name}"? This won't delete any downloaded files.`)) {
                 return;
@@ -1698,6 +1802,7 @@
             'smtp_from': 'settingSmtpFrom',
             'smtp_to': 'settingSmtpTo',
             'smtp_tls': 'settingSmtpTls',
+            'youtube_cookies': 'settingYoutubeCookies',
             'api_key': 'settingApiKey'
         };
 
@@ -1752,7 +1857,10 @@
                     if (isLocked) {
                         element.disabled = true;
                         const row = element.closest('.settings-row') || element.closest('.settings-label');
-                        if (row) row.classList.add('env-locked');
+                        if (row) {
+                            row.classList.add('env-locked');
+                            row.title = 'Set via environment variable (e.g., docker-compose.yml)';
+                        }
                     }
                 }
 
@@ -1883,6 +1991,9 @@
                         if (key === 'default_convert_to_flac') {
                             convertToFlacCheckbox.checked = value;
                             localStorage.setItem('convertToFlac', value);
+                            if (watchedConvertToFlac && !watchedFlacTouched) {
+                                watchedConvertToFlac.checked = value;
+                            }
                         }
                     }
                 }
@@ -1898,9 +2009,12 @@
         }
 
         async function testConnection(service) {
-            const btn = document.getElementById(`test${service.charAt(0).toUpperCase() + service.slice(1)}Btn`);
-            const resultDiv = document.getElementById(`${service}TestResult`);
+            const idMap = { 'youtube-cookies': { btn: 'testYoutubeCookiesBtn', result: 'youtubeCookiesTestResult', label: 'Test Cookies' } };
+            const ids = idMap[service] || { btn: `test${service.charAt(0).toUpperCase() + service.slice(1)}Btn`, result: `${service}TestResult`, label: 'Test Connection' };
+            const btn = document.getElementById(ids.btn);
+            const resultDiv = document.getElementById(ids.result);
 
+            const btnLabel = ids.label;
             btn.disabled = true;
             btn.textContent = 'Testing...';
             resultDiv.className = 'test-result';
@@ -1924,6 +2038,10 @@
                 body = {
                     url: document.getElementById('settingJellyfinUrl').value.trim(),
                     api_key: document.getElementById('settingJellyfinApiKey').value.trim()
+                };
+            } else if (service === 'youtube-cookies') {
+                body = {
+                    cookies: document.getElementById('settingYoutubeCookies').value
                 };
             }
 
@@ -1950,7 +2068,7 @@
                 resultDiv.style.display = 'block';
             } finally {
                 btn.disabled = false;
-                btn.textContent = 'Test Connection';
+                btn.textContent = btnLabel;
             }
         }
 
@@ -1976,6 +2094,7 @@
         document.getElementById('testSlskdBtn').addEventListener('click', () => testConnection('slskd'));
         document.getElementById('testNavidromeBtn').addEventListener('click', () => testConnection('navidrome'));
         document.getElementById('testJellyfinBtn').addEventListener('click', () => testConnection('jellyfin'));
+        document.getElementById('testYoutubeCookiesBtn').addEventListener('click', () => testConnection('youtube-cookies'));
 
         // Sync FLAC toggles: Settings checkbox <-> Header toggle
         const settingDefaultFlac = document.getElementById('settingDefaultFlac');
