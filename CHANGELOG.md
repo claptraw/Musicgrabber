@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.7.1 (Will update with release date, not when changes were made)
+## v1.7.1 (2026-01-30)
 
 ### Added
 - **Watched playlist FLAC controls**: Per-playlist FLAC toggle plus a "Convert to FLAC" option when adding a watched playlist
