@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.8.0 (Update when pushed)
+## v1.8.0 (2026-01-31)
 
 ### Changed
 - **Codebase split**: Monolithic `app.py` (~4778 lines) split into 15 focused modules — `app.py` is now a thin route layer, with main logic in `constants.py`, `models.py`, `db.py`, `settings.py`, `utils.py`, `middleware.py`, `youtube.py`, `slskd.py`, `spotify.py`, `metadata.py`, `notifications.py`, `downloads.py`, `bulk_import.py`, and `watched_playlists.py`
