@@ -1,5 +1,47 @@
 # Changelog
 
+## v1.8.0 (Update when pushed)
+
+### Changed
+- **Codebase split**: Monolithic `app.py` (~4778 lines) split into 15 focused modules — `app.py` is now a thin route layer, with main logic in `constants.py`, `models.py`, `db.py`, `settings.py`, `utils.py`, `middleware.py`, `youtube.py`, `slskd.py`, `spotify.py`, `metadata.py`, `notifications.py`, `downloads.py`, `bulk_import.py`, and `watched_playlists.py`
+- **Notification function renamed**: `send_telegram_notification` → `send_notification`
+- **Dockerfile**: Now copies all Python modules (`COPY *.py`) instead of just `app.py`
+- **YouTube backoff settings**: Warns when min/max are misconfigured and swapped
+- **Title cleaning**: Consolidated title cleanup regexes into a single pass
+- **Search ranking**: YouTube scoring now uses query-aware token matching and stricter artist/title alignment
+- **DB connections**: Switched call sites to a context-managed connection helper to ensure closes on error
+- **YouTube cookies**: Added a Settings upload button and automatic cooldown when cookies appear stale
+- **Background work**: Standardized background downloads/retries to use daemon threads
+- **Background threads**: Centralized the daemon thread helper in `utils` for shared use
+- **Bulk import search**: Reused shared YouTube search parsing/scoring logic to avoid drift
+- **SQLite pooling**: Added a small connection pool for reuse
+- **SQLite pooling fix**: Enabled cross-thread connections for pooled reuse in FastAPI
+- **File permissions**: Audio files now get `0o666` instead of `0o777` (no execute bit)
+- **Bulk import progress**: Progress display now tracks downloads through to completion instead of showing "Complete" while tracks are still downloading
+- **YouTube Topic channels**: Artist names from YouTube auto-generated "- Topic" channels are now cleaned up properly
+- **Rate limiting**: Added periodic cleanup to prevent long-lived IP entries from accumulating
+- **Scheduler jitter**: Watched playlist checks add a small random offset to avoid synchronized polling
+
+### Removed
+- **Sync bulk import endpoint**: Removed `/api/bulk-import` (the sync, event-loop-blocking version). Use `/api/bulk-import-async` instead
+- **Legacy bulk import model**: Removed unused `BulkImportRequest`
+- **Notification alias**: Removed unused `send_telegram_notification` alias
+
+### Fixed
+- **Search scoring**: Removed duplicate cover/remix penalty in YouTube scoring
+- **YouTube ID validation**: Added basic ID validation before building yt-dlp URLs
+- **Title splitting**: Hyphens in compound words (e.g. "T-4") no longer incorrectly split artist from title
+- **Variable safety**: `process_download` no longer uses fragile `dir()` checks for variable existence
+- **Playlist track failures**: Fixed `NameError` (`processed_tracks` -> `completed_tracks`) that caused a single track failure to kill the entire playlist job
+- **Download success path**: Fixed indentation bug where successful first-attempt downloads skipped metadata, library scans, and job completion
+- **Connection pool safety**: `row_factory` is now reset when connections are returned to the pool, preventing leaked state between callers
+- **DB rollback semantics**: Only roll back open transactions on `db_conn()` exit
+- **YouTube cookie test cleanup**: Temp cookie files are now cleaned up on all failure paths
+- **yt-dlp retry logic**: Consolidated cookie/backoff retry logic to avoid drift across download paths
+- **API key compare**: Constant-time comparison for API keys
+- **Search input validation**: Added max length constraints to search queries
+- **MusicBrainz UA**: Standardized the User-Agent URL used for MusicBrainz lookups
+
 ## v1.7.1 (2026-01-30)
 
 ### Added

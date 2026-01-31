@@ -1,0 +1,109 @@
+"""
+MusicGrabber - Pydantic Request/Response Models
+"""
+
+from typing import Optional
+from pydantic import BaseModel, Field
+from constants import DEFAULT_CONVERT_TO_FLAC, MAX_SEARCH_QUERY_LENGTH
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
+    limit: int = 15
+
+class DownloadRequest(BaseModel):
+    video_id: str
+    title: str
+    artist: Optional[str] = None
+    download_type: str = "single"  # "single" or "playlist"
+    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
+    # Soulseek-specific fields
+    source: str = "youtube"  # "youtube" or "soulseek"
+    slskd_username: Optional[str] = None
+    slskd_filename: Optional[str] = None
+
+class SpotifyPlaylistRequest(BaseModel):
+    url: str  # Spotify playlist URL
+
+class AsyncBulkImportRequest(BaseModel):
+    songs: str  # Multi-line text with "Artist - Song" format
+    create_playlist: bool = False
+    playlist_name: Optional[str] = None
+    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+
+class WatchedPlaylistRequest(BaseModel):
+    url: str  # Spotify or YouTube playlist URL
+    refresh_interval_hours: int = 24
+    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+
+class WatchedPlaylistUpdate(BaseModel):
+    refresh_interval_hours: Optional[int] = None
+    enabled: Optional[bool] = None
+    convert_to_flac: Optional[bool] = None
+
+class SettingsUpdate(BaseModel):
+    """Settings that can be updated via the UI"""
+    # General
+    music_dir: Optional[str] = None
+    enable_musicbrainz: Optional[bool] = None
+    enable_lyrics: Optional[bool] = None
+    default_convert_to_flac: Optional[bool] = None
+    # Soulseek/slskd
+    slskd_url: Optional[str] = None
+    slskd_user: Optional[str] = None
+    slskd_pass: Optional[str] = None
+    slskd_downloads_path: Optional[str] = None
+    # Navidrome
+    navidrome_url: Optional[str] = None
+    navidrome_user: Optional[str] = None
+    navidrome_pass: Optional[str] = None
+    # Jellyfin
+    jellyfin_url: Optional[str] = None
+    jellyfin_api_key: Optional[str] = None
+    # Notifications
+    notify_on: Optional[str] = None
+    telegram_webhook_url: Optional[str] = None
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    smtp_user: Optional[str] = None
+    smtp_pass: Optional[str] = None
+    smtp_from: Optional[str] = None
+    smtp_to: Optional[str] = None
+    smtp_tls: Optional[bool] = None
+    # YouTube
+    youtube_cookies: Optional[str] = None
+    # Security
+    api_key: Optional[str] = None
+
+class SearchResult(BaseModel):
+    video_id: str
+    title: str
+    artist: Optional[str] = None
+    channel: str
+    duration: str
+    thumbnail: str
+    is_playlist: bool = False
+    video_count: Optional[int] = None
+    # New fields for multi-source support
+    source: str = "youtube"  # "youtube" or "soulseek"
+    quality: Optional[str] = None  # e.g., "FLAC", "MP3 320", None for YouTube
+    quality_score: int = 40  # For sorting (higher = better)
+    slskd_username: Optional[str] = None
+    slskd_filename: Optional[str] = None
+
+class TestSlskdRequest(BaseModel):
+    url: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+class TestNavidromeRequest(BaseModel):
+    url: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+class TestJellyfinRequest(BaseModel):
+    url: Optional[str] = None
+    api_key: Optional[str] = None
+
+class TestYouTubeCookiesRequest(BaseModel):
+    cookies: Optional[str] = None

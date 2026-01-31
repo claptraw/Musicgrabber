@@ -271,8 +271,11 @@
                     <div class="settings-row">
                         <label for="settingYoutubeCookies">Browser Cookies</label>
                         <textarea id="settingYoutubeCookies" rows="6" placeholder="Paste cookies.txt content here..."></textarea>
-                        <span class="settings-hint">Paste Netscape-format cookies from your browser to avoid YouTube 403 errors. Use a browser extension like "Get cookies.txt LOCALLY" to export.</span>
+                        <span class="settings-hint">Export cookies from youtube.com while logged in using a browser extension like "Get cookies.txt LOCALLY". Cookies typically expire within a few hours — re-export when you start getting 403 errors.</span>
                     </div>
+                    <input type="file" id="youtubeCookiesFile" accept=".txt,text/plain" style="display:none">
+                    <button type="button" class="test-btn" id="uploadYoutubeCookiesBtn">Upload cookies.txt</button>
+                    <button type="button" class="test-btn" id="clearYoutubeCookiesBtn">Clear Cookies</button>
                     <button type="button" class="test-btn" id="testYoutubeCookiesBtn">Test Cookies</button>
                     <div id="youtubeCookiesTestResult" class="test-result"></div>
                 </div>
@@ -1156,16 +1159,25 @@
         }
 
         function showBulkImportProgress(data) {
-            const percent = data.total_tracks > 0 ? Math.round((data.searched / data.total_tracks) * 100) : 0;
-            const isComplete = data.complete || data.status === 'completed' || data.status === 'error';
+            const searchDone = data.status === 'completed' || data.status === 'error';
+            // Show search progress while searching, download progress once searches are done
+            const percent = data.total_tracks > 0
+                ? (searchDone
+                    ? Math.round(((data.completed + data.failed + (data.skipped || 0)) / data.total_tracks) * 100)
+                    : Math.round((data.searched / data.total_tracks) * 100))
+                : 0;
+            const isComplete = data.complete;
 
             let statusText = 'Processing...';
             let statusColor = 'var(--accent)';
             if (data.rate_limited) {
                 statusText = 'Rate limited - waiting...';
                 statusColor = 'var(--warning)';
-            } else if (data.status === 'completed') {
+            } else if (data.complete) {
                 statusText = 'Complete';
+                statusColor = 'var(--accent)';
+            } else if (data.status === 'completed' && data.queued > 0) {
+                statusText = `Downloading... (${data.queued} remaining)`;
                 statusColor = 'var(--accent)';
             } else if (data.status === 'error') {
                 statusText = 'Error';
@@ -1833,6 +1845,10 @@
                     const isLocked = envOverrides.includes(key);
 
                     // Store original value for change detection
+                    if (!element.dataset.defaultPlaceholder) {
+                        element.dataset.defaultPlaceholder = element.placeholder || '';
+                    }
+
                     if (element.type === 'checkbox') {
                         originalValues[key] = value === true || value === 'true';
                     } else if (sensitiveFields.includes(key) && value === '••••••••') {
@@ -1936,6 +1952,8 @@
                                 // Field was "configured (hidden)" - only send if user typed something new
                                 if (value && value !== '') {
                                     updates[key] = value;
+                                } else if (element.dataset.forceClear === 'true') {
+                                    updates[key] = '';
                                 }
                             } else if (value !== originalValues[key]) {
                                 // Field had visible value - send if changed (including to empty)
@@ -1973,14 +1991,21 @@
                 // Update original values and clear sensitive fields after save
                 for (const [key, value] of Object.entries(updates)) {
                     if (sensitiveFields.includes(key)) {
-                        // Mark as "configured but hidden" and clear the field
-                        originalValues[key] = null;
                         const elementId = settingsFieldMap[key];
                         if (elementId) {
                             const element = document.getElementById(elementId);
                             if (element && element.type !== 'checkbox') {
-                                element.value = '';
-                                element.placeholder = 'Configured (hidden)';
+                                if (value === '') {
+                                    originalValues[key] = '';
+                                    element.value = '';
+                                    element.placeholder = element.dataset.defaultPlaceholder || '';
+                                } else {
+                                    // Mark as "configured but hidden" and clear the field
+                                    originalValues[key] = null;
+                                    element.value = '';
+                                    element.placeholder = 'Configured (hidden)';
+                                }
+                                element.dataset.forceClear = '';
                             }
                         }
                     } else {
@@ -2095,6 +2120,49 @@
         document.getElementById('testNavidromeBtn').addEventListener('click', () => testConnection('navidrome'));
         document.getElementById('testJellyfinBtn').addEventListener('click', () => testConnection('jellyfin'));
         document.getElementById('testYoutubeCookiesBtn').addEventListener('click', () => testConnection('youtube-cookies'));
+        const uploadYoutubeCookiesBtn = document.getElementById('uploadYoutubeCookiesBtn');
+        const youtubeCookiesFile = document.getElementById('youtubeCookiesFile');
+        const youtubeCookiesTextarea = document.getElementById('settingYoutubeCookies');
+        const clearYoutubeCookiesBtn = document.getElementById('clearYoutubeCookiesBtn');
+
+        uploadYoutubeCookiesBtn?.addEventListener('click', () => {
+            if (envOverrides.includes('youtube_cookies')) {
+                showToast('YouTube cookies are locked by environment settings', true);
+                return;
+            }
+            youtubeCookiesFile?.click();
+        });
+
+        youtubeCookiesFile?.addEventListener('change', async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            try {
+                const text = await file.text();
+                if (youtubeCookiesTextarea) {
+                    youtubeCookiesTextarea.value = text;
+                }
+                showToast('Cookies loaded, saving...');
+                await saveSettings();
+                showToast('Cookies updated');
+            } catch (error) {
+                console.error('Failed to read cookies file:', error);
+                showToast('Failed to read cookies file', true);
+            } finally {
+                event.target.value = '';
+            }
+        });
+
+        clearYoutubeCookiesBtn?.addEventListener('click', async () => {
+            if (envOverrides.includes('youtube_cookies')) {
+                showToast('YouTube cookies are locked by environment settings', true);
+                return;
+            }
+            if (!youtubeCookiesTextarea) return;
+            youtubeCookiesTextarea.value = '';
+            youtubeCookiesTextarea.dataset.forceClear = 'true';
+            showToast('Clearing cookies...');
+            await saveSettings();
+        });
 
         // Sync FLAC toggles: Settings checkbox <-> Header toggle
         const settingDefaultFlac = document.getElementById('settingDefaultFlac');

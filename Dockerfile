@@ -27,7 +27,7 @@ RUN playwright install chromium --with-deps
 WORKDIR /app
 
 # Copy application files
-COPY app.py /app/
+COPY *.py /app/
 COPY static /app/static/
 COPY entrypoint.sh /app/
 
