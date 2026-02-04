@@ -6,6 +6,7 @@ Searches YouTube, downloads best quality audio with optional conversion to FLAC,
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
@@ -21,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 
 from constants import (
-    VERSION, SINGLES_DIR, DB_PATH, COOKIES_FILE,
+    VERSION, MUSIC_DIR, SINGLES_DIR, DB_PATH, COOKIES_FILE,
     TIMEOUT_YTDLP_INFO,
     TIMEOUT_YTDLP_PREVIEW,
     TIMEOUT_SLSKD_SEARCH,
@@ -85,6 +86,23 @@ def root():
     """Serve the main UI"""
     return FileResponse("static/index.html")
 
+def _is_volume_mounted() -> bool:
+    """Check if MUSIC_DIR appears to be a mounted volume.
+
+    Compares device IDs - if /music is on a different device than /,
+    it's likely a mounted volume. This helps detect misconfigured setups
+    where users forgot to mount their music directory.
+    """
+    try:
+        root_stat = os.stat("/")
+        music_stat = os.stat(MUSIC_DIR)
+        # Different device ID means it's a mount point
+        return root_stat.st_dev != music_stat.st_dev
+    except OSError:
+        # Can't stat, assume it's fine
+        return True
+
+
 @app.get("/api/config")
 def get_config():
     """Expose server configuration and version for the UI"""
@@ -92,7 +110,8 @@ def get_config():
     return {
         "version": VERSION,
         "default_convert_to_flac": get_setting_bool("default_convert_to_flac", True),
-        "auth_required": bool(api_key)
+        "auth_required": bool(api_key),
+        "volume_mounted": _is_volume_mounted()
     }
 
 

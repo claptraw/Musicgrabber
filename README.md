@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.8.2**
+**v1.8.3**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 

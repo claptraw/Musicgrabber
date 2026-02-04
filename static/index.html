@@ -496,6 +496,10 @@
                     if (authRequired && !getApiKey()) {
                         promptForApiKey();
                     }
+                    // Show warning if music directory isn't mounted
+                    if (config.volume_mounted === false) {
+                        showVolumeMountWarning();
+                    }
                 }
             })
             .catch(() => {});
@@ -1083,6 +1087,28 @@
             toast.className = 'toast' + (isError ? ' error' : '');
             toast.classList.add('show');
             setTimeout(() => toast.classList.remove('show'), 2500);
+        }
+
+        function showVolumeMountWarning() {
+            // Don't show if user dismissed it
+            if (localStorage.getItem('dismissedVolumeWarning') === 'true') return;
+
+            const banner = document.createElement('div');
+            banner.className = 'warning-banner';
+            banner.innerHTML = `
+                <div class="warning-content">
+                    <strong>Warning:</strong> Music directory doesn't appear to be mounted.
+                    Downloads will be lost when the container restarts.
+                    <a href="https://gitlab.com/g33kphr33k/musicgrabber#troubleshooting" target="_blank" rel="noopener">See setup guide</a>
+                </div>
+                <button class="warning-dismiss" onclick="dismissVolumeWarning(this.parentElement)">&times;</button>
+            `;
+            document.body.insertBefore(banner, document.body.firstChild);
+        }
+
+        function dismissVolumeWarning(banner) {
+            localStorage.setItem('dismissedVolumeWarning', 'true');
+            banner.remove();
         }
 
         async function bulkImport() {
