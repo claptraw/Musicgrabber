@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from constants import (
@@ -159,7 +159,7 @@ def process_bulk_import_worker(import_id: str):
                         consecutive_successes = 0
 
                         # Update import with rate limit info
-                        rate_limited_until = datetime.now().isoformat()
+                        rate_limited_until = datetime.now(timezone.utc).isoformat()
                         conn.execute(
                             "UPDATE bulk_imports SET rate_limited_until = ? WHERE id = ?",
                             (rate_limited_until, import_id)

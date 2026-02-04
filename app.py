@@ -522,6 +522,22 @@ def download(request: DownloadRequest):
 # Job Management API
 # =============================================================================
 
+def _ensure_utc_suffix(timestamp: str | None) -> str | None:
+    """Ensure timestamp has UTC indicator for proper JS parsing.
+
+    SQLite's CURRENT_TIMESTAMP and datetime('now') return UTC but without
+    timezone suffix. JavaScript's Date() treats such strings as local time.
+    Appending 'Z' tells JS to interpret as UTC.
+    """
+    if not timestamp:
+        return timestamp
+    # Already has timezone info
+    if timestamp.endswith('Z') or '+' in timestamp[-6:]:
+        return timestamp
+    # SQLite format uses space, ISO uses T
+    return timestamp.replace(' ', 'T') + 'Z'
+
+
 @app.get("/api/jobs")
 def get_jobs(limit: int = 20):
     """Get recent jobs"""
@@ -531,7 +547,12 @@ def get_jobs(limit: int = 20):
             "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
             (limit,)
         )
-        jobs = [dict(row) for row in cursor.fetchall()]
+        jobs = []
+        for row in cursor.fetchall():
+            job = dict(row)
+            job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
+            job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
+            jobs.append(job)
     return {"jobs": jobs}
 
 
@@ -546,7 +567,10 @@ def get_job(job_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    return dict(row)
+    job = dict(row)
+    job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
+    job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
+    return job
 
 
 @app.post("/api/jobs/{job_id}/retry")

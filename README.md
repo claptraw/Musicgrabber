@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.7.0**
+**v1.8.2**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -62,6 +62,9 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
          - DB_PATH=/data/music_grabber.db
          - ENABLE_MUSICBRAINZ=true
          - DEFAULT_CONVERT_TO_FLAC=true
+         # Optional: Run as specific user (like *arr stack) for correct file permissions
+         # - PUID=1000
+         # - PGID=1000
          # Optional: Navidrome auto-rescan
          # - NAVIDROME_URL=http://navidrome:4533
          # - NAVIDROME_USER=admin
@@ -139,6 +142,8 @@ Settings are stored in the database and persist across container restarts.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `PUID` | `0` | User ID for file ownership (like *arr stack) |
+| `PGID` | `0` | Group ID for file ownership (like *arr stack) |
 | `MUSIC_DIR` | `/music` | Music library root inside container |
 | `DB_PATH` | `/data/music_grabber.db` | SQLite database path |
 | `ENABLE_MUSICBRAINZ` | `true` | Enable MusicBrainz metadata lookups |
@@ -499,6 +504,27 @@ docker compose up -d
 ```
 
 ## Troubleshooting
+
+**Downloads staying inside container / not appearing in mounted volume?**
+- Ensure your volume mount matches the `MUSIC_DIR` environment variable
+- The default is `MUSIC_DIR=/music`, so mount your music folder to `/music`:
+  ```yaml
+  volumes:
+    - /path/to/your/music:/music  # This MUST match MUSIC_DIR
+  environment:
+    - MUSIC_DIR=/music
+  ```
+- Check inside the container: `docker exec music-grabber ls -la /music/Singles/`
+
+**Files created as root / permission denied?**
+- By default, the container runs as root (UID 0)
+- Set `PUID` and `PGID` to match your host user (like the *arr stack):
+  ```yaml
+  environment:
+    - PUID=1000
+    - PGID=1000
+  ```
+- Find your UID/GID with: `id $USER`
 
 **Downloads failing?**
 - Check `docker compose logs music-grabber`

@@ -7,11 +7,12 @@ Library scan triggers and M3U playlist generation.
 
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -137,6 +138,24 @@ def _mark_watched_track_downloaded(job_id: str) -> None:
             (job_id,)
         )
         conn.commit()
+
+
+def _cleanup_temp_files(artist_dir: Path, sanitized_title: str) -> int:
+    """Remove yt-dlp .temp.* leftover files for a given track. Returns count removed."""
+    removed = 0
+    for temp_file in artist_dir.glob(f"{sanitized_title}.temp.*"):
+        try:
+            temp_file.unlink()
+            removed += 1
+            print(f"Cleaned up temp file: {temp_file.name}")
+        except OSError:
+            pass
+    return removed
+
+
+def _is_permission_error(stderr: str) -> bool:
+    """Check if yt-dlp failed due to a permission denied error on rename."""
+    return "Permission denied" in stderr and ".temp." in stderr
 
 
 def _run_ytdlp_with_retries(
@@ -354,8 +373,19 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 )
 
                 if download_timed_out or not download_result or download_result.returncode != 0:
-                    failed_tracks += 1
-                    continue
+                    # Permission denied on temp file rename — clean up and retry once
+                    stderr = download_result.stderr if download_result else ""
+                    if not download_timed_out and download_result and _is_permission_error(stderr):
+                        sanitized = sanitize_filename(title)
+                        cleaned = _cleanup_temp_files(artist_dir, sanitized)
+                        if cleaned:
+                            print(f"Retrying playlist track after cleaning {cleaned} temp file(s)")
+                            download_result, download_timed_out = _run_ytdlp_with_retries(
+                                download_cmd, TIMEOUT_YTDLP_DOWNLOAD, has_cookies
+                            )
+                    if download_timed_out or not download_result or download_result.returncode != 0:
+                        failed_tracks += 1
+                        continue
 
                 # Find the downloaded file (extension depends on convert_to_flac setting)
                 audio_file = None
@@ -435,7 +465,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
             job_id,
             status=final_status,
             error=error_message,
-            completed_at=datetime.now().isoformat()
+            completed_at=datetime.now(timezone.utc).isoformat()
         )
 
         # Send notification for playlist
@@ -452,7 +482,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         )
 
     except Exception as e:
-        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now().isoformat())
+        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
 
         # Send notification for playlist failure
         send_notification(
@@ -484,7 +514,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             _update_job(
                 job_id,
                 status="completed",
-                completed_at=datetime.now().isoformat(),
+                completed_at=datetime.now(timezone.utc).isoformat(),
                 error=f"Already exists: {existing_file.name}"
             )
             _mark_watched_track_downloaded(job_id)
@@ -586,7 +616,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         trigger_jellyfin_scan()
 
         # Update job status
-        _update_job(job_id, status="completed", error=None, completed_at=datetime.now().isoformat())
+        _update_job(job_id, status="completed", error=None, completed_at=datetime.now(timezone.utc).isoformat())
         _mark_watched_track_downloaded(job_id)
 
         print(f"slskd: Successfully downloaded {artist} - {title}")
@@ -602,7 +632,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
     except Exception as e:
         print(f"slskd download failed: {e}")
-        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now().isoformat())
+        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
 
         # Send notification for Soulseek failure
         send_notification(
@@ -665,7 +695,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
             _update_job(
                 job_id,
                 status="completed",
-                completed_at=datetime.now().isoformat(),
+                completed_at=datetime.now(timezone.utc).isoformat(),
                 error=f"Already exists: {existing_file.name}"
             )
             _mark_watched_track_downloaded(job_id)
@@ -692,13 +722,27 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
 
         if not download_result or download_result.returncode != 0:
             stderr = download_result.stderr if download_result else ""
-            error_msg = f"Download failed: {stderr}"
-            if download_result and _is_ytdlp_403(stderr):
-                if has_cookies:
-                    error_msg = "YouTube blocked this download (403). Your cookies may have expired — try re-exporting them in Settings."
-                else:
-                    error_msg = "YouTube blocked this download (403). Add browser cookies in Settings to authenticate."
-            raise Exception(error_msg)
+
+            # Permission denied on temp file rename — clean up and retry once
+            if download_result and _is_permission_error(stderr):
+                sanitized = sanitize_filename(title)
+                cleaned = _cleanup_temp_files(artist_dir, sanitized)
+                if cleaned:
+                    print(f"Retrying download after cleaning {cleaned} temp file(s)")
+                    download_result, download_timed_out = _run_ytdlp_with_retries(
+                        download_cmd, TIMEOUT_YTDLP_DOWNLOAD, has_cookies
+                    )
+                    if not download_timed_out and download_result and download_result.returncode == 0:
+                        stderr = None  # Clear error — retry succeeded
+
+            if stderr:
+                error_msg = f"Download failed: {stderr}"
+                if download_result and _is_ytdlp_403(stderr):
+                    if has_cookies:
+                        error_msg = "YouTube blocked this download (403). Your cookies may have expired — try re-exporting them in Settings."
+                    else:
+                        error_msg = "YouTube blocked this download (403). Add browser cookies in Settings to authenticate."
+                raise Exception(error_msg)
 
         # Find the downloaded file (extension depends on convert_to_flac setting)
         audio_file = None
@@ -739,7 +783,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
         trigger_jellyfin_scan()
 
         # Update job status
-        _update_job(job_id, status="completed", error=None, completed_at=datetime.now().isoformat())
+        _update_job(job_id, status="completed", error=None, completed_at=datetime.now(timezone.utc).isoformat())
         _mark_watched_track_downloaded(job_id)
 
         # Send notification for single track
@@ -752,7 +796,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
         )
 
     except Exception as e:
-        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now().isoformat())
+        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
 
         # Send notification for failure
         send_notification(

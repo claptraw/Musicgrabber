@@ -9,7 +9,7 @@ from contextlib import contextmanager
 import queue
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from constants import DB_PATH, STALE_JOB_TIMEOUT, STALE_JOB_CHECK_INTERVAL
 
@@ -218,7 +218,7 @@ def cleanup_stale_jobs():
                completed_at = ?
                WHERE status IN ('downloading', 'queued')
                AND created_at < ?""",
-            (datetime.now().isoformat(), datetime.fromtimestamp(cutoff).isoformat())
+            (datetime.now(timezone.utc).isoformat(), datetime.fromtimestamp(cutoff).isoformat())
         )
         if cursor.rowcount > 0:
             print(f"Cleaned up {cursor.rowcount} stale job(s)")

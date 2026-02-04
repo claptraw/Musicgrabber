@@ -1,9 +1,11 @@
 FROM python:3.12-slim
 
 # Install system dependencies
+# gosu is used for PUID/PGID support (running as non-root user)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp (latest version)

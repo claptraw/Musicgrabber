@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.8.2 (2026-02-03)
+
+### Added
+- **PUID/PGID support**: Run the container as a specific user/group for correct file ownership (like *arr stack). Set `PUID=1000` and `PGID=1000` in your environment to match your host user
+- **Preview button visibility**: The play/preview button on search results is now always visible (dimmed) and highlights on hover, making the feature more discoverable
+
+### Fixed
+- **Queue timestamps ignore timezone**: Timestamps in the queue now correctly respect the user's timezone. SQLite stores times in UTC, and the frontend now properly interprets them as UTC before converting to local time
+
+## v1.8.1 (2026-01-31)
+
+### Added
+- **Settings clear buttons**: All text and password settings now have an inline "Clear" button that clears the field and saves in a single click
+
+### Fixed
+- **Download permission errors**: When yt-dlp fails with a permission denied error on temp file rename (e.g. `Brunette.temp.flac` → `Brunette.flac`), leftover `.temp.*` files are now cleaned up and the download is retried automatically. Applies to both single track and playlist downloads
+
 ## v1.8.0 (2026-01-31)
 
 ### Changed

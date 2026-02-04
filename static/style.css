@@ -269,18 +269,34 @@ h1 {
     right: 8px;
     width: 24px;
     height: 24px;
-    background: var(--accent);
+    background: rgba(34, 197, 94, 0.15);
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 10px;
-    opacity: 0;
-    transition: opacity 0.2s;
+    opacity: 0.5;
+    transition: opacity 0.2s, background 0.2s, color 0.2s;
+    color: var(--accent);
+}
+
+.result-item:hover .preview-indicator {
+    opacity: 1;
+    background: var(--accent);
+    color: #000;
+}
+
+.result-item.loading-preview .preview-indicator {
+    opacity: 1;
+    background: var(--text-secondary);
+    color: #000;
+    animation: pulse 0.8s infinite;
 }
 
 .result-item.previewing .preview-indicator {
     opacity: 1;
+    background: var(--accent);
+    color: #000;
     animation: pulse 1s infinite;
 }
 
@@ -813,6 +829,34 @@ h1 {
 .password-toggle:hover {
     border-color: var(--accent);
     color: var(--text-primary);
+}
+
+.setting-clear-btn {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-family: inherit;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.setting-clear-btn:hover {
+    color: var(--error);
+    border-color: var(--error);
+}
+
+.setting-input-group {
+    display: flex;
+    gap: 8px;
+}
+
+.setting-input-group input,
+.setting-input-group .password-field {
+    flex: 1;
 }
 
 .test-btn {
