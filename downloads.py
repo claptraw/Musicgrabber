@@ -5,19 +5,18 @@ Single track, playlist, and Soulseek download handlers.
 Library scan triggers and M3U playlist generation.
 """
 
-import hashlib
 import json
 import os
 import sqlite3
 import subprocess
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 
 from constants import (
+    AUDIO_EXTENSIONS,
     COOKIES_FILE, MUSIC_DIR, SINGLES_DIR,
     TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
     TIMEOUT_FFMPEG_CONVERT, TIMEOUT_HTTP_REQUEST,
@@ -39,6 +38,7 @@ from utils import (
     check_duplicate,
     is_valid_youtube_id,
     set_file_permissions,
+    subsonic_auth_params,
 )
 from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, _strip_cookies_args,
@@ -56,19 +56,7 @@ def trigger_navidrome_scan():
         return
 
     try:
-        # Navidrome uses subsonic API
-        salt = uuid.uuid4().hex[:8]
-        # Subsonic API requires md5(password + salt)
-        token = hashlib.md5(f"{navidrome_pass}{salt}".encode()).hexdigest()
-
-        params = {
-            "u": navidrome_user,
-            "t": token,
-            "s": salt,
-            "v": "1.16.1",
-            "c": "music-grabber",
-            "f": "json"
-        }
+        params = subsonic_auth_params(navidrome_user, navidrome_pass)
 
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             client.get(
@@ -260,7 +248,7 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
         # Construct expected file path (any supported format)
         artist_dir = SINGLES_DIR / sanitize_filename(artist)
         audio_file = None
-        for ext in ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']:
+        for ext in AUDIO_EXTENSIONS:
             candidate = artist_dir / f"{sanitize_filename(title)}{ext}"
             if candidate.exists():
                 audio_file = candidate
@@ -328,7 +316,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         skipped_tracks = 0
         has_cookies = COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
 
-        for _, video in enumerate(videos, 1):
+        for video in videos:
             track_label = video.get("title", "Unknown")
             try:
                 video_id = video["id"]
@@ -390,7 +378,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 # Find the downloaded file (extension depends on convert_to_flac setting)
                 audio_file = None
                 sanitized_title = sanitize_filename(title)
-                for ext in ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']:
+                for ext in AUDIO_EXTENSIONS:
                     candidate = artist_dir / f"{sanitized_title}{ext}"
                     if candidate.exists():
                         audio_file = candidate
@@ -399,6 +387,9 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 if not audio_file:
                     failed_tracks += 1
                     continue
+
+                # Set permissions for NAS/SMB compatibility
+                set_file_permissions(audio_file)
 
                 # Try to enrich metadata with MusicBrainz
                 mb_metadata = lookup_musicbrainz(artist, title)
@@ -747,36 +738,38 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
         # Find the downloaded file (extension depends on convert_to_flac setting)
         audio_file = None
         sanitized_title = sanitize_filename(title)
-        for ext in ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']:
+        for ext in AUDIO_EXTENSIONS:
             candidate = artist_dir / f"{sanitized_title}{ext}"
             if candidate.exists():
                 audio_file = candidate
                 break
 
-        if audio_file:
-            # Set permissions for NAS/SMB compatibility
-            set_file_permissions(audio_file)
+        if not audio_file:
+            raise Exception("Download completed but audio file not found")
 
-            # Try to enrich metadata with MusicBrainz
-            mb_metadata = lookup_musicbrainz(artist, title)
-            if mb_metadata:
-                apply_metadata_to_file(
-                    audio_file,
-                    mb_metadata.get("artist", artist),
-                    mb_metadata.get("title", title),
-                    mb_metadata.get("album", "Singles"),
-                    mb_metadata.get("year")
-                )
-            else:
-                apply_metadata_to_file(audio_file, artist, title, "Singles")
+        # Set permissions for NAS/SMB compatibility
+        set_file_permissions(audio_file)
 
-            # Fetch and save lyrics
-            lyrics = fetch_lyrics(artist, title)
-            if lyrics:
-                save_lyrics_file(audio_file, lyrics)
-                print(f"Saved lyrics for {artist} - {title}")
-            else:
-                print(f"No lyrics found for {artist} - {title}")
+        # Try to enrich metadata with MusicBrainz
+        mb_metadata = lookup_musicbrainz(artist, title)
+        if mb_metadata:
+            apply_metadata_to_file(
+                audio_file,
+                mb_metadata.get("artist", artist),
+                mb_metadata.get("title", title),
+                mb_metadata.get("album", "Singles"),
+                mb_metadata.get("year")
+            )
+        else:
+            apply_metadata_to_file(audio_file, artist, title, "Singles")
+
+        # Fetch and save lyrics
+        lyrics = fetch_lyrics(artist, title)
+        if lyrics:
+            save_lyrics_file(audio_file, lyrics)
+            print(f"Saved lyrics for {artist} - {title}")
+        else:
+            print(f"No lyrics found for {artist} - {title}")
 
         # Trigger library rescans if configured
         trigger_navidrome_scan()

@@ -9,8 +9,6 @@ from contextlib import contextmanager
 import queue
 import threading
 import time
-from datetime import datetime, timezone
-
 from constants import DB_PATH, STALE_JOB_TIMEOUT, STALE_JOB_CHECK_INTERVAL
 
 
@@ -212,13 +210,12 @@ def cleanup_stale_jobs():
     """Mark any downloading/queued jobs older than STALE_JOB_TIMEOUT as failed.
     Handles cases where the background task crashed or the container restarted."""
     with db_conn() as conn:
-        cutoff = datetime.now().timestamp() - STALE_JOB_TIMEOUT
         cursor = conn.execute(
             """UPDATE jobs SET status = 'failed', error = 'Timed out (no progress)',
-               completed_at = ?
+               completed_at = datetime('now')
                WHERE status IN ('downloading', 'queued')
-               AND created_at < ?""",
-            (datetime.now(timezone.utc).isoformat(), datetime.fromtimestamp(cutoff).isoformat())
+               AND created_at < datetime('now', ? || ' seconds')""",
+            (str(-STALE_JOB_TIMEOUT),)
         )
         if cursor.rowcount > 0:
             print(f"Cleaned up {cursor.rowcount} stale job(s)")

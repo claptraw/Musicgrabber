@@ -4,11 +4,9 @@ Music Grabber - A self-hosted music acquisition service
 Searches YouTube, downloads best quality audio with optional conversion to FLAC, drops into Navidrome library
 """
 
-import hashlib
 import json
 import os
 import re
-import secrets
 import sqlite3
 import subprocess
 import tempfile
@@ -53,7 +51,7 @@ from watched_playlists import (
     detect_playlist_platform, fetch_playlist_tracks, refresh_watched_playlist,
     start_scheduler, _fetch_spotify_playlist_embed,
 )
-from utils import hash_track, is_valid_youtube_id, spawn_daemon_thread
+from utils import hash_track, is_valid_youtube_id, spawn_daemon_thread, subsonic_auth_params
 
 # =============================================================================
 # Application Setup
@@ -226,22 +224,12 @@ def test_navidrome_connection(request: TestNavidromeRequest = None):
         return {"success": False, "message": "Navidrome URL not configured"}
 
     try:
-        # Navidrome uses subsonic API - ping endpoint
-        salt = secrets.token_hex(8)
-        # Subsonic API requires md5(password + salt)
-        token = hashlib.md5((password + salt).encode()).hexdigest()
+        params = subsonic_auth_params(user, password)
 
         with httpx.Client(timeout=10) as client:
             response = client.get(
                 f"{url.rstrip('/')}/rest/ping",
-                params={
-                    "u": user,
-                    "t": token,
-                    "s": salt,
-                    "v": "1.16.0",
-                    "c": "MusicGrabber",
-                    "f": "json"
-                }
+                params=params
             )
             if response.status_code == 200:
                 data = response.json()
@@ -821,10 +809,6 @@ def fetch_spotify_playlist(request: SpotifyPlaylistRequest):
     """Fetch track list from a public Spotify playlist or album URL"""
     return _fetch_spotify_playlist_embed(request.url)
 
-
-# =============================================================================
-# Legacy Bulk Import (synchronous)
-# =============================================================================
 
 # =============================================================================
 # Watched Playlists API

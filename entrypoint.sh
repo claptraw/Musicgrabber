@@ -13,7 +13,7 @@ PGID=${PGID:-0}
 echo ""
 echo "=========================================="
 echo "  Music Grabber is starting..."
-echo "  Access at: http://localhost:38274"
+echo "  Listening on port 8080 (map to your desired host port in docker-compose)"
 
 # Only do user/group setup if not running as root (PUID/PGID specified)
 if [ "$PUID" != "0" ] || [ "$PGID" != "0" ]; then

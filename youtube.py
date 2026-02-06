@@ -192,7 +192,13 @@ def _parse_query_artist_title(query: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def score_search_result(title: str, channel: str, query: str | None = None) -> int:
+def score_search_result(
+    title: str,
+    channel: str,
+    query: str | None = None,
+    duration_seconds: float | None = None,
+    view_count: int | None = None,
+) -> int:
     """Score a search result to prioritise official content over live versions
 
     Higher score = better match
@@ -235,9 +241,9 @@ def score_search_result(title: str, channel: str, query: str | None = None) -> i
     if re.search(r'official\s*(music)?\s*video', title_lower):
         score += 25
 
-    # Bonus for official audio
+    # Bonus for official audio (best signal for a music grabber)
     if re.search(r'official\s*audio', title_lower):
-        score += 20
+        score += 35
 
     # Bonus when channel name appears in title (often "Artist - Title")
     if channel_lower and channel_lower in title_lower:
@@ -298,6 +304,30 @@ def score_search_result(title: str, channel: str, query: str | None = None) -> i
     if re.search(r'\b(nightcore|sped up|slowed|8d|reverb|bass boosted)\b', title_lower):
         score -= 45
 
+    # Duration scoring — typical songs are 2-6 minutes
+    if duration_seconds is not None and duration_seconds > 0:
+        if duration_seconds < 30:
+            score -= 40   # Clips, intros, previews
+        elif duration_seconds < 90:
+            score -= 15   # Short clips or snippets
+        elif duration_seconds <= 420:
+            score += 10   # Sweet spot (1:30 – 7:00)
+        elif duration_seconds <= 720:
+            pass          # 7-12 min — could be legit long track
+        elif duration_seconds <= 1200:
+            score -= 20   # 12-20 min — likely extended mix
+        else:
+            score -= 40   # 20+ min — album, mix, or compilation
+
+    # View count — modest tiebreaker, log-scale to avoid domination
+    if view_count is not None and view_count >= 0:
+        if view_count < 1_000:
+            score -= 10   # Suspiciously low
+        elif view_count >= 100_000:
+            score += 5    # Decent signal of legitimacy
+            if view_count >= 10_000_000:
+                score += 5  # Very likely official (+10 total)
+
     return score
 
 
@@ -313,7 +343,13 @@ def parse_youtube_search_results(stdout: str, query: str | None = None) -> list[
 
             title = data.get("title", "Unknown")
             channel = data.get("channel", data.get("uploader", "Unknown"))
-            quality_score = score_search_result(title, channel, query)
+            duration_secs = data.get("duration") or 0
+            views = data.get("view_count")
+            quality_score = score_search_result(
+                title, channel, query,
+                duration_seconds=duration_secs or None,
+                view_count=views,
+            )
 
             results.append({
                 "video_id": data.get("id", ""),

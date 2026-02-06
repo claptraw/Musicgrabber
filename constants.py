@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "1.8.3"
+VERSION = "1.8.4"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -44,6 +44,7 @@ MAX_SEARCH_QUERY_LENGTH = 512    # Max characters allowed in search input
 # File handling
 MAX_FILENAME_LENGTH = 200        # Maximum characters in sanitised filenames
 COOKIES_FILE = Path("/data/cookies.txt")  # yt-dlp cookies file path
+AUDIO_EXTENSIONS = ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']
 
 # YouTube 403 retry
 YTDLP_403_MAX_RETRIES = 2       # Retry attempts on 403/Forbidden errors

@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.8.4 (2026-02-06)
+
+### Fixed
+- **Playlist download permissions**: Audio files downloaded as part of a playlist now get `set_file_permissions` applied, matching single track and Soulseek downloads. Previously, playlist tracks had different permissions on NAS/SMB shares
+- **Silent download success with no file**: `process_download` now raises an error if no audio file is found after yt-dlp completes, instead of silently marking the job as completed with no file on disk
+- **Stale job timestamp mismatch**: Stale job cleanup now uses SQLite's native `datetime()` functions instead of Python `isoformat()`, fixing a string comparison mismatch between `T` and space separators
+- **Scheduler crash on bad playlist URL**: `fetch_playlist_tracks` now guards the `list=` regex match, preventing an `AttributeError` crash if a stored YouTube URL has no `list=` parameter
+
+### Changed
+- **Search scoring: duration awareness**: Results are now scored by duration — typical song length (1:30–7:00) gets a bonus, while clips (<30s), snippets (<90s), extended mixes (12–20min), and full albums (20min+) are penalised
+- **Search scoring: view count tiebreaker**: View count is now a modest scoring signal — suspiciously low views (<1K) get a small penalty, high views (100K+) get a small bonus. Deliberately conservative to avoid penalising niche artists
+- **Search scoring: Official Audio boost**: "Official Audio" bonus increased from +20 to +35, matching the Topic channel bonus — both signal official studio audio, which is the ideal source for a music grabber
+- **Title cleaning: trailing suffixes**: `clean_title()` now strips unbracketed trailing suffixes like "- Official Audio", "- Official Music Video", and "- Official Lyric Video", plus any dangling separators left after cleanup
+- **Audio extensions centralised**: The repeated `['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']` list (5 occurrences) is now a single `AUDIO_EXTENSIONS` constant in `constants.py`
+- **Navidrome auth deduplicated**: Subsonic API auth logic (salt, MD5 token, params) extracted to `subsonic_auth_params()` in `utils.py`, fixing inconsistent API versions and client names between test and scan endpoints
+- **Bulk import thread pool**: Downloads spawned by bulk imports now use a `ThreadPoolExecutor(max_workers=3)` instead of unbounded daemon threads, preventing hundreds of concurrent yt-dlp subprocesses on large imports
+- **Bulk import DB connection**: The bulk import worker now acquires and releases DB connections per query instead of holding one for its entire lifetime (which could be hours)
+- **Spotify browser script extracted**: The 130-line Playwright f-string with double-brace escaping is now a standalone `spotify_browser.py` script that receives parameters via environment variables — proper syntax highlighting, linting, and no escaping bugs
+- **Dockerfile version pins**: Python packages now pinned with compatible release specifiers (`~=`) for reproducible builds
+- **Entrypoint banner**: Replaced hardcoded `http://localhost:38274` (Docker host port) with a message showing the actual container port (8080)
+
+### Removed
+- **beautifulsoup4**: Removed unused dependency from Dockerfile (~500KB saved)
+- **Dead section header**: Removed empty "Legacy Bulk Import (synchronous)" comment block from `app.py`
+- **Unused enumerate**: Removed discarded index variable in playlist download loop
+
 ## v1.8.3 (2026-02-04)
 
 ### Added

@@ -168,7 +168,10 @@ def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]
 
     elif platform == "youtube":
         # Use yt-dlp to get playlist info
-        playlist_id = re.search(r'list=([a-zA-Z0-9_-]+)', url).group(1)
+        m = re.search(r'list=([a-zA-Z0-9_-]+)', url)
+        if not m:
+            raise HTTPException(status_code=400, detail="Invalid YouTube playlist URL: no list= parameter found")
+        playlist_id = m.group(1)
 
         info_cmd = [
             "yt-dlp",

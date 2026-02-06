@@ -7,11 +7,12 @@ Filename sanitisation, title cleaning, track hashing, duplicate detection.
 import hashlib
 import os
 import re
+import secrets
 import threading
 from pathlib import Path
 from typing import Optional
 
-from constants import MAX_FILENAME_LENGTH, SINGLES_DIR
+from constants import AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH, SINGLES_DIR
 
 
 def sanitize_filename(name: str) -> str:
@@ -37,6 +38,17 @@ def clean_title(title: str) -> str:
     )
     # Remove standalone "Official (Music) Video" text
     title = re.sub(r'\s*official\s*(music\s*)?video', '', title, flags=re.IGNORECASE)
+
+    # Remove trailing dash-separated suffixes: "- Official Audio", "- Official Music Video", etc.
+    title = re.sub(
+        r'\s+[-–—]\s+(?:official\s+)?(?:music\s+)?(?:audio|video|lyric\s+video)\s*$',
+        '',
+        title,
+        flags=re.IGNORECASE
+    )
+
+    # Strip any trailing dangling separators left after cleanup (e.g. "Title -")
+    title = re.sub(r'\s+[-–—]\s*$', '', title)
 
     return title.strip()
 
@@ -101,15 +113,15 @@ def check_duplicate(artist: str, title: str) -> Optional[Path]:
         sanitized_title = sanitize_filename(title)
 
         # Check for exact filename match in any supported format
-        for ext in ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']:
+        for ext in AUDIO_EXTENSIONS:
             expected_file = artist_dir / f"{sanitized_title}{ext}"
             if expected_file.exists():
                 return expected_file
 
         # Check for similar files (case-insensitive) in any audio format
         title_lower = sanitized_title.lower()
-        for ext in ['*.flac', '*.opus', '*.m4a', '*.webm', '*.mp3', '*.ogg']:
-            for file in artist_dir.glob(ext):
+        for ext in AUDIO_EXTENSIONS:
+            for file in artist_dir.glob(f"*{ext}"):
                 if file.stem.lower() == title_lower:
                     return file
 
@@ -124,6 +136,20 @@ def set_file_permissions(file_path: Path):
         os.chmod(file_path, 0o666)
     except OSError:
         pass  # Silently ignore permission errors (may not have rights)
+
+
+def subsonic_auth_params(username: str, password: str) -> dict:
+    """Build Subsonic API authentication parameters (for Navidrome)."""
+    salt = secrets.token_hex(8)
+    token = hashlib.md5(f"{password}{salt}".encode()).hexdigest()
+    return {
+        "u": username,
+        "t": token,
+        "s": salt,
+        "v": "1.16.1",
+        "c": "MusicGrabber",
+        "f": "json",
+    }
 
 
 def spawn_daemon_thread(target, *args) -> None:

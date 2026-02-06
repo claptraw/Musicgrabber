@@ -14,13 +14,12 @@ RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o 
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \
-    fastapi \
-    uvicorn[standard] \
-    httpx \
-    pydantic \
-    mutagen \
-    beautifulsoup4 \
-    playwright
+    fastapi~=0.128.0 \
+    uvicorn[standard]~=0.40.0 \
+    httpx~=0.28.1 \
+    pydantic~=2.12.5 \
+    mutagen~=1.47.0 \
+    playwright~=1.58.0
 
 # Install Playwright browsers (Chromium only to save space)
 RUN playwright install chromium --with-deps
