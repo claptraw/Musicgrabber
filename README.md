@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.8.3**
+**v1.8.5**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -13,6 +13,7 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
 ## Features
 
 - **Mobile-friendly UI** — designed for quick searches from your phone
+- **Dark/light theme** — toggle between themes with the moon/sun button; preference saved per browser
 - **Settings tab** — configure all integrations via UI (no docker-compose editing required)
 - **Optional API authentication** — protect your instance with an API key
 - **Hover to preview** — on desktop, hover over a result for 2 seconds to hear a preview
@@ -22,12 +23,17 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
 - **Watched playlists** — monitor Spotify/YouTube playlists and auto-download new tracks
 - **Bulk import** — paste or upload a text file of songs to auto-search and queue
 - **Best quality FLAC** — extracts highest available audio quality
+- **Minimum bitrate enforcement** — optionally reject downloads below a configurable bitrate threshold
+- **Audio quality display** — completed downloads show codec and bitrate in the queue details
 - **Enhanced metadata** — MusicBrainz lookups with fallback to cleaned YouTube data
 - **Synced lyrics** — automatic lyrics fetching from LRClib, saved as `.lrc` files
 - **Auto-organise** — creates `Singles/Artist/Title.flac` structure
 - **Duplicate detection** — skips already-downloaded tracks
-- **Job queue** — track download progress, retry failed jobs, manage history
-- **Optional Navidrome integration** — auto-triggers library rescan
+- **Job queue** — track download progress, retry failed jobs, re-download or delete files from the queue
+- **Statistics dashboard** — download counts, success rate, daily chart, top artists, search analytics
+- **Webhook notifications** — get notified via Telegram, email, or generic webhook on download events
+- **YouTube cookie support** — upload browser cookies in Settings to bypass YouTube bot detection
+- **Optional Navidrome/Jellyfin integration** — auto-triggers library rescan after downloads
 
 ## Why FLAC?
 
@@ -38,6 +44,10 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
 | Search & Results | Bulk Import | Queue |
 |:---:|:---:|:---:|
 | ![Search and Results](assets/SearchAndResults.png) | ![Bulk Import](assets/BulkImport.png) | ![Queue](assets/Queue.png) |
+
+| Watched Playlists | Settings | Dark & Light Theme |
+|:---:|:---:|:---:|
+| ![Watched Playlists](assets/WatchedPlaylists.png) | ![Settings](assets/SettingsTab.png) | ![Dark and Light Theme](assets/NightAndDay.png) |
 
 ## Quick Start
 
@@ -75,6 +85,7 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
          # Optional: Notifications
          # - NOTIFY_ON=playlists,bulk,errors
          # - TELEGRAM_WEBHOOK_URL=https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}
+         # - WEBHOOK_URL=https://your-webhook-endpoint.com/hook
          # - SMTP_HOST=smtp.example.com
          # - SMTP_PORT=587
          # - SMTP_USER=user@example.com
@@ -127,11 +138,12 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
 
 The easiest way to configure MusicGrabber is via the **Settings tab** in the UI. You can configure:
 
-- **General**: MusicBrainz metadata, lyrics fetching, default FLAC conversion
+- **General**: MusicBrainz metadata, lyrics fetching, default FLAC conversion, minimum audio bitrate
 - **Soulseek (slskd)**: URL, credentials, downloads path
 - **Navidrome**: URL and credentials for library refresh
 - **Jellyfin**: URL and API key for library refresh
-- **Notifications**: Telegram webhook and SMTP settings
+- **Notifications**: Telegram webhook, generic webhook URL, and SMTP settings
+- **YouTube**: Upload browser cookies for authenticated downloads
 - **Security**: API key for authentication
 
 Settings are stored in the database and persist across container restarts.
@@ -149,6 +161,9 @@ Settings are stored in the database and persist across container restarts.
 | `ENABLE_MUSICBRAINZ` | `true` | Enable MusicBrainz metadata lookups |
 | `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
 | `DEFAULT_CONVERT_TO_FLAC` | `true` | Convert downloads to FLAC by default (can be toggled per-download in UI) |
+| `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
+| `WEBHOOK_URL` | - | Generic webhook URL — receives JSON POST on download completion/failure |
+| `YTDLP_PLAYER_CLIENT` | *(empty)* | Override yt-dlp YouTube player client (expert-only, e.g. `android`, `web,android`) |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
 | `NAVIDROME_USER` | - | Navidrome username for API |
 | `NAVIDROME_PASS` | - | Navidrome password for API |
@@ -199,7 +214,7 @@ Get your API key from Jellyfin: Dashboard → API Keys → Add.
 
 ### Notifications (Optional)
 
-Get notified when downloads complete or fail via Telegram and/or email. Configure one or both channels, the same triggers apply to all.
+Get notified when downloads complete or fail via Telegram, email, or a generic webhook. Configure one or more channels — the same triggers apply to all.
 
 **Notification triggers** (`NOTIFY_ON`):
 
@@ -239,6 +254,15 @@ environment:
 ```
 
 `SMTP_TO` can be a comma-separated list for multiple recipients.
+
+**Generic webhook:**
+
+Set `WEBHOOK_URL` to any URL. MusicGrabber sends a JSON POST with event type, title, artist, status, source, and track counts. Useful for custom integrations (Discord bots, Home Assistant, etc.).
+
+```yaml
+environment:
+  - WEBHOOK_URL=https://your-endpoint.com/hook
+```
 
 ### Soulseek Integration (Optional)
 
@@ -378,9 +402,11 @@ Supports various dash formats: `-`, `–`, `—`
 ### Queue Management
 
 - **View progress** — See queued, in-progress, completed, and failed jobs
+- **Job details** — Click completed/failed jobs to see source, timestamps, download duration, and audio quality
+- **Re-download** — Re-queue any completed or failed download (overwrites existing file)
+- **Delete from library** — Remove the audio file and lyrics directly from the queue
 - **Retry failed** — Click retry on individual failed downloads
 - **Clear queue** — Remove all remembered jobs with the "Clear Queue" button
-- **Bulk cleanup** — Use API endpoints to remove completed/failed jobs in bulk
 
 ## File Structure
 
@@ -471,14 +497,15 @@ music.yourdomain.com {
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
 | `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (YouTube only) |
 | `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "download_type": "single/playlist"}`) |
-| `POST` | `/api/bulk-import` | Bulk import songs (synchronous, blocks until searched) |
 | `POST` | `/api/bulk-import-async` | Bulk import songs (async, returns immediately) |
 | `GET` | `/api/bulk-import/{id}/status` | Get async bulk import progress |
 | `GET` | `/api/bulk-imports` | List recent bulk imports |
 | `POST` | `/api/spotify-playlist` | Fetch tracks from Spotify playlist/album URL |
+| `GET` | `/api/stats` | Get statistics (download counts, daily chart, top artists, search analytics) |
 | `GET` | `/api/jobs` | List recent jobs |
 | `GET` | `/api/jobs/{id}` | Get job status |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
+| `DELETE` | `/api/jobs/{id}/file` | Delete downloaded file and lyrics from library |
 | `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`) |
 | `GET` | `/api/watched-playlists` | List all watched playlists |
 | `POST` | `/api/watched-playlists` | Add a playlist to watch |
@@ -487,6 +514,9 @@ music.yourdomain.com {
 | `DELETE` | `/api/watched-playlists/{id}` | Remove a watched playlist |
 | `POST` | `/api/watched-playlists/{id}/refresh` | Check playlist for new tracks |
 | `POST` | `/api/watched-playlists/check-all` | Check all watched playlists |
+| `GET` | `/api/watched-playlists/schedule` | Get next scheduled check time |
+| `POST` | `/api/settings/test/youtube-cookies` | Test YouTube cookie validity |
+| `GET` | `/api/settings/youtube-cookies/status` | Get cookie upload status |
 
 ## Updating yt-dlp
 
@@ -526,7 +556,13 @@ docker compose up -d
   ```
 - Find your UID/GID with: `id $USER`
 
-**Downloads failing?**
+**Downloads failing with 403 errors?**
+- YouTube's bot detection may be blocking requests
+- Go to Settings → YouTube and upload browser cookies (export from a browser where you're signed into YouTube)
+- Use a cookie export extension like "Get cookies.txt LOCALLY" (Chrome/Firefox)
+- Cookies expire periodically — re-export if downloads start failing again
+
+**Downloads failing for other reasons?**
 - Check `docker compose logs music-grabber`
 - YouTube may have changed something — try updating yt-dlp
 - Some videos are region-locked or age-restricted
