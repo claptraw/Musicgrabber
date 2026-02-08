@@ -25,8 +25,9 @@ from constants import (
     TIMEOUT_YTDLP_PREVIEW,
     TIMEOUT_SLSKD_SEARCH,
     WATCHED_PLAYLIST_CHECK_HOURS,
+    SEARCH_LOG_RETENTION_DAYS,
 )
-from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs
+from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs, cleanup_old_search_logs
 from settings import (
     get_setting, get_setting_bool, set_setting,
     SETTINGS_SCHEMA, SENSITIVE_SETTINGS, _get_typed_setting, _is_env_override,
@@ -66,6 +67,7 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Initialise database and start background monitors
 init_db()
+cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
 start_stale_job_monitor()
 
 # Sync cookies file from settings at startup
@@ -355,6 +357,176 @@ def youtube_cookies_status():
 
 
 # =============================================================================
+# Statistics API
+# =============================================================================
+
+def _extract_search_artist(query: str) -> str | None:
+    """Best-effort artist extraction from common search query formats."""
+    q = (query or "").strip()
+    if not q:
+        return None
+
+    # "Artist - Song", "Artist – Song", "Artist — Song"
+    split_match = re.split(r"\s*[-–—]\s*", q, maxsplit=1)
+    if len(split_match) == 2 and split_match[0].strip():
+        return split_match[0].strip()[:120]
+
+    # Fallback: first 3 words is usually artist-ish, avoids giant free text blobs
+    words = q.split()
+    if not words:
+        return None
+    return " ".join(words[:3])[:120]
+
+
+def _log_search(query: str, result_count: int, source: str = "youtube") -> str:
+    """Log search requests for dashboard analytics and return tracking token."""
+    artist = _extract_search_artist(query)
+    search_token = uuid.uuid4().hex
+    with db_conn() as conn:
+        conn.execute(
+            "INSERT INTO search_logs (query, artist, result_count, source, search_token) VALUES (?, ?, ?, ?, ?)",
+            (query.strip(), artist, int(result_count), source, search_token)
+        )
+        conn.commit()
+    return search_token
+
+
+def _validated_search_token(search_token: str | None) -> str | None:
+    """Only accept server-issued search tokens that exist in search_logs."""
+    token = (search_token or "").strip().lower()
+    if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
+        return None
+
+    with db_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM search_logs WHERE search_token = ? LIMIT 1",
+            (token,)
+        ).fetchone()
+    return token if row else None
+
+
+@app.get("/api/stats")
+def get_stats():
+    """Return download statistics for the dashboard."""
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+
+        # Overall counts by status
+        rows = conn.execute(
+            "SELECT status, COUNT(*) as count FROM jobs GROUP BY status"
+        ).fetchall()
+        status_counts = {r["status"]: r["count"] for r in rows}
+
+        # Total completed tracks
+        total = sum(status_counts.values())
+        completed = status_counts.get("completed", 0) + status_counts.get("completed_with_errors", 0)
+        failed = status_counts.get("failed", 0)
+
+        # Source breakdown (youtube vs soulseek)
+        source_rows = conn.execute(
+            "SELECT COALESCE(source, 'youtube') as source, COUNT(*) as count "
+            "FROM jobs WHERE status IN ('completed', 'completed_with_errors') "
+            "GROUP BY source"
+        ).fetchall()
+        sources = {r["source"]: r["count"] for r in source_rows}
+
+        # Downloads completed per day (last 30 days)
+        daily_rows = conn.execute(
+            "SELECT DATE(completed_at) as day, COUNT(*) as count "
+            "FROM jobs WHERE status IN ('completed', 'completed_with_errors') "
+            "AND completed_at IS NOT NULL "
+            "AND completed_at >= DATE('now', '-30 days') "
+            "GROUP BY day ORDER BY day"
+        ).fetchall()
+        daily = [{"day": r["day"], "count": r["count"]} for r in daily_rows]
+
+        # Top artists (by completed downloads)
+        artist_rows = conn.execute(
+            "SELECT artist, COUNT(*) as count "
+            "FROM jobs WHERE status IN ('completed', 'completed_with_errors') "
+            "AND artist IS NOT NULL AND artist != '' "
+            "GROUP BY artist ORDER BY count DESC LIMIT 10"
+        ).fetchall()
+        top_artists = [{"artist": r["artist"], "count": r["count"]} for r in artist_rows]
+
+        # Recent downloads (last 10 completed)
+        recent_rows = conn.execute(
+            "SELECT title, artist, source, completed_at "
+            "FROM jobs WHERE status IN ('completed', 'completed_with_errors') "
+            "ORDER BY completed_at DESC LIMIT 10"
+        ).fetchall()
+        recent = [
+            {"title": r["title"], "artist": r["artist"], "source": r["source"], "completed_at": r["completed_at"]}
+            for r in recent_rows
+        ]
+
+        # Search history stats
+        search_summary = conn.execute(
+            "SELECT COUNT(*) as total_searches, "
+            "SUM(CASE WHEN result_count > 0 THEN 1 ELSE 0 END) as successful_searches "
+            "FROM search_logs"
+        ).fetchone()
+        total_searches = int(search_summary["total_searches"] or 0)
+        successful_searches = int(search_summary["successful_searches"] or 0)
+
+        searched_artist_rows = conn.execute(
+            "SELECT artist, COUNT(*) as count, "
+            "SUM(CASE WHEN result_count > 0 THEN 1 ELSE 0 END) as successful_searches "
+            "FROM search_logs "
+            "WHERE artist IS NOT NULL AND artist != '' "
+            "GROUP BY artist "
+            "ORDER BY count DESC, artist ASC "
+            "LIMIT 10"
+        ).fetchall()
+        top_searched_artists = [
+            {
+                "artist": r["artist"],
+                "count": int(r["count"]),
+                "successful_searches": int(r["successful_searches"] or 0),
+            }
+            for r in searched_artist_rows
+        ]
+
+        search_to_download = conn.execute(
+            "SELECT COUNT(*) as converted_searches "
+            "FROM search_logs s "
+            "WHERE EXISTS ("
+            "  SELECT 1 FROM jobs j "
+            "  WHERE j.search_token = s.search_token "
+            "  AND j.status IN ('completed', 'completed_with_errors')"
+            ")"
+        ).fetchone()
+        converted_searches = int(search_to_download["converted_searches"] or 0)
+
+        # Storage usage
+        storage_bytes = 0
+        file_count = 0
+        try:
+            for f in SINGLES_DIR.rglob("*"):
+                if f.is_file() and f.suffix.lower() in ('.flac', '.opus', '.m4a', '.mp3', '.ogg', '.webm'):
+                    storage_bytes += f.stat().st_size
+                    file_count += 1
+        except OSError:
+            pass
+
+    return {
+        "total_jobs": total,
+        "completed": completed,
+        "failed": failed,
+        "sources": sources,
+        "daily": daily,
+        "top_artists": top_artists,
+        "total_searches": total_searches,
+        "successful_searches": successful_searches,
+        "converted_searches": converted_searches,
+        "top_searched_artists": top_searched_artists,
+        "recent": recent,
+        "storage_bytes": storage_bytes,
+        "file_count": file_count,
+    }
+
+
+# =============================================================================
 # Search API
 # =============================================================================
 
@@ -388,7 +560,8 @@ def get_preview_url(video_id: str):
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Preview request timed out")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"preview error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get preview URL")
 
 
 @app.post("/api/search")
@@ -415,12 +588,19 @@ def search(request: SearchRequest):
                 slskd_filename=item["slskd_filename"],
             ))
 
-        return {"results": final_results, "slskd_enabled": slskd_enabled()}
+        search_token = None
+        try:
+            search_token = _log_search(request.query, len(final_results), source="youtube")
+        except Exception as log_error:
+            print(f"search log error: {log_error}")
+
+        return {"results": final_results, "slskd_enabled": slskd_enabled(), "search_token": search_token}
 
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Search timed out")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"search error: {e}")
+        raise HTTPException(status_code=500, detail="Search failed")
 
 
 @app.post("/api/search/slskd")
@@ -491,18 +671,20 @@ def download(request: DownloadRequest):
         else:
             source_url = f"https://www.youtube.com/watch?v={request.video_id}" if request.video_id else None
 
+        valid_search_token = _validated_search_token(request.search_token)
+
         if request.download_type == "playlist":
             conn.execute(
-                """INSERT INTO jobs (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac, source_url)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (job_id, request.video_id, title, "queued", "playlist", title, "youtube", int(request.convert_to_flac), source_url)
+                """INSERT INTO jobs (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac, source_url, search_token)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (job_id, request.video_id, title, "queued", "playlist", title, "youtube", int(request.convert_to_flac), source_url, valid_search_token)
             )
         else:
             conn.execute(
-                """INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, convert_to_flac, source_url)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, convert_to_flac, source_url, search_token)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (job_id, request.video_id, title, artist or "", "queued", "single", source,
-                 request.slskd_username, request.slskd_filename, int(request.convert_to_flac), source_url)
+                 request.slskd_username, request.slskd_filename, int(request.convert_to_flac), source_url, valid_search_token)
             )
         conn.commit()
 
@@ -593,9 +775,9 @@ def retry_job(job_id: str):
 
         job = dict(row)
 
-        # Only allow retrying failed jobs
-        if job["status"] != "failed":
-            raise HTTPException(status_code=400, detail="Only failed jobs can be retried")
+        # Allow retrying failed jobs or re-downloading completed jobs
+        if job["status"] not in ("failed", "completed", "completed_with_errors"):
+            raise HTTPException(status_code=400, detail="Only failed or completed jobs can be retried")
 
         # Reset job status
         conn.execute(
@@ -623,6 +805,54 @@ def retry_job(job_id: str):
         spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac)
 
     return {"job_id": job_id, "status": "queued"}
+
+
+@app.delete("/api/jobs/{job_id}/file")
+def delete_job_file(job_id: str):
+    """Delete the downloaded audio file (and lyrics) for a completed job."""
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        row = cursor.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = dict(row)
+    if job["status"] not in ("completed", "completed_with_errors"):
+        raise HTTPException(status_code=400, detail="Only completed jobs have files to delete")
+
+    artist = job.get("artist")
+    title = job.get("title")
+    if not artist or not title:
+        raise HTTPException(status_code=400, detail="Job has no artist/title metadata")
+
+    from utils import sanitize_filename, check_duplicate
+    existing = check_duplicate(artist, title)
+    if not existing:
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    deleted_files = []
+    try:
+        # Delete audio file
+        existing.unlink()
+        deleted_files.append(existing.name)
+
+        # Delete lyrics file if present
+        lrc_file = existing.with_suffix(".lrc")
+        if lrc_file.exists():
+            lrc_file.unlink()
+            deleted_files.append(lrc_file.name)
+
+        # Remove empty artist directory
+        artist_dir = existing.parent
+        if artist_dir.exists() and not any(artist_dir.iterdir()):
+            artist_dir.rmdir()
+
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
+
+    return {"deleted": deleted_files, "job_id": job_id}
 
 
 @app.delete("/api/jobs/cleanup")

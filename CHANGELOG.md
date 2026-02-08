@@ -1,4 +1,25 @@
 # Changelog
+## v1.8.5 (2026-02-08)
+
+### Added
+- **Dark/light theme toggle**: Moon/sun button in the header switches between dark and light themes. Preference saved to localStorage
+- **Webhook notifications**: New generic webhook URL setting — sends a JSON POST on download completion/failure with event type, title, artist, status, source, and track counts. Configure via Settings > Notifications or the `WEBHOOK_URL` env var
+- **Statistics dashboard**: New "Stats" tab with download overview — completed/failed counts, success rate, library storage usage, daily download chart (last 14 days), source breakdown (YouTube vs Soulseek), top 10 artists, and recent downloads
+- **Search analytics in Stats**: Search queries are now logged and shown in the Stats tab with total searches, successful search rate, search-to-download conversion, and most searched artists
+- **Delete from library**: Completed jobs in the queue now have a "Delete File" button that removes the audio file and lyrics from disk, plus cleans up empty artist directories
+- **Re-download**: Completed and failed jobs now have a "Re-download" button in the queue details to re-queue the download (overwrites existing file)
+- **Audio quality display**: Completed downloads now show the audio quality (e.g. "FLAC 44.1kHz 16bit", "OPUS 160kbps") in the queue job details
+- **Minimum bitrate setting**: New "Minimum Audio Bitrate" setting in Settings > General. Downloads below this bitrate are automatically rejected with a clear error message. Set to 0 (default) to disable. Lossless formats (FLAC) always pass
+
+### Changed
+- **Tab bar**: Now horizontally scrolls on narrow screens to accommodate the sixth tab without wrapping
+- **Date display format**: UI dates now render consistently as `YYYY-MM-DD` instead of locale-specific formats
+
+### Fixed
+- **Audio quality: 64kbps downloads**: Removed the forced Android YouTube player client (`player_client=android`) which was causing yt-dlp to pull very low bitrate audio (64kbps). Downloads now use YouTube's default web client which serves full-quality audio (~160kbps Opus). An env-var escape hatch (`YTDLP_PLAYER_CLIENT`) is available if needed
+- **Search conversion overcounting**: Search-to-download conversion now uses a per-search server token instead of matching raw query text, preventing repeated identical searches from inflating conversion rate
+- **Search attribution trust boundary**: Download attribution now validates server-issued search tokens and ignores invalid/untrusted values
+- **Search analytics retention**: Added automatic pruning of old `search_logs` rows (90-day retention) to keep stats queries fast and DB growth bounded
 
 ## v1.8.4 (2026-02-06)
 
@@ -110,7 +131,7 @@
 - **Watched playlist creation**: Now honours the FLAC setting selected at creation time
 - **Settings env lock badge**: Replaced "ENV" with a clearer "CONFIG LOCKED" pill
 - **Clear Queue**: Now also cleans up stale/stuck downloads, not just completed and failed jobs
-- **YouTube download client**: Default yt-dlp player client set to Android to reduce bot blocks
+- **YouTube download client**: Default yt-dlp player client set to Android to reduce bot blocks (reverted in v1.8.5 — caused 64kbps audio)
 - **Bot backoff**: Queue now applies a randomized delay after bot/403 signals to ease rate limits
 
 ### Fixed

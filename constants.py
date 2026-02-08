@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "1.8.4"
+VERSION = "1.8.5"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -40,6 +40,7 @@ YOUTUBE_SEARCH_MIN_FETCH = 30    # Minimum results to fetch for scoring
 SLSKD_MAX_RESULTS = 20           # Max Soulseek results to return
 SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 MAX_SEARCH_QUERY_LENGTH = 512    # Max characters allowed in search input
+SEARCH_LOG_RETENTION_DAYS = 90   # Keep search analytics for N days
 
 # File handling
 MAX_FILENAME_LENGTH = 200        # Maximum characters in sanitised filenames
@@ -53,6 +54,9 @@ YTDLP_403_RETRY_DELAY = 3       # Seconds between retries
 # YouTube bot/backoff handling
 BOT_BACKOFF_MIN_SECONDS = 5
 BOT_BACKOFF_MAX_SECONDS = 20
+
+# YouTube player client override (empty = yt-dlp default / web client)
+YTDLP_PLAYER_CLIENT = os.getenv("YTDLP_PLAYER_CLIENT", "")
 
 # Rate limiting
 RATE_LIMIT_REQUESTS = 60         # Max requests per IP per window

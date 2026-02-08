@@ -23,6 +23,7 @@
                         <span class="toggle-slider"></span>
                     </div>
                 </label>
+                <button id="themeToggle" style="background: none; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 16px; line-height: 1; color: var(--text-secondary); transition: all 0.2s;" title="Toggle light/dark theme">🌙</button>
                 <span id="versionLabel" style="font-size: 11px; color: var(--text-secondary);"></span>
             </div>
         </header>
@@ -45,6 +46,7 @@
             <button class="tab" data-tab="bulk">Bulk Import</button>
             <button class="tab" data-tab="watched">Watched</button>
             <button class="tab" data-tab="queue">Queue</button>
+            <button class="tab" data-tab="stats">Stats</button>
             <button class="tab" data-tab="settings">Settings</button>
         </div>
 
@@ -168,6 +170,10 @@
             <div id="queueTab" class="results"></div>
         </div>
 
+        <div id="statsTabContainer" style="display: none;">
+            <div id="statsContent" class="results"></div>
+        </div>
+
         <div id="settingsTabContainer" style="display: none;">
             <div class="settings-section">
                 <h3 class="settings-section-title">General</h3>
@@ -193,6 +199,13 @@
                             <span class="toggle-slider"></span>
                         </div>
                     </label>
+                </div>
+                <div class="settings-form" style="margin-top: 8px;">
+                    <div class="settings-row">
+                        <label for="settingMinBitrate">Minimum Audio Bitrate (kbps)</label>
+                        <input type="number" id="settingMinBitrate" placeholder="0 (disabled)" value="0" min="0" max="320" style="width: 120px;">
+                        <span style="font-size: 11px; color: var(--text-secondary);">Downloads below this bitrate are rejected. 0 = no minimum.</span>
+                    </div>
                 </div>
             </div>
 
@@ -295,6 +308,11 @@
                             <input type="password" id="settingTelegramUrl" placeholder="https://api.telegram.org/bot.../sendMessage?chat_id=...">
                             <button type="button" class="password-toggle" data-target="settingTelegramUrl">Show</button>
                         </div>
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingWebhookUrl">Webhook URL</label>
+                        <input type="text" id="settingWebhookUrl" placeholder="https://example.com/webhook">
+                        <span class="settings-hint">Receives a JSON POST on download completion with event, type, title, artist, status, etc.</span>
                     </div>
                 </div>
                 <details class="settings-details">
@@ -435,6 +453,28 @@
         }
 
         // =============================================================================
+        // Theme Toggle
+        // =============================================================================
+
+        function getTheme() {
+            return localStorage.getItem('theme') || 'dark';
+        }
+
+        function setTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            localStorage.setItem('theme', theme);
+            const btn = document.getElementById('themeToggle');
+            if (btn) btn.textContent = theme === 'dark' ? '🌙' : '☀️';
+        }
+
+        // Apply saved theme immediately
+        setTheme(getTheme());
+
+        document.getElementById('themeToggle').addEventListener('click', () => {
+            setTheme(getTheme() === 'dark' ? 'light' : 'dark');
+        });
+
+        // =============================================================================
         // DOM Elements
         // =============================================================================
 
@@ -467,6 +507,8 @@
         const toast = document.getElementById('toast');
         const tabs = document.querySelectorAll('.tab');
         const lineCounter = document.getElementById('lineCounter');
+        const statsTabContainer = document.getElementById('statsTabContainer');
+        const statsContent = document.getElementById('statsContent');
         const settingsTabContainer = document.getElementById('settingsTabContainer');
         const createPlaylistCheckbox = document.getElementById('createPlaylistCheckbox');
         const playlistNameInput = document.getElementById('playlistNameInput');
@@ -530,6 +572,7 @@
         let lastResults = [];
         let currentSearchToken = 0;
         let pendingSlskdToken = 0;
+        let currentSearchLogToken = null;
         const MAX_QUEUE_SIZE = 100;
         let currentBulkImportId = null;
         let bulkImportPollInterval = null;
@@ -674,6 +717,7 @@
                 bulkTabContainer.style.display = currentTab === 'bulk' ? 'block' : 'none';
                 watchedTabContainer.style.display = currentTab === 'watched' ? 'block' : 'none';
                 queueTabContainer.style.display = currentTab === 'queue' ? 'block' : 'none';
+                statsTabContainer.style.display = currentTab === 'stats' ? 'block' : 'none';
                 settingsTabContainer.style.display = currentTab === 'settings' ? 'block' : 'none';
 
                 // Stop preview when leaving results tab
@@ -689,6 +733,10 @@
                     loadWatchedPlaylists();
                 }
 
+                if (currentTab === 'stats') {
+                    loadStats();
+                }
+
                 if (currentTab === 'settings') {
                     loadSettings();
                 }
@@ -697,9 +745,11 @@
 
         // Search
         async function search() {
+            if (searchBtn.disabled) return;
             const query = searchInput.value.trim();
             if (!query) return;
             const searchToken = ++currentSearchToken;
+            currentSearchLogToken = null;
 
             // Save to history
             saveSearchHistory(query);
@@ -721,7 +771,11 @@
                 if (!response.ok) throw new Error('Search failed');
 
                 const data = await response.json();
+                if (searchToken !== currentSearchToken) {
+                    return;
+                }
                 lastResults = data.results;
+                currentSearchLogToken = data.search_token || null;
                 renderResults(data.results);
                 showRelatedSuggestions(data.results);
 
@@ -922,7 +976,8 @@
                     video_id: result.video_id,
                     title: result.title,
                     convert_to_flac: convertToFlacCheckbox.checked,
-                    source: result.source || 'youtube'
+                    source: result.source || 'youtube',
+                    search_token: currentSearchLogToken
                 };
 
                 // Add slskd-specific fields if this is a Soulseek result
@@ -1016,11 +1071,16 @@
                         ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ''}
                         ${hasDetails ? `
                         <div class="job-details" style="display:none;">
+                            ${job.audio_quality ? `<div class="job-details-row"><span class="job-details-label">Quality:</span> ${escapeHtml(job.audio_quality)}</div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Source:</span> ${escapeHtml(sourceLabel)}</div>
                             ${sourceUrl ? `<div class="job-details-row"><span class="job-details-label">URL:</span> ${isYouTubeUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sourceUrl)}</a>` : `<span class="job-details-url">${escapeHtml(sourceUrl)}</span>`}</div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Queued:</span> ${formatTimeFull(job.created_at)}</div>
                             ${job.completed_at ? `<div class="job-details-row"><span class="job-details-label">Completed:</span> ${formatTimeFull(job.completed_at)}</div>` : ''}
                             ${job.completed_at && job.created_at ? `<div class="job-details-row"><span class="job-details-label">Duration:</span> ${formatDuration(job.created_at, job.completed_at)}</div>` : ''}
+                            <div style="display: flex; gap: 8px; margin-top: 8px;">
+                                <button onclick="event.stopPropagation(); redownloadJob('${job.id}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Re-download</button>
+                                ${job.status !== 'failed' ? `<button onclick="event.stopPropagation(); deleteJobFile('${job.id}', '${escapeHtml(job.artist ? job.artist + ' - ' + job.title : job.title)}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Delete File</button>` : ''}
+                            </div>
                         </div>` : ''}
                     </div>
                 </div>`;
@@ -1040,16 +1100,19 @@
             return status;
         }
 
-        function formatTime(isoString) {
+        function formatDateYmd(isoString) {
             if (!isoString) return '';
-            const date = new Date(isoString);
-            const now = new Date();
-            const diff = now - date;
+            const normalized = /Z$|[+-]\d{2}:\d{2}$/.test(isoString) ? isoString : `${isoString.replace(' ', 'T')}Z`;
+            const date = new Date(normalized);
+            if (Number.isNaN(date.getTime())) return '';
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        }
 
-            if (diff < 60000) return 'just now';
-            if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-            if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-            return date.toLocaleDateString();
+        function formatTime(isoString) {
+            return formatDateYmd(isoString);
         }
 
         function toggleJobDetails(el) {
@@ -1061,10 +1124,40 @@
             }
         }
 
+        async function redownloadJob(jobId) {
+            try {
+                showToast('Re-downloading...');
+                const response = await apiFetch(`/api/jobs/${jobId}/retry`, { method: 'POST' });
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.detail || 'Re-download failed');
+                }
+                showToast('Queued for re-download');
+                loadJobs();
+            } catch (error) {
+                showToast(error.message || 'Re-download failed', true);
+            }
+        }
+
+        async function deleteJobFile(jobId, trackName) {
+            if (!confirm(`Delete "${trackName}" from your library?`)) return;
+
+            try {
+                const response = await apiFetch(`/api/jobs/${jobId}/file`, { method: 'DELETE' });
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.detail || 'Delete failed');
+                }
+                const data = await response.json();
+                showToast(`Deleted ${data.deleted.length} file(s)`);
+                loadJobs();
+            } catch (error) {
+                showToast(error.message || 'Delete failed', true);
+            }
+        }
+
         function formatTimeFull(isoString) {
-            if (!isoString) return '';
-            const date = new Date(isoString);
-            return date.toLocaleString();
+            return formatDateYmd(isoString);
         }
 
         function formatDuration(startIso, endIso) {
@@ -1621,18 +1714,7 @@
         }
 
         function formatTimeAgo(isoString) {
-            const date = new Date(isoString + 'Z'); // Assume UTC if no timezone
-            const now = new Date();
-            const diffMs = now - date;
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMs / 3600000);
-            const diffDays = Math.floor(diffMs / 86400000);
-
-            if (diffMins < 1) return 'Just now';
-            if (diffMins < 60) return `${diffMins}m ago`;
-            if (diffHours < 24) return `${diffHours}h ago`;
-            if (diffDays < 7) return `${diffDays}d ago`;
-            return date.toLocaleDateString();
+            return formatDateYmd(isoString);
         }
 
         async function addWatchedPlaylist() {
@@ -1815,6 +1897,196 @@
         refreshAllWatchedBtn.addEventListener('click', refreshAllWatched);
 
         // =============================================================================
+        // Statistics Dashboard
+        // =============================================================================
+
+        async function loadStats() {
+            statsContent.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+            try {
+                const response = await apiFetch('/api/stats');
+                if (!response.ok) throw new Error('Failed to load stats');
+
+                const data = await response.json();
+                renderStats(data);
+            } catch (error) {
+                statsContent.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">😕</div>
+                        <p>Failed to load statistics</p>
+                    </div>
+                `;
+            }
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+        }
+
+        function renderStats(data) {
+            const successRate = data.total_jobs > 0
+                ? Math.round((data.completed / data.total_jobs) * 100)
+                : 0;
+            const searchSuccessRate = data.total_searches > 0
+                ? Math.round((data.successful_searches / data.total_searches) * 100)
+                : 0;
+            const searchToDownloadRate = data.total_searches > 0
+                ? Math.round((data.converted_searches / data.total_searches) * 100)
+                : 0;
+
+            // Build daily chart (simple bar chart using divs)
+            const maxDaily = Math.max(...data.daily.map(d => d.count), 1);
+            const dailyBars = data.daily.length > 0
+                ? data.daily.slice(-14).map(d => {
+                    const height = Math.max(4, Math.round((d.count / maxDaily) * 80));
+                    const dayLabel = d.day;
+                    return `
+                        <div style="display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; min-width: 0;">
+                            <div style="font-size: 10px; color: var(--text-secondary);">${d.count}</div>
+                            <div style="width: 100%; max-width: 24px; height: ${height}px; background: var(--accent); border-radius: 3px;"></div>
+                            <div style="font-size: 9px; color: var(--text-secondary); white-space: nowrap;">${dayLabel}</div>
+                        </div>
+                    `;
+                }).join('')
+                : '<div style="text-align: center; color: var(--text-secondary); font-size: 13px; padding: 20px;">No downloads yet</div>';
+
+            // Source breakdown
+            const ytCount = data.sources.youtube || 0;
+            const slkCount = data.sources.soulseek || 0;
+            const sourceTotal = ytCount + slkCount || 1;
+
+            let html = `
+                <!-- Summary cards -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 16px;">
+                    <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; text-align: center;">
+                        <div style="font-size: 22px; font-weight: 600;">${data.completed}</div>
+                        <div style="font-size: 11px; color: var(--text-secondary);">Completed</div>
+                    </div>
+                    <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; text-align: center;">
+                        <div style="font-size: 22px; font-weight: 600; color: var(--error);">${data.failed}</div>
+                        <div style="font-size: 11px; color: var(--text-secondary);">Failed</div>
+                    </div>
+                    <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; text-align: center;">
+                        <div style="font-size: 22px; font-weight: 600;">${successRate}%</div>
+                        <div style="font-size: 11px; color: var(--text-secondary);">Success</div>
+                    </div>
+                    <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; text-align: center;">
+                        <div style="font-size: 22px; font-weight: 600;">${data.file_count}</div>
+                        <div style="font-size: 11px; color: var(--text-secondary);">${formatBytes(data.storage_bytes)}</div>
+                    </div>
+                    <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; text-align: center;">
+                        <div style="font-size: 22px; font-weight: 600;">${data.total_searches || 0}</div>
+                        <div style="font-size: 11px; color: var(--text-secondary);">Searches</div>
+                    </div>
+                    <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; text-align: center;">
+                        <div style="font-size: 22px; font-weight: 600;">${searchToDownloadRate}%</div>
+                        <div style="font-size: 11px; color: var(--text-secondary);">Search → Download</div>
+                    </div>
+                </div>
+
+                <!-- Search quality -->
+                <div style="padding: 16px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 16px;">
+                    <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px;">Search Performance</div>
+                    <div style="font-size: 13px; color: var(--text-secondary);">
+                        Successful searches: <strong style="color: var(--text-primary);">${data.successful_searches || 0}</strong> /
+                        ${data.total_searches || 0}
+                        (${searchSuccessRate}% found at least one result)
+                    </div>
+                </div>
+
+                <!-- Daily downloads chart -->
+                <div style="padding: 16px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 16px;">
+                    <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px;">Downloads (last 14 days)</div>
+                    <div style="display: flex; align-items: flex-end; gap: 4px; min-height: 100px;">
+                        ${dailyBars}
+                    </div>
+                </div>
+
+                <!-- Source breakdown -->
+                <div style="padding: 16px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 16px;">
+                    <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px;">Sources</div>
+                    <div style="display: flex; gap: 8px; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
+                        ${ytCount > 0 ? `<div style="flex: ${ytCount}; background: #ff0000; border-radius: 4px;"></div>` : ''}
+                        ${slkCount > 0 ? `<div style="flex: ${slkCount}; background: #4a9eff; border-radius: 4px;"></div>` : ''}
+                    </div>
+                    <div style="display: flex; gap: 16px; font-size: 12px;">
+                        <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff0000; border-radius: 2px; margin-right: 4px;"></span>YouTube: ${ytCount}</span>
+                        <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #4a9eff; border-radius: 2px; margin-right: 4px;"></span>Soulseek: ${slkCount}</span>
+                    </div>
+                </div>
+            `;
+
+            // Top artists
+            if (data.top_artists.length > 0) {
+                const maxArtistCount = data.top_artists[0].count;
+                html += `
+                    <div style="padding: 16px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 16px;">
+                        <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px;">Top Artists</div>
+                        ${data.top_artists.map((a, i) => `
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                                <span style="font-size: 11px; color: var(--text-secondary); width: 16px; text-align: right;">${i + 1}</span>
+                                <div style="flex: 1; min-width: 0;">
+                                    <div style="display: flex; align-items: center; gap: 8px;">
+                                        <span style="font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(a.artist)}</span>
+                                        <span style="font-size: 11px; color: var(--text-secondary); flex-shrink: 0;">${a.count}</span>
+                                    </div>
+                                    <div style="height: 4px; background: var(--bg-tertiary); border-radius: 2px; margin-top: 4px;">
+                                        <div style="height: 100%; width: ${Math.round((a.count / maxArtistCount) * 100)}%; background: var(--accent); border-radius: 2px;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+
+            // Top searched artists
+            if (data.top_searched_artists && data.top_searched_artists.length > 0) {
+                const maxSearchCount = data.top_searched_artists[0].count;
+                html += `
+                    <div style="padding: 16px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 16px;">
+                        <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px;">Most Searched Artists</div>
+                        ${data.top_searched_artists.map((a, i) => `
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                                <span style="font-size: 11px; color: var(--text-secondary); width: 16px; text-align: right;">${i + 1}</span>
+                                <div style="flex: 1; min-width: 0;">
+                                    <div style="display: flex; align-items: center; gap: 8px;">
+                                        <span style="font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(a.artist)}</span>
+                                        <span style="font-size: 11px; color: var(--text-secondary); flex-shrink: 0;">${a.count}</span>
+                                    </div>
+                                    <div style="height: 4px; background: var(--bg-tertiary); border-radius: 2px; margin-top: 4px;">
+                                        <div style="height: 100%; width: ${Math.round((a.count / maxSearchCount) * 100)}%; background: #f59e0b; border-radius: 2px;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+
+            // Recent downloads
+            if (data.recent.length > 0) {
+                html += `
+                    <div style="padding: 16px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px;">
+                        <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px;">Recent Downloads</div>
+                        ${data.recent.map(r => `
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px;">
+                                <span class="source-badge ${r.source || 'youtube'}" style="flex-shrink: 0;">${(r.source || 'youtube') === 'soulseek' ? 'SLK' : 'YT'}</span>
+                                <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(r.artist ? `${r.artist} - ${r.title}` : r.title)}</span>
+                                <span style="margin-left: auto; color: var(--text-secondary); white-space: nowrap; flex-shrink: 0;">${r.completed_at ? formatTime(r.completed_at) : ''}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+
+            statsContent.innerHTML = html;
+        }
+
+        // =============================================================================
         // Settings Management
         // =============================================================================
 
@@ -1823,6 +2095,7 @@
             'enable_musicbrainz': 'settingEnableMusicbrainz',
             'enable_lyrics': 'settingEnableLyrics',
             'default_convert_to_flac': 'settingDefaultFlac',
+            'min_audio_bitrate': 'settingMinBitrate',
             'slskd_url': 'settingSlskdUrl',
             'slskd_user': 'settingSlskdUser',
             'slskd_pass': 'settingSlskdPass',
@@ -1834,6 +2107,7 @@
             'jellyfin_api_key': 'settingJellyfinApiKey',
             'notify_on': 'settingNotifyOn',
             'telegram_webhook_url': 'settingTelegramUrl',
+            'webhook_url': 'settingWebhookUrl',
             'smtp_host': 'settingSmtpHost',
             'smtp_port': 'settingSmtpPort',
             'smtp_user': 'settingSmtpUser',
@@ -1922,7 +2196,7 @@
 
         function _injectSettingsClearButtons() {
             // Skip these — they already have dedicated clear mechanisms
-            const skipIds = new Set(['settingYoutubeCookies', 'settingSmtpPort']);
+            const skipIds = new Set(['settingYoutubeCookies', 'settingSmtpPort', 'settingMinBitrate']);
 
             for (const row of document.querySelectorAll('.settings-row')) {
                 const input = row.querySelector('input[type="text"], input[type="password"], input[type="number"]');

@@ -15,6 +15,7 @@ class DownloadRequest(BaseModel):
     video_id: str
     title: str
     artist: Optional[str] = None
+    search_token: Optional[str] = None
     download_type: str = "single"  # "single" or "playlist"
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
     # Soulseek-specific fields
@@ -48,6 +49,7 @@ class SettingsUpdate(BaseModel):
     enable_musicbrainz: Optional[bool] = None
     enable_lyrics: Optional[bool] = None
     default_convert_to_flac: Optional[bool] = None
+    min_audio_bitrate: Optional[int] = None
     # Soulseek/slskd
     slskd_url: Optional[str] = None
     slskd_user: Optional[str] = None

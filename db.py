@@ -9,7 +9,7 @@ from contextlib import contextmanager
 import queue
 import threading
 import time
-from constants import DB_PATH, STALE_JOB_TIMEOUT, STALE_JOB_CHECK_INTERVAL
+from constants import DB_PATH, STALE_JOB_TIMEOUT, STALE_JOB_CHECK_INTERVAL, SEARCH_LOG_RETENTION_DAYS
 
 
 def get_db() -> sqlite3.Connection:
@@ -113,6 +113,19 @@ def init_db():
             conn.execute("ALTER TABLE jobs ADD COLUMN skipped_tracks INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN search_query TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN search_token TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN audio_quality TEXT")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_search_token ON jobs(search_token)")
 
         # Bulk imports table - tracks the overall import job
         conn.execute("""
@@ -194,6 +207,34 @@ def init_db():
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_watched_tracks_playlist ON watched_playlist_tracks(playlist_id)")
 
+        # Search history logs for stats
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS search_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT NOT NULL,
+            artist TEXT,
+            result_count INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'youtube',
+            search_token TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+        try:
+            conn.execute("ALTER TABLE search_logs ADD COLUMN search_token TEXT")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute(
+            "UPDATE search_logs SET search_token = lower(hex(randomblob(16))) "
+            "WHERE search_token IS NULL OR search_token = ''"
+        )
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_search_logs_created_at ON search_logs(created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_search_logs_artist ON search_logs(artist)")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_search_logs_search_token "
+            "ON search_logs(search_token) WHERE search_token IS NOT NULL"
+        )
+
         # Settings table - stores configuration that can be edited via UI
         conn.execute("""
         CREATE TABLE IF NOT EXISTS settings (
@@ -204,6 +245,18 @@ def init_db():
     """)
 
         conn.commit()
+
+
+def cleanup_old_search_logs(retention_days: int = SEARCH_LOG_RETENTION_DAYS) -> int:
+    """Delete search log rows older than retention window. Returns deleted row count."""
+    with db_conn() as conn:
+        cursor = conn.execute(
+            "DELETE FROM search_logs WHERE created_at < datetime('now', '-' || ? || ' days')",
+            (int(retention_days),)
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        return deleted
 
 
 def cleanup_stale_jobs():
@@ -228,6 +281,7 @@ def _stale_job_monitor():
         time.sleep(STALE_JOB_CHECK_INTERVAL)
         try:
             cleanup_stale_jobs()
+            cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
         except Exception as e:
             print(f"Stale job monitor error: {e}")
 

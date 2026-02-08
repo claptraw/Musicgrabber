@@ -1,4 +1,5 @@
-:root {
+:root,
+[data-theme="dark"] {
     --bg-primary: #0a0a0b;
     --bg-secondary: #141416;
     --bg-tertiary: #1c1c1f;
@@ -9,6 +10,19 @@
     --error: #ef4444;
     --warning: #f59e0b;
     --border: #2a2a2d;
+}
+
+[data-theme="light"] {
+    --bg-primary: #f5f5f5;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #e8e8eb;
+    --text-primary: #1a1a1a;
+    --text-secondary: #666;
+    --accent: #16a34a;
+    --accent-dim: #bbf7d0;
+    --error: #dc2626;
+    --warning: #d97706;
+    --border: #d4d4d8;
 }
 
 /* Warning banner for misconfiguration */
@@ -58,7 +72,7 @@ body {
 }
 
 .container {
-    max-width: 600px;
+    max-width: 640px;
     margin: 0 auto;
     padding: 20px;
     padding-bottom: env(safe-area-inset-bottom, 20px);
@@ -227,6 +241,13 @@ h1 {
     display: flex;
     gap: 8px;
     margin-bottom: 20px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+    display: none;
 }
 
 .tab {
@@ -240,6 +261,9 @@ h1 {
     border-radius: 8px;
     cursor: pointer;
     transition: all 0.2s;
+    white-space: nowrap;
+    flex: 1;
+    text-align: center;
 }
 
 .tab.active {
@@ -611,7 +635,7 @@ h1 {
     opacity: 0;
     transition: all 0.3s ease;
     z-index: 100;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
 }
 
 .toast.show {

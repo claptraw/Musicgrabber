@@ -15,6 +15,7 @@ from constants import (
     BOT_BACKOFF_MIN_SECONDS, BOT_BACKOFF_MAX_SECONDS,
     COOKIES_FILE, TIMEOUT_YTDLP_SEARCH,
     YOUTUBE_SEARCH_MULTIPLIER, YOUTUBE_SEARCH_MIN_FETCH,
+    YTDLP_PLAYER_CLIENT,
 )
 from settings import get_setting, get_setting_int
 
@@ -77,18 +78,14 @@ def _sync_cookies_file():
         COOKIES_FILE.unlink()
 
 
-def _android_client_args() -> list[str]:
-    """Return yt-dlp args to force the Android player client."""
-    return ["--extractor-args", "youtube:player_client=android"]
-
-
 def _ytdlp_base_args():
-    """Return common yt-dlp arguments (cookies, extractor args).
+    """Return common yt-dlp arguments (cookies, optional player-client override).
     These should be prepended after 'yt-dlp' in every command."""
     args = []
     if _cookies_allowed() and COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
         args.extend(["--cookies", str(COOKIES_FILE)])
-    args.extend(_android_client_args())
+    if YTDLP_PLAYER_CLIENT:
+        args.extend(["--extractor-args", f"youtube:player_client={YTDLP_PLAYER_CLIENT}"])
     return args
 
 

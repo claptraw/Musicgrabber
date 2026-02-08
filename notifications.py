@@ -140,6 +140,51 @@ def _send_email(subject: str, message: str):
         pass
 
 
+def _send_webhook(
+    notification_type: str,
+    title: str,
+    artist: str = None,
+    source: str = None,
+    status: str = "completed",
+    error: str = None,
+    track_count: int = None,
+    failed_count: int = None,
+    skipped_count: int = None,
+    playlist_name: str = None
+):
+    """Send notification via generic webhook POST."""
+    webhook_url = get_setting("webhook_url")
+    if not webhook_url:
+        return
+
+    payload = {
+        "event": f"download.{status}",
+        "type": notification_type,
+        "title": title,
+        "status": status,
+    }
+    if artist:
+        payload["artist"] = artist
+    if source:
+        payload["source"] = source
+    if error:
+        payload["error"] = error
+    if track_count is not None:
+        payload["track_count"] = track_count
+    if failed_count is not None:
+        payload["failed_count"] = failed_count
+    if skipped_count is not None:
+        payload["skipped_count"] = skipped_count
+    if playlist_name:
+        payload["playlist_name"] = playlist_name
+
+    try:
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
+            client.post(webhook_url, json=payload)
+    except Exception:
+        pass
+
+
 def send_notification(
     notification_type: str,
     title: str,
@@ -176,4 +221,8 @@ def send_notification(
 
     _send_telegram(message)
     _send_email(subject, message)
+    _send_webhook(
+        notification_type, title, artist, source, status,
+        error, track_count, failed_count, skipped_count, playlist_name
+    )
 

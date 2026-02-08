@@ -27,7 +27,7 @@ from constants import (
 from db import db_conn
 from metadata import lookup_musicbrainz, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
 from notifications import send_notification
-from settings import get_setting
+from settings import get_setting, get_setting_int
 from slskd import (
     download_from_slskd, extract_track_info_from_path,
     search_slskd, should_retry_slskd_error,
@@ -83,6 +83,44 @@ def trigger_jellyfin_scan():
             )
     except Exception:
         pass  # Non-critical, scan will happen on schedule anyway
+
+
+def probe_audio_quality(file_path: Path) -> tuple[str | None, int]:
+    """Use ffprobe to extract audio quality info.
+
+    Returns (human_readable_string, bitrate_kbps). For lossless formats like
+    FLAC the bitrate is reported as 0 (lossless always passes quality gates).
+    """
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name,bit_rate,sample_rate,bits_per_raw_sample",
+             "-of", "json", str(file_path)],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            return None, 0
+        info = json.loads(result.stdout)
+        stream = info.get("streams", [{}])[0]
+        codec = (stream.get("codec_name") or "").upper()
+        sample_rate = int(stream.get("sample_rate") or 0)
+        bit_rate = int(stream.get("bit_rate") or 0)
+        bit_depth = int(stream.get("bits_per_raw_sample") or 0)
+        bitrate_kbps = bit_rate // 1000
+
+        sample_khz = f"{sample_rate / 1000:.1f}kHz".replace(".0kHz", "kHz") if sample_rate else ""
+
+        if codec == "FLAC":
+            parts = ["FLAC", sample_khz]
+            if bit_depth:
+                parts.append(f"{bit_depth}bit")
+            return " ".join(p for p in parts if p), 0  # Lossless — always passes
+        else:
+            kbps = f"{bitrate_kbps}kbps" if bitrate_kbps else ""
+            label = " ".join(p for p in [codec, kbps] if p) or None
+            return label, bitrate_kbps
+    except Exception:
+        return None, 0
 
 
 def _build_ytdlp_download_cmd(video_id: str, output_template: str, convert_to_flac: bool) -> list[str]:
@@ -581,6 +619,13 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(final_file)
 
+        # Probe audio quality and enforce minimum bitrate
+        audio_quality, bitrate_kbps = probe_audio_quality(final_file)
+        min_bitrate = get_setting_int("min_audio_bitrate", 0)
+        if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
+            final_file.unlink(missing_ok=True)
+            raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
+
         # Apply metadata
         mb_metadata = lookup_musicbrainz(artist, title)
         if mb_metadata:
@@ -607,7 +652,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         trigger_jellyfin_scan()
 
         # Update job status
-        _update_job(job_id, status="completed", error=None, completed_at=datetime.now(timezone.utc).isoformat())
+        _update_job(job_id, status="completed", error=None, audio_quality=audio_quality,
+                    completed_at=datetime.now(timezone.utc).isoformat())
         _mark_watched_track_downloaded(job_id)
 
         print(f"slskd: Successfully downloaded {artist} - {title}")
@@ -750,6 +796,13 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(audio_file)
 
+        # Probe audio quality and enforce minimum bitrate
+        audio_quality, bitrate_kbps = probe_audio_quality(audio_file)
+        min_bitrate = get_setting_int("min_audio_bitrate", 0)
+        if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
+            audio_file.unlink(missing_ok=True)
+            raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
+
         # Try to enrich metadata with MusicBrainz
         mb_metadata = lookup_musicbrainz(artist, title)
         if mb_metadata:
@@ -776,7 +829,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
         trigger_jellyfin_scan()
 
         # Update job status
-        _update_job(job_id, status="completed", error=None, completed_at=datetime.now(timezone.utc).isoformat())
+        _update_job(job_id, status="completed", error=None, audio_quality=audio_quality,
+                    completed_at=datetime.now(timezone.utc).isoformat())
         _mark_watched_track_downloaded(job_id)
 
         # Send notification for single track

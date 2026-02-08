@@ -77,6 +77,7 @@ SETTINGS_SCHEMA = {
     "enable_musicbrainz": {"type": "bool", "default": True, "env": "ENABLE_MUSICBRAINZ"},
     "enable_lyrics": {"type": "bool", "default": True, "env": "ENABLE_LYRICS"},
     "default_convert_to_flac": {"type": "bool", "default": True, "env": "DEFAULT_CONVERT_TO_FLAC"},
+    "min_audio_bitrate": {"type": "int", "default": 0, "env": "MIN_AUDIO_BITRATE"},
     # Soulseek/slskd
     "slskd_url": {"type": "str", "default": "", "env": "SLSKD_URL"},
     "slskd_user": {"type": "str", "default": "", "env": "SLSKD_USER"},
@@ -103,6 +104,8 @@ SETTINGS_SCHEMA = {
     "youtube_cookies": {"type": "str", "default": "", "env": "YOUTUBE_COOKIES", "sensitive": True},
     "youtube_bot_backoff_min": {"type": "int", "default": BOT_BACKOFF_MIN_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MIN"},
     "youtube_bot_backoff_max": {"type": "int", "default": BOT_BACKOFF_MAX_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MAX"},
+    # Webhooks
+    "webhook_url": {"type": "str", "default": "", "env": "WEBHOOK_URL"},
     # Security
     "api_key": {"type": "str", "default": "", "env": "API_KEY", "sensitive": True},
 }
