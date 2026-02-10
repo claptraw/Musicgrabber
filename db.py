@@ -80,6 +80,7 @@ def init_db():
             slskd_filename TEXT,
             convert_to_flac INTEGER DEFAULT 1,
             source_url TEXT,
+            file_deleted INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             completed_at TIMESTAMP
         )
@@ -123,6 +124,10 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN audio_quality TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN file_deleted INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_search_token ON jobs(search_token)")
@@ -244,6 +249,28 @@ def init_db():
         )
     """)
 
+        # Blacklist — reported bad tracks and blocked uploaders
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS blacklist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id TEXT,
+            uploader TEXT,
+            source TEXT,
+            reason TEXT,
+            note TEXT,
+            job_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_video ON blacklist(video_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_uploader ON blacklist(uploader, source)")
+
+        # Migration: add uploader column to jobs (raw channel/uploader name)
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN uploader TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         conn.commit()
 
 
@@ -291,3 +318,39 @@ def start_stale_job_monitor():
     cleanup_stale_jobs()
     _stale_monitor_thread = threading.Thread(target=_stale_job_monitor, daemon=True)
     _stale_monitor_thread.start()
+
+
+# ---------------------------------------------------------------------------
+# Blacklist helpers — kept close to the DB layer for easy reuse
+# ---------------------------------------------------------------------------
+
+def get_blacklisted_video_ids() -> set[str]:
+    """Return all blacklisted video IDs (any source)."""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT video_id FROM blacklist WHERE video_id IS NOT NULL AND video_id != ''"
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
+def get_blacklisted_uploaders(source: str) -> set[str]:
+    """Return lowercased uploader names blacklisted for a given source."""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT lower(uploader) FROM blacklist "
+            "WHERE uploader IS NOT NULL AND uploader != '' AND source = ?",
+            (source,)
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
+def is_video_blacklisted(video_id: str) -> bool:
+    """Quick check for a single video ID."""
+    if not video_id:
+        return False
+    with db_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM blacklist WHERE video_id = ? LIMIT 1",
+            (video_id,)
+        ).fetchone()
+    return row is not None

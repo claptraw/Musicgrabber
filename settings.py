@@ -5,8 +5,9 @@ Environment variable > DB value > default hierarchy.
 """
 
 import os
+from pathlib import Path
 
-from constants import BOT_BACKOFF_MIN_SECONDS, BOT_BACKOFF_MAX_SECONDS
+from constants import BOT_BACKOFF_MIN_SECONDS, BOT_BACKOFF_MAX_SECONDS, MUSIC_DIR
 from db import db_conn
 
 
@@ -78,6 +79,7 @@ SETTINGS_SCHEMA = {
     "enable_lyrics": {"type": "bool", "default": True, "env": "ENABLE_LYRICS"},
     "default_convert_to_flac": {"type": "bool", "default": True, "env": "DEFAULT_CONVERT_TO_FLAC"},
     "min_audio_bitrate": {"type": "int", "default": 0, "env": "MIN_AUDIO_BITRATE"},
+    "singles_subdir": {"type": "str", "default": "Singles", "env": "SINGLES_SUBDIR"},
     # Soulseek/slskd
     "slskd_url": {"type": "str", "default": "", "env": "SLSKD_URL"},
     "slskd_user": {"type": "str", "default": "", "env": "SLSKD_USER"},
@@ -127,3 +129,9 @@ def _is_env_override(key: str) -> bool:
     schema = SETTINGS_SCHEMA.get(key, {})
     env_key = schema.get("env", key.upper())
     return os.getenv(env_key) is not None
+
+
+def get_singles_dir() -> Path:
+    """Get the singles download directory. Reads the setting at runtime so changes take effect immediately."""
+    subdir = get_setting("singles_subdir", "Singles").strip() or "Singles"
+    return MUSIC_DIR / subdir

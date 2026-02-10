@@ -1,4 +1,44 @@
 # Changelog
+
+## v1.9.0 (2026-02-10)
+
+### Added
+- **SoundCloud search**: Search SoundCloud via yt-dlp `scsearch` — returns results with correct artist (from `uploader` field), duration, thumbnails, and quality scoring. No auth required
+- **Source selector**: Segmented button group (YouTube / SoundCloud / All) on the search bar. Selection persisted to localStorage. "All" searches both sources in parallel and merges results by quality score
+- **Extensible source architecture**: New `search.py` module with `SOURCE_REGISTRY` dict — adding a new source is one search function and one registry entry. Includes `search_source()`, `search_all()`, and `get_available_sources()` API
+- **`GET /api/sources` endpoint**: Returns available search sources with labels, badges, and colours for the frontend
+- **SoundCloud downloads**: Full download pipeline support — SoundCloud URLs route through yt-dlp without YouTube-specific cookie/backoff logic
+- **SoundCloud preview**: Hover-to-preview works for SoundCloud tracks (passes source URL to the preview endpoint)
+- **Source badges**: Search results and queue items show coloured source badges (YT red, SC orange, SLK teal) with consistent `getSourceBadge()` / `getSourceLabel()` helpers
+- **Donation link**: Added a subtle Ko-fi "Buy me a coffee" link with coffee icon in Settings (`https://ko-fi.com/geekphreek`)
+- **Amazon Music playlist import**: Paste a public Amazon Music playlist URL and import the tracks into bulk import. Uses headless Playwright to scrape Amazon's JS-rendered pages, handling cookie consent banners and virtualised scrolling. Extracted 132 unique tracks from a 139-track playlist in testing (7 were duplicates). Supports user playlists, curated playlists, and all regional Amazon domains
+- **Generalised playlist endpoint**: New `/api/fetch-playlist` endpoint routes to Spotify or Amazon scraper based on URL. Old `/api/spotify-playlist` path kept as backwards-compat alias
+- **Custom singles subfolder**: New `singles_subdir` setting in Settings > General lets you change the download subfolder name (default: `Singles`). Overridable via `SINGLES_SUBDIR` env var. Changes take effect immediately without restart
+- **Source badges on queue items**: Queue entries now show a coloured source badge (YT/SC/SLK) in the bottom-right corner of each card
+
+- **Report / Blacklist system**: Flag bad tracks (wrong track, poor quality, slowed/pitched, ContentID dodge) directly from the queue with a Report button. Blacklisted videos are hidden from search results and bulk imports; blocked uploaders get a heavy score penalty so they sink to the bottom. Manage all entries in Settings > Blacklist with one-click removal
+- **Blacklist API**: New `POST /api/blacklist`, `GET /api/blacklist`, `DELETE /api/blacklist/{id}` endpoints for reporting and managing blacklisted tracks and uploaders
+- **Uploader tracking**: Jobs now store the raw uploader/channel name (separate from the cleaned artist name) for accurate blacklist matching
+
+### Changed
+- **Honest audio quality reporting**: FLAC files converted from lossy sources now show their true origin (e.g. "FLAC (from MP3 128kbps)" instead of "FLAC 44.1kHz 24bit"). The min-bitrate quality gate also uses the source bitrate, so a 64kbps Opus wrapped in FLAC won't sneak past
+- **Search routing**: `/api/search` now dispatches via `search.py` based on `source` param instead of calling `search_youtube()` directly
+- **Download routing**: `process_download()` accepts optional `source_url` param; SoundCloud downloads skip YouTube ID validation, cookie handling, and 403 retry logic
+- **Preview routing**: `/api/preview/{video_id}` accepts `source` and `url` query params for non-YouTube sources
+- **Retry routing**: `/api/jobs/{job_id}/retry` passes stored `source_url` for SoundCloud re-downloads
+- **Stats source breakdown**: Now shows YouTube, SoundCloud, and Soulseek counts with correct colours
+- **Playlist input UX**: Bulk import playlist URL field now uses generic wording and includes a supported-services hint/tooltip driven from a centralised service list
+- **Watched playlists**: URL input and description updated to mention Amazon Music alongside Spotify and YouTube
+
+### Fixed
+- **SoundCloud preview**: SoundCloud returns HLS `.m3u8` playlist URLs for `bestaudio` which browsers can't play natively in `<audio>`. Preview now requests the direct HTTP MP3 stream (`http_mp3_1_0`) instead
+- **SoundCloud queue false-fail**: Fixed a thread spawn bug where SoundCloud downloads were inserted as `queued` but the API returned an error (`Failed to queue`) because keyword args (`source_url`) were not forwarded to the background thread helper
+- **Queue delete button state**: "Delete File" now persists per job after successful deletion (`file_deleted=1`), renders as disabled/greyed "File Deleted", and is reset when "Re-download" is clicked
+- **Delete button for missing files**: If a file was deleted externally, the delete button now greys out automatically instead of throwing an error. The jobs list checks file existence on load and updates the flag in the database
+- **Empty singles subfolder fallback**: Clearing the singles subfolder setting no longer dumps files into the music root -- it falls back to "Singles"
+- **Queue action buttons with special characters**: "Delete File" and "Report" now work reliably for tracks with apostrophes/quotes in artist or title. Switched from fragile inline argument interpolation to data-attribute event binding
+- **Queue card expansion state**: Expanded queue items now stay expanded across refreshes after actions like delete/report/reload, instead of collapsing unexpectedly
+
 ## v1.8.5 (2026-02-08)
 
 ### Added

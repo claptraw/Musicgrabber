@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "1.8.5"
+VERSION = "1.9.0"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -22,6 +22,7 @@ TIMEOUT_SLSKD_SEARCH = 12        # Soulseek search polling
 TIMEOUT_SLSKD_DOWNLOAD = 600     # Soulseek download (10 minutes)
 TIMEOUT_SLSKD_API = 30           # slskd API calls
 TIMEOUT_SPOTIFY_BROWSER = 180    # Headless browser for large playlists (3 minutes)
+TIMEOUT_AMAZON_BROWSER = 180     # Amazon Music playlist scraping (3 minutes)
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
 
@@ -37,6 +38,8 @@ PLAYLIST_WAIT_INTERVAL = 10      # Seconds between completion checks
 # Search and results
 YOUTUBE_SEARCH_MULTIPLIER = 3    # Fetch N times more results than requested for scoring
 YOUTUBE_SEARCH_MIN_FETCH = 30    # Minimum results to fetch for scoring
+SOUNDCLOUD_SEARCH_MULTIPLIER = 2 # Less noise on SoundCloud, so fewer extras needed
+SOUNDCLOUD_SEARCH_MIN_FETCH = 15 # Minimum results to fetch for scoring
 SLSKD_MAX_RESULTS = 20           # Max Soulseek results to return
 SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 MAX_SEARCH_QUERY_LENGTH = 512    # Max characters allowed in search input
@@ -64,7 +67,6 @@ RATE_LIMIT_WINDOW = 60           # Window size in seconds
 
 # Configuration from environment - structural paths
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
-SINGLES_DIR = MUSIC_DIR / "Singles"
 DB_PATH = Path(os.getenv("DB_PATH", "/data/music_grabber.db"))
 
 # Other settings that don't change at runtime (not in UI)

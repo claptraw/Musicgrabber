@@ -17,7 +17,7 @@ import httpx
 
 from constants import (
     AUDIO_EXTENSIONS,
-    COOKIES_FILE, MUSIC_DIR, SINGLES_DIR,
+    COOKIES_FILE, MUSIC_DIR,
     TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
     TIMEOUT_FFMPEG_CONVERT, TIMEOUT_HTTP_REQUEST,
     YTDLP_403_MAX_RETRIES, YTDLP_403_RETRY_DELAY,
@@ -27,7 +27,7 @@ from constants import (
 from db import db_conn
 from metadata import lookup_musicbrainz, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
 from notifications import send_notification
-from settings import get_setting, get_setting_int
+from settings import get_setting, get_setting_int, get_singles_dir
 from slskd import (
     download_from_slskd, extract_track_info_from_path,
     search_slskd, should_retry_slskd_error,
@@ -85,11 +85,20 @@ def trigger_jellyfin_scan():
         pass  # Non-critical, scan will happen on schedule anyway
 
 
-def probe_audio_quality(file_path: Path) -> tuple[str | None, int]:
+def probe_audio_quality(
+    file_path: Path,
+    source_info: tuple[str, int] | None = None,
+) -> tuple[str | None, int]:
     """Use ffprobe to extract audio quality info.
 
     Returns (human_readable_string, bitrate_kbps). For lossless formats like
     FLAC the bitrate is reported as 0 (lossless always passes quality gates).
+
+    source_info is an optional (codec_label, bitrate_kbps) tuple describing
+    the original format before conversion. When the final file is FLAC but
+    the source was lossy, the display string honestly notes the conversion
+    (e.g. "FLAC (from MP3 128kbps)") and the returned bitrate is the SOURCE
+    bitrate so the quality gate can reject lipstick-on-a-pig transcodes.
     """
     try:
         result = subprocess.run(
@@ -111,6 +120,16 @@ def probe_audio_quality(file_path: Path) -> tuple[str | None, int]:
         sample_khz = f"{sample_rate / 1000:.1f}kHz".replace(".0kHz", "kHz") if sample_rate else ""
 
         if codec == "FLAC":
+            # Check if this FLAC was converted from a lossy source
+            if source_info:
+                src_codec, src_bitrate = source_info
+                lossless_codecs = {"FLAC", "ALAC", "WAV", "PCM_S16LE", "PCM_S24LE"}
+                if src_codec and src_codec.upper() not in lossless_codecs:
+                    src_kbps = f" {src_bitrate}kbps" if src_bitrate else ""
+                    label = f"FLAC (from {src_codec}{src_kbps})"
+                    return label, src_bitrate  # Source bitrate for quality gate
+
+            # Genuinely lossless
             parts = ["FLAC", sample_khz]
             if bit_depth:
                 parts.append(f"{bit_depth}bit")
@@ -123,12 +142,46 @@ def probe_audio_quality(file_path: Path) -> tuple[str | None, int]:
         return None, 0
 
 
-def _build_ytdlp_download_cmd(video_id: str, output_template: str, convert_to_flac: bool) -> list[str]:
-    """Build yt-dlp args for audio extraction, metadata, and thumbnail embedding."""
+def _extract_source_format_from_info(info: dict) -> tuple[str, int]:
+    """Extract the source audio codec and bitrate from yt-dlp info JSON.
+
+    Returns (codec_label, bitrate_kbps). The top-level 'acodec' and 'abr'
+    fields describe what yt-dlp actually selected to download, before any
+    post-processing conversion.
+    """
+    acodec = (info.get("acodec") or "").strip().lower()
+    abr = info.get("abr")  # Already in kbps (float or None)
+
+    codec_map = {
+        "mp3": "MP3", "aac": "AAC", "opus": "OPUS", "vorbis": "VORBIS",
+        "flac": "FLAC", "alac": "ALAC", "pcm_s16le": "WAV", "pcm_s24le": "WAV",
+        "mp4a.40.2": "AAC", "mp4a.40.5": "AAC",
+    }
+
+    codec_label = codec_map.get(acodec, acodec.upper() if acodec else "")
+    bitrate_kbps = int(abr) if abr else 0
+
+    return codec_label, bitrate_kbps
+
+
+def _build_ytdlp_download_cmd(
+    video_id: str,
+    output_template: str,
+    convert_to_flac: bool,
+    source_url: str = None,
+    use_cookies: bool = True,
+) -> list[str]:
+    """Build yt-dlp args for audio extraction, metadata, and thumbnail embedding.
+
+    source_url overrides the default YouTube URL (used for SoundCloud etc.).
+    use_cookies=False skips cookie/player-client args (not needed for SoundCloud).
+    """
     flac_args = ["--audio-format", "flac"] if convert_to_flac else []
+    base_args = _ytdlp_base_args() if use_cookies else []
+    url = source_url or f"https://www.youtube.com/watch?v={video_id}"
     return [
         "yt-dlp",
-        *_ytdlp_base_args(),
+        *base_args,
         "-f", "bestaudio/best",
         "-x",
         *flac_args,
@@ -142,7 +195,7 @@ def _build_ytdlp_download_cmd(video_id: str, output_template: str, convert_to_fl
         "--parse-metadata", "%(track,title)s:%(meta_title)s",
         "-o", output_template,
         "--no-warnings",
-        f"https://www.youtube.com/watch?v={video_id}"
+        url,
     ]
 
 
@@ -284,7 +337,7 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
         title = job.get("title", "Unknown")
 
         # Construct expected file path (any supported format)
-        artist_dir = SINGLES_DIR / sanitize_filename(artist)
+        artist_dir = get_singles_dir() / sanitize_filename(artist)
         audio_file = None
         for ext in AUDIO_EXTENSIONS:
             candidate = artist_dir / f"{sanitize_filename(title)}{ext}"
@@ -294,12 +347,12 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
 
         if audio_file:
             # Store relative path from Singles directory
-            rel_path = audio_file.relative_to(SINGLES_DIR)
+            rel_path = audio_file.relative_to(get_singles_dir())
             playlist_files.append(str(rel_path))
 
     if playlist_files:
         # Create M3U file
-        m3u_path = SINGLES_DIR / f"{sanitize_filename(playlist_name)}.m3u"
+        m3u_path = get_singles_dir() / f"{sanitize_filename(playlist_name)}.m3u"
         with open(m3u_path, 'w', encoding='utf-8') as f:
             f.write("#EXTM3U\n")
             for file_path in playlist_files:
@@ -385,7 +438,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     continue
 
                 # Create artist directory under Singles
-                artist_dir = SINGLES_DIR / sanitize_filename(artist)
+                artist_dir = get_singles_dir() / sanitize_filename(artist)
                 artist_dir.mkdir(parents=True, exist_ok=True)
 
                 # Download with best audio quality
@@ -447,7 +500,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 if lyrics:
                     save_lyrics_file(audio_file, lyrics)
 
-                downloaded_files.append(str(audio_file.relative_to(SINGLES_DIR)))
+                downloaded_files.append(str(audio_file.relative_to(get_singles_dir())))
                 completed_tracks += 1
 
             except Exception as track_error:
@@ -464,7 +517,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
         # Generate M3U playlist file
         if downloaded_files:
-            m3u_path = SINGLES_DIR / f"{sanitize_filename(playlist_name)}.m3u"
+            m3u_path = get_singles_dir() / f"{sanitize_filename(playlist_name)}.m3u"
             with open(m3u_path, 'w', encoding='utf-8') as f:
                 f.write("#EXTM3U\n")
                 for file_path in downloaded_files:
@@ -534,8 +587,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         if not artist or not title:
             artist, title = extract_track_info_from_path(filename)
 
-        # Update job with extracted info
-        _update_job(job_id, title=title, artist=artist)
+        # Update job with extracted info (store slskd peer as uploader for blacklist)
+        _update_job(job_id, title=title, artist=artist, uploader=username)
 
         # Check for duplicates
         existing_file = check_duplicate(artist, title)
@@ -550,7 +603,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             return
 
         # Create artist directory under Singles
-        artist_dir = SINGLES_DIR / sanitize_filename(artist)
+        artist_dir = get_singles_dir() / sanitize_filename(artist)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download from slskd with retries on common queue/abort failures
@@ -595,6 +648,14 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         sanitized_title = sanitize_filename(title)
         source_ext = downloaded_file.suffix.lower()
 
+        # Probe the source file BEFORE conversion so we know the real quality
+        source_format_info = None
+        if convert_to_flac and source_ext != '.flac':
+            src_quality_str, src_bitrate = probe_audio_quality(downloaded_file)
+            if src_quality_str:
+                src_codec = src_quality_str.split()[0]
+                source_format_info = (src_codec, src_bitrate)
+
         # Determine final filename
         if convert_to_flac and source_ext != '.flac':
             # Convert to FLAC
@@ -619,8 +680,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(final_file)
 
-        # Probe audio quality and enforce minimum bitrate
-        audio_quality, bitrate_kbps = probe_audio_quality(final_file)
+        # Probe audio quality (with source info so FLAC-from-lossy is reported honestly)
+        audio_quality, bitrate_kbps = probe_audio_quality(final_file, source_info=source_format_info)
         min_bitrate = get_setting_int("min_audio_bitrate", 0)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             final_file.unlink(missing_ok=True)
@@ -683,32 +744,41 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
 
 
-def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
-    """Process a download job"""
+def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, source_url: str = None):
+    """Process a download job.
+
+    source_url overrides the default YouTube URL construction — used for
+    SoundCloud and any future yt-dlp-supported source.
+    """
+    is_soundcloud = source_url and "soundcloud.com" in source_url
+    source_label = "soundcloud" if is_soundcloud else "youtube"
+    target_url = source_url or f"https://www.youtube.com/watch?v={video_id}"
+
     try:
-        if not is_valid_youtube_id(video_id):
+        if not is_soundcloud and not is_valid_youtube_id(video_id):
             raise Exception("Invalid YouTube video ID")
 
         # Defaults in case extraction fails before artist/title are assigned
         artist = None
         title = video_id
-        has_cookies = COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
+        has_cookies = not is_soundcloud and COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
 
         # Update status to downloading
         _update_job(job_id, status="downloading")
 
         # First, get video info for proper metadata
+        base_args = _ytdlp_base_args() if not is_soundcloud else []
         info_cmd = [
             "yt-dlp",
-            *_ytdlp_base_args(),
+            *base_args,
             "--dump-json",
             "--no-warnings",
-            f"https://www.youtube.com/watch?v={video_id}"
+            target_url,
         ]
 
         info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
         if info_result.returncode != 0:
-            if _is_ytdlp_403(info_result.stderr):
+            if not is_soundcloud and _is_ytdlp_403(info_result.stderr):
                 if has_cookies:
                     _note_cookie_failure()
                 hint = "Your cookies may have expired — try re-exporting them in Settings." if has_cookies else "Add browser cookies in Settings to authenticate."
@@ -717,18 +787,20 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
 
         info = json.loads(info_result.stdout)
 
-        # Extract artist and title
+        # Capture source audio format before yt-dlp converts it
+        source_format_info = _extract_source_format_from_info(info) if convert_to_flac else None
+
+        # Extract artist and title — SoundCloud uses 'uploader' for artist
         full_title = info.get("title", "Unknown")
-        channel = info.get("channel", info.get("uploader", "Unknown"))
+        channel = info.get("uploader", info.get("channel", "Unknown")) if is_soundcloud else info.get("channel", info.get("uploader", "Unknown"))
         artist, title = extract_artist_title(full_title, channel)
 
-        # Update job with extracted info
-        _update_job(job_id, title=title, artist=artist)
+        # Update job with extracted info (store raw uploader for blacklist reporting)
+        _update_job(job_id, title=title, artist=artist, uploader=channel)
 
         # Check for duplicates
         existing_file = check_duplicate(artist, title)
         if existing_file:
-            # Mark as completed without downloading
             _update_job(
                 job_id,
                 status="completed",
@@ -739,12 +811,16 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
             return
 
         # Create artist directory under Singles
-        artist_dir = SINGLES_DIR / sanitize_filename(artist)
+        artist_dir = get_singles_dir() / sanitize_filename(artist)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download with best audio quality
         output_template = str(artist_dir / f"{sanitize_filename(title)}.%(ext)s")
-        download_cmd = _build_ytdlp_download_cmd(video_id, output_template, convert_to_flac)
+        download_cmd = _build_ytdlp_download_cmd(
+            video_id, output_template, convert_to_flac,
+            source_url=source_url,
+            use_cookies=not is_soundcloud,
+        )
 
         # Retry strategy: back off on suspected bot blocks; if cookies seem to cause 403s,
         # try again without cookies once to distinguish auth problems from general rate limits.
@@ -774,7 +850,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
 
             if stderr:
                 error_msg = f"Download failed: {stderr}"
-                if download_result and _is_ytdlp_403(stderr):
+                if not is_soundcloud and download_result and _is_ytdlp_403(stderr):
                     if has_cookies:
                         error_msg = "YouTube blocked this download (403). Your cookies may have expired — try re-exporting them in Settings."
                     else:
@@ -796,8 +872,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(audio_file)
 
-        # Probe audio quality and enforce minimum bitrate
-        audio_quality, bitrate_kbps = probe_audio_quality(audio_file)
+        # Probe audio quality (with source info so FLAC-from-lossy is reported honestly)
+        audio_quality, bitrate_kbps = probe_audio_quality(audio_file, source_info=source_format_info)
         min_bitrate = get_setting_int("min_audio_bitrate", 0)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             audio_file.unlink(missing_ok=True)
@@ -838,7 +914,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
             notification_type="single",
             title=title,
             artist=artist,
-            source="youtube",
+            source=source_label,
             status="completed"
         )
 
@@ -850,7 +926,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True):
             notification_type="error",
             title=title,
             artist=artist,
-            source="youtube",
+            source=source_label,
             status="failed",
             error=str(e)
         )

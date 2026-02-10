@@ -10,6 +10,7 @@ from constants import DEFAULT_CONVERT_TO_FLAC, MAX_SEARCH_QUERY_LENGTH
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: int = 15
+    source: str = "youtube"  # "youtube", "soundcloud", or "all"
 
 class DownloadRequest(BaseModel):
     video_id: str
@@ -18,13 +19,18 @@ class DownloadRequest(BaseModel):
     search_token: Optional[str] = None
     download_type: str = "single"  # "single" or "playlist"
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
+    # Source routing
+    source: str = "youtube"  # "youtube", "soundcloud", or "soulseek"
+    source_url: Optional[str] = None  # Full URL for non-YouTube sources (e.g. SoundCloud)
     # Soulseek-specific fields
-    source: str = "youtube"  # "youtube" or "soulseek"
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
 
-class SpotifyPlaylistRequest(BaseModel):
-    url: str  # Spotify playlist URL
+class PlaylistFetchRequest(BaseModel):
+    url: str  # Spotify, Amazon Music, etc. playlist URL
+
+# Backwards compat alias — older code references this name
+SpotifyPlaylistRequest = PlaylistFetchRequest
 
 class AsyncBulkImportRequest(BaseModel):
     songs: str  # Multi-line text with "Artist - Song" format
@@ -33,7 +39,7 @@ class AsyncBulkImportRequest(BaseModel):
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
 
 class WatchedPlaylistRequest(BaseModel):
-    url: str  # Spotify or YouTube playlist URL
+    url: str  # Spotify, YouTube, or Amazon Music playlist URL
     refresh_interval_hours: int = 24
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
 
@@ -50,6 +56,7 @@ class SettingsUpdate(BaseModel):
     enable_lyrics: Optional[bool] = None
     default_convert_to_flac: Optional[bool] = None
     min_audio_bitrate: Optional[int] = None
+    singles_subdir: Optional[str] = None
     # Soulseek/slskd
     slskd_url: Optional[str] = None
     slskd_user: Optional[str] = None
@@ -86,12 +93,23 @@ class SearchResult(BaseModel):
     thumbnail: str
     is_playlist: bool = False
     video_count: Optional[int] = None
-    # New fields for multi-source support
-    source: str = "youtube"  # "youtube" or "soulseek"
+    # Multi-source support
+    source: str = "youtube"  # "youtube", "soundcloud", or "soulseek"
+    source_url: Optional[str] = None  # Full URL for non-YouTube sources
     quality: Optional[str] = None  # e.g., "FLAC", "MP3 320", None for YouTube
     quality_score: int = 40  # For sorting (higher = better)
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
+
+class BlacklistRequest(BaseModel):
+    """Report a bad track / block an uploader."""
+    job_id: Optional[str] = None
+    video_id: Optional[str] = None
+    uploader: Optional[str] = None
+    source: str = "youtube"  # "youtube", "soundcloud", or "soulseek"
+    reason: str = "other"  # wrong_track, poor_quality, slowed_pitched, contentid, other
+    note: Optional[str] = None  # Optional free-text detail
+    block_uploader: bool = False  # Also blacklist the uploader
 
 class TestSlskdRequest(BaseModel):
     url: Optional[str] = None

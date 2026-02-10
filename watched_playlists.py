@@ -20,6 +20,7 @@ from constants import (
 from db import db_conn
 from bulk_import import start_bulk_import_for_tracks
 from models import SpotifyPlaylistRequest
+from amazon import fetch_amazon_playlist
 from spotify import fetch_spotify_playlist_via_browser
 from utils import extract_artist_title, hash_track, spawn_daemon_thread
 from youtube import _ytdlp_base_args
@@ -47,7 +48,15 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if youtube_playlist:
         return "youtube", youtube_playlist.group(3)
 
-    raise HTTPException(status_code=400, detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube playlists.")
+    # Amazon Music playlist (user or curated, any regional TLD)
+    amazon_playlist = re.match(r'https?://music\.amazon\.[a-z.]+/(user-playlists|playlists)/\S+', url)
+    if amazon_playlist:
+        return "amazon", url  # Full URL needed — no extractable ID
+
+    raise HTTPException(
+        status_code=400,
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube playlists, Amazon Music playlists."
+    )
 
 
 def _fetch_spotify_playlist_embed(url: str) -> dict:
@@ -214,6 +223,19 @@ def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]
             raise HTTPException(status_code=422, detail="No tracks found in YouTube playlist")
 
         return tracks, playlist_name
+
+    elif platform == "amazon":
+        result = fetch_amazon_playlist(url)
+
+        tracks = []
+        for track_str in result["tracks"]:
+            if " - " in track_str:
+                artist, title = track_str.split(" - ", 1)
+                tracks.append((artist.strip(), title.strip()))
+            else:
+                tracks.append(("Unknown", track_str.strip()))
+
+        return tracks, result["playlist_name"]
 
     raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
 

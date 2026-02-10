@@ -237,6 +237,44 @@ h1 {
     cursor: not-allowed;
 }
 
+.source-selector {
+    position: absolute;
+    right: 90px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    z-index: 2;
+}
+
+.source-option {
+    padding: 5px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    transition: all 0.2s;
+    line-height: 1;
+}
+
+.source-option.active {
+    background: var(--accent);
+    color: #000;
+}
+
+.source-option:hover:not(.active) {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
 .tabs {
     display: flex;
     gap: 8px;
@@ -445,9 +483,24 @@ h1 {
     color: white;
 }
 
+.source-badge.soundcloud {
+    background: #ff5500;
+    color: white;
+}
+
 .source-badge.soulseek {
     background: #4a9eff;
     color: white;
+}
+
+.job-source-badge {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    border-radius: 4px 0 10px 0;
+    font-size: 9px;
+    padding: 3px 7px 3px 6px;
+    line-height: 1;
 }
 
 .quality-badge {
@@ -488,6 +541,8 @@ h1 {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 12px;
+    position: relative;
+    overflow: hidden;
 }
 
 .job-status {
@@ -1005,6 +1060,33 @@ h1 {
     align-items: center;
     gap: 16px;
     margin-top: 8px;
+}
+
+.donation-link {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 14px 28px;
+    font-size: 14px;
+    font-family: inherit;
+    font-weight: 600;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 10px;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.donation-link:hover {
+    background: #16a34a;
+    color: #000;
+}
+
+.donation-link-icon {
+    font-size: 15px;
 }
 
 .save-btn {

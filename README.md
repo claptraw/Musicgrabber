@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.8.5**
+**v1.9.0**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -11,29 +11,37 @@ If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 Lidarr's great for albums, but grabbing a single track you heard on the radio shouldn't require navigating menus or pulling an artist's entire discography. This is for the "I want one song, not a commitment" use case.
 
 ## Features
+New in **v1.9.0**:
+- **SoundCloud source** -- search, preview, and download from SoundCloud alongside YouTube. Great for mixes and extended versions
+- **Amazon Music playlist import** -- paste a public Amazon Music playlist URL to import tracks (headless browser scraping, same approach as Spotify)
+- **Honest quality reporting** -- FLAC files converted from lossy sources show their true origin (e.g. "FLAC (from MP3 128kbps)") instead of pretending to be lossless
+- **Custom download subfolder** -- change the "Singles" folder name in Settings without a restart
+- **Source badges** -- queue items show coloured badges (YT/SC/SLK) so you can see where each track came from
+- **Report / Blacklist** -- flag bad tracks (wrong track, ContentID dodge, slowed/pitched, poor quality) from the queue. Blacklisted videos are hidden from searches; blocked uploaders get penalised in ranking. Manage entries in Settings
 
-- **Mobile-friendly UI** — designed for quick searches from your phone
-- **Dark/light theme** — toggle between themes with the moon/sun button; preference saved per browser
-- **Settings tab** — configure all integrations via UI (no docker-compose editing required)
-- **Optional API authentication** — protect your instance with an API key
-- **Hover to preview** — on desktop, hover over a result for 2 seconds to hear a preview
-- **YouTube search** — finds tracks and playlists via yt-dlp
-- **Soulseek integration** — optional slskd support for higher quality sources (FLAC from P2P) *(in progress — needs testing)*
-- **Playlist support** — download entire playlists with automatic M3U generation
-- **Watched playlists** — monitor Spotify/YouTube playlists and auto-download new tracks
-- **Bulk import** — paste or upload a text file of songs to auto-search and queue
-- **Best quality FLAC** — extracts highest available audio quality
-- **Minimum bitrate enforcement** — optionally reject downloads below a configurable bitrate threshold
-- **Audio quality display** — completed downloads show codec and bitrate in the queue details
-- **Enhanced metadata** — MusicBrainz lookups with fallback to cleaned YouTube data
-- **Synced lyrics** — automatic lyrics fetching from LRClib, saved as `.lrc` files
-- **Auto-organise** — creates `Singles/Artist/Title.flac` structure
-- **Duplicate detection** — skips already-downloaded tracks
-- **Job queue** — track download progress, retry failed jobs, re-download or delete files from the queue
-- **Statistics dashboard** — download counts, success rate, daily chart, top artists, search analytics
-- **Webhook notifications** — get notified via Telegram, email, or generic webhook on download events
-- **YouTube cookie support** — upload browser cookies in Settings to bypass YouTube bot detection
-- **Optional Navidrome/Jellyfin integration** — auto-triggers library rescan after downloads
+and the rest of them:
+- **Mobile-friendly UI** -- designed for quick searches from your phone
+- **Dark/light theme** -- toggle between themes with the moon/sun button; preference saved per browser
+- **Settings tab** -- configure all integrations via UI (no docker-compose editing required)
+- **Optional API authentication** -- protect your instance with an API key
+- **Hover to preview** -- on desktop, hover over a result for 2 seconds to hear a preview
+- **YouTube search** -- finds tracks and playlists via yt-dlp
+- **Soulseek integration** -- optional slskd support for higher quality sources (FLAC from P2P) *(in progress -- needs testing)*
+- **Playlist support** -- download entire playlists with automatic M3U generation
+- **Watched playlists** -- monitor Spotify/YouTube playlists and auto-download new tracks
+- **Bulk import** -- paste or upload a text file of songs to auto-search and queue
+- **Best quality FLAC** -- extracts highest available audio quality
+- **Minimum bitrate enforcement** -- optionally reject downloads below a configurable bitrate threshold
+- **Audio quality display** -- completed downloads show codec and bitrate in the queue details, with honest reporting for lossy-to-FLAC conversions
+- **Enhanced metadata** -- MusicBrainz lookups with fallback to cleaned YouTube data
+- **Synced lyrics** -- automatic lyrics fetching from LRClib, saved as `.lrc` files
+- **Auto-organise** -- creates `Singles/Artist/Title.flac` structure
+- **Duplicate detection** -- skips already-downloaded tracks
+- **Job queue** -- track download progress, retry failed jobs, re-download or delete files from the queue
+- **Statistics dashboard** -- download counts, success rate, daily chart, top artists, search analytics
+- **Webhook notifications** -- get notified via Telegram, email, or generic webhook on download events
+- **YouTube cookie support** -- upload browser cookies in Settings to bypass YouTube bot detection
+- **Optional Navidrome/Jellyfin integration** -- auto-triggers library rescan after downloads
 
 ## Why FLAC?
 
@@ -144,6 +152,7 @@ The easiest way to configure MusicGrabber is via the **Settings tab** in the UI.
 - **Jellyfin**: URL and API key for library refresh
 - **Notifications**: Telegram webhook, generic webhook URL, and SMTP settings
 - **YouTube**: Upload browser cookies for authenticated downloads
+- **Blacklist**: View and manage reported tracks and blocked uploaders
 - **Security**: API key for authentication
 
 Settings are stored in the database and persist across container restarts.
@@ -162,7 +171,7 @@ Settings are stored in the database and persist across container restarts.
 | `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
 | `DEFAULT_CONVERT_TO_FLAC` | `true` | Convert downloads to FLAC by default (can be toggled per-download in UI) |
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
-| `WEBHOOK_URL` | - | Generic webhook URL — receives JSON POST on download completion/failure |
+| `WEBHOOK_URL` | - | Generic webhook URL -- receives JSON POST on download completion/failure |
 | `YTDLP_PLAYER_CLIENT` | *(empty)* | Override yt-dlp YouTube player client (expert-only, e.g. `android`, `web,android`) |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
 | `NAVIDROME_USER` | - | Navidrome username for API |
@@ -214,7 +223,7 @@ Get your API key from Jellyfin: Dashboard → API Keys → Add.
 
 ### Notifications (Optional)
 
-Get notified when downloads complete or fail via Telegram, email, or a generic webhook. Configure one or more channels — the same triggers apply to all.
+Get notified when downloads complete or fail via Telegram, email, or a generic webhook. Configure one or more channels -- the same triggers apply to all.
 
 **Notification triggers** (`NOTIFY_ON`):
 
@@ -225,7 +234,7 @@ Get notified when downloads complete or fail via Telegram, email, or a generic w
 | `bulk` | Notify when bulk imports complete |
 | `errors` | Notify when any download fails |
 
-Default is `playlists,bulk,errors` — notifications for playlist/bulk completions and any failures, but not for every single track.
+Default is `playlists,bulk,errors` -- notifications for playlist/bulk completions and any failures, but not for every single track.
 
 **Telegram setup:**
 
@@ -266,7 +275,7 @@ environment:
 
 ### Soulseek Integration (Optional)
 
-MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When configured, search results from both YouTube and Soulseek are displayed, sorted by quality — FLAC files from Soulseek appear at the top.
+MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When configured, search results from both YouTube and Soulseek are displayed, sorted by quality -- FLAC files from Soulseek appear at the top.
 
 **Searching only** (no downloads): If you only want to see what's available on Soulseek without downloading, configure just the API credentials:
 
@@ -297,7 +306,7 @@ environment:
 
 slskd organises downloads as `{downloads}/{username}/{filename}`, which MusicGrabber will look for automatically.
 
-**Note:** Soulseek is a P2P network. Most users run slskd behind a VPN. This integration only talks to your slskd instance — it doesn't connect directly to the Soulseek network.
+**Note:** Soulseek is a P2P network. Most users run slskd behind a VPN. This integration only talks to your slskd instance -- it doesn't connect directly to the Soulseek network.
 
 **Status:** Soulseek integration is in progress and needs testing. New Soulseek users may experience rejected downloads until they build reputation by sharing files.
 
@@ -377,10 +386,10 @@ music.yourdomain.com {
 
 ### Search and Download
 
-1. **Single tracks** — Search for a song, tap/click the result to download
-2. **Preview** — On desktop, hover over a result for 2 seconds to hear a preview (cached for quick replays, YouTube ONLY)
-3. **Playlists** — Search for a playlist URL or name, tap the playlist result to download all tracks (Best effort for song match from YouTube ONLY)
-4. **Processing feedback** — Shows "Processing..." immediately when tapped, then "Added to queue ✓"
+1. **Single tracks** -- Search for a song, tap/click the result to download
+2. **Preview** -- On desktop, hover over a result for 2 seconds to hear a preview (cached for quick replays, YouTube ONLY)
+3. **Playlists** -- Search for a playlist URL or name, tap the playlist result to download all tracks (Best effort for song match from YouTube ONLY)
+4. **Processing feedback** -- Shows "Processing..." immediately when tapped, then "Added to queue ✓"
 
 ### Bulk Import
 
@@ -397,16 +406,17 @@ The app will:
 - Show success/failure summary
 - All processing happens in-memory (files are not stored on server)
 
-Supports various dash formats: `-`, `–`, `—`
+Supports various dash formats: `-`, `–`, `--`
 
 ### Queue Management
 
-- **View progress** — See queued, in-progress, completed, and failed jobs
-- **Job details** — Click completed/failed jobs to see source, timestamps, download duration, and audio quality
-- **Re-download** — Re-queue any completed or failed download (overwrites existing file)
-- **Delete from library** — Remove the audio file and lyrics directly from the queue
-- **Retry failed** — Click retry on individual failed downloads
-- **Clear queue** — Remove all remembered jobs with the "Clear Queue" button
+- **View progress** -- See queued, in-progress, completed, and failed jobs
+- **Job details** -- Click completed/failed jobs to see source, timestamps, download duration, and audio quality
+- **Re-download** -- Re-queue any completed or failed download (overwrites existing file)
+- **Report bad tracks** -- Flag wrong tracks, ContentID dodges, or poor quality from the queue. Blacklisted videos are excluded from future searches
+- **Delete from library** -- Remove the audio file and lyrics directly from the queue. If the file is already missing, the job is marked as deleted. Artist folders are removed only when empty
+- **Retry failed** -- Click retry on individual failed downloads
+- **Clear queue** -- Remove all remembered jobs with the "Clear Queue" button
 
 ## File Structure
 
@@ -493,20 +503,24 @@ music.yourdomain.com {
 | `GET` | `/api/settings` | Get all settings (requires auth if API key set) |
 | `PUT` | `/api/settings` | Update settings |
 | `POST` | `/api/settings/test/{service}` | Test connection (slskd, navidrome, jellyfin) |
-| `POST` | `/api/search` | Search YouTube (`{"query": "...", "limit": 15}`) |
+| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "youtube/soundcloud/all"}`) |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
-| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (YouTube only) |
+| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for SoundCloud) |
 | `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "download_type": "single/playlist"}`) |
 | `POST` | `/api/bulk-import-async` | Bulk import songs (async, returns immediately) |
 | `GET` | `/api/bulk-import/{id}/status` | Get async bulk import progress |
 | `GET` | `/api/bulk-imports` | List recent bulk imports |
-| `POST` | `/api/spotify-playlist` | Fetch tracks from Spotify playlist/album URL |
+| `POST` | `/api/fetch-playlist` | Fetch tracks from supported playlist URL (Spotify or Amazon Music) |
+| `POST` | `/api/spotify-playlist` | Backwards-compat alias for Spotify playlist/album fetch |
 | `GET` | `/api/stats` | Get statistics (download counts, daily chart, top artists, search analytics) |
 | `GET` | `/api/jobs` | List recent jobs |
 | `GET` | `/api/jobs/{id}` | Get job status |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
 | `DELETE` | `/api/jobs/{id}/file` | Delete downloaded file and lyrics from library |
 | `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`) |
+| `POST` | `/api/blacklist` | Report a bad track / block an uploader |
+| `GET` | `/api/blacklist` | List all blacklist entries |
+| `DELETE` | `/api/blacklist/{id}` | Remove a blacklist entry |
 | `GET` | `/api/watched-playlists` | List all watched playlists |
 | `POST` | `/api/watched-playlists` | Add a playlist to watch |
 | `GET` | `/api/watched-playlists/{id}` | Get watched playlist details |
@@ -560,11 +574,11 @@ docker compose up -d
 - YouTube's bot detection may be blocking requests
 - Go to Settings → YouTube and upload browser cookies (export from a browser where you're signed into YouTube)
 - Use a cookie export extension like "Get cookies.txt LOCALLY" (Chrome/Firefox)
-- Cookies expire periodically — re-export if downloads start failing again
+- Cookies expire periodically -- re-export if downloads start failing again
 
 **Downloads failing for other reasons?**
 - Check `docker compose logs music-grabber`
-- YouTube may have changed something — try updating yt-dlp
+- YouTube may have changed something -- try updating yt-dlp
 - Some videos are region-locked or age-restricted
 
 **Navidrome not seeing new files?**
@@ -592,8 +606,8 @@ docker compose up -d
 
 Built with a mix of human creativity and AI assistance.
 
-- **Karl** — Creator and maintainer
-- **Claude (Anthropic)** — AI pair programmer
+- **Karl** -- Creator and maintainer
+- **Claude (Anthropic)** -- AI pair programmer
 
 ## License
 

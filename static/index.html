@@ -37,6 +37,12 @@
                 autocomplete="off"
                 autocapitalize="off"
             >
+            <!-- Source selector hidden — always search all sources. Kept for easy rollback -->
+            <div class="source-selector" id="sourceSelector" style="display:none">
+                <button class="source-option" data-source="youtube" title="Search YouTube">YT</button>
+                <button class="source-option" data-source="soundcloud" title="Search SoundCloud">SC</button>
+                <button class="source-option active" data-source="all" title="Search all sources">All</button>
+            </div>
             <button class="search-btn" id="searchBtn">Search</button>
             <div class="search-history" id="searchHistory"></div>
         </div>
@@ -70,7 +76,7 @@
                         <input
                             type="text"
                             id="spotifyUrlInput"
-                            placeholder="Spotify playlist or album URL"
+                            placeholder="Playlist or album URL"
                             style="flex: 1; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);"
                         >
                         <button
@@ -81,6 +87,14 @@
                         </button>
                     </div>
                     <div id="spotifyError" style="margin-top: 8px; font-size: 12px; color: var(--error); display: none;"></div>
+                    <div style="margin-top: 6px; display: flex; align-items: center; gap: 6px;">
+                        <span id="playlistServicesHint" style="font-size: 11px; color: var(--text-secondary);">Supported services: Spotify, YouTube, Amazon Music</span>
+                        <span
+                            id="playlistServicesTooltip"
+                            title="Supported services: Spotify, YouTube, Amazon Music"
+                            style="width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border); color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; cursor: help;"
+                        >i</span>
+                    </div>
                     <div style="margin-top: 6px; font-size: 11px; color: var(--text-secondary);">
                         Large Spotify playlists may take a few seconds to load. YouTube playlists are unlimited.
                     </div>
@@ -123,14 +137,14 @@
             </div>
             <div style="margin-bottom: 16px; padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px;">
                 <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
-                    Add a Spotify or YouTube playlist to automatically download new tracks when they're added.
+                    Add a Spotify, YouTube, or Amazon Music playlist to automatically download new tracks when they're added.
                 </p>
                 <p id="watchedScheduleInfo" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 12px; opacity: 0.8;"></p>
                 <div style="display: flex; gap: 8px; margin-bottom: 8px;">
                     <input
                         type="text"
                         id="watchedUrlInput"
-                        placeholder="Spotify or YouTube playlist URL"
+                        placeholder="Spotify, YouTube, or Amazon Music playlist URL"
                         style="flex: 1; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);"
                     >
                     <button
@@ -205,6 +219,11 @@
                         <label for="settingMinBitrate">Minimum Audio Bitrate (kbps)</label>
                         <input type="number" id="settingMinBitrate" placeholder="0 (disabled)" value="0" min="0" max="320" style="width: 120px;">
                         <span style="font-size: 11px; color: var(--text-secondary);">Downloads below this bitrate are rejected. 0 = no minimum.</span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingSinglesSubdir">Singles Subfolder</label>
+                        <input type="text" id="settingSinglesSubdir" placeholder="Singles" style="width: 200px;">
+                        <span style="font-size: 11px; color: var(--text-secondary);">Subfolder name under the music directory for downloads. Default: Singles</span>
                     </div>
                 </div>
             </div>
@@ -357,6 +376,12 @@
             </div>
 
             <div class="settings-section">
+                <h3 class="settings-section-title">Blacklist</h3>
+                <p style="font-size: 12px; color: var(--text-secondary); margin: 0 0 12px;">Reported tracks and blocked uploaders. Blacklisted videos are hidden from search results; blocked uploaders are penalised in ranking.</p>
+                <div id="blacklistContent" style="font-size: 13px; color: var(--text-secondary);">Loading...</div>
+            </div>
+
+            <div class="settings-section">
                 <h3 class="settings-section-title">Security</h3>
                 <div class="settings-form">
                     <div class="settings-row">
@@ -381,6 +406,55 @@
             <div class="settings-actions" style="padding-bottom: 20px;">
                 <button type="button" class="save-btn" id="saveSettingsBtn">Save Settings</button>
                 <div id="settingsSaveResult" class="save-result"></div>
+                <a
+                    class="donation-link"
+                    href="https://ko-fi.com/geekphreek"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Support Music Grabber on Ko-fi"
+                >
+                    <span class="donation-link-icon" aria-hidden="true">☕</span>
+                    <span>Buy me a coffee</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Report / Blacklist modal -->
+    <div id="reportOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
+        <div style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:12px; padding:24px; width:min(400px,90vw); max-width:90vw;">
+            <h3 style="margin:0 0 16px; font-size:15px; color:var(--text-primary);">Report Bad Track</h3>
+            <input type="hidden" id="reportJobId">
+            <input type="hidden" id="reportVideoId">
+            <input type="hidden" id="reportSource">
+            <input type="hidden" id="reportUploader">
+
+            <div style="margin-bottom:12px;">
+                <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Reason</label>
+                <select id="reportReason" style="width:100%; padding:8px; font-size:13px; font-family:inherit; background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border); border-radius:6px;">
+                    <option value="wrong_track">Wrong track</option>
+                    <option value="poor_quality">Poor quality</option>
+                    <option value="slowed_pitched">Slowed / pitched</option>
+                    <option value="contentid">ContentID dodge</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+
+            <div style="margin-bottom:12px;">
+                <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Notes (optional)</label>
+                <input type="text" id="reportNote" placeholder="Any extra detail..." style="width:100%; padding:8px; font-size:13px; font-family:inherit; background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border); border-radius:6px; box-sizing:border-box;">
+            </div>
+
+            <div id="reportUploaderRow" style="margin-bottom:16px;">
+                <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-primary); cursor:pointer;">
+                    <input type="checkbox" id="reportBlockUploader" style="accent-color:var(--warning);">
+                    <span>Also block uploader: <strong id="reportUploaderName"></strong></span>
+                </label>
+            </div>
+
+            <div style="display:flex; gap:8px; justify-content:flex-end;">
+                <button onclick="closeReportDialog()" style="padding:8px 16px; font-size:12px; font-family:inherit; font-weight:600; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Cancel</button>
+                <button onclick="submitReport()" id="reportSubmitBtn" style="padding:8px 16px; font-size:12px; font-family:inherit; font-weight:600; background:var(--warning); color:#000; border:none; border-radius:6px; cursor:pointer;">Report</button>
             </div>
         </div>
     </div>
@@ -490,6 +564,8 @@
         const fileUpload = document.getElementById('fileUpload');
         const fileName = document.getElementById('fileName');
         const spotifyUrlInput = document.getElementById('spotifyUrlInput');
+        const playlistServicesHint = document.getElementById('playlistServicesHint');
+        const playlistServicesTooltip = document.getElementById('playlistServicesTooltip');
         const fetchSpotifyBtn = document.getElementById('fetchSpotifyBtn');
         const spotifyError = document.getElementById('spotifyError');
         const queueTabContainer = document.getElementById('queueTabContainer');
@@ -515,6 +591,19 @@
         const convertToFlacCheckbox = document.getElementById('convertToFlac');
 
         const versionLabel = document.getElementById('versionLabel');
+        const PLAYLIST_SERVICES = ["Spotify", "YouTube", "Amazon Music"];
+
+        function renderPlaylistServicesText() {
+            const text = PLAYLIST_SERVICES.join(", ");
+            if (playlistServicesHint) {
+                playlistServicesHint.textContent = `Supported services: ${text}`;
+            }
+            if (playlistServicesTooltip) {
+                playlistServicesTooltip.title = `Supported services: ${text}`;
+            }
+        }
+
+        renderPlaylistServicesText();
 
         // Load config from server (version, FLAC preference, auth status)
         fetch('/api/config')
@@ -573,6 +662,26 @@
         let currentSearchToken = 0;
         let pendingSlskdToken = 0;
         let currentSearchLogToken = null;
+        let currentSource = 'all'; // Always search all sources
+        const expandedJobIds = new Set();
+
+        // Source selector — restore saved preference and wire up clicks
+        (function initSourceSelector() {
+            const buttons = document.querySelectorAll('.source-option');
+            buttons.forEach(btn => {
+                if (btn.dataset.source === currentSource) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+                btn.addEventListener('click', () => {
+                    buttons.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    currentSource = btn.dataset.source;
+                    localStorage.setItem('searchSource', currentSource);
+                });
+            });
+        })();
         const MAX_QUEUE_SIZE = 100;
         let currentBulkImportId = null;
         let bulkImportPollInterval = null;
@@ -587,10 +696,10 @@
         const HOVER_DELAY = 2000; // 2 seconds before preview starts
 
         // Preview functions
-        function startHoverTimer(videoId, element) {
+        function startHoverTimer(videoId, element, result) {
             clearHoverTimer();
             hoverTimeout = setTimeout(() => {
-                startPreview(videoId, element);
+                startPreview(videoId, element, result);
             }, HOVER_DELAY);
         }
 
@@ -601,7 +710,7 @@
             }
         }
 
-        async function startPreview(videoId, element) {
+        async function startPreview(videoId, element, result) {
             // Don't preview if already downloading
             if (downloadingIds.has(videoId)) return;
 
@@ -614,8 +723,13 @@
                 let audioUrl = previewCache.get(videoId);
 
                 if (!audioUrl) {
-                    // Fetch preview URL from backend
-                    const response = await apiFetch(`/api/preview/${videoId}`);
+                    // Build preview URL with source params
+                    const previewSource = (result && result.source) || 'youtube';
+                    const params = new URLSearchParams({ source: previewSource });
+                    if (previewSource === 'soundcloud' && result.source_url) {
+                        params.set('url', result.source_url);
+                    }
+                    const response = await apiFetch(`/api/preview/${encodeURIComponent(videoId)}?${params}`);
                     if (!response.ok) throw new Error('Failed to get preview');
 
                     const data = await response.json();
@@ -739,6 +853,7 @@
 
                 if (currentTab === 'settings') {
                     loadSettings();
+                    loadBlacklist();
                 }
             });
         });
@@ -761,11 +876,10 @@
             stopPreview(); // Stop any playing preview
 
             try {
-                // Fetch YouTube results first (fast)
                 const response = await apiFetch('/api/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query, limit: 15 })
+                    body: JSON.stringify({ query, limit: 15, source: currentSource })
                 });
 
                 if (!response.ok) throw new Error('Search failed');
@@ -779,8 +893,8 @@
                 renderResults(data.results);
                 showRelatedSuggestions(data.results);
 
-                // If slskd is enabled, fetch those results in the background
-                if (data.slskd_enabled) {
+                // If slskd is enabled and we're searching YouTube or All, fetch slskd results too
+                if (data.slskd_enabled && (currentSource === 'youtube' || currentSource === 'all')) {
                     pendingSlskdToken = searchToken;
                     fetchSlskdResults(query, searchToken);
                 }
@@ -878,6 +992,16 @@
             relatedSuggestions.style.display = 'block';
         }
 
+        function getSourceBadge(source) {
+            const badges = { youtube: 'YT', soundcloud: 'SC', soulseek: 'SLK' };
+            return badges[source] || source.toUpperCase().slice(0, 3);
+        }
+
+        function getSourceLabel(source) {
+            const labels = { youtube: 'YouTube', soundcloud: 'SoundCloud', soulseek: 'Soulseek' };
+            return labels[source] || source;
+        }
+
         function getQualityBadgeClass(quality) {
             if (!quality) return '';
             if (quality.includes('FLAC')) return 'flac';
@@ -921,7 +1045,7 @@
                         <div class="result-title">${escapeHtml(r.title)}</div>
                         <div class="result-meta">${formatResultMeta(r)}</div>
                         <div class="result-badges">
-                            <span class="source-badge ${r.source}">${r.source === 'soulseek' ? 'SLK' : 'YT'}</span>
+                            <span class="source-badge ${r.source}">${getSourceBadge(r.source)}</span>
                             ${r.quality ? `<span class="quality-badge ${getQualityBadgeClass(r.quality)}">${r.quality}</span>` : ''}
                             ${r.duration ? `<span class="result-duration">${r.duration}</span>` : ''}
                         </div>
@@ -943,10 +1067,10 @@
                     }
                 });
 
-                // Hover to preview (desktop only, YouTube only)
+                // Hover to preview (desktop only, not Soulseek)
                 item.addEventListener('mouseenter', () => {
-                    if (!downloadingIds.has(videoId) && result.source === 'youtube') {
-                        startHoverTimer(videoId, item);
+                    if (!downloadingIds.has(videoId) && result.source !== 'soulseek') {
+                        startHoverTimer(videoId, item, result);
                     }
                 });
 
@@ -967,9 +1091,7 @@
             downloadingIds.add(result.video_id);
             element.classList.add('downloading');
 
-            // Show processing state immediately
-            const sourceLabel = result.source === 'soulseek' ? 'Soulseek' : 'YouTube';
-            showToast(`Processing (${sourceLabel})...`, false);
+            showToast(`Processing (${getSourceLabel(result.source)})...`, false);
 
             try {
                 const payload = {
@@ -980,11 +1102,15 @@
                     search_token: currentSearchLogToken
                 };
 
+                // SoundCloud needs the full URL for downloading
+                if (result.source === 'soundcloud' && result.source_url) {
+                    payload.source_url = result.source_url;
+                }
+
                 // Add slskd-specific fields if this is a Soulseek result
                 if (result.source === 'soulseek') {
                     payload.slskd_username = result.slskd_username;
                     payload.slskd_filename = result.slskd_filename;
-                    // Use parsed artist when available
                     if (result.artist) {
                         payload.artist = result.artist;
                     }
@@ -1048,6 +1174,7 @@
 
         function renderJobs(jobs) {
             if (!jobs.length) {
+                expandedJobIds.clear();
                 queueTab.innerHTML = `
                     <div class="empty-state">
                         <div class="empty-state-icon">📭</div>
@@ -1057,34 +1184,64 @@
                 return;
             }
 
+            const visibleJobIds = new Set(jobs.map(j => j.id));
+            for (const id of Array.from(expandedJobIds)) {
+                if (!visibleJobIds.has(id)) expandedJobIds.delete(id);
+            }
+
             queueTab.innerHTML = jobs.map(job => {
                 const hasDetails = job.status === 'completed' || job.status === 'completed_with_errors' || job.status === 'failed';
-                const sourceLabel = job.source === 'soulseek' ? 'Soulseek' : 'YouTube';
+                const isExpanded = hasDetails && expandedJobIds.has(job.id);
+                const sourceLabel = getSourceLabel(job.source || 'youtube');
                 const sourceUrl = job.source_url || '';
-                const isYouTubeUrl = sourceUrl.startsWith('https://www.youtube.com/');
+                const isClickableUrl = sourceUrl.startsWith('https://');
+                const fileDeleted = Number(job.file_deleted || 0) === 1;
                 return `
-                <div class="job-item ${hasDetails ? 'has-details' : ''}" data-job-id="${job.id}" ${hasDetails ? 'onclick="toggleJobDetails(this)"' : ''}>
+                <div class="job-item ${hasDetails ? 'has-details' : ''} ${isExpanded ? 'expanded' : ''}" data-job-id="${job.id}" ${hasDetails ? 'onclick="toggleJobDetails(this)"' : ''}>
                     <div class="job-status ${job.status}"></div>
                     <div class="job-info">
                         <div class="job-title">${escapeHtml(job.artist ? `${job.artist} - ${job.title}` : job.title)}${job.status === 'completed_with_errors' ? '<span class="job-warning-badge">ISSUES</span>' : ''}</div>
                         <div class="job-meta">${formatJobStatus(job.status)} • ${formatTime(job.created_at)}</div>
                         ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ''}
                         ${hasDetails ? `
-                        <div class="job-details" style="display:none;">
+                        <div class="job-details" style="display:${isExpanded ? 'block' : 'none'};">
                             ${job.audio_quality ? `<div class="job-details-row"><span class="job-details-label">Quality:</span> ${escapeHtml(job.audio_quality)}</div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Source:</span> ${escapeHtml(sourceLabel)}</div>
-                            ${sourceUrl ? `<div class="job-details-row"><span class="job-details-label">URL:</span> ${isYouTubeUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sourceUrl)}</a>` : `<span class="job-details-url">${escapeHtml(sourceUrl)}</span>`}</div>` : ''}
+                            ${sourceUrl ? `<div class="job-details-row"><span class="job-details-label">URL:</span> ${isClickableUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sourceUrl)}</a>` : `<span class="job-details-url">${escapeHtml(sourceUrl)}</span>`}</div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Queued:</span> ${formatTimeFull(job.created_at)}</div>
                             ${job.completed_at ? `<div class="job-details-row"><span class="job-details-label">Completed:</span> ${formatTimeFull(job.completed_at)}</div>` : ''}
                             ${job.completed_at && job.created_at ? `<div class="job-details-row"><span class="job-details-label">Duration:</span> ${formatDuration(job.created_at, job.completed_at)}</div>` : ''}
-                            <div style="display: flex; gap: 8px; margin-top: 8px;">
+                            <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
                                 <button onclick="event.stopPropagation(); redownloadJob('${job.id}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Re-download</button>
-                                ${job.status !== 'failed' ? `<button onclick="event.stopPropagation(); deleteJobFile('${job.id}', '${escapeHtml(job.artist ? job.artist + ' - ' + job.title : job.title)}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Delete File</button>` : ''}
+                                <button class="report-btn" data-job-id="${escapeHtml(job.id || '')}" data-video-id="${escapeHtml(job.video_id || '')}" data-uploader="${escapeHtml(job.uploader || '')}" data-source="${escapeHtml(job.source || 'youtube')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--warning); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Report</button>
+                                ${job.status !== 'failed' ? (fileDeleted
+                                    ? `<button disabled style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; cursor: not-allowed; opacity: 0.8;">File Deleted</button>`
+                                    : `<button class="delete-file-btn" data-job-id="${escapeHtml(job.id || '')}" data-track-name="${escapeHtml(job.artist ? job.artist + ' - ' + job.title : job.title)}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Delete File</button>`) : ''}
                             </div>
                         </div>` : ''}
                     </div>
+                    <span class="source-badge job-source-badge ${job.source || 'youtube'}">${getSourceBadge(job.source || 'youtube')}</span>
                 </div>`;
             }).join('');
+
+            queueTab.querySelectorAll('.delete-file-btn').forEach((btn) => {
+                btn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    deleteJobFile(btn.dataset.jobId || '', btn.dataset.trackName || '');
+                });
+            });
+
+            queueTab.querySelectorAll('.report-btn').forEach((btn) => {
+                btn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    openReportDialog(
+                        btn.dataset.jobId || '',
+                        btn.dataset.videoId || '',
+                        btn.dataset.uploader || '',
+                        btn.dataset.source || 'youtube'
+                    );
+                });
+            });
 
             // If there are active jobs, poll for updates
             const hasActive = jobs.some(j => j.status === 'queued' || j.status === 'downloading');
@@ -1121,6 +1278,11 @@
                 const isOpen = details.style.display !== 'none';
                 details.style.display = isOpen ? 'none' : 'block';
                 el.classList.toggle('expanded', !isOpen);
+                const jobId = el.dataset.jobId;
+                if (jobId) {
+                    if (isOpen) expandedJobIds.delete(jobId);
+                    else expandedJobIds.add(jobId);
+                }
             }
         }
 
@@ -1149,10 +1311,162 @@
                     throw new Error(data.detail || 'Delete failed');
                 }
                 const data = await response.json();
-                showToast(`Deleted ${data.deleted.length} file(s)`);
+                if (data.deleted.length > 0) {
+                    showToast(`Deleted ${data.deleted.length} file(s)`);
+                } else {
+                    showToast('File was already missing — marked as deleted');
+                }
                 loadJobs();
             } catch (error) {
                 showToast(error.message || 'Delete failed', true);
+                loadJobs(); // Refresh anyway so buttons reflect current state
+            }
+        }
+
+        // =============================================================================
+        // Report / Blacklist
+        // =============================================================================
+
+        function openReportDialog(jobId, videoId, uploader, source) {
+            document.getElementById('reportJobId').value = jobId;
+            document.getElementById('reportVideoId').value = videoId;
+            document.getElementById('reportSource').value = source;
+            document.getElementById('reportUploader').value = uploader;
+            document.getElementById('reportReason').value = 'wrong_track';
+            document.getElementById('reportNote').value = '';
+            document.getElementById('reportBlockUploader').checked = false;
+
+            const uploaderRow = document.getElementById('reportUploaderRow');
+            const uploaderName = document.getElementById('reportUploaderName');
+            if (uploader) {
+                uploaderName.textContent = uploader;
+                uploaderRow.style.display = 'block';
+            } else {
+                uploaderRow.style.display = 'none';
+            }
+
+            const overlay = document.getElementById('reportOverlay');
+            overlay.style.display = 'flex';
+        }
+
+        function closeReportDialog() {
+            document.getElementById('reportOverlay').style.display = 'none';
+        }
+
+        // Close on overlay click (not the dialog itself)
+        document.getElementById('reportOverlay').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closeReportDialog();
+        });
+
+        async function submitReport() {
+            const btn = document.getElementById('reportSubmitBtn');
+            btn.disabled = true;
+            btn.textContent = 'Reporting...';
+
+            try {
+                const payload = {
+                    job_id: document.getElementById('reportJobId').value || null,
+                    video_id: document.getElementById('reportVideoId').value || null,
+                    uploader: document.getElementById('reportUploader').value || null,
+                    source: document.getElementById('reportSource').value || 'youtube',
+                    reason: document.getElementById('reportReason').value,
+                    note: document.getElementById('reportNote').value || null,
+                    block_uploader: document.getElementById('reportBlockUploader').checked
+                };
+
+                const response = await apiFetch('/api/blacklist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.detail || 'Report failed');
+                }
+
+                showToast('Track reported and blacklisted');
+                closeReportDialog();
+            } catch (error) {
+                showToast(error.message || 'Report failed', true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Report';
+            }
+        }
+
+        const _reasonLabels = {
+            wrong_track: 'Wrong track',
+            poor_quality: 'Poor quality',
+            slowed_pitched: 'Slowed/pitched',
+            contentid: 'ContentID dodge',
+            other: 'Other'
+        };
+
+        async function loadBlacklist() {
+            const container = document.getElementById('blacklistContent');
+            if (!container) return;
+
+            try {
+                const response = await apiFetch('/api/blacklist?limit=200');
+                if (!response.ok) throw new Error('Failed to load blacklist');
+
+                const data = await response.json();
+                const entries = data.entries || [];
+
+                if (entries.length === 0) {
+                    container.innerHTML = '<p style="color:var(--text-secondary); font-style:italic;">No blacklisted items yet. Use the Report button on queue items to flag bad tracks.</p>';
+                    return;
+                }
+
+                container.innerHTML = `
+                    <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                        <thead>
+                            <tr style="text-align:left; color:var(--text-secondary); border-bottom:1px solid var(--border);">
+                                <th style="padding:6px 8px;">Type</th>
+                                <th style="padding:6px 8px;">Value</th>
+                                <th style="padding:6px 8px;">Source</th>
+                                <th style="padding:6px 8px;">Reason</th>
+                                <th style="padding:6px 8px;">Date</th>
+                                <th style="padding:6px 8px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${entries.map(e => {
+                                const isUploader = !e.video_id && e.uploader;
+                                const typeLabel = isUploader ? 'Uploader' : 'Video';
+                                const value = isUploader ? e.uploader : (e.video_id || '?');
+                                const reasonLabel = _reasonLabels[e.reason] || e.reason || '';
+                                const dateStr = formatDateYmd(e.created_at);
+                                return `<tr style="border-bottom:1px solid var(--border);">
+                                    <td style="padding:6px 8px;"><span style="display:inline-block; padding:2px 6px; font-size:10px; font-weight:600; border-radius:4px; background:${isUploader ? 'var(--warning)' : 'var(--error)'}; color:#000;">${typeLabel}</span></td>
+                                    <td style="padding:6px 8px; max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(value)}">${escapeHtml(value)}</td>
+                                    <td style="padding:6px 8px;">${escapeHtml(e.source || '')}</td>
+                                    <td style="padding:6px 8px;">${escapeHtml(reasonLabel)}</td>
+                                    <td style="padding:6px 8px;">${dateStr}</td>
+                                    <td style="padding:6px 8px;"><button onclick="removeBlacklistEntry(${e.id})" style="padding:3px 8px; font-size:11px; font-family:inherit; font-weight:600; background:var(--bg-tertiary); color:var(--error); border:1px solid var(--border); border-radius:4px; cursor:pointer;">Remove</button></td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                    <p style="margin-top:8px; color:var(--text-secondary); font-size:11px;">${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}</p>
+                `;
+            } catch (error) {
+                container.innerHTML = '<p style="color:var(--error);">Failed to load blacklist</p>';
+            }
+        }
+
+        async function removeBlacklistEntry(entryId) {
+            try {
+                const response = await apiFetch(`/api/blacklist/${entryId}`, { method: 'DELETE' });
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.detail || 'Remove failed');
+                }
+                showToast('Blacklist entry removed');
+                loadBlacklist();
+            } catch (error) {
+                showToast(error.message || 'Remove failed', true);
             }
         }
 
@@ -1454,6 +1768,11 @@
             return div.innerHTML;
         }
 
+        function escapeAttr(text) {
+            // Safe for use inside single-quoted JS string literals in HTML attributes
+            return escapeHtml(String(text)).replace(/'/g, '&#39;').replace(/\\/g, '\\\\');
+        }
+
         // Line counter (no limit)
         function updateLineCounter() {
             const lines = bulkInput.value.split('\n').filter(line => line.trim());
@@ -1507,24 +1826,26 @@
         async function fetchSpotifyPlaylist() {
             const url = spotifyUrlInput.value.trim();
             if (!url) {
-                spotifyError.textContent = 'Please enter a Spotify URL';
+                spotifyError.textContent = 'Please enter a playlist URL';
                 spotifyError.style.display = 'block';
                 return;
             }
 
-            // Basic URL validation - support playlists and albums
-            if (!url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//)) {
-                spotifyError.textContent = 'Invalid Spotify URL. Expected playlist or album URL.';
+            // URL validation - Spotify playlists/albums and Amazon Music playlists
+            const isSpotify = url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//);
+            const isAmazon = url.match(/^https?:\/\/music\.amazon\.[a-z.]+\/(user-playlists|playlists)\//);
+            if (!isSpotify && !isAmazon) {
+                spotifyError.textContent = 'Unsupported URL. Paste a Spotify or Amazon Music playlist link.';
                 spotifyError.style.display = 'block';
                 return;
             }
 
             spotifyError.style.display = 'none';
             fetchSpotifyBtn.disabled = true;
-            fetchSpotifyBtn.textContent = 'Fetching...';
+            fetchSpotifyBtn.textContent = isAmazon ? 'Scraping...' : 'Fetching...';
 
             try {
-                const response = await apiFetch('/api/spotify-playlist', {
+                const response = await apiFetch('/api/fetch-playlist', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ url })
@@ -1955,8 +2276,9 @@
 
             // Source breakdown
             const ytCount = data.sources.youtube || 0;
+            const scCount = data.sources.soundcloud || 0;
             const slkCount = data.sources.soulseek || 0;
-            const sourceTotal = ytCount + slkCount || 1;
+            const sourceTotal = ytCount + scCount + slkCount || 1;
 
             let html = `
                 <!-- Summary cards -->
@@ -2010,10 +2332,12 @@
                     <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px;">Sources</div>
                     <div style="display: flex; gap: 8px; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
                         ${ytCount > 0 ? `<div style="flex: ${ytCount}; background: #ff0000; border-radius: 4px;"></div>` : ''}
+                        ${scCount > 0 ? `<div style="flex: ${scCount}; background: #ff5500; border-radius: 4px;"></div>` : ''}
                         ${slkCount > 0 ? `<div style="flex: ${slkCount}; background: #4a9eff; border-radius: 4px;"></div>` : ''}
                     </div>
-                    <div style="display: flex; gap: 16px; font-size: 12px;">
+                    <div style="display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap;">
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff0000; border-radius: 2px; margin-right: 4px;"></span>YouTube: ${ytCount}</span>
+                        ${scCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff5500; border-radius: 2px; margin-right: 4px;"></span>SoundCloud: ${scCount}</span>` : ''}
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #4a9eff; border-radius: 2px; margin-right: 4px;"></span>Soulseek: ${slkCount}</span>
                     </div>
                 </div>
@@ -2074,7 +2398,7 @@
                         <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px;">Recent Downloads</div>
                         ${data.recent.map(r => `
                             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px;">
-                                <span class="source-badge ${r.source || 'youtube'}" style="flex-shrink: 0;">${(r.source || 'youtube') === 'soulseek' ? 'SLK' : 'YT'}</span>
+                                <span class="source-badge ${r.source || 'youtube'}" style="flex-shrink: 0;">${getSourceBadge(r.source || 'youtube')}</span>
                                 <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(r.artist ? `${r.artist} - ${r.title}` : r.title)}</span>
                                 <span style="margin-left: auto; color: var(--text-secondary); white-space: nowrap; flex-shrink: 0;">${r.completed_at ? formatTime(r.completed_at) : ''}</span>
                             </div>
@@ -2096,6 +2420,7 @@
             'enable_lyrics': 'settingEnableLyrics',
             'default_convert_to_flac': 'settingDefaultFlac',
             'min_audio_bitrate': 'settingMinBitrate',
+            'singles_subdir': 'settingSinglesSubdir',
             'slskd_url': 'settingSlskdUrl',
             'slskd_user': 'settingSlskdUser',
             'slskd_pass': 'settingSlskdPass',

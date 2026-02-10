@@ -17,7 +17,7 @@ from constants import (
     BULK_IMPORT_SEARCH_DELAY, BULK_IMPORT_BACKOFF_DELAYS,
     BULK_IMPORT_BACKOFF_RESET_AFTER, TIMEOUT_YTDLP_SEARCH,
 )
-from db import db_conn
+from db import db_conn, get_blacklisted_video_ids
 from downloads import process_download, create_bulk_playlist
 from notifications import send_notification
 from utils import hash_track, spawn_daemon_thread
@@ -113,6 +113,9 @@ def process_bulk_import_worker(import_id: str):
         conn.execute("UPDATE bulk_imports SET status = 'processing' WHERE id = ?", (import_id,))
         conn.commit()
 
+    # Load blacklisted video IDs once for the whole import run
+    blocked_ids = get_blacklisted_video_ids()
+
     # Rate limiting state
     base_delay = BULK_IMPORT_SEARCH_DELAY
     backoff_delays = BULK_IMPORT_BACKOFF_DELAYS
@@ -199,9 +202,11 @@ def process_bulk_import_worker(import_id: str):
                     time.sleep(base_delay)
                     continue
 
-                # Parse results and find best match
+                # Parse results and find best match (excluding blacklisted videos)
                 search_results = parse_youtube_search_results(result.stdout, query=f"{artist} - {song}")
-                search_results = [r for r in search_results if r.get("video_id") and not r.get("is_playlist")]
+                search_results = [r for r in search_results
+                                  if r.get("video_id") and not r.get("is_playlist")
+                                  and r.get("video_id") not in blocked_ids]
 
                 if not search_results:
                     with db_conn() as conn:

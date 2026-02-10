@@ -12,7 +12,8 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from constants import AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH, SINGLES_DIR
+from constants import AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH
+from settings import get_singles_dir
 
 
 def sanitize_filename(name: str) -> str:
@@ -106,7 +107,7 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
 def check_duplicate(artist: str, title: str) -> Optional[Path]:
     """Check if a track already exists in the library (any audio format)"""
     try:
-        artist_dir = SINGLES_DIR / sanitize_filename(artist)
+        artist_dir = get_singles_dir() / sanitize_filename(artist)
         if not artist_dir.exists():
             return None
 
@@ -152,7 +153,7 @@ def subsonic_auth_params(username: str, password: str) -> dict:
     }
 
 
-def spawn_daemon_thread(target, *args) -> None:
+def spawn_daemon_thread(target, *args, **kwargs) -> None:
     """Start a daemon thread for background work."""
-    thread = threading.Thread(target=target, args=args, daemon=True)
+    thread = threading.Thread(target=target, args=args, kwargs=kwargs, daemon=True)
     thread.start()

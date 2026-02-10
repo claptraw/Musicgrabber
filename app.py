@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 
 from constants import (
-    VERSION, MUSIC_DIR, SINGLES_DIR, DB_PATH, COOKIES_FILE,
+    VERSION, MUSIC_DIR, DB_PATH, COOKIES_FILE,
     TIMEOUT_YTDLP_INFO,
     TIMEOUT_YTDLP_PREVIEW,
     TIMEOUT_SLSKD_SEARCH,
@@ -29,25 +29,27 @@ from constants import (
 )
 from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs, cleanup_old_search_logs
 from settings import (
-    get_setting, get_setting_bool, set_setting,
+    get_setting, get_setting_bool, set_setting, get_singles_dir,
     SETTINGS_SCHEMA, SENSITIVE_SETTINGS, _get_typed_setting, _is_env_override,
 )
 from models import (
-    SearchRequest, DownloadRequest, SpotifyPlaylistRequest,
+    SearchRequest, DownloadRequest, PlaylistFetchRequest,
     AsyncBulkImportRequest, WatchedPlaylistRequest, WatchedPlaylistUpdate,
-    SettingsUpdate, SearchResult,
+    SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestYouTubeCookiesRequest,
 )
 from middleware import AuthMiddleware
 from youtube import (
     _has_valid_cookie_entries, _cookie_lines_for_domain_check, _sync_cookies_file,
-    _ytdlp_base_args, _is_ytdlp_403, search_youtube, parse_duration,
+    _ytdlp_base_args, _is_ytdlp_403, parse_duration,
 )
+from search import search_source, search_all, get_available_sources, SOURCE_REGISTRY
 from slskd import slskd_enabled, search_slskd
 from downloads import (
     process_download, process_playlist_download, process_slskd_download,
 )
 from bulk_import import clean_bulk_import_line, start_bulk_import_for_tracks, process_bulk_import_worker
+from amazon import fetch_amazon_playlist
 from watched_playlists import (
     detect_playlist_platform, fetch_playlist_tracks, refresh_watched_playlist,
     start_scheduler, _fetch_spotify_playlist_embed,
@@ -62,7 +64,7 @@ app = FastAPI(title="Music Grabber", version=VERSION)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Ensure directories exist
-SINGLES_DIR.mkdir(parents=True, exist_ok=True)
+get_singles_dir().mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Initialise database and start background monitors
@@ -502,7 +504,7 @@ def get_stats():
         storage_bytes = 0
         file_count = 0
         try:
-            for f in SINGLES_DIR.rglob("*"):
+            for f in get_singles_dir().rglob("*"):
                 if f.is_file() and f.suffix.lower() in ('.flac', '.opus', '.m4a', '.mp3', '.ogg', '.webm'):
                     storage_bytes += f.stat().st_size
                     file_count += 1
@@ -531,18 +533,36 @@ def get_stats():
 # =============================================================================
 
 @app.get("/api/preview/{video_id}")
-def get_preview_url(video_id: str):
-    """Get a streamable audio URL for preview playback"""
+def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
+    """Get a streamable audio URL for preview playback."""
     try:
-        if not is_valid_youtube_id(video_id):
-            raise HTTPException(status_code=400, detail="Invalid YouTube video ID")
+        if source == "youtube":
+            if not is_valid_youtube_id(video_id):
+                raise HTTPException(status_code=400, detail="Invalid YouTube video ID")
+            target_url = f"https://www.youtube.com/watch?v={video_id}"
+            base_args = _ytdlp_base_args()
+        elif source == "soundcloud":
+            if not url:
+                raise HTTPException(status_code=400, detail="SoundCloud preview requires url parameter")
+            target_url = url
+            base_args = []  # No cookies needed for SoundCloud
+        else:
+            raise HTTPException(status_code=400, detail=f"Preview not supported for source: {source}")
+
+        # SoundCloud returns HLS (.m3u8) for bestaudio which browsers can't
+        # play natively — prefer the direct HTTP MP3 stream for previews
+        if source == "soundcloud":
+            fmt = "http_mp3_1_0/bestaudio[protocol=https]/bestaudio/best"
+        else:
+            fmt = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+
         cmd = [
             "yt-dlp",
-            *_ytdlp_base_args(),
-            "-f", "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+            *base_args,
+            "-f", fmt,
             "-g",  # Get URL only, don't download
             "--no-warnings",
-            f"https://www.youtube.com/watch?v={video_id}"
+            target_url,
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_PREVIEW)
@@ -557,6 +577,8 @@ def get_preview_url(video_id: str):
 
         return {"url": audio_url, "video_id": video_id}
 
+    except HTTPException:
+        raise
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Preview request timed out")
     except Exception as e:
@@ -564,14 +586,26 @@ def get_preview_url(video_id: str):
         raise HTTPException(status_code=500, detail="Failed to get preview URL")
 
 
+@app.get("/api/sources")
+def list_sources():
+    """Return available search sources for the frontend source selector."""
+    return {"sources": get_available_sources()}
+
+
 @app.post("/api/search")
 def search(request: SearchRequest):
-    """Search YouTube for music (fast, no slskd delay)"""
+    """Search for music across configured sources."""
     try:
-        yt_results = search_youtube(request.query, request.limit)
+        source = request.source
+        if source == "all":
+            raw_results = search_all(request.query, request.limit)
+        elif source in SOURCE_REGISTRY:
+            raw_results = search_source(source, request.query, request.limit)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
 
         final_results = []
-        for item in yt_results[:request.limit]:
+        for item in raw_results[:request.limit]:
             final_results.append(SearchResult(
                 video_id=item["video_id"],
                 title=item["title"],
@@ -579,9 +613,10 @@ def search(request: SearchRequest):
                 channel=item["channel"],
                 duration=item["duration"],
                 thumbnail=item["thumbnail"],
-                is_playlist=item["is_playlist"],
-                video_count=item["video_count"],
+                is_playlist=item.get("is_playlist", False),
+                video_count=item.get("video_count"),
                 source=item["source"],
+                source_url=item.get("source_url"),
                 quality=item["quality"],
                 quality_score=item["quality_score"],
                 slskd_username=item["slskd_username"],
@@ -590,7 +625,7 @@ def search(request: SearchRequest):
 
         search_token = None
         try:
-            search_token = _log_search(request.query, len(final_results), source="youtube")
+            search_token = _log_search(request.query, len(final_results), source=source)
         except Exception as log_error:
             print(f"search log error: {log_error}")
 
@@ -598,6 +633,8 @@ def search(request: SearchRequest):
 
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Search timed out")
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"search error: {e}")
         raise HTTPException(status_code=500, detail="Search failed")
@@ -655,17 +692,23 @@ def download(request: DownloadRequest):
     # Create job record
     with db_conn() as conn:
         # Determine source type
-        source = "youtube"
-        if request.source == "soulseek" and request.slskd_username and request.slskd_filename:
-            source = "soulseek"
+        source = request.source or "youtube"
+        if source == "soulseek" and not (request.slskd_username and request.slskd_filename):
+            source = "youtube"  # Fallback if slskd fields missing
 
+        # Validate based on source
         if source == "youtube":
             if not request.video_id or not is_valid_youtube_id(request.video_id):
                 raise HTTPException(status_code=400, detail="Invalid YouTube video ID")
+        elif source == "soundcloud":
+            if not request.source_url:
+                raise HTTPException(status_code=400, detail="SoundCloud download requires source_url")
 
         # Build source URL for tracking
         if source == "soulseek":
             source_url = f"soulseek://{request.slskd_username}/{request.slskd_filename}" if request.slskd_username else None
+        elif source == "soundcloud":
+            source_url = request.source_url
         elif request.download_type == "playlist":
             source_url = f"https://www.youtube.com/playlist?list={request.video_id}" if request.video_id else None
         else:
@@ -701,6 +744,8 @@ def download(request: DownloadRequest):
             title,
             request.convert_to_flac
         )
+    elif source == "soundcloud":
+        spawn_daemon_thread(process_download, job_id, request.video_id, request.convert_to_flac, source_url=source_url)
     else:
         spawn_daemon_thread(process_download, job_id, request.video_id, request.convert_to_flac)
 
@@ -730,6 +775,7 @@ def _ensure_utc_suffix(timestamp: str | None) -> str | None:
 @app.get("/api/jobs")
 def get_jobs(limit: int = 20):
     """Get recent jobs"""
+    from utils import check_duplicate
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
@@ -737,11 +783,30 @@ def get_jobs(limit: int = 20):
             (limit,)
         )
         jobs = []
+        stale_ids = []  # Jobs that claim file exists but it doesn't
         for row in cursor.fetchall():
             job = dict(row)
             job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
             job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
+
+            # Sync file_deleted flag with reality for completed jobs
+            if (job.get('status') in ('completed', 'completed_with_errors')
+                    and not job.get('file_deleted')
+                    and job.get('artist') and job.get('title')):
+                if not check_duplicate(job['artist'], job['title']):
+                    job['file_deleted'] = 1
+                    stale_ids.append(job['id'])
+
             jobs.append(job)
+
+        # Batch-update any jobs whose files have gone walkabout
+        if stale_ids:
+            conn.executemany(
+                "UPDATE jobs SET file_deleted = 1 WHERE id = ?",
+                [(jid,) for jid in stale_ids]
+            )
+            conn.commit()
+
     return {"jobs": jobs}
 
 
@@ -781,7 +846,7 @@ def retry_job(job_id: str):
 
         # Reset job status
         conn.execute(
-            "UPDATE jobs SET status = ?, error = NULL, completed_at = NULL WHERE id = ?",
+            "UPDATE jobs SET status = ?, error = NULL, completed_at = NULL, file_deleted = 0 WHERE id = ?",
             ("queued", job_id)
         )
         conn.commit()
@@ -801,6 +866,8 @@ def retry_job(job_id: str):
             job.get("title", ""),
             convert_to_flac
         )
+    elif job.get("source") == "soundcloud" and job.get("source_url"):
+        spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac, source_url=job["source_url"])
     else:
         spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac)
 
@@ -830,7 +897,11 @@ def delete_job_file(job_id: str):
     from utils import sanitize_filename, check_duplicate
     existing = check_duplicate(artist, title)
     if not existing:
-        raise HTTPException(status_code=404, detail="File not found on disk")
+        # File already gone — just mark it as deleted and move on
+        with db_conn() as conn:
+            conn.execute("UPDATE jobs SET file_deleted = 1 WHERE id = ?", (job_id,))
+            conn.commit()
+        return {"deleted": [], "job_id": job_id}
 
     deleted_files = []
     try:
@@ -851,6 +922,10 @@ def delete_job_file(job_id: str):
 
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
+
+    with db_conn() as conn:
+        conn.execute("UPDATE jobs SET file_deleted = 1 WHERE id = ?", (job_id,))
+        conn.commit()
 
     return {"deleted": deleted_files, "job_id": job_id}
 
@@ -875,6 +950,86 @@ def cleanup_jobs(status: Optional[str] = None):
         conn.commit()
 
     return {"deleted": deleted_count}
+
+
+# =============================================================================
+# Blacklist / Report API
+# =============================================================================
+
+@app.post("/api/blacklist")
+def add_blacklist_entry(request: BlacklistRequest):
+    """Report a bad track and/or block an uploader."""
+    if not request.video_id and not request.uploader:
+        raise HTTPException(status_code=400, detail="Need at least a video_id or uploader to blacklist")
+
+    entries_created = []
+
+    with db_conn() as conn:
+        # Blacklist the specific video
+        if request.video_id:
+            # Upsert — if the same video_id is already blacklisted, update the reason
+            existing = conn.execute(
+                "SELECT id FROM blacklist WHERE video_id = ?", (request.video_id,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE blacklist SET reason = ?, note = ?, job_id = COALESCE(?, job_id) WHERE id = ?",
+                    (request.reason, request.note, request.job_id, existing[0])
+                )
+                entries_created.append({"type": "video", "id": existing[0], "updated": True})
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO blacklist (video_id, source, reason, note, job_id) VALUES (?, ?, ?, ?, ?)",
+                    (request.video_id, request.source, request.reason, request.note, request.job_id)
+                )
+                entries_created.append({"type": "video", "id": cursor.lastrowid})
+
+        # Optionally blacklist the uploader too
+        if request.block_uploader and request.uploader:
+            uploader_lower = request.uploader.lower()
+            existing = conn.execute(
+                "SELECT id FROM blacklist WHERE lower(uploader) = ? AND source = ? AND (video_id IS NULL OR video_id = '')",
+                (uploader_lower, request.source)
+            ).fetchone()
+            if not existing:
+                cursor = conn.execute(
+                    "INSERT INTO blacklist (uploader, source, reason, note, job_id) VALUES (?, ?, ?, ?, ?)",
+                    (request.uploader, request.source, request.reason, request.note, request.job_id)
+                )
+                entries_created.append({"type": "uploader", "id": cursor.lastrowid})
+
+        conn.commit()
+
+    return {"entries": entries_created}
+
+
+@app.get("/api/blacklist")
+def list_blacklist(limit: int = 100, offset: int = 0):
+    """List all blacklist entries for the management UI."""
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM blacklist ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset)
+        ).fetchall()
+        total = conn.execute("SELECT COUNT(*) FROM blacklist").fetchone()[0]
+
+    return {
+        "entries": [dict(r) for r in rows],
+        "total": total
+    }
+
+
+@app.delete("/api/blacklist/{entry_id}")
+def remove_blacklist_entry(entry_id: int):
+    """Remove a blacklist entry by ID."""
+    with db_conn() as conn:
+        cursor = conn.execute("DELETE FROM blacklist WHERE id = ?", (entry_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Blacklist entry not found")
+        conn.commit()
+
+    return {"deleted": entry_id}
 
 
 # =============================================================================
@@ -1031,13 +1186,21 @@ def list_bulk_imports(limit: int = 10):
 
 
 # =============================================================================
-# Spotify Playlist API
+# Playlist Fetch API (Spotify, Amazon Music)
 # =============================================================================
 
-@app.post("/api/spotify-playlist")
-def fetch_spotify_playlist(request: SpotifyPlaylistRequest):
-    """Fetch track list from a public Spotify playlist or album URL"""
-    return _fetch_spotify_playlist_embed(request.url)
+@app.post("/api/fetch-playlist")
+@app.post("/api/spotify-playlist")  # Backwards compat
+def fetch_playlist(request: PlaylistFetchRequest):
+    """Fetch track list from a public Spotify or Amazon Music playlist URL."""
+    url = request.url.strip()
+
+    # Route to the right scraper based on URL
+    if re.match(r'https?://music\.amazon\.[a-z.]+/(user-playlists|playlists)/', url):
+        return fetch_amazon_playlist(url)
+
+    # Default: Spotify (the original behaviour)
+    return _fetch_spotify_playlist_embed(url)
 
 
 # =============================================================================
@@ -1123,6 +1286,15 @@ def list_watched_playlists():
 
     return {
         "playlists": [dict(p) for p in playlists]
+    }
+
+
+@app.get("/api/watched-playlists/schedule")
+def get_watched_schedule():
+    """Get the current watched playlist check schedule"""
+    return {
+        "check_interval_hours": WATCHED_PLAYLIST_CHECK_HOURS,
+        "enabled": WATCHED_PLAYLIST_CHECK_HOURS > 0
     }
 
 
@@ -1263,15 +1435,6 @@ def check_all_watched_playlists():
         "total_new_tracks": total_new,
         "total_queued": total_queued,
         "results": results
-    }
-
-
-@app.get("/api/watched-playlists/schedule")
-def get_watched_schedule():
-    """Get the current watched playlist check schedule"""
-    return {
-        "check_interval_hours": WATCHED_PLAYLIST_CHECK_HOURS,
-        "enabled": WATCHED_PLAYLIST_CHECK_HOURS > 0
     }
 
 
