@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v1.9.0**
+**v1.9.1**
 
 A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -11,6 +11,10 @@ If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 Lidarr's great for albums, but grabbing a single track you heard on the radio shouldn't require navigating menus or pulling an artist's entire discography. This is for the "I want one song, not a commitment" use case.
 
 ## Features
+New in **v1.9.1**:
+- **AcoustID audio fingerprinting** -- metadata lookups now fingerprint the actual audio via AcoustID/Chromaprint before falling back to text-based MusicBrainz searches. Smart recording selection scores candidates against the expected artist/title to avoid covers, karaoke versions, and remasters. Dramatically improves album, artist, and year accuracy
+- **Flat directory mode** -- optional "Organise by Artist" toggle in Settings. When off, all tracks go straight into the Singles folder without artist subfolders. Duplicate detection works across both layouts
+
 New in **v1.9.0**:
 - **SoundCloud source** -- search, preview, and download from SoundCloud alongside YouTube. Great for mixes and extended versions
 - **Amazon Music playlist import** -- paste a public Amazon Music playlist URL to import tracks (headless browser scraping, same approach as Spotify)
@@ -33,11 +37,11 @@ and the rest of them:
 - **Best quality FLAC** -- extracts highest available audio quality
 - **Minimum bitrate enforcement** -- optionally reject downloads below a configurable bitrate threshold
 - **Audio quality display** -- completed downloads show codec and bitrate in the queue details, with honest reporting for lossy-to-FLAC conversions
-- **Enhanced metadata** -- MusicBrainz lookups with fallback to cleaned YouTube data
+- **Enhanced metadata** -- AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source-embedded/guessed tags
 - **Synced lyrics** -- automatic lyrics fetching from LRClib, saved as `.lrc` files
-- **Auto-organise** -- creates `Singles/Artist/Title.flac` structure
+- **Auto-organise** -- creates `Singles/Artist/Title.flac` structure (or flat `Singles/Title.flac` when "Organise by Artist" is off)
 - **Duplicate detection** -- skips already-downloaded tracks
-- **Job queue** -- track download progress, retry failed jobs, re-download or delete files from the queue
+- **Job queue** -- track download progress, retry failed jobs, re-download or delete files from the queue, and see metadata provenance (`Metadata:` shows AcoustID fingerprint, MusicBrainz text match, or source guessed)
 - **Statistics dashboard** -- download counts, success rate, daily chart, top artists, search analytics
 - **Webhook notifications** -- get notified via Telegram, email, or generic webhook on download events
 - **YouTube cookie support** -- upload browser cookies in Settings to bypass YouTube bot detection
@@ -146,7 +150,7 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
 
 The easiest way to configure MusicGrabber is via the **Settings tab** in the UI. You can configure:
 
-- **General**: MusicBrainz metadata, lyrics fetching, default FLAC conversion, minimum audio bitrate
+- **General**: MusicBrainz metadata, lyrics fetching, default FLAC conversion, minimum audio bitrate, artist subfolder organisation
 - **Soulseek (slskd)**: URL, credentials, downloads path
 - **Navidrome**: URL and credentials for library refresh
 - **Jellyfin**: URL and API key for library refresh
@@ -171,6 +175,7 @@ Settings are stored in the database and persist across container restarts.
 | `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
 | `DEFAULT_CONVERT_TO_FLAC` | `true` | Convert downloads to FLAC by default (can be toggled per-download in UI) |
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
+| `ORGANISE_BY_ARTIST` | `true` | Create artist subfolders under Singles. Set to `false` for a flat directory |
 | `WEBHOOK_URL` | - | Generic webhook URL -- receives JSON POST on download completion/failure |
 | `YTDLP_PLAYER_CLIENT` | *(empty)* | Override yt-dlp YouTube player client (expert-only, e.g. `android`, `web,android`) |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
@@ -424,12 +429,14 @@ Downloads are organised as:
 ```
 /music/
 └── Singles/
-    ├── Artist Name/
+    ├── Artist Name/          # When "Organise by Artist" is on (default)
     │   └── Track Title.flac
+    ├── Track Title.flac      # When "Organise by Artist" is off
     └── Playlist Name.m3u
 ```
 
-- All tracks go into `Singles/Artist/` directories, even from playlists
+- By default, tracks go into `Singles/Artist/` directories
+- Disable "Organise by Artist" in Settings to put all tracks directly in `Singles/`
 - Playlist downloads generate `.m3u` files with relative paths
 - Artist and title are extracted from YouTube metadata
 - Common patterns like "Artist - Title" are parsed automatically
@@ -438,10 +445,12 @@ Downloads are organised as:
 ### Metadata
 
 When `ENABLE_MUSICBRAINZ=true`:
-1. Searches MusicBrainz for accurate artist, title, album, and year
-2. Falls back to cleaned YouTube metadata if not found
-3. Sets album to "Singles" by default
-4. Embeds cover art from YouTube thumbnails
+1. Fingerprints the downloaded audio with AcoustID/Chromaprint to identify the actual recording
+2. If AcoustID matches confidently, uses the correct artist, title, album, and year from MusicBrainz
+3. Falls back to a text-based MusicBrainz search if fingerprinting fails or scores too low
+4. Falls back to cleaned YouTube metadata if neither lookup finds anything
+5. Sets album to "Singles" by default when no album is found
+6. Embeds cover art from YouTube thumbnails
 
 ### Duplicate Detection
 
@@ -505,6 +514,7 @@ music.yourdomain.com {
 | `POST` | `/api/settings/test/{service}` | Test connection (slskd, navidrome, jellyfin) |
 | `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "youtube/soundcloud/all"}`) |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
+| `GET` | `/api/sources` | List available search sources (for source selector UI) |
 | `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for SoundCloud) |
 | `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "download_type": "single/playlist"}`) |
 | `POST` | `/api/bulk-import-async` | Bulk import songs (async, returns immediately) |
@@ -513,8 +523,9 @@ music.yourdomain.com {
 | `POST` | `/api/fetch-playlist` | Fetch tracks from supported playlist URL (Spotify or Amazon Music) |
 | `POST` | `/api/spotify-playlist` | Backwards-compat alias for Spotify playlist/album fetch |
 | `GET` | `/api/stats` | Get statistics (download counts, daily chart, top artists, search analytics) |
-| `GET` | `/api/jobs` | List recent jobs |
-| `GET` | `/api/jobs/{id}` | Get job status |
+| `DELETE` | `/api/stats?confirm=true` | Reset stats history (deletes completed/failed job history and search logs; confirmation required) |
+| `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` for provenance) |
+| `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
 | `DELETE` | `/api/jobs/{id}/file` | Delete downloaded file and lyrics from library |
 | `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`) |
@@ -598,9 +609,10 @@ docker compose up -d
 
 **Metadata quality issues?**
 - Ensure `ENABLE_MUSICBRAINZ=true` in environment variables
-- MusicBrainz lookups are rate-limited (1 request/second)
-- Some tracks may not be in the MusicBrainz database
-- YouTube metadata is used as fallback
+- AcoustID fingerprinting identifies most well-known tracks automatically
+- Very short clips (under ~5 seconds) may not fingerprint reliably
+- Obscure or newly released tracks may not be in AcoustID or MusicBrainz yet
+- Falls back to text-based MusicBrainz search, then to cleaned YouTube metadata
 
 ## Contributors
 

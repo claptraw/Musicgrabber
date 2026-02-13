@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
     gosu \
+    libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp (latest version)

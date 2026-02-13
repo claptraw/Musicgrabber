@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from constants import AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH
-from settings import get_singles_dir
+from settings import get_singles_dir, get_download_dir
 
 
 def sanitize_filename(name: str) -> str:
@@ -84,9 +84,10 @@ def hash_track(artist: str, title: str) -> str:
 
 def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
     """Try to extract artist and title from YouTube video title"""
-    # Common patterns: "Artist - Title", "Artist — Title", "Artist | Title"
+    # Common patterns: "Artist -- Title", "Artist - Title", "Artist — Title", "Artist | Title"
     # Require spaces around hyphens to avoid splitting compound words like "T-4"
     patterns = [
+        r'^(.+?)\s+--\s+(.+)$',
         r'^(.+?)\s+[-–—]\s+(.+)$',
         r'^(.+?)\s*\|\s*(.+)$',
     ]
@@ -95,36 +96,55 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
         match = re.match(pattern, full_title)
         if match:
             artist, title = match.groups()
-            return artist.strip(), clean_title(title)
+            cleaned_title = clean_title(title)
+            # If suffix stripping nukes the whole title (e.g. "... - Official Video"),
+            # treat this split as invalid and try other patterns/fallback.
+            if cleaned_title:
+                return artist.strip(), cleaned_title
 
     # Fallback: use channel as artist, full title as title
     # Remove common channel suffixes like "VEVO", "Official", "- Topic"
     artist = re.sub(r'\s*[-–—]\s*Topic$', '', channel, flags=re.IGNORECASE)
     artist = re.sub(r'\s*(VEVO|Official|Music)$', '', artist, flags=re.IGNORECASE)
-    return artist.strip(), clean_title(full_title)
+    fallback_title = clean_title(full_title)
+    if not fallback_title:
+        fallback_title = full_title.strip() or "Unknown Title"
+    return artist.strip() or "Unknown Artist", fallback_title
 
 
 def check_duplicate(artist: str, title: str) -> Optional[Path]:
-    """Check if a track already exists in the library (any audio format)"""
-    try:
-        artist_dir = get_singles_dir() / sanitize_filename(artist)
-        if not artist_dir.exists():
-            return None
+    """Check if a track already exists in the library (any audio format).
 
+    Checks the current download directory (artist subfolder or flat) and also
+    peeks at the other layout so switching modes doesn't silently re-download.
+    """
+    try:
         sanitized_title = sanitize_filename(title)
 
-        # Check for exact filename match in any supported format
-        for ext in AUDIO_EXTENSIONS:
-            expected_file = artist_dir / f"{sanitized_title}{ext}"
-            if expected_file.exists():
-                return expected_file
+        # Check both possible locations so mode switches don't cause re-downloads
+        dirs_to_check = [
+            get_download_dir(artist),                           # current mode
+            get_singles_dir() / sanitize_filename(artist),      # artist subfolder
+            get_singles_dir(),                                  # flat
+        ]
+        seen = set()
+        for d in dirs_to_check:
+            d_str = str(d)
+            if d_str in seen or not d.exists():
+                continue
+            seen.add(d_str)
 
-        # Check for similar files (case-insensitive) in any audio format
-        title_lower = sanitized_title.lower()
-        for ext in AUDIO_EXTENSIONS:
-            for file in artist_dir.glob(f"*{ext}"):
-                if file.stem.lower() == title_lower:
-                    return file
+            for ext in AUDIO_EXTENSIONS:
+                expected_file = d / f"{sanitized_title}{ext}"
+                if expected_file.exists():
+                    return expected_file
+
+            # Case-insensitive fallback
+            title_lower = sanitized_title.lower()
+            for ext in AUDIO_EXTENSIONS:
+                for file in d.glob(f"*{ext}"):
+                    if file.stem.lower() == title_lower:
+                        return file
 
         return None
     except Exception:

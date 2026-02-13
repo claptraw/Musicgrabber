@@ -528,6 +528,25 @@ def get_stats():
     }
 
 
+@app.delete("/api/stats")
+def reset_stats(confirm: bool = False):
+    """Reset dashboard stats without touching active queue items."""
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Confirmation required (use ?confirm=true)")
+
+    # Keep active work intact, but clear historical job/search data used by stats
+    cleanup_stale_jobs()
+
+    with db_conn() as conn:
+        deleted_jobs = conn.execute(
+            "DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors', 'failed')"
+        ).rowcount
+        deleted_searches = conn.execute("DELETE FROM search_logs").rowcount
+        conn.commit()
+
+    return {"deleted_jobs": deleted_jobs, "deleted_searches": deleted_searches}
+
+
 # =============================================================================
 # Search API
 # =============================================================================

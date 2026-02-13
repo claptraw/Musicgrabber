@@ -81,6 +81,7 @@ def init_db():
             convert_to_flac INTEGER DEFAULT 1,
             source_url TEXT,
             file_deleted INTEGER DEFAULT 0,
+            metadata_source TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             completed_at TIMESTAMP
         )
@@ -128,6 +129,10 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN file_deleted INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN metadata_source TEXT")
         except sqlite3.OperationalError:
             pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_search_token ON jobs(search_token)")

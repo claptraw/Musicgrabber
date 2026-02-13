@@ -185,6 +185,10 @@
         </div>
 
         <div id="statsTabContainer" style="display: none;">
+            <div class="queue-header">
+                <h2 style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Statistics</h2>
+                <button class="clear-btn" id="resetStatsBtn" style="color: var(--warning); border-color: var(--warning);">Reset Stats</button>
+            </div>
             <div id="statsContent" class="results"></div>
         </div>
 
@@ -210,6 +214,13 @@
                         <span>Convert to FLAC by Default</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingDefaultFlac" checked>
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
+                    <label class="settings-label">
+                        <span>Organise by Artist<br><span style="font-size: 10px; font-weight: normal; color: var(--text-secondary);">Create artist subfolders</span></span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingOrganiseByArtist" checked>
                             <span class="toggle-slider"></span>
                         </div>
                     </label>
@@ -571,6 +582,7 @@
         const queueTabContainer = document.getElementById('queueTabContainer');
         const queueTab = document.getElementById('queueTab');
         const clearQueueBtn = document.getElementById('clearQueueBtn');
+        const resetStatsBtn = document.getElementById('resetStatsBtn');
         const watchedTabContainer = document.getElementById('watchedTabContainer');
         const watchedList = document.getElementById('watchedList');
         const watchedUrlInput = document.getElementById('watchedUrlInput');
@@ -1207,6 +1219,7 @@
                         <div class="job-details" style="display:${isExpanded ? 'block' : 'none'};">
                             ${job.audio_quality ? `<div class="job-details-row"><span class="job-details-label">Quality:</span> ${escapeHtml(job.audio_quality)}</div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Source:</span> ${escapeHtml(sourceLabel)}</div>
+                            ${job.metadata_source ? `<div class="job-details-row"><span class="job-details-label">Metadata:</span> ${escapeHtml(formatMetadataSource(job.metadata_source))}</div>` : ''}
                             ${sourceUrl ? `<div class="job-details-row"><span class="job-details-label">URL:</span> ${isClickableUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sourceUrl)}</a>` : `<span class="job-details-url">${escapeHtml(sourceUrl)}</span>`}</div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Queued:</span> ${formatTimeFull(job.created_at)}</div>
                             ${job.completed_at ? `<div class="job-details-row"><span class="job-details-label">Completed:</span> ${formatTimeFull(job.completed_at)}</div>` : ''}
@@ -1255,6 +1268,18 @@
                 return 'completed (with errors)';
             }
             return status;
+        }
+
+        function formatMetadataSource(metadataSource) {
+            const source = (metadataSource || '').toLowerCase();
+            const labels = {
+                'acoustid_fingerprint': 'AcoustID fingerprint',
+                'musicbrainz_text': 'MusicBrainz text match',
+                'youtube_guessed': 'YouTube embedded/guessed',
+                'soundcloud_guessed': 'SoundCloud embedded/guessed',
+                'soulseek_guessed': 'Soulseek embedded/guessed',
+            };
+            return labels[source] || metadataSource;
         }
 
         function formatDateYmd(isoString) {
@@ -1762,6 +1787,31 @@
             }
         }
 
+        async function resetStats() {
+            if (!confirm('Reset all dashboard stats? This clears completed/failed job history and search history.')) {
+                return;
+            }
+
+            resetStatsBtn.disabled = true;
+
+            try {
+                const response = await apiFetch('/api/stats?confirm=true', {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) throw new Error('Failed to reset stats');
+
+                const data = await response.json();
+                showToast(`Stats reset (${data.deleted_jobs} jobs, ${data.deleted_searches} searches)`);
+                loadJobs();
+                loadStats();
+            } catch (error) {
+                showToast('Failed to reset stats', true);
+            } finally {
+                resetStatsBtn.disabled = false;
+            }
+        }
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
@@ -1821,6 +1871,7 @@
         });
         bulkImportBtn.addEventListener('click', bulkImport);
         clearQueueBtn.addEventListener('click', clearQueue);
+        resetStatsBtn.addEventListener('click', resetStats);
 
         // Spotify playlist/album fetch handler
         async function fetchSpotifyPlaylist() {
@@ -2421,6 +2472,7 @@
             'default_convert_to_flac': 'settingDefaultFlac',
             'min_audio_bitrate': 'settingMinBitrate',
             'singles_subdir': 'settingSinglesSubdir',
+            'organise_by_artist': 'settingOrganiseByArtist',
             'slskd_url': 'settingSlskdUrl',
             'slskd_user': 'settingSlskdUser',
             'slskd_pass': 'settingSlskdPass',

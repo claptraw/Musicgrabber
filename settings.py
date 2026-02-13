@@ -80,6 +80,7 @@ SETTINGS_SCHEMA = {
     "default_convert_to_flac": {"type": "bool", "default": True, "env": "DEFAULT_CONVERT_TO_FLAC"},
     "min_audio_bitrate": {"type": "int", "default": 0, "env": "MIN_AUDIO_BITRATE"},
     "singles_subdir": {"type": "str", "default": "Singles", "env": "SINGLES_SUBDIR"},
+    "organise_by_artist": {"type": "bool", "default": True, "env": "ORGANISE_BY_ARTIST"},
     # Soulseek/slskd
     "slskd_url": {"type": "str", "default": "", "env": "SLSKD_URL"},
     "slskd_user": {"type": "str", "default": "", "env": "SLSKD_USER"},
@@ -135,3 +136,16 @@ def get_singles_dir() -> Path:
     """Get the singles download directory. Reads the setting at runtime so changes take effect immediately."""
     subdir = get_setting("singles_subdir", "Singles").strip() or "Singles"
     return MUSIC_DIR / subdir
+
+
+def get_download_dir(artist: str) -> Path:
+    """Get the download directory for a track, respecting the organise-by-artist setting.
+
+    When organise_by_artist is True (default):  /music/Singles/Artist Name/
+    When organise_by_artist is False:            /music/Singles/
+    """
+    from utils import sanitize_filename
+    base = get_singles_dir()
+    if get_setting_bool("organise_by_artist", True):
+        return base / sanitize_filename(artist)
+    return base

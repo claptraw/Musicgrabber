@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.9.1 (in progress)
+
+### Added
+- **AcoustID fingerprint metadata lookup**: New metadata pipeline fingerprints downloaded audio with `fpcalc`/Chromaprint, looks up AcoustID matches, and enriches year/album via MusicBrainz recording ID. Falls back to text-based MusicBrainz lookup when fingerprinting is unavailable or low-confidence
+- **Flat directory mode**: New `organise_by_artist` setting and UI toggle ("Organise by Artist"). When disabled, tracks are saved directly under `Singles` with no artist subfolders
+- **Stats reset action**: New `DELETE /api/stats` endpoint and "Reset Stats" button in the Stats tab to explicitly clear historical stats data
+- **Metadata provenance tracking**: Jobs now store a `metadata_source` value so queue details can show where final tags came from (`AcoustID fingerprint`, `MusicBrainz text match`, or source guessed metadata for YouTube/SoundCloud/Soulseek)
+
+### Changed
+- **Queue clear semantics**: "Clear Queue" remains queue/job cleanup only; stats/history reset is now a separate explicit action
+- **Duplicate/path handling across layouts**: Duplicate detection and bulk playlist file resolution now work across both folder layouts (artist subfolders and flat)
+- **AcoustID configuration**: `ACOUSTID_API_KEY` now supports environment override via `ACOUSTID_API_KEY`
+
+### Fixed
+- **Settings API model mismatch**: `organise_by_artist` is now included in `SettingsUpdate`, so the Settings toggle persists correctly via `PUT /api/settings`
+- **Stats reset safety**: `DELETE /api/stats` now requires explicit confirmation (`?confirm=true`) to prevent accidental history wipes
+- **YouTube title edge case -> hidden output file**: Titles with trailing separators/suffixes (e.g. patterns like `Artist -- Title - Official Video`) could be cleaned to an empty title, causing yt-dlp to output hidden files like `.webm.flac` and fail with "audio file not found". Parsing now rejects empty cleaned titles, falls back safely, and download naming enforces a non-empty basename
+
 ## v1.9.0 (2026-02-10)
 
 ### Added

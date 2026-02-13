@@ -57,6 +57,7 @@ class SettingsUpdate(BaseModel):
     default_convert_to_flac: Optional[bool] = None
     min_audio_bitrate: Optional[int] = None
     singles_subdir: Optional[str] = None
+    organise_by_artist: Optional[bool] = None
     # Soulseek/slskd
     slskd_url: Optional[str] = None
     slskd_user: Optional[str] = None

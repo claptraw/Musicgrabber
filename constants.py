@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -23,6 +23,7 @@ TIMEOUT_SLSKD_DOWNLOAD = 600     # Soulseek download (10 minutes)
 TIMEOUT_SLSKD_API = 30           # slskd API calls
 TIMEOUT_SPOTIFY_BROWSER = 180    # Headless browser for large playlists (3 minutes)
 TIMEOUT_AMAZON_BROWSER = 180     # Amazon Music playlist scraping (3 minutes)
+TIMEOUT_FPCALC = 30              # Audio fingerprinting via fpcalc
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
 
@@ -73,6 +74,11 @@ DB_PATH = Path(os.getenv("DB_PATH", "/data/music_grabber.db"))
 SLSKD_REQUIRE_FREE_SLOT = os.getenv("SLSKD_REQUIRE_FREE_SLOT", "true").lower() == "true"
 SLSKD_MAX_RETRIES = int(os.getenv("SLSKD_MAX_RETRIES", "5"))
 WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24"))
+
+# AcoustID audio fingerprinting — because guessing metadata from titles
+# is about as reliable as asking YouTube commenters for facts
+ACOUSTID_API_KEY = os.getenv("ACOUSTID_API_KEY", "0NILMQojj4")
+ACOUSTID_MIN_SCORE = 0.8         # Below this, the match is too dodgy to trust
 
 # Default settings for fields that need startup values
 DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"

@@ -25,9 +25,9 @@ from constants import (
     PLAYLIST_WAIT_MAX, PLAYLIST_WAIT_INTERVAL,
 )
 from db import db_conn
-from metadata import lookup_musicbrainz, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
+from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
 from notifications import send_notification
-from settings import get_setting, get_setting_int, get_singles_dir
+from settings import get_setting, get_setting_int, get_singles_dir, get_download_dir
 from slskd import (
     download_from_slskd, extract_track_info_from_path,
     search_slskd, should_retry_slskd_error,
@@ -44,6 +44,43 @@ from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, _strip_cookies_args,
     _should_retry_without_cookies, _sleep_if_botted, _note_bot_block, _note_cookie_failure,
 )
+
+
+def _default_metadata_source(source: str) -> str:
+    """Metadata fallback label when no AcoustID/MusicBrainz match is available."""
+    source_name = (source or "youtube").lower()
+    if source_name == "soundcloud":
+        return "soundcloud_guessed"
+    if source_name == "soulseek":
+        return "soulseek_guessed"
+    return "youtube_guessed"
+
+
+def _safe_sanitized_title(title: str, fallback: str) -> str:
+    """Return a filesystem-safe non-empty title for output templates/lookup."""
+    cleaned = sanitize_filename(title or "")
+    if cleaned:
+        return cleaned
+    fallback_cleaned = sanitize_filename(fallback or "")
+    return fallback_cleaned or "Unknown Title"
+
+
+def _find_downloaded_audio_or_raise(artist_dir: Path, sanitized_title: str) -> Path:
+    """Find downloaded audio file by expected base name, or raise with useful context."""
+    for ext in AUDIO_EXTENSIONS:
+        candidate = artist_dir / f"{sanitized_title}{ext}"
+        if candidate.exists():
+            return candidate
+
+    seen_files = []
+    try:
+        seen_files = [p.name for p in artist_dir.iterdir() if p.is_file()][:8]
+    except OSError:
+        pass
+    raise Exception(
+        f"Download completed but expected '{sanitized_title}' audio file not found in {artist_dir}. "
+        f"Found files: {', '.join(seen_files) if seen_files else 'none'}"
+    )
 
 
 def trigger_navidrome_scan():
@@ -336,14 +373,8 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
         artist = job.get("artist", "Unknown")
         title = job.get("title", "Unknown")
 
-        # Construct expected file path (any supported format)
-        artist_dir = get_singles_dir() / sanitize_filename(artist)
-        audio_file = None
-        for ext in AUDIO_EXTENSIONS:
-            candidate = artist_dir / f"{sanitize_filename(title)}{ext}"
-            if candidate.exists():
-                audio_file = candidate
-                break
+        # Resolve track path across both flat and artist-subfolder layouts
+        audio_file = check_duplicate(artist, title)
 
         if audio_file:
             # Store relative path from Singles directory
@@ -437,12 +468,13 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     skipped_tracks += 1
                     continue
 
-                # Create artist directory under Singles
-                artist_dir = get_singles_dir() / sanitize_filename(artist)
+                # Create download directory (with or without artist subfolder)
+                artist_dir = get_download_dir(artist)
                 artist_dir.mkdir(parents=True, exist_ok=True)
 
                 # Download with best audio quality
-                output_template = str(artist_dir / f"{sanitize_filename(title)}.%(ext)s")
+                safe_title = _safe_sanitized_title(title, video_id)
+                output_template = str(artist_dir / f"{safe_title}.%(ext)s")
                 download_cmd = _build_ytdlp_download_cmd(video_id, output_template, convert_to_flac)
 
                 download_result, download_timed_out = _run_ytdlp_with_retries(
@@ -455,8 +487,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     # Permission denied on temp file rename — clean up and retry once
                     stderr = download_result.stderr if download_result else ""
                     if not download_timed_out and download_result and _is_permission_error(stderr):
-                        sanitized = sanitize_filename(title)
-                        cleaned = _cleanup_temp_files(artist_dir, sanitized)
+                        cleaned = _cleanup_temp_files(artist_dir, safe_title)
                         if cleaned:
                             print(f"Retrying playlist track after cleaning {cleaned} temp file(s)")
                             download_result, download_timed_out = _run_ytdlp_with_retries(
@@ -466,24 +497,18 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                         failed_tracks += 1
                         continue
 
-                # Find the downloaded file (extension depends on convert_to_flac setting)
-                audio_file = None
-                sanitized_title = sanitize_filename(title)
-                for ext in AUDIO_EXTENSIONS:
-                    candidate = artist_dir / f"{sanitized_title}{ext}"
-                    if candidate.exists():
-                        audio_file = candidate
-                        break
-
-                if not audio_file:
+                try:
+                    audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
+                except Exception as e:
+                    print(f"Playlist track output lookup failed: {e}")
                     failed_tracks += 1
                     continue
 
                 # Set permissions for NAS/SMB compatibility
                 set_file_permissions(audio_file)
 
-                # Try to enrich metadata with MusicBrainz
-                mb_metadata = lookup_musicbrainz(artist, title)
+                # Try to enrich metadata with AcoustID fingerprinting, then MusicBrainz
+                mb_metadata = lookup_metadata(artist, title, audio_file)
                 if mb_metadata:
                     apply_metadata_to_file(
                         audio_file,
@@ -602,8 +627,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             _mark_watched_track_downloaded(job_id)
             return
 
-        # Create artist directory under Singles
-        artist_dir = get_singles_dir() / sanitize_filename(artist)
+        # Create download directory (with or without artist subfolder)
+        artist_dir = get_download_dir(artist)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download from slskd with retries on common queue/abort failures
@@ -645,7 +670,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             raise Exception("Download completed but file not found")
 
         # Rename to our standard naming
-        sanitized_title = sanitize_filename(title)
+        sanitized_title = _safe_sanitized_title(title, Path(filename).stem or job_id)
         source_ext = downloaded_file.suffix.lower()
 
         # Probe the source file BEFORE conversion so we know the real quality
@@ -687,9 +712,11 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             final_file.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
 
-        # Apply metadata
-        mb_metadata = lookup_musicbrainz(artist, title)
+        # Apply metadata (AcoustID fingerprinting first, then text-based MusicBrainz fallback)
+        metadata_source = _default_metadata_source("soulseek")
+        mb_metadata = lookup_metadata(artist, title, final_file)
         if mb_metadata:
+            metadata_source = mb_metadata.get("metadata_source", metadata_source)
             apply_metadata_to_file(
                 final_file,
                 mb_metadata.get("artist", artist),
@@ -713,8 +740,14 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         trigger_jellyfin_scan()
 
         # Update job status
-        _update_job(job_id, status="completed", error=None, audio_quality=audio_quality,
-                    completed_at=datetime.now(timezone.utc).isoformat())
+        _update_job(
+            job_id,
+            status="completed",
+            error=None,
+            audio_quality=audio_quality,
+            metadata_source=metadata_source,
+            completed_at=datetime.now(timezone.utc).isoformat()
+        )
         _mark_watched_track_downloaded(job_id)
 
         print(f"slskd: Successfully downloaded {artist} - {title}")
@@ -810,12 +843,13 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             _mark_watched_track_downloaded(job_id)
             return
 
-        # Create artist directory under Singles
-        artist_dir = get_singles_dir() / sanitize_filename(artist)
+        # Create download directory (with or without artist subfolder)
+        artist_dir = get_download_dir(artist)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download with best audio quality
-        output_template = str(artist_dir / f"{sanitize_filename(title)}.%(ext)s")
+        safe_title = _safe_sanitized_title(title, video_id)
+        output_template = str(artist_dir / f"{safe_title}.%(ext)s")
         download_cmd = _build_ytdlp_download_cmd(
             video_id, output_template, convert_to_flac,
             source_url=source_url,
@@ -838,8 +872,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
             # Permission denied on temp file rename — clean up and retry once
             if download_result and _is_permission_error(stderr):
-                sanitized = sanitize_filename(title)
-                cleaned = _cleanup_temp_files(artist_dir, sanitized)
+                cleaned = _cleanup_temp_files(artist_dir, safe_title)
                 if cleaned:
                     print(f"Retrying download after cleaning {cleaned} temp file(s)")
                     download_result, download_timed_out = _run_ytdlp_with_retries(
@@ -857,17 +890,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         error_msg = "YouTube blocked this download (403). Add browser cookies in Settings to authenticate."
                 raise Exception(error_msg)
 
-        # Find the downloaded file (extension depends on convert_to_flac setting)
-        audio_file = None
-        sanitized_title = sanitize_filename(title)
-        for ext in AUDIO_EXTENSIONS:
-            candidate = artist_dir / f"{sanitized_title}{ext}"
-            if candidate.exists():
-                audio_file = candidate
-                break
-
-        if not audio_file:
-            raise Exception("Download completed but audio file not found")
+        audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
 
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(audio_file)
@@ -879,9 +902,11 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             audio_file.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
 
-        # Try to enrich metadata with MusicBrainz
-        mb_metadata = lookup_musicbrainz(artist, title)
+        # Try to enrich metadata with AcoustID fingerprinting, then MusicBrainz
+        metadata_source = _default_metadata_source(source_label)
+        mb_metadata = lookup_metadata(artist, title, audio_file)
         if mb_metadata:
+            metadata_source = mb_metadata.get("metadata_source", metadata_source)
             apply_metadata_to_file(
                 audio_file,
                 mb_metadata.get("artist", artist),
@@ -905,8 +930,14 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         trigger_jellyfin_scan()
 
         # Update job status
-        _update_job(job_id, status="completed", error=None, audio_quality=audio_quality,
-                    completed_at=datetime.now(timezone.utc).isoformat())
+        _update_job(
+            job_id,
+            status="completed",
+            error=None,
+            audio_quality=audio_quality,
+            metadata_source=metadata_source,
+            completed_at=datetime.now(timezone.utc).isoformat()
+        )
         _mark_watched_track_downloaded(job_id)
 
         # Send notification for single track
