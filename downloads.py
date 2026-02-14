@@ -27,7 +27,7 @@ from constants import (
 from db import db_conn
 from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
 from notifications import send_notification
-from settings import get_setting, get_setting_int, get_singles_dir, get_download_dir
+from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir
 from slskd import (
     download_from_slskd, extract_track_info_from_path,
     search_slskd, should_retry_slskd_error,
@@ -267,6 +267,52 @@ def _cleanup_temp_files(artist_dir: Path, sanitized_title: str) -> int:
         except OSError:
             pass
     return removed
+
+
+def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artist: str) -> Path:
+    """Move a downloaded file to the correct artist directory after MusicBrainz normalisation.
+
+    Because MusicBrainz actually knows how to spell, unlike half the uploaders on YouTube.
+    Returns the new file path (or the original if no move was needed).
+    """
+    # Flat directory mode doesn't use artist names — nothing to shuffle
+    if not get_setting_bool("organise_by_artist", True):
+        return audio_file
+
+    new_dir = get_download_dir(new_artist)
+    old_dir = audio_file.parent
+
+    if new_dir == old_dir:
+        return audio_file
+
+    new_dir.mkdir(parents=True, exist_ok=True)
+    new_path = new_dir / audio_file.name
+
+    # Don't trample an existing file — paranoia beats regret
+    if new_path.exists():
+        print(f"Artist normalisation: target already exists, skipping move: {new_path}")
+        return audio_file
+
+    audio_file.rename(new_path)
+    print(f"Artist normalised: {old_dir.name}/{audio_file.name} -> {new_dir.name}/{audio_file.name}")
+    set_file_permissions(new_path)
+
+    # Relocate any lyrics file that tagged along
+    old_lrc = audio_file.with_suffix(".lrc")
+    if old_lrc.exists():
+        new_lrc = new_path.with_suffix(".lrc")
+        old_lrc.rename(new_lrc)
+        set_file_permissions(new_lrc)
+
+    # Tidy up the old directory if it's now gathering dust
+    try:
+        if old_dir.exists() and not any(old_dir.iterdir()):
+            old_dir.rmdir()
+            print(f"Removed empty artist directory: {old_dir.name}")
+    except OSError:
+        pass
+
+    return new_path
 
 
 def _is_permission_error(stderr: str) -> bool:
@@ -510,13 +556,19 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 # Try to enrich metadata with AcoustID fingerprinting, then MusicBrainz
                 mb_metadata = lookup_metadata(artist, title, audio_file)
                 if mb_metadata:
+                    mb_artist = mb_metadata.get("artist", artist)
+                    mb_title = mb_metadata.get("title", title)
                     apply_metadata_to_file(
-                        audio_file,
-                        mb_metadata.get("artist", artist),
-                        mb_metadata.get("title", title),
+                        audio_file, mb_artist, mb_title,
                         mb_metadata.get("album", "Singles"),
                         mb_metadata.get("year")
                     )
+                    # Use canonical artist/title from MusicBrainz
+                    if mb_artist != artist:
+                        audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist)
+                        artist = mb_artist
+                    if mb_title != title:
+                        title = mb_title
                 else:
                     apply_metadata_to_file(audio_file, artist, title, "Singles")
 
@@ -717,13 +769,20 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         mb_metadata = lookup_metadata(artist, title, final_file)
         if mb_metadata:
             metadata_source = mb_metadata.get("metadata_source", metadata_source)
+            mb_artist = mb_metadata.get("artist", artist)
+            mb_title = mb_metadata.get("title", title)
             apply_metadata_to_file(
-                final_file,
-                mb_metadata.get("artist", artist),
-                mb_metadata.get("title", title),
+                final_file, mb_artist, mb_title,
                 mb_metadata.get("album", "Singles"),
                 mb_metadata.get("year")
             )
+            # Use canonical artist/title from MusicBrainz
+            if mb_artist != artist:
+                final_file = _relocate_for_normalised_artist(final_file, artist, mb_artist)
+                artist = mb_artist
+            if mb_title != title:
+                title = mb_title
+            _update_job(job_id, artist=artist, title=title)
         else:
             apply_metadata_to_file(final_file, artist, title, "Singles")
 
@@ -907,13 +966,20 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         mb_metadata = lookup_metadata(artist, title, audio_file)
         if mb_metadata:
             metadata_source = mb_metadata.get("metadata_source", metadata_source)
+            mb_artist = mb_metadata.get("artist", artist)
+            mb_title = mb_metadata.get("title", title)
             apply_metadata_to_file(
-                audio_file,
-                mb_metadata.get("artist", artist),
-                mb_metadata.get("title", title),
+                audio_file, mb_artist, mb_title,
                 mb_metadata.get("album", "Singles"),
                 mb_metadata.get("year")
             )
+            # Use the canonical artist/title from MusicBrainz everywhere
+            if mb_artist != artist:
+                audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist)
+                artist = mb_artist
+            if mb_title != title:
+                title = mb_title
+            _update_job(job_id, artist=artist, title=title)
         else:
             apply_metadata_to_file(audio_file, artist, title, "Singles")
 

@@ -1,6 +1,16 @@
 # Changelog
 
-## v1.9.1 (in progress)
+## v1.9.2 (2026-02-13)
+
+### Added
+- **MusicBrainz artist normalisation**: When MusicBrainz returns a canonical artist name, it's now used everywhere — file tags, directory name, and the jobs database. Files are automatically relocated to the correct artist folder if the name differs from the original source. Prevents duplicate artist folders from inconsistent casing or spelling across YouTube/SoundCloud uploaders
+
+### Fixed
+- **Top Artists case grouping**: Stats queries now group artists case-insensitively, displaying the most popular casing variant and summing counts across all variants. "BAD BUNNY" (2) and "Bad Bunny" (1) now merge into a single "BAD BUNNY" (3) entry
+- **SoundCloud preview playback**: SoundCloud migrated some tracks to a new CDN with different format IDs (`http_mp3_standard` instead of `http_mp3_1_0`). The old format selector would fall through to HLS (`application/vnd.apple.mpegurl`) which browsers can't play. Preview now tries both format IDs before falling back
+
+
+## v1.9.1 (2026-02-13)
 
 ### Added
 - **AcoustID fingerprint metadata lookup**: New metadata pipeline fingerprints downloaded audio with `fpcalc`/Chromaprint, looks up AcoustID matches, and enriches year/album via MusicBrainz recording ID. Falls back to text-based MusicBrainz lookup when fingerprinting is unavailable or low-confidence

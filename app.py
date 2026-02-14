@@ -442,12 +442,19 @@ def get_stats():
         ).fetchall()
         daily = [{"day": r["day"], "count": r["count"]} for r in daily_rows]
 
-        # Top artists (by completed downloads)
+        # Top artists (by completed downloads) — case-insensitive grouping,
+        # display the most popular casing variant for each artist
         artist_rows = conn.execute(
-            "SELECT artist, COUNT(*) as count "
-            "FROM jobs WHERE status IN ('completed', 'completed_with_errors') "
-            "AND artist IS NOT NULL AND artist != '' "
-            "GROUP BY artist ORDER BY count DESC LIMIT 10"
+            "SELECT artist, total_count as count FROM ("
+            "  SELECT artist, "
+            "    SUM(COUNT(*)) OVER (PARTITION BY LOWER(artist)) as total_count, "
+            "    ROW_NUMBER() OVER (PARTITION BY LOWER(artist) ORDER BY COUNT(*) DESC) as rn "
+            "  FROM jobs "
+            "  WHERE status IN ('completed', 'completed_with_errors') "
+            "  AND artist IS NOT NULL AND artist != '' "
+            "  GROUP BY artist"
+            ") WHERE rn = 1 "
+            "ORDER BY count DESC LIMIT 10"
         ).fetchall()
         top_artists = [{"artist": r["artist"], "count": r["count"]} for r in artist_rows]
 
@@ -471,12 +478,17 @@ def get_stats():
         total_searches = int(search_summary["total_searches"] or 0)
         successful_searches = int(search_summary["successful_searches"] or 0)
 
+        # Case-insensitive grouping — display the most popular casing variant
         searched_artist_rows = conn.execute(
-            "SELECT artist, COUNT(*) as count, "
-            "SUM(CASE WHEN result_count > 0 THEN 1 ELSE 0 END) as successful_searches "
-            "FROM search_logs "
-            "WHERE artist IS NOT NULL AND artist != '' "
-            "GROUP BY artist "
+            "SELECT artist, total_count as count, total_successful as successful_searches FROM ("
+            "  SELECT artist, "
+            "    SUM(COUNT(*)) OVER (PARTITION BY LOWER(artist)) as total_count, "
+            "    SUM(SUM(CASE WHEN result_count > 0 THEN 1 ELSE 0 END)) OVER (PARTITION BY LOWER(artist)) as total_successful, "
+            "    ROW_NUMBER() OVER (PARTITION BY LOWER(artist) ORDER BY COUNT(*) DESC) as rn "
+            "  FROM search_logs "
+            "  WHERE artist IS NOT NULL AND artist != '' "
+            "  GROUP BY artist"
+            ") WHERE rn = 1 "
             "ORDER BY count DESC, artist ASC "
             "LIMIT 10"
         ).fetchall()
@@ -569,9 +581,11 @@ def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
             raise HTTPException(status_code=400, detail=f"Preview not supported for source: {source}")
 
         # SoundCloud returns HLS (.m3u8) for bestaudio which browsers can't
-        # play natively — prefer the direct HTTP MP3 stream for previews
+        # play natively — prefer the direct HTTP MP3 stream for previews.
+        # Format IDs vary by track: older ones use http_mp3_1_0, newer ones
+        # use http_mp3_standard. Both resolve to a direct .mp3 on cf-media.sndcdn.com.
         if source == "soundcloud":
-            fmt = "http_mp3_1_0/bestaudio[protocol=https]/bestaudio/best"
+            fmt = "http_mp3_1_0/http_mp3_standard/bestaudio[protocol=http]/best"
         else:
             fmt = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
 
