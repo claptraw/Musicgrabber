@@ -10,7 +10,7 @@ from constants import DEFAULT_CONVERT_TO_FLAC, MAX_SEARCH_QUERY_LENGTH
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: int = 15
-    source: str = "youtube"  # "youtube", "soundcloud", or "all"
+    source: str = "all"  # "youtube", "soundcloud", "monochrome", or "all"
 
 class DownloadRequest(BaseModel):
     video_id: str
@@ -20,8 +20,8 @@ class DownloadRequest(BaseModel):
     download_type: str = "single"  # "single" or "playlist"
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
     # Source routing
-    source: str = "youtube"  # "youtube", "soundcloud", or "soulseek"
-    source_url: Optional[str] = None  # Full URL for non-YouTube sources (e.g. SoundCloud)
+    source: str = "youtube"  # "youtube", "soundcloud", "monochrome", or "soulseek"
+    source_url: Optional[str] = None  # Full URL for non-YouTube sources (e.g. SoundCloud/Monochrome)
     # Soulseek-specific fields
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
@@ -95,19 +95,21 @@ class SearchResult(BaseModel):
     is_playlist: bool = False
     video_count: Optional[int] = None
     # Multi-source support
-    source: str = "youtube"  # "youtube", "soundcloud", or "soulseek"
+    source: str = "youtube"  # "youtube", "soundcloud", "monochrome", or "soulseek"
     source_url: Optional[str] = None  # Full URL for non-YouTube sources
-    quality: Optional[str] = None  # e.g., "FLAC", "MP3 320", None for YouTube
+    quality: Optional[str] = None  # e.g., "LOSSLESS", "HI_RES_LOSSLESS", None for YouTube
     quality_score: int = 40  # For sorting (higher = better)
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
+    # Monochrome-specific extras (available when source == "monochrome")
+    album: Optional[str] = None  # Album title from Tidal metadata
 
 class BlacklistRequest(BaseModel):
     """Report a bad track / block an uploader."""
     job_id: Optional[str] = None
     video_id: Optional[str] = None
     uploader: Optional[str] = None
-    source: str = "youtube"  # "youtube", "soundcloud", or "soulseek"
+    source: str = "youtube"  # "youtube", "soundcloud", "monochrome", or "soulseek"
     reason: str = "other"  # wrong_track, poor_quality, slowed_pitched, contentid, other
     note: Optional[str] = None  # Optional free-text detail
     block_uploader: bool = False  # Also blacklist the uploader

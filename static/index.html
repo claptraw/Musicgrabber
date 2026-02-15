@@ -41,6 +41,7 @@
             <div class="source-selector" id="sourceSelector" style="display:none">
                 <button class="source-option" data-source="youtube" title="Search YouTube">YT</button>
                 <button class="source-option" data-source="soundcloud" title="Search SoundCloud">SC</button>
+                <button class="source-option" data-source="monochrome" title="Search Monochrome (Tidal lossless)">MO</button>
                 <button class="source-option active" data-source="all" title="Search all sources">All</button>
             </div>
             <button class="search-btn" id="searchBtn">Search</button>
@@ -1005,30 +1006,50 @@
         }
 
         function getSourceBadge(source) {
-            const badges = { youtube: 'YT', soundcloud: 'SC', soulseek: 'SLK' };
+            const badges = { youtube: 'YT', soundcloud: 'SC', monochrome: 'MO', soulseek: 'SLK' };
             return badges[source] || source.toUpperCase().slice(0, 3);
         }
 
         function getSourceLabel(source) {
-            const labels = { youtube: 'YouTube', soundcloud: 'SoundCloud', soulseek: 'Soulseek' };
+            const labels = { youtube: 'YouTube', soundcloud: 'SoundCloud', monochrome: 'Monochrome', soulseek: 'Soulseek' };
             return labels[source] || source;
         }
 
         function getQualityBadgeClass(quality) {
             if (!quality) return '';
-            if (quality.includes('FLAC')) return 'flac';
-            if (quality.includes('320') || quality.includes('256')) return 'mp3-high';
+            const q = quality.toUpperCase();
+            if (q === 'HI_RES_LOSSLESS') return 'hires';
+            if (q === 'LOSSLESS' || q.includes('FLAC')) return 'flac';
+            if (q === 'HIGH' || q.includes('320') || q.includes('256')) return 'mp3-high';
             return '';
         }
 
+        function formatQualityLabel(quality) {
+            if (!quality) return '';
+            const labels = {
+                'HI_RES_LOSSLESS': 'Hi-Res',
+                'LOSSLESS': 'Lossless',
+                'HIGH': 'HQ',
+            };
+            return labels[quality] || quality;
+        }
+
         function formatResultMeta(result) {
+            const parts = [];
             if (result.artist) {
                 if (result.channel && result.channel !== result.artist) {
-                    return `${escapeHtml(result.artist)} • ${escapeHtml(result.channel)}`;
+                    parts.push(`${escapeHtml(result.artist)} • ${escapeHtml(result.channel)}`);
+                } else {
+                    parts.push(escapeHtml(result.artist));
                 }
-                return escapeHtml(result.artist);
+            } else {
+                parts.push(escapeHtml(result.channel || ''));
             }
-            return escapeHtml(result.channel || '');
+            // Show album for Monochrome results — they have proper metadata
+            if (result.album) {
+                parts.push(escapeHtml(result.album));
+            }
+            return parts.join(' • ');
         }
 
         function renderResults(results) {
@@ -1058,7 +1079,7 @@
                         <div class="result-meta">${formatResultMeta(r)}</div>
                         <div class="result-badges">
                             <span class="source-badge ${r.source}">${getSourceBadge(r.source)}</span>
-                            ${r.quality ? `<span class="quality-badge ${getQualityBadgeClass(r.quality)}">${r.quality}</span>` : ''}
+                            ${r.quality ? `<span class="quality-badge ${getQualityBadgeClass(r.quality)}">${formatQualityLabel(r.quality)}</span>` : ''}
                             ${r.duration ? `<span class="result-duration">${r.duration}</span>` : ''}
                         </div>
                     </div>
@@ -1114,8 +1135,8 @@
                     search_token: currentSearchLogToken
                 };
 
-                // SoundCloud needs the full URL for downloading
-                if (result.source === 'soundcloud' && result.source_url) {
+                // URL-based sources need the full URL for downloading
+                if ((result.source === 'soundcloud' || result.source === 'monochrome') && result.source_url) {
                     payload.source_url = result.source_url;
                 }
 
@@ -1140,7 +1161,7 @@
 
                 // Update toast with success message
                 const formatMsg = convertToFlacCheckbox.checked ? '' : ' (original format)';
-                const qualityMsg = result.quality ? ` [${result.quality}]` : '';
+                const qualityMsg = result.quality ? ` [${formatQualityLabel(result.quality)}]` : '';
                 showToast(`Added to queue ✓${qualityMsg}${formatMsg}`);
             } catch (error) {
                 downloadingIds.delete(result.video_id);
@@ -1277,6 +1298,8 @@
                 'musicbrainz_text': 'MusicBrainz text match',
                 'youtube_guessed': 'YouTube embedded/guessed',
                 'soundcloud_guessed': 'SoundCloud embedded/guessed',
+                'monochrome_guessed': 'Monochrome embedded/guessed',
+                'monochrome_api': 'Monochrome/Tidal API',
                 'soulseek_guessed': 'Soulseek embedded/guessed',
             };
             return labels[source] || metadataSource;
@@ -2328,8 +2351,9 @@
             // Source breakdown
             const ytCount = data.sources.youtube || 0;
             const scCount = data.sources.soundcloud || 0;
+            const moCount = data.sources.monochrome || 0;
             const slkCount = data.sources.soulseek || 0;
-            const sourceTotal = ytCount + scCount + slkCount || 1;
+            const sourceTotal = ytCount + scCount + moCount + slkCount || 1;
 
             let html = `
                 <!-- Summary cards -->
@@ -2384,11 +2408,13 @@
                     <div style="display: flex; gap: 8px; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
                         ${ytCount > 0 ? `<div style="flex: ${ytCount}; background: #ff0000; border-radius: 4px;"></div>` : ''}
                         ${scCount > 0 ? `<div style="flex: ${scCount}; background: #ff5500; border-radius: 4px;"></div>` : ''}
+                        ${moCount > 0 ? `<div style="flex: ${moCount}; background: #111111; border-radius: 4px;"></div>` : ''}
                         ${slkCount > 0 ? `<div style="flex: ${slkCount}; background: #4a9eff; border-radius: 4px;"></div>` : ''}
                     </div>
                     <div style="display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap;">
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff0000; border-radius: 2px; margin-right: 4px;"></span>YouTube: ${ytCount}</span>
                         ${scCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff5500; border-radius: 2px; margin-right: 4px;"></span>SoundCloud: ${scCount}</span>` : ''}
+                        ${moCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #111111; border-radius: 2px; margin-right: 4px;"></span>Monochrome: ${moCount}</span>` : ''}
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #4a9eff; border-radius: 2px; margin-right: 4px;"></span>Soulseek: ${slkCount}</span>
                     </div>
                 </div>

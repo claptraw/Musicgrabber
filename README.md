@@ -1,8 +1,8 @@
 # Music Grabber 🎵
 
-**v1.9.1**
+**v2.0.0**
 
-A self-hosted music acquisition service. Search YouTube, tap a result, and it downloads the best quality audio as FLAC straight into your music library.
+A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless) -- tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
 If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 
@@ -11,25 +11,20 @@ If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 Lidarr's great for albums, but grabbing a single track you heard on the radio shouldn't require navigating menus or pulling an artist's entire discography. This is for the "I want one song, not a commitment" use case.
 
 ## Features
-New in **v1.9.1**:
-- **AcoustID audio fingerprinting** -- metadata lookups now fingerprint the actual audio via AcoustID/Chromaprint before falling back to text-based MusicBrainz searches. Smart recording selection scores candidates against the expected artist/title to avoid covers, karaoke versions, and remasters. Dramatically improves album, artist, and year accuracy
-- **Flat directory mode** -- optional "Organise by Artist" toggle in Settings. When off, all tracks go straight into the Singles folder without artist subfolders. Duplicate detection works across both layouts
-
-New in **v1.9.0**:
-- **SoundCloud source** -- search, preview, and download from SoundCloud alongside YouTube. Great for mixes and extended versions
-- **Amazon Music playlist import** -- paste a public Amazon Music playlist URL to import tracks (headless browser scraping, same approach as Spotify)
-- **Honest quality reporting** -- FLAC files converted from lossy sources show their true origin (e.g. "FLAC (from MP3 128kbps)") instead of pretending to be lossless
-- **Custom download subfolder** -- change the "Singles" folder name in Settings without a restart
-- **Source badges** -- queue items show coloured badges (YT/SC/SLK) so you can see where each track came from
-- **Report / Blacklist** -- flag bad tracks (wrong track, ContentID dodge, slowed/pitched, poor quality) from the queue. Blacklisted videos are hidden from searches; blocked uploaders get penalised in ranking. Manage entries in Settings
+New in **v2.0.0**:
+- **Monochrome/Tidal lossless search** -- full free-text search via the Monochrome API. Returns genuine lossless FLAC results with proper artist, album, cover art, and quality metadata. Results show "Lossless" or "Hi-Res" badges and rank above YouTube when available
+- **Direct FLAC downloads** -- Monochrome downloads bypass yt-dlp entirely. FLAC streams directly from the Tidal CDN with embedded cover art and accurate metadata from the Tidal catalogue. Faster and more reliable than YouTube extraction
+- **"All" is now the default search** -- searches YouTube, SoundCloud, and Monochrome in parallel. Lossless Monochrome results float to the top; YouTube and SoundCloud fill in the gaps for tracks not on Tidal
+- **Monochrome preview** -- hover-to-preview works for Monochrome tracks using AAC streams (browser-native, no yt-dlp subprocess)
+- **Configurable Monochrome instance** -- `MONOCHROME_API_URL` env var lets you point at community mirror instances
 
 and the rest of them:
 - **Mobile-friendly UI** -- designed for quick searches from your phone
 - **Dark/light theme** -- toggle between themes with the moon/sun button; preference saved per browser
 - **Settings tab** -- configure all integrations via UI (no docker-compose editing required)
 - **Optional API authentication** -- protect your instance with an API key
-- **Hover to preview** -- on desktop, hover over a result for 2 seconds to hear a preview
-- **YouTube search** -- finds tracks and playlists via yt-dlp
+- **Hover to preview** -- on desktop, hover over a result for 2 seconds to hear a preview (works for YouTube, SoundCloud, and Monochrome)
+- **Multi-source search** -- YouTube, SoundCloud, and Monochrome (Tidal lossless) with parallel searching and quality-based ranking
 - **Soulseek integration** -- optional slskd support for higher quality sources (FLAC from P2P) *(in progress -- needs testing)*
 - **Playlist support** -- download entire playlists with automatic M3U generation
 - **Watched playlists** -- monitor Spotify/YouTube playlists and auto-download new tracks
@@ -49,7 +44,7 @@ and the rest of them:
 
 ## Why FLAC?
 
-This project uses FLAC primarily for standardisation and consistent tagging across your library. Converting to FLAC does not improve audio quality beyond the source; it only preserves what is already there. If you prefer to keep the original format, disable FLAC conversion and files will be saved as-is.
+For YouTube and SoundCloud, FLAC conversion is primarily for standardisation and consistent tagging -- it does not improve audio quality beyond the source, it only preserves what is already there. **Monochrome downloads are genuine lossless** -- the FLAC comes directly from the Tidal CDN, so you get the real deal. If you prefer to keep the original format from YouTube/SoundCloud, disable FLAC conversion and files will be saved as-is.
 
 ## Screenshots
 
@@ -103,6 +98,8 @@ This project uses FLAC primarily for standardisation and consistent tagging acro
          # - SMTP_USER=user@example.com
          # - SMTP_PASS=password
          # - SMTP_TO=you@example.com
+         # Optional: Use a Monochrome mirror instead of the default instance
+         # - MONOCHROME_API_URL=https://api.monochrome.tf
    ```
 
 2. **Run**
@@ -177,6 +174,7 @@ Settings are stored in the database and persist across container restarts.
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
 | `ORGANISE_BY_ARTIST` | `true` | Create artist subfolders under Singles. Set to `false` for a flat directory |
 | `WEBHOOK_URL` | - | Generic webhook URL -- receives JSON POST on download completion/failure |
+| `MONOCHROME_API_URL` | `https://api.monochrome.tf` | Monochrome API URL -- override to use a community mirror instance |
 | `YTDLP_PLAYER_CLIENT` | *(empty)* | Override yt-dlp YouTube player client (expert-only, e.g. `android`, `web,android`) |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
 | `NAVIDROME_USER` | - | Navidrome username for API |
@@ -391,9 +389,9 @@ music.yourdomain.com {
 
 ### Search and Download
 
-1. **Single tracks** -- Search for a song, tap/click the result to download
-2. **Preview** -- On desktop, hover over a result for 2 seconds to hear a preview (cached for quick replays, YouTube ONLY)
-3. **Playlists** -- Search for a playlist URL or name, tap the playlist result to download all tracks (Best effort for song match from YouTube ONLY)
+1. **Single tracks** -- Search for a song, tap/click the result to download. By default, searches YouTube, SoundCloud, and Monochrome in parallel -- lossless results rank highest
+2. **Preview** -- On desktop, hover over a result for 2 seconds to hear a preview (works for all sources)
+3. **Playlists** -- Search for a playlist URL or name, tap the playlist result to download all tracks (YouTube playlists only)
 4. **Processing feedback** -- Shows "Processing..." immediately when tapped, then "Added to queue ✓"
 
 ### Bulk Import
@@ -438,19 +436,21 @@ Downloads are organised as:
 - By default, tracks go into `Singles/Artist/` directories
 - Disable "Organise by Artist" in Settings to put all tracks directly in `Singles/`
 - Playlist downloads generate `.m3u` files with relative paths
-- Artist and title are extracted from YouTube metadata
+- Artist and title are extracted from source metadata (Monochrome provides accurate Tidal metadata; YouTube/SoundCloud are parsed from titles)
 - Common patterns like "Artist - Title" are parsed automatically
 - YouTube annotations (Official Audio, Lyrics, etc.) are cleaned from titles
 
 ### Metadata
 
-When `ENABLE_MUSICBRAINZ=true`:
+**Monochrome/Tidal downloads** come with accurate metadata directly from the Tidal catalogue -- artist, title, album, and cover art are embedded without needing any lookups.
+
+**YouTube/SoundCloud downloads** with `ENABLE_MUSICBRAINZ=true`:
 1. Fingerprints the downloaded audio with AcoustID/Chromaprint to identify the actual recording
 2. If AcoustID matches confidently, uses the correct artist, title, album, and year from MusicBrainz
 3. Falls back to a text-based MusicBrainz search if fingerprinting fails or scores too low
-4. Falls back to cleaned YouTube metadata if neither lookup finds anything
+4. Falls back to cleaned source metadata if neither lookup finds anything
 5. Sets album to "Singles" by default when no album is found
-6. Embeds cover art from YouTube thumbnails
+6. Embeds cover art from source thumbnails
 
 ### Duplicate Detection
 
@@ -512,11 +512,11 @@ music.yourdomain.com {
 | `GET` | `/api/settings` | Get all settings (requires auth if API key set) |
 | `PUT` | `/api/settings` | Update settings |
 | `POST` | `/api/settings/test/{service}` | Test connection (slskd, navidrome, jellyfin) |
-| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "youtube/soundcloud/all"}`) |
+| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "youtube/soundcloud/monochrome/all"}`) |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
 | `GET` | `/api/sources` | List available search sources (for source selector UI) |
-| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for SoundCloud) |
-| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "download_type": "single/playlist"}`) |
+| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for URL-based sources like SoundCloud/Monochrome) |
+| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/monochrome", "download_type": "single/playlist"}`) |
 | `POST` | `/api/bulk-import-async` | Bulk import songs (async, returns immediately) |
 | `GET` | `/api/bulk-import/{id}/status` | Get async bulk import progress |
 | `GET` | `/api/bulk-imports` | List recent bulk imports |

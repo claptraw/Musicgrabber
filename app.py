@@ -19,8 +19,11 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
 
+import base64
+
 from constants import (
     VERSION, MUSIC_DIR, DB_PATH, COOKIES_FILE,
+    MONOCHROME_API_URL, TIMEOUT_MONOCHROME_API,
     TIMEOUT_YTDLP_INFO,
     TIMEOUT_YTDLP_PREVIEW,
     TIMEOUT_SLSKD_SEARCH,
@@ -55,6 +58,8 @@ from watched_playlists import (
     start_scheduler, _fetch_spotify_playlist_embed,
 )
 from utils import hash_track, is_valid_youtube_id, spawn_daemon_thread, subsonic_auth_params
+
+URL_BASED_SOURCES = {"soundcloud", "monochrome"}
 
 # =============================================================================
 # Application Setup
@@ -567,16 +572,34 @@ def reset_stats(confirm: bool = False):
 def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
     """Get a streamable audio URL for preview playback."""
     try:
+        # Monochrome: fetch an AAC stream URL from the API — no yt-dlp needed,
+        # and browsers play MP4/AAC natively without any fuss
+        if source == "monochrome":
+            with httpx.Client(timeout=TIMEOUT_MONOCHROME_API) as client:
+                resp = client.get(
+                    f"{MONOCHROME_API_URL}/track/",
+                    params={"id": video_id, "quality": "HIGH"},
+                )
+            resp.raise_for_status()
+            data = resp.json().get("data") or {}
+            if not data.get("manifest"):
+                raise HTTPException(status_code=404, detail="No stream available for this track")
+            manifest = json.loads(base64.b64decode(data["manifest"]))
+            urls = manifest.get("urls") or []
+            if not urls:
+                raise HTTPException(status_code=404, detail="No audio stream found")
+            return {"url": urls[0], "video_id": video_id}
+
         if source == "youtube":
             if not is_valid_youtube_id(video_id):
                 raise HTTPException(status_code=400, detail="Invalid YouTube video ID")
             target_url = f"https://www.youtube.com/watch?v={video_id}"
             base_args = _ytdlp_base_args()
-        elif source == "soundcloud":
+        elif source in URL_BASED_SOURCES:
             if not url:
-                raise HTTPException(status_code=400, detail="SoundCloud preview requires url parameter")
+                raise HTTPException(status_code=400, detail=f"{source.capitalize()} preview requires url parameter")
             target_url = url
-            base_args = []  # No cookies needed for SoundCloud
+            base_args = []  # No cookies needed for URL-based non-YouTube sources
         else:
             raise HTTPException(status_code=400, detail=f"Preview not supported for source: {source}")
 
@@ -654,6 +677,7 @@ def search(request: SearchRequest):
                 quality_score=item["quality_score"],
                 slskd_username=item["slskd_username"],
                 slskd_filename=item["slskd_filename"],
+                album=item.get("monochrome_album"),
             ))
 
         search_token = None
@@ -733,14 +757,14 @@ def download(request: DownloadRequest):
         if source == "youtube":
             if not request.video_id or not is_valid_youtube_id(request.video_id):
                 raise HTTPException(status_code=400, detail="Invalid YouTube video ID")
-        elif source == "soundcloud":
+        elif source in URL_BASED_SOURCES:
             if not request.source_url:
-                raise HTTPException(status_code=400, detail="SoundCloud download requires source_url")
+                raise HTTPException(status_code=400, detail=f"{source.capitalize()} download requires source_url")
 
         # Build source URL for tracking
         if source == "soulseek":
             source_url = f"soulseek://{request.slskd_username}/{request.slskd_filename}" if request.slskd_username else None
-        elif source == "soundcloud":
+        elif source in URL_BASED_SOURCES:
             source_url = request.source_url
         elif request.download_type == "playlist":
             source_url = f"https://www.youtube.com/playlist?list={request.video_id}" if request.video_id else None
@@ -777,7 +801,7 @@ def download(request: DownloadRequest):
             title,
             request.convert_to_flac
         )
-    elif source == "soundcloud":
+    elif source in URL_BASED_SOURCES:
         spawn_daemon_thread(process_download, job_id, request.video_id, request.convert_to_flac, source_url=source_url)
     else:
         spawn_daemon_thread(process_download, job_id, request.video_id, request.convert_to_flac)
@@ -899,7 +923,7 @@ def retry_job(job_id: str):
             job.get("title", ""),
             convert_to_flac
         )
-    elif job.get("source") == "soundcloud" and job.get("source_url"):
+    elif job.get("source") in URL_BASED_SOURCES and job.get("source_url"):
         spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac, source_url=job["source_url"])
     else:
         spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac)

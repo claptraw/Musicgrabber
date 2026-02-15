@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "1.9.2"
+VERSION = "2.0.0"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -24,6 +24,7 @@ TIMEOUT_SLSKD_API = 30           # slskd API calls
 TIMEOUT_SPOTIFY_BROWSER = 180    # Headless browser for large playlists (3 minutes)
 TIMEOUT_AMAZON_BROWSER = 180     # Amazon Music playlist scraping (3 minutes)
 TIMEOUT_FPCALC = 30              # Audio fingerprinting via fpcalc
+TIMEOUT_MONOCHROME_API = 15      # Monochrome/Tidal API calls (search + manifest)
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
 
@@ -79,6 +80,12 @@ WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24
 # is about as reliable as asking YouTube commenters for facts
 ACOUSTID_API_KEY = os.getenv("ACOUSTID_API_KEY", "0NILMQojj4")
 ACOUSTID_MIN_SCORE = 0.8         # Below this, the match is too dodgy to trust
+
+# Monochrome API — Tidal frontend with public lossless FLAC streams.
+# Points at the official instance by default; users can override to use
+# community mirrors listed at github.com/monochrome-music/monochrome/blob/main/INSTANCES.md
+MONOCHROME_API_URL = os.getenv("MONOCHROME_API_URL", "https://api.monochrome.tf")
+MONOCHROME_COVER_BASE = "https://resources.tidal.com/images"
 
 # Default settings for fields that need startup values
 DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"

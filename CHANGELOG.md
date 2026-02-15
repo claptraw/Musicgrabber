@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.0.0 (2026-02-15)
+
+### Added
+- **Full Monochrome/Tidal search**: Free-text search via the Monochrome API returns lossless FLAC results with proper artist, album, cover art, and quality metadata. Monochrome results appear alongside YouTube and SoundCloud when searching, ranked higher thanks to genuine lossless quality
+- **Direct FLAC downloads from Monochrome**: Downloads bypass yt-dlp entirely -- FLAC files stream directly from the Tidal CDN. Faster, simpler, no bot detection headaches. Cover art is embedded automatically from Tidal's image CDN
+- **Hi-Res and Lossless quality badges**: Search results show "Lossless" or "Hi-Res" badges with colour-coded styling. Monochrome results display album name alongside artist
+- **Monochrome API preview**: Preview playback uses AAC streams from the API (browser-native, no yt-dlp subprocess)
+- **Configurable API instance**: `MONOCHROME_API_URL` env var lets you point at community mirror instances
+- **Default search source changed to "All"**: Searches all sources in parallel by default so Monochrome lossless results compete with YouTube/SoundCloud on quality score
+
+### Changed
+- **Monochrome metadata source label**: Downloads from Monochrome now report metadata source as "Monochrome/Tidal API" rather than "guessed" -- because Tidal actually knows what it's serving
+- **Version bump to 2.0.0**: Major feature release -- Monochrome integration turns MusicGrabber from a YouTube downloader into a proper multi-source music acquisition tool
+
+
 ## v1.9.2 (2026-02-13)
 
 ### Added

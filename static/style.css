@@ -488,6 +488,11 @@ h1 {
     color: white;
 }
 
+.source-badge.monochrome {
+    background: #111111;
+    color: white;
+}
+
 .source-badge.soulseek {
     background: #4a9eff;
     color: white;
@@ -510,6 +515,11 @@ h1 {
     border-radius: 3px;
     background: var(--accent);
     color: white;
+}
+
+.quality-badge.hires {
+    background: linear-gradient(135deg, #ffd700, #ff8c00);
+    color: #000;
 }
 
 .quality-badge.flac {

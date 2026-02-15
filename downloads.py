@@ -5,6 +5,7 @@ Single track, playlist, and Soulseek download handlers.
 Library scan triggers and M3U playlist generation.
 """
 
+import base64
 import json
 import os
 import sqlite3
@@ -18,6 +19,7 @@ import httpx
 from constants import (
     AUDIO_EXTENSIONS,
     COOKIES_FILE, MUSIC_DIR,
+    MONOCHROME_API_URL, MONOCHROME_COVER_BASE, TIMEOUT_MONOCHROME_API,
     TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
     TIMEOUT_FFMPEG_CONVERT, TIMEOUT_HTTP_REQUEST,
     YTDLP_403_MAX_RETRIES, YTDLP_403_RETRY_DELAY,
@@ -51,6 +53,8 @@ def _default_metadata_source(source: str) -> str:
     source_name = (source or "youtube").lower()
     if source_name == "soundcloud":
         return "soundcloud_guessed"
+    if source_name == "monochrome":
+        return "monochrome_guessed"
     if source_name == "soulseek":
         return "soulseek_guessed"
     return "youtube_guessed"
@@ -836,30 +840,259 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
 
 
+def _monochrome_cover_url(cover_uuid: str) -> str:
+    """Turn a Tidal cover UUID into a CDN thumbnail URL."""
+    if not cover_uuid:
+        return ""
+    return f"{MONOCHROME_COVER_BASE}/{cover_uuid.replace('-', '/')}/640x640.jpg"
+
+
+def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
+    """Download a FLAC directly from the Monochrome/Tidal API.
+
+    No yt-dlp, no messing about — just a straight FLAC off the CDN.
+    Raises on any failure so the caller can handle it.
+    """
+    # Fetch the stream manifest
+    with httpx.Client(timeout=TIMEOUT_MONOCHROME_API) as client:
+        resp = client.get(
+            f"{MONOCHROME_API_URL}/track/",
+            params={"id": track_id, "quality": "LOSSLESS"},
+        )
+    resp.raise_for_status()
+    data = resp.json().get("data") or {}
+    if not data.get("manifest"):
+        raise Exception(f"No stream manifest returned for Monochrome track {track_id}")
+
+    manifest = json.loads(base64.b64decode(data["manifest"]))
+    encryption = manifest.get("encryptionType", "NONE")
+    if encryption != "NONE":
+        raise Exception(f"Monochrome track {track_id} is encrypted ({encryption}) — cannot download")
+
+    urls = manifest.get("urls") or []
+    if not urls:
+        raise Exception(f"Empty URL list in manifest for Monochrome track {track_id}")
+
+    # Stream the FLAC to disk
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with httpx.stream("GET", urls[0], timeout=120) as stream_resp:
+        stream_resp.raise_for_status()
+        with open(output_path, "wb") as f:
+            for chunk in stream_resp.iter_bytes(chunk_size=8192):
+                f.write(chunk)
+
+
+def _embed_monochrome_cover(audio_file: Path, cover_uuid: str) -> None:
+    """Download cover art from Tidal CDN and embed it in a FLAC file."""
+    if not cover_uuid:
+        return
+    try:
+        from mutagen.flac import FLAC, Picture
+
+        cover_url = _monochrome_cover_url(cover_uuid)
+        resp = httpx.get(cover_url, timeout=10)
+        resp.raise_for_status()
+
+        pic = Picture()
+        pic.type = 3  # Cover (front)
+        pic.mime = "image/jpeg"
+        pic.data = resp.content
+
+        audio = FLAC(str(audio_file))
+        audio.clear_pictures()
+        audio.add_picture(pic)
+        audio.save()
+    except Exception as e:
+        # Non-critical — the track still plays fine without cover art
+        print(f"Monochrome cover embed failed: {e}")
+
+
+def _get_monochrome_track_info(track_id: str) -> dict | None:
+    """Fetch track metadata from the Monochrome API info endpoint."""
+    try:
+        resp = httpx.get(
+            f"{MONOCHROME_API_URL}/info/",
+            params={"id": track_id},
+            timeout=TIMEOUT_MONOCHROME_API,
+        )
+        resp.raise_for_status()
+        return resp.json().get("data")
+    except Exception as e:
+        print(f"Monochrome track info lookup failed: {e}")
+        return None
+
+
+def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bool = True):
+    """Download a track directly from Monochrome/Tidal — no yt-dlp needed.
+
+    The API gives us proper metadata (artist, album, ISRC) so we don't need
+    to guess from dodgy YouTube titles. The audio is genuine lossless FLAC
+    straight off the Tidal CDN.
+    """
+    source_label = "monochrome"
+    artist = None
+    title = track_id
+
+    try:
+        _update_job(job_id, status="downloading")
+
+        # Get track metadata from the API — artist, title, album, the lot
+        info = _get_monochrome_track_info(track_id)
+        if not info:
+            raise Exception(f"Failed to get track info for Monochrome track {track_id}")
+
+        title = info.get("title", "Unknown")
+        artist_obj = info.get("artist") or {}
+        artist = artist_obj.get("name", "Unknown")
+        album_obj = info.get("album") or {}
+        album_title = album_obj.get("title", "Singles")
+        cover_uuid = album_obj.get("cover", "")
+        isrc = info.get("isrc", "")
+
+        _update_job(job_id, title=title, artist=artist, uploader=artist)
+
+        # Duplicate check
+        existing_file = check_duplicate(artist, title)
+        if existing_file:
+            _update_job(
+                job_id,
+                status="completed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error=f"Already exists: {existing_file.name}"
+            )
+            _mark_watched_track_downloaded(job_id)
+            return
+
+        # Create download directory
+        artist_dir = get_download_dir(artist)
+        artist_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_title = _safe_sanitized_title(title, track_id)
+        output_path = artist_dir / f"{safe_title}.flac"
+
+        # Download the FLAC
+        _download_monochrome_direct(track_id, output_path)
+
+        if not output_path.exists():
+            raise Exception("Download completed but FLAC file not found")
+
+        set_file_permissions(output_path)
+
+        # Embed cover art from Tidal CDN
+        _embed_monochrome_cover(output_path, cover_uuid)
+
+        # Probe audio quality — this is genuine lossless, no transcode shenanigans
+        audio_quality, bitrate_kbps = probe_audio_quality(output_path)
+        min_bitrate = get_setting_int("min_audio_bitrate", 0)
+        if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
+            output_path.unlink(missing_ok=True)
+            raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
+
+        # Metadata enrichment — we already have album + ISRC from Tidal,
+        # but MusicBrainz might have a better canonical artist name or year
+        metadata_source = "monochrome_api"
+        mb_metadata = lookup_metadata(artist, title, output_path)
+        if mb_metadata:
+            metadata_source = mb_metadata.get("metadata_source", metadata_source)
+            mb_artist = mb_metadata.get("artist", artist)
+            mb_title = mb_metadata.get("title", title)
+            # Prefer MusicBrainz album if found, otherwise use Tidal's
+            mb_album = mb_metadata.get("album", album_title)
+            mb_year = mb_metadata.get("year")
+            apply_metadata_to_file(output_path, mb_artist, mb_title, mb_album, mb_year)
+            if mb_artist != artist:
+                output_path = _relocate_for_normalised_artist(output_path, artist, mb_artist)
+                artist = mb_artist
+            if mb_title != title:
+                title = mb_title
+            _update_job(job_id, artist=artist, title=title)
+        else:
+            # Use the Tidal metadata directly — it's already better than YouTube guesswork
+            apply_metadata_to_file(output_path, artist, title, album_title)
+
+        # Lyrics
+        lyrics = fetch_lyrics(artist, title)
+        if lyrics:
+            save_lyrics_file(output_path, lyrics)
+            print(f"Saved lyrics for {artist} - {title}")
+        else:
+            print(f"No lyrics found for {artist} - {title}")
+
+        # Library scans
+        trigger_navidrome_scan()
+        trigger_jellyfin_scan()
+
+        # Done!
+        _update_job(
+            job_id,
+            status="completed",
+            error=None,
+            audio_quality=audio_quality,
+            metadata_source=metadata_source,
+            completed_at=datetime.now(timezone.utc).isoformat()
+        )
+        _mark_watched_track_downloaded(job_id)
+
+        print(f"Monochrome: Downloaded {artist} - {title} (lossless FLAC)")
+
+        send_notification(
+            notification_type="single",
+            title=title,
+            artist=artist,
+            source=source_label,
+            status="completed"
+        )
+
+    except Exception as e:
+        print(f"Monochrome download failed: {e}")
+        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
+
+        send_notification(
+            notification_type="error",
+            title=title,
+            artist=artist,
+            source=source_label,
+            status="failed",
+            error=str(e)
+        )
+
+
 def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, source_url: str = None):
     """Process a download job.
 
     source_url overrides the default YouTube URL construction — used for
     SoundCloud and any future yt-dlp-supported source.
+    Monochrome tracks bypass yt-dlp entirely and download via the API.
     """
     is_soundcloud = source_url and "soundcloud.com" in source_url
-    source_label = "soundcloud" if is_soundcloud else "youtube"
+    is_monochrome = source_url and "monochrome.tf" in source_url
+    is_url_source = bool(source_url)
+
+    # Monochrome gets its own dedicated download path — no yt-dlp needed
+    if is_monochrome:
+        _process_monochrome_download(job_id, video_id, convert_to_flac)
+        return
+
+    if is_soundcloud:
+        source_label = "soundcloud"
+    else:
+        source_label = "youtube"
     target_url = source_url or f"https://www.youtube.com/watch?v={video_id}"
 
     try:
-        if not is_soundcloud and not is_valid_youtube_id(video_id):
+        if not is_url_source and not is_valid_youtube_id(video_id):
             raise Exception("Invalid YouTube video ID")
 
         # Defaults in case extraction fails before artist/title are assigned
         artist = None
         title = video_id
-        has_cookies = not is_soundcloud and COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
+        has_cookies = (not is_url_source) and COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
 
         # Update status to downloading
         _update_job(job_id, status="downloading")
 
         # First, get video info for proper metadata
-        base_args = _ytdlp_base_args() if not is_soundcloud else []
+        base_args = _ytdlp_base_args() if not is_url_source else []
         info_cmd = [
             "yt-dlp",
             *base_args,
@@ -870,7 +1103,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
         info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
         if info_result.returncode != 0:
-            if not is_soundcloud and _is_ytdlp_403(info_result.stderr):
+            if not is_url_source and _is_ytdlp_403(info_result.stderr):
                 if has_cookies:
                     _note_cookie_failure()
                 hint = "Your cookies may have expired — try re-exporting them in Settings." if has_cookies else "Add browser cookies in Settings to authenticate."
@@ -884,7 +1117,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
         # Extract artist and title — SoundCloud uses 'uploader' for artist
         full_title = info.get("title", "Unknown")
-        channel = info.get("uploader", info.get("channel", "Unknown")) if is_soundcloud else info.get("channel", info.get("uploader", "Unknown"))
+        channel = info.get("uploader", info.get("channel", "Unknown")) if is_url_source else info.get("channel", info.get("uploader", "Unknown"))
         artist, title = extract_artist_title(full_title, channel)
 
         # Update job with extracted info (store raw uploader for blacklist reporting)
@@ -912,7 +1145,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         download_cmd = _build_ytdlp_download_cmd(
             video_id, output_template, convert_to_flac,
             source_url=source_url,
-            use_cookies=not is_soundcloud,
+            use_cookies=not is_url_source,
         )
 
         # Retry strategy: back off on suspected bot blocks; if cookies seem to cause 403s,
@@ -942,7 +1175,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
             if stderr:
                 error_msg = f"Download failed: {stderr}"
-                if not is_soundcloud and download_result and _is_ytdlp_403(stderr):
+                if not is_url_source and download_result and _is_ytdlp_403(stderr):
                     if has_cookies:
                         error_msg = "YouTube blocked this download (403). Your cookies may have expired — try re-exporting them in Settings."
                     else:
