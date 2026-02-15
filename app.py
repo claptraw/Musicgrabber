@@ -123,6 +123,44 @@ def get_config():
 
 
 # =============================================================================
+# Music directory listing (for subfolder picker)
+# =============================================================================
+
+@app.get("/api/music-dirs")
+def list_music_dirs(path: str = ""):
+    """List subdirectories of MUSIC_DIR (or a subpath) for the subfolder picker.
+
+    Returns folder names only — no hidden/system dirs, sorted alphabetically.
+    Filters out dotfiles and @-prefixed system dirs (Synology, etc.).
+    The path parameter lets users browse deeper into the tree.
+    """
+    # Sanitise: strip leading/trailing slashes, reject path traversal
+    clean = path.strip("/").strip()
+    if ".." in clean:
+        raise HTTPException(status_code=400, detail="Path traversal not allowed")
+
+    target = MUSIC_DIR / clean if clean else MUSIC_DIR
+    # Make sure we haven't escaped MUSIC_DIR
+    try:
+        target.resolve().relative_to(MUSIC_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Path outside music directory")
+
+    try:
+        dirs = sorted([
+            d.name for d in target.iterdir()
+            if d.is_dir() and not d.name.startswith((".", "@"))
+        ])
+    except FileNotFoundError:
+        dirs = []
+
+    return {
+        "path": clean,
+        "directories": dirs,
+    }
+
+
+# =============================================================================
 # Settings API
 # =============================================================================
 

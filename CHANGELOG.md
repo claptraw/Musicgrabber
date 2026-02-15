@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.0.1 (2026-02-15)
+
+### Changed
+- **Singles subfolder is now a dropdown**: Replaced the free-text input with a directory picker that lists existing subdirectories from the music library. Prevents typos, trailing spaces, and other user-input gremlins. Includes a "New folder..." option for creating new directories with validated input
+- **Filtered system directories**: The directory picker hides dotfiles and `@`-prefixed system folders (Synology `@Recycle`, `@Recently-Snapshot`, etc.)
+
+### Added
+- **`GET /api/music-dirs` endpoint**: Lists subdirectories of `MUSIC_DIR` for the subfolder picker
+
 ## v2.0.0 (2026-02-15)
 
 ### Added
