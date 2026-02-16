@@ -133,8 +133,13 @@ def _is_env_override(key: str) -> bool:
 
 
 def get_singles_dir() -> Path:
-    """Get the singles download directory. Reads the setting at runtime so changes take effect immediately."""
+    """Get the singles download directory. Reads the setting at runtime so changes take effect immediately.
+
+    A value of "." means the music root itself (no subfolder).
+    """
     subdir = get_setting("singles_subdir", "Singles").strip() or "Singles"
+    if subdir == ".":
+        return MUSIC_DIR
     return MUSIC_DIR / subdir
 
 

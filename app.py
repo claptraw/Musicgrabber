@@ -127,30 +127,63 @@ def get_config():
 # =============================================================================
 
 @app.get("/api/music-dirs")
-def list_music_dirs(path: str = ""):
+def list_music_dirs(path: str = "", recursive: bool = False, max_depth: int | None = None):
     """List subdirectories of MUSIC_DIR (or a subpath) for the subfolder picker.
 
-    Returns folder names only — no hidden/system dirs, sorted alphabetically.
+    Returns directory names/paths only — no hidden/system dirs, sorted alphabetically.
     Filters out dotfiles and @-prefixed system dirs (Synology, etc.).
     The path parameter lets users browse deeper into the tree.
+    Set recursive=true to list descendants as full paths relative to MUSIC_DIR.
+    Optionally pass max_depth to cap recursive traversal depth.
     """
-    # Sanitise: strip leading/trailing slashes, reject path traversal
-    clean = path.strip("/").strip()
-    if ".." in clean:
+    # Sanitise: normalise separators, strip edges, reject traversal segments
+    clean = path.strip().replace("\\", "/").strip("/")
+    segments = [segment for segment in clean.split("/") if segment and segment != "."]
+    if any(segment == ".." for segment in segments):
         raise HTTPException(status_code=400, detail="Path traversal not allowed")
+    clean = "/".join(segments)
 
     target = MUSIC_DIR / clean if clean else MUSIC_DIR
+    target_resolved = target.resolve()
+    music_root = MUSIC_DIR.resolve()
     # Make sure we haven't escaped MUSIC_DIR
     try:
-        target.resolve().relative_to(MUSIC_DIR.resolve())
+        target.resolve().relative_to(music_root)
     except ValueError:
         raise HTTPException(status_code=400, detail="Path outside music directory")
 
+    if max_depth is not None and max_depth < 1:
+        raise HTTPException(status_code=400, detail="max_depth must be >= 1")
+
     try:
-        dirs = sorted([
-            d.name for d in target.iterdir()
-            if d.is_dir() and not d.name.startswith((".", "@"))
-        ])
+        if recursive:
+            dirs = []
+            if target.is_dir():
+                for dirpath, dirnames, _ in os.walk(target):
+                    # Prune hidden/system directories at each level.
+                    dirnames[:] = [
+                        name for name in dirnames
+                        if not name.startswith((".", "@"))
+                    ]
+                    rel_from_target = Path(dirpath).resolve().relative_to(target_resolved)
+                    depth = len(rel_from_target.parts)
+                    if max_depth is not None and depth >= max_depth:
+                        dirnames[:] = []
+                    rel = Path(dirpath).resolve().relative_to(music_root).as_posix()
+                    if rel in {".", clean}:
+                        continue
+                    if max_depth is not None and depth > max_depth:
+                        continue
+                    dirs.append(rel)
+            dirs.sort(key=str.casefold)
+        else:
+            dirs = sorted(
+                [
+                    d.name for d in target.iterdir()
+                    if d.is_dir() and not d.name.startswith((".", "@"))
+                ],
+                key=str.casefold,
+            )
     except FileNotFoundError:
         dirs = []
 
@@ -209,6 +242,25 @@ def update_settings(updates: SettingsUpdate):
             value = "true" if value else "false"
         else:
             value = str(value)
+
+        # Validate singles_subdir to keep writes under MUSIC_DIR.
+        if key == "singles_subdir":
+            raw = value.strip().replace("\\", "/")
+            if raw == ".":
+                value = "."
+            else:
+                parts = [
+                    part.strip()
+                    for part in raw.split("/")
+                    if part.strip() and part.strip() != "."
+                ]
+                if any(part == ".." for part in parts):
+                    raise HTTPException(status_code=400, detail="Invalid singles subfolder path")
+                value = "/".join(parts) or "Singles"
+                try:
+                    (MUSIC_DIR / value).resolve().relative_to(MUSIC_DIR.resolve())
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Singles subfolder must stay within music directory")
 
         # Validate cookie format before saving
         if key == "youtube_cookies" and value.strip() and not _has_valid_cookie_entries(value):

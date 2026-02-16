@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.0.2 (2026-02-16)
+
+### Changed
+- **Simplified directory picker**: Replaced the browsable tree (with breadcrumb navigation and "Browse" button) with a single flat dropdown. Lists all existing subdirectories up to 2 levels deep, plus `/music (root)` for flat downloads and a `Custom path...` option for freeform input. Fewer clicks, less faff
+- **Recursive directory listing**: `/api/music-dirs` now supports `recursive=true` and `max_depth` parameters, so the dropdown fetches the full folder tree in one request instead of level-by-level AJAX calls
+- **Case-insensitive directory sorting**: Folder lists are now sorted case-insensitively so `Albums` and `albums` sit together
+
+### Added
+- **Server-side `singles_subdir` validation**: The settings API now validates the subfolder path on save -- rejects traversal attempts (`..`), normalises slashes, and confirms the resolved path stays within `MUSIC_DIR`
+- **Music root as download target**: Setting the subfolder to `.` (via the `/music (root)` dropdown option) saves files directly into the music directory with no subfolder
+
+### Fixed
+- **Custom path env-lock inheritance**: The custom path text input now correctly inherits the disabled state when the setting is locked via environment variable
+
 ## v2.0.1 (2026-02-15)
 
 ### Changed

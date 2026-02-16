@@ -234,17 +234,15 @@
                     </div>
                     <div class="settings-row">
                         <label for="settingSinglesSubdir">Singles Subfolder</label>
-                        <div id="subdirBreadcrumb" style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; font-family: monospace; cursor: default;"></div>
                         <div style="display: flex; gap: 6px; align-items: center;">
-                            <select id="settingSinglesSubdir" style="width: 200px; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); font-size: 14px;">
-                                <option value="Singles">Singles</option>
+                            <select id="settingSinglesSubdir" style="width: 320px; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); font-size: 14px;">
+                                <option value="Singles">/music/Singles</option>
                             </select>
-                            <button type="button" id="subdirBrowseBtn" style="padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary); font-size: 13px; cursor: pointer; white-space: nowrap;">Browse &rarr;</button>
                         </div>
-                        <div id="newSubdirRow" style="display:none; margin-top: 6px;">
-                            <input type="text" id="newSubdirInput" placeholder="New folder name" style="width: 200px;">
+                        <div id="customSubdirRow" style="display:none; margin-top: 6px;">
+                            <input type="text" id="customSubdirInput" placeholder="Path under /music (e.g. Singles/Rock)" style="width: 320px;">
                         </div>
-                        <span style="font-size: 11px; color: var(--text-secondary);">Pick a subfolder or browse deeper. Click breadcrumb segments to go back up.</span>
+                        <span style="font-size: 11px; color: var(--text-secondary);">Choose an existing folder, use <code>/music</code> root, or pick <code>Custom path…</code>.</span>
                     </div>
                 </div>
             </div>
@@ -2596,7 +2594,7 @@
                 settingsLoaded = true;
 
                 // Populate singles subfolder dropdown from actual directories
-                _populateSubdirDropdown(settings['singles_subdir'] || 'Singles');
+                await _populateSubdirDropdown(settings['singles_subdir'] || 'Singles');
 
                 // Update browser API key status
                 updateBrowserApiKeyStatus();
@@ -2609,175 +2607,106 @@
             }
         }
 
-        // Subfolder picker state — tracks the current browsing path
-        let _subdirBrowsePath = '';
+        const SUBDIR_CUSTOM_VALUE = '__custom__';
+
+        function _normaliseSubdirPath(rawValue) {
+            const raw = String(rawValue || '').trim();
+            if (!raw) return '';
+            if (raw === '.') return '.';
+
+            const parts = raw
+                .replace(/\\/g, '/')
+                .split('/')
+                .map(part => part.trim())
+                .filter(part => part && part !== '.');
+
+            if (parts.some(part => part === '..')) return '';
+            return parts.join('/');
+        }
 
         async function _populateSubdirDropdown(currentValue) {
             const select = document.getElementById('settingSinglesSubdir');
-            const newRow = document.getElementById('newSubdirRow');
-            const newInput = document.getElementById('newSubdirInput');
-            const browseBtn = document.getElementById('subdirBrowseBtn');
-            if (!select) return;
+            const customRow = document.getElementById('customSubdirRow');
+            const customInput = document.getElementById('customSubdirInput');
+            if (!select || !customRow || !customInput) return;
 
-            // Work out the initial browse path from the current setting
-            const current = (currentValue || 'Singles').trim();
-            const parts = current.split('/');
-            if (parts.length > 1) {
-                // Current value is a nested path like "Singles/Rock" — browse to the parent
-                _subdirBrowsePath = parts.slice(0, -1).join('/');
-            } else {
-                _subdirBrowsePath = '';
-            }
-            const leafName = parts[parts.length - 1] || 'Singles';
+            const currentRaw = (currentValue || 'Singles').trim();
+            const current = currentRaw === '.' ? '.' : (_normaliseSubdirPath(currentRaw) || 'Singles');
 
-            await _loadSubdirLevel(_subdirBrowsePath, leafName);
-
-            // Show/hide new folder input on change
-            select.addEventListener('change', () => {
-                if (select.value === '__new__') {
-                    newRow.style.display = 'block';
-                    newInput.focus();
-                } else {
-                    newRow.style.display = 'none';
-                    newInput.value = '';
-                }
-            });
-
-            // Browse into the selected directory
-            browseBtn.addEventListener('click', async () => {
-                const selected = select.value;
-                if (!selected || selected === '__new__') return;
-
-                const deeper = _subdirBrowsePath ? _subdirBrowsePath + '/' + selected : selected;
-                _subdirBrowsePath = deeper;
-                newRow.style.display = 'none';
-                newInput.value = '';
-                await _loadSubdirLevel(deeper, '');
-            });
-        }
-
-        async function _loadSubdirLevel(browsePath, selectName) {
-            const select = document.getElementById('settingSinglesSubdir');
-            const breadcrumb = document.getElementById('subdirBreadcrumb');
-            const browseBtn = document.getElementById('subdirBrowseBtn');
-            if (!select) return;
-
-            // Fetch directories at this level
             let dirs = [];
             try {
-                const url = browsePath
-                    ? '/api/music-dirs?path=' + encodeURIComponent(browsePath)
-                    : '/api/music-dirs';
-                const resp = await apiFetch(url);
+                const resp = await apiFetch('/api/music-dirs?recursive=true&max_depth=2');
                 if (resp.ok) {
                     const data = await resp.json();
-                    dirs = data.directories || [];
+                    dirs = Array.isArray(data.directories) ? data.directories : [];
                 }
             } catch (e) {
                 console.warn('Could not fetch music directories:', e);
             }
 
-            // If at root level, ensure "Singles" default is always present
-            if (!browsePath && !dirs.includes('Singles')) {
-                dirs.unshift('Singles');
+            const unique = new Set();
+            for (const dir of dirs) {
+                const normalised = _normaliseSubdirPath(dir);
+                if (normalised && normalised !== '.') {
+                    unique.add(normalised);
+                }
             }
 
-            // If selectName isn't in the list (e.g. folder was deleted), add it
-            if (selectName && !dirs.includes(selectName)) {
-                dirs.push(selectName);
-                dirs.sort();
+            // Keep defaults/current value available even if folder disappeared.
+            unique.add('Singles');
+            if (current !== '.') {
+                unique.add(current);
             }
 
-            // Build the dropdown options
+            const sortedDirs = Array.from(unique).sort((a, b) =>
+                a.localeCompare(b, undefined, { sensitivity: 'base' })
+            );
+
             select.innerHTML = '';
 
-            // If we've browsed into a directory, the directory itself is a valid choice
-            // — shown as "(use this folder)" at the top
-            if (browsePath) {
-                const useOpt = document.createElement('option');
-                useOpt.value = '__current__';
-                useOpt.textContent = '\u2190 Use this folder';
-                select.appendChild(useOpt);
-            }
+            const rootOpt = document.createElement('option');
+            rootOpt.value = '.';
+            rootOpt.textContent = '/music (root)';
+            select.appendChild(rootOpt);
 
-            for (const d of dirs) {
+            for (const relPath of sortedDirs) {
                 const opt = document.createElement('option');
-                opt.value = d;
-                opt.textContent = d;
+                opt.value = relPath;
+                opt.textContent = `/music/${relPath}`;
                 select.appendChild(opt);
             }
 
-            // "New folder..." option
-            const newOpt = document.createElement('option');
-            newOpt.value = '__new__';
-            newOpt.textContent = 'New folder\u2026';
-            select.appendChild(newOpt);
+            const customOpt = document.createElement('option');
+            customOpt.value = SUBDIR_CUSTOM_VALUE;
+            customOpt.textContent = 'Custom path\u2026';
+            select.appendChild(customOpt);
 
-            // Select the right option
-            if (selectName && dirs.includes(selectName)) {
-                select.value = selectName;
-            } else if (browsePath) {
-                select.value = '__current__';
+            const currentIsKnown = current === '.' || sortedDirs.includes(current);
+            customInput.disabled = !!select.disabled;
+            if (currentIsKnown) {
+                select.value = current;
+                customRow.style.display = 'none';
+                customInput.value = '';
+            } else {
+                select.value = SUBDIR_CUSTOM_VALUE;
+                customRow.style.display = 'block';
+                customInput.value = current;
             }
 
-            // Update breadcrumb — clickable path segments to navigate back up
-            _renderSubdirBreadcrumb(browsePath);
-
-            // Hide browse button if no subdirs to browse into
-            const hasSubdirs = dirs.length > 0;
-            browseBtn.style.display = hasSubdirs ? 'inline-block' : 'none';
-        }
-
-        function _renderSubdirBreadcrumb(browsePath) {
-            const breadcrumb = document.getElementById('subdirBreadcrumb');
-            if (!breadcrumb) return;
-
-            breadcrumb.innerHTML = '';
-            const segments = browsePath ? browsePath.split('/') : [];
-
-            // Root link
-            const rootSpan = document.createElement('span');
-            rootSpan.textContent = '/music';
-            rootSpan.style.cursor = 'pointer';
-            rootSpan.style.color = 'var(--accent)';
-            rootSpan.style.textDecoration = 'underline';
-            rootSpan.addEventListener('click', async () => {
-                _subdirBrowsePath = '';
-                document.getElementById('newSubdirRow').style.display = 'none';
-                await _loadSubdirLevel('', 'Singles');
-            });
-            breadcrumb.appendChild(rootSpan);
-
-            // Each path segment as a clickable link
-            for (let i = 0; i < segments.length; i++) {
-                const sep = document.createTextNode(' / ');
-                breadcrumb.appendChild(sep);
-
-                const segSpan = document.createElement('span');
-                segSpan.textContent = segments[i];
-
-                if (i < segments.length - 1) {
-                    // Clickable — navigate back to this level
-                    const pathToHere = segments.slice(0, i + 1).join('/');
-                    segSpan.style.cursor = 'pointer';
-                    segSpan.style.color = 'var(--accent)';
-                    segSpan.style.textDecoration = 'underline';
-                    segSpan.addEventListener('click', async () => {
-                        _subdirBrowsePath = pathToHere;
-                        document.getElementById('newSubdirRow').style.display = 'none';
-                        await _loadSubdirLevel(pathToHere, '');
-                    });
-                } else {
-                    // Current level — not clickable
-                    segSpan.style.fontWeight = '600';
+            select.onchange = () => {
+                if (select.value === SUBDIR_CUSTOM_VALUE) {
+                    customRow.style.display = 'block';
+                    customInput.focus();
+                    return;
                 }
-                breadcrumb.appendChild(segSpan);
-            }
+                customRow.style.display = 'none';
+                customInput.value = '';
+            };
         }
 
         function _injectSettingsClearButtons() {
             // Skip these — they already have dedicated clear mechanisms
-            const skipIds = new Set(['settingYoutubeCookies', 'settingSmtpPort', 'settingMinBitrate']);
+            const skipIds = new Set(['settingYoutubeCookies', 'settingSmtpPort', 'settingMinBitrate', 'customSubdirInput']);
 
             for (const row of document.querySelectorAll('.settings-row')) {
                 const input = row.querySelector('input[type="text"], input[type="password"], input[type="number"]');
@@ -2869,20 +2798,15 @@
                         }
                     } else {
                         let value = element.value.trim();
-                        // Singles subfolder: resolve the full path from browse state
+                        // Singles subfolder: use direct picker value or custom path
                         if (key === 'singles_subdir') {
-                            if (value === '__current__') {
-                                // "Use this folder" — the browsed-to path itself
-                                value = _subdirBrowsePath || 'Singles';
-                            } else if (value === '__new__') {
-                                // "New folder..." — read from text input, append to browse path
-                                const newInput = document.getElementById('newSubdirInput');
-                                let newName = (newInput?.value || '').trim().replace(/[\/\\]/g, '');
-                                if (!newName) newName = 'Singles';
-                                value = _subdirBrowsePath ? _subdirBrowsePath + '/' + newName : newName;
+                            if (value === '.') {
+                                value = '.';
+                            } else if (value === SUBDIR_CUSTOM_VALUE) {
+                                const customInput = document.getElementById('customSubdirInput');
+                                value = _normaliseSubdirPath(customInput?.value || '') || 'Singles';
                             } else {
-                                // Selected an existing dir — combine with browse path
-                                value = _subdirBrowsePath ? _subdirBrowsePath + '/' + value : value;
+                                value = _normaliseSubdirPath(value) || 'Singles';
                             }
                         }
                         // For sensitive fields with hidden values (null), only send if user entered something
