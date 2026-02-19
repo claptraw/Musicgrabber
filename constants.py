@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.0.2"
+VERSION = "2.0.3"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -29,9 +29,9 @@ STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
 
 # Bulk import settings
-BULK_IMPORT_SEARCH_DELAY = 1.0           # Seconds between YouTube searches
-BULK_IMPORT_BACKOFF_DELAYS = [30, 60, 120, 300]  # Rate limit backoff sequence
-BULK_IMPORT_BACKOFF_RESET_AFTER = 5      # Consecutive successes before reducing backoff
+BULK_IMPORT_SEARCH_DELAY = 1.0           # Seconds between searches (be courteous to all sources)
+BULK_IMPORT_BACKOFF_DELAYS = [30, 60, 120, 300]  # Rate limit backoff sequence (unused, kept for reference)
+BULK_IMPORT_BACKOFF_RESET_AFTER = 5      # Consecutive successes before reducing backoff (unused, kept for reference)
 
 # Playlist creation
 PLAYLIST_WAIT_MAX = 3600         # Max seconds to wait for downloads to complete (1 hour)

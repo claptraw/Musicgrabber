@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v2.0.2**
+**v2.0.3**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless) -- tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -27,8 +27,8 @@ and the rest of them:
 - **Multi-source search** -- YouTube, SoundCloud, and Monochrome (Tidal lossless) with parallel searching and quality-based ranking
 - **Soulseek integration** -- optional slskd support for higher quality sources (FLAC from P2P) *(in progress -- needs testing)*
 - **Playlist support** -- download entire playlists with automatic M3U generation
-- **Watched playlists** -- monitor Spotify/YouTube playlists and auto-download new tracks
-- **Bulk import** -- paste or upload a text file of songs to auto-search and queue
+- **Watched playlists** -- monitor Spotify/YouTube playlists and auto-download new tracks; searches all sources and grabs the best quality available
+- **Bulk import** -- paste or upload a text file of songs to auto-search and queue; searches YouTube, SoundCloud, and Monochrome in parallel, picks the best result
 - **Best quality FLAC** -- extracts highest available audio quality
 - **Minimum bitrate enforcement** -- optionally reject downloads below a configurable bitrate threshold
 - **Audio quality display** -- completed downloads show codec and bitrate in the queue details, with honest reporting for lossy-to-FLAC conversions

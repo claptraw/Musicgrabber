@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.0.3 (2026-02-19)
+
+### Changed
+- **Multi-source bulk import and watched playlists**: Bulk import and watched playlist auto-downloads now search all sources (YouTube, SoundCloud, Monochrome) in parallel instead of YouTube only. The highest-scoring result wins -- so if a track is available lossless on Monochrome, that's what gets downloaded
+
 ## v2.0.2 (2026-02-16)
 
 ### Changed
