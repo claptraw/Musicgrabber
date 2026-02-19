@@ -851,14 +851,20 @@ def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
     """Download a FLAC directly from the Monochrome/Tidal API.
 
     No yt-dlp, no messing about — just a straight FLAC off the CDN.
-    Raises on any failure so the caller can handle it.
+    Tries LOSSLESS first; falls back to HIGH on 403 (some tracks are restricted
+    at the lossless tier). Raises on any other failure.
     """
-    # Fetch the stream manifest
+    quality_attempts = ["LOSSLESS", "HIGH"]
+    resp = None
     with httpx.Client(timeout=TIMEOUT_MONOCHROME_API) as client:
-        resp = client.get(
-            f"{MONOCHROME_API_URL}/track/",
-            params={"id": track_id, "quality": "LOSSLESS"},
-        )
+        for quality in quality_attempts:
+            resp = client.get(
+                f"{MONOCHROME_API_URL}/track/",
+                params={"id": track_id, "quality": quality},
+            )
+            if resp.status_code != 403:
+                break
+            print(f"Monochrome: {quality} quality returned 403 for track {track_id}, trying next tier...")
     resp.raise_for_status()
     data = resp.json().get("data") or {}
     if not data.get("manifest"):

@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.0.4 (2026-02-19)
+
+### Fixed
+- **Monochrome quality fallback**: Some tracks return 403 at the LOSSLESS tier (Tidal restricts certain catalogue items). Now falls back to HIGH quality automatically rather than failing the download outright
+
 ## v2.0.3 (2026-02-19)
 
 ### Changed
