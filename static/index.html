@@ -16,8 +16,8 @@
             <div class="logo">🎵</div>
             <h1>Music Grabber</h1>
             <div style="margin-left: auto; display: flex; align-items: center; gap: 12px;">
-                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer;" title="When enabled, converts all downloads to FLAC format. When disabled, keeps the original format (usually opus/m4a).">
-                    <span>FLAC</span>
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer;" title="When on, converts downloads to the format selected in Settings. When off, keeps the source format.">
+                    <span id="headerFormatLabel">FLAC</span>
                     <div class="toggle-switch" id="flacToggle">
                         <input type="checkbox" id="convertToFlac" checked>
                         <span class="toggle-slider"></span>
@@ -120,6 +120,10 @@
                         placeholder="Playlist name (e.g., My Mixtape 2026)"
                         style="width: 100%; margin-top: 8px; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); display: none;"
                     >
+                    <label id="usePlaylistsDirRow" style="display: none; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); cursor: pointer; margin-top: 8px;">
+                        <input type="checkbox" id="usePlaylistsDirCheckbox" style="width: 16px; height: 16px; cursor: pointer;">
+                        <span>Save files to Playlists folder</span>
+                    </label>
                 </div>
                 <button
                     id="bulkImportBtn"
@@ -164,10 +168,24 @@
                             <option value="720">Monthly</option>
                         </select>
                     </label>
-                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary);" title="Convert new tracks to FLAC as they are added">
-                        <span>Convert to FLAC</span>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary);" title="Convert new tracks to the selected audio format">
+                        <span id="watchedFormatLabel">Convert to FLAC</span>
                         <div class="toggle-switch" id="watchedFlacToggle">
                             <input type="checkbox" id="watchedConvertToFlac" checked>
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary);" title="Generate and update a .m3u playlist file as tracks are downloaded">
+                        <span>Generate M3U</span>
+                        <div class="toggle-switch" id="watchedM3uToggle">
+                            <input type="checkbox" id="watchedMakeM3u">
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
+                    <label id="watchedPlaylistsDirToggle" style="display: none; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary);" title="Save downloaded tracks to the Playlists folder instead of Singles">
+                        <span>Playlists folder</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="watchedUsePlaylistsDir">
                             <span class="toggle-slider"></span>
                         </div>
                     </label>
@@ -212,11 +230,13 @@
                         </div>
                     </label>
                     <label class="settings-label">
-                        <span>Convert to FLAC by Default</span>
-                        <div class="toggle-switch">
-                            <input type="checkbox" id="settingDefaultFlac" checked>
-                            <span class="toggle-slider"></span>
+                        <span>Audio Format</span>
+                        <div style="display:flex;gap:2px;padding:3px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;">
+                            <button type="button" id="formatBtnFlac" class="format-option active" onclick="setAudioFormat('flac'); saveSettings();">FLAC</button>
+                            <button type="button" id="formatBtnOpus" class="format-option" onclick="setAudioFormat('opus'); saveSettings();">Opus</button>
                         </div>
+                        <input type="checkbox" id="settingDefaultFlac" checked style="display:none;">
+                        <input type="text" id="settingAudioFormat" value="flac" style="display:none;">
                     </label>
                     <label class="settings-label">
                         <span>Organise by Artist<br><span style="font-size: 10px; font-weight: normal; color: var(--text-secondary);">Create artist subfolders</span></span>
@@ -243,6 +263,20 @@
                             <input type="text" id="customSubdirInput" placeholder="Path under /music (e.g. Singles/Rock)" style="width: 320px;">
                         </div>
                         <span style="font-size: 11px; color: var(--text-secondary);">Choose an existing folder, use <code>/music</code> root, or pick <code>Custom path…</code>.</span>
+                        <span id="singlesPathPreview" style="font-size: 11px; color: var(--text-secondary); font-family: monospace; margin-top: 2px;"></span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingPlaylistsSubdir">Playlists Subfolder</label>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <select id="settingPlaylistsSubdir" style="width: 320px; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); font-size: 14px;">
+                                <option value="">(disabled)</option>
+                            </select>
+                        </div>
+                        <div id="customPlaylistsSubdirRow" style="display:none; margin-top: 6px;">
+                            <input type="text" id="customPlaylistsSubdirInput" placeholder="Path under /music (e.g. Playlists)" style="width: 320px;">
+                        </div>
+                        <span style="font-size: 11px; color: var(--text-secondary);">Separate folder for playlist downloads. Leave disabled to keep playlist tracks in Singles. When set, playlist tracks are saved as <code>Artist - Title.ext</code> inside a named subfolder.</span>
+                        <span id="playlistsPathPreview" style="font-size: 11px; color: var(--text-secondary); font-family: monospace; margin-top: 2px;"></span>
                     </div>
                 </div>
             </div>
@@ -322,7 +356,8 @@
                     <div class="settings-row">
                         <label for="settingYoutubeCookies">Browser Cookies</label>
                         <textarea id="settingYoutubeCookies" rows="6" placeholder="Paste cookies.txt content here..."></textarea>
-                        <span class="settings-hint">Export cookies from youtube.com while logged in using a browser extension like "Get cookies.txt LOCALLY". Cookies typically expire within a few hours — re-export when you start getting 403 errors.</span>
+                        <span class="settings-hint">Export cookies from youtube.com while logged in using a browser extension like "Get cookies.txt LOCALLY". Re-export when you start getting 403 errors.</span>
+                        <span id="cookieExpiryHint" style="font-size:11px; font-family:monospace; margin-top:2px; display:none;"></span>
                     </div>
                     <input type="file" id="youtubeCookiesFile" accept=".txt,text/plain" style="display:none">
                     <button type="button" class="test-btn" id="uploadYoutubeCookiesBtn">Upload cookies.txt</button>
@@ -487,6 +522,7 @@
         // =============================================================================
 
         let authRequired = false;
+        let serverConfig = {}; // Populated from /api/config at startup
 
         function getApiKey() {
             return localStorage.getItem('apiKey') || '';
@@ -546,7 +582,7 @@
         }
 
         // =============================================================================
-        // Theme Toggle
+        // Theme Toggle - Day and Night Modes
         // =============================================================================
 
         function getTheme() {
@@ -609,6 +645,33 @@
         const createPlaylistCheckbox = document.getElementById('createPlaylistCheckbox');
         const playlistNameInput = document.getElementById('playlistNameInput');
         const convertToFlacCheckbox = document.getElementById('convertToFlac');
+        let watchedFlacTouched = false;
+
+        // audioFormat tracks which format to use when conversion is on ("flac" or "opus")
+        let audioFormat = 'flac';
+
+        function setAudioFormat(format) {
+            audioFormat = (format === 'opus') ? 'opus' : 'flac';
+            const isFlac = audioFormat === 'flac';
+
+            const btnFlac = document.getElementById('formatBtnFlac');
+            const btnOpus = document.getElementById('formatBtnOpus');
+            if (btnFlac) btnFlac.classList.toggle('active', isFlac);
+            if (btnOpus) btnOpus.classList.toggle('active', !isFlac);
+
+            const label = isFlac ? 'FLAC' : 'Opus';
+            const headerLabel = document.getElementById('headerFormatLabel');
+            if (headerLabel) headerLabel.textContent = label;
+
+            const watchedLabel = document.getElementById('watchedFormatLabel');
+            if (watchedLabel) watchedLabel.textContent = `Convert to ${label}`;
+
+            // Keep hidden input in sync so settings save picks it up
+            const hiddenInput = document.getElementById('settingAudioFormat');
+            if (hiddenInput) hiddenInput.value = audioFormat;
+
+            localStorage.setItem('audioFormat', audioFormat);
+        }
 
         const versionLabel = document.getElementById('versionLabel');
         const PLAYLIST_SERVICES = ["Spotify", "YouTube", "Amazon Music"];
@@ -630,17 +693,21 @@
             .then((response) => response.ok ? response.json() : null)
             .then((config) => {
                 if (config) {
+                    serverConfig = config;
                     // Set version label
                     if (config.version) {
                         versionLabel.textContent = `v${config.version}`;
                     }
-                    // Set FLAC preference from server if not already saved locally
-                    const savedFlacPref = localStorage.getItem('convertToFlac');
-                    if (savedFlacPref === null && typeof config.default_convert_to_flac === 'boolean') {
+                    // Set convert on/off from server if not saved locally
+                    if (localStorage.getItem('convertToFlac') === null && typeof config.default_convert_to_flac === 'boolean') {
                         convertToFlacCheckbox.checked = config.default_convert_to_flac;
                         if (watchedConvertToFlac && !watchedFlacTouched) {
                             watchedConvertToFlac.checked = config.default_convert_to_flac;
                         }
+                    }
+                    // Set audio format picker from server if not saved locally
+                    if (localStorage.getItem('audioFormat') === null && config.audio_format) {
+                        setAudioFormat(config.audio_format);
                     }
                     // Check if auth is required
                     authRequired = config.auth_required === true;
@@ -651,24 +718,34 @@
                     if (config.volume_mounted === false) {
                         showVolumeMountWarning();
                     }
+                    // Show Playlists folder toggle in watched playlist add form if configured
+                    if (config.playlists_subdir) {
+                        const toggle = document.getElementById('watchedPlaylistsDirToggle');
+                        if (toggle) toggle.style.display = 'flex';
+                    }
                 }
             })
             .catch(() => {});
 
-        // Load FLAC preference from localStorage if saved
+        // Restore convert on/off from localStorage
         const savedFlacPref = localStorage.getItem('convertToFlac');
         if (savedFlacPref !== null) {
             convertToFlacCheckbox.checked = savedFlacPref === 'true';
         }
 
+        // Restore audio format picker from localStorage
+        const savedAudioFormat = localStorage.getItem('audioFormat');
+        if (savedAudioFormat) {
+            setAudioFormat(savedAudioFormat);
+        }
+
         if (watchedConvertToFlac) {
-            watchedConvertToFlac.checked = convertToFlacCheckbox.checked;
             watchedConvertToFlac.addEventListener('change', () => {
                 watchedFlacTouched = true;
             });
         }
 
-        // Save FLAC preference when changed
+        // Save convert preference when header toggle is flipped
         convertToFlacCheckbox.addEventListener('change', () => {
             localStorage.setItem('convertToFlac', convertToFlacCheckbox.checked);
             if (watchedConvertToFlac && !watchedFlacTouched) {
@@ -687,7 +764,7 @@
 
         // Source selector — restore saved preference and wire up clicks
         (function initSourceSelector() {
-            const buttons = document.querySelectorAll('.source-option');
+            const buttons = document.querySelectorAll('#sourceSelector .source-option');
             buttons.forEach(btn => {
                 if (btn.dataset.source === currentSource) {
                     btn.classList.add('active');
@@ -705,7 +782,6 @@
         const MAX_QUEUE_SIZE = 100;
         let currentBulkImportId = null;
         let bulkImportPollInterval = null;
-        let watchedFlacTouched = false;
 
         // Preview state
         const previewAudio = document.getElementById('previewAudio');
@@ -1080,6 +1156,7 @@
                      data-title="${escapeHtml(r.title)}"
                      data-tooltip="${r.source !== 'soulseek' ? 'Hover to preview, click to download' : 'Click to download'}">
                     ${r.source !== 'soulseek' ? '<div class="preview-indicator">▶</div>' : ''}
+                    ${r.source !== 'soulseek' ? `<button class="preview-btn" data-video-id="${r.video_id}" data-index="${index}" title="Preview">Preview &#9654;</button>` : ''}
                     ${r.thumbnail ? `<img class="result-thumb" src="${r.thumbnail}" alt="" loading="lazy">` : '<div class="result-thumb"></div>'}
                     <div class="result-info">
                         <div class="result-title">${escapeHtml(r.title)}</div>
@@ -1117,6 +1194,20 @@
                 item.addEventListener('mouseleave', () => {
                     stopPreview();
                 });
+
+                // Mobile preview button — tap to preview without triggering download
+                const previewBtn = item.querySelector('.preview-btn');
+                if (previewBtn) {
+                    previewBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (downloadingIds.has(videoId)) return;
+                        if (currentPreviewId === videoId) {
+                            stopPreview();
+                        } else {
+                            startPreview(videoId, item, result);
+                        }
+                    });
+                }
             });
         }
 
@@ -1603,6 +1694,10 @@
                 if (createPlaylist) {
                     requestBody.create_playlist = true;
                     requestBody.playlist_name = playlistName;
+                    const usePlaylistsDirCheckbox = document.getElementById('usePlaylistsDirCheckbox');
+                    if (usePlaylistsDirCheckbox && usePlaylistsDirCheckbox.checked) {
+                        requestBody.use_playlists_dir = true;
+                    }
                 }
 
                 // Start the async import
@@ -1625,6 +1720,10 @@
                 playlistNameInput.value = '';
                 createPlaylistCheckbox.checked = false;
                 playlistNameInput.style.display = 'none';
+                const usePlaylistsDirCheckboxCleared = document.getElementById('usePlaylistsDirCheckbox');
+                if (usePlaylistsDirCheckboxCleared) usePlaylistsDirCheckboxCleared.checked = false;
+                const usePlaylistsDirRowCleared = document.getElementById('usePlaylistsDirRow');
+                if (usePlaylistsDirRowCleared) usePlaylistsDirRowCleared.style.display = 'none';
                 updateLineCounter();
 
                 // Show initial progress
@@ -1955,15 +2054,14 @@
                     }
 
                     // Show toast with result (include warning if present)
-                    let toastMsg = `Loaded ${data.tracks.length} tracks from "${data.playlist_name}"`;
                     if (data.warning) {
-                        toastMsg += ` (Warning: ${data.warning})`;
-                        // Also show in the error area for visibility
-                        spotifyError.textContent = data.warning;
+                        spotifyError.textContent = `Warning: ${data.warning}`;
                         spotifyError.style.color = 'var(--warning, #f59e0b)';
                         spotifyError.style.display = 'block';
+                        showToast(`Loaded ${data.tracks.length} tracks (truncated) — ${data.warning}`, true);
+                    } else {
+                        showToast(`Loaded ${data.tracks.length} tracks from "${data.playlist_name}"`);
                     }
-                    showToast(toastMsg);
 
                     // Clear the URL input
                     spotifyUrlInput.value = '';
@@ -1987,9 +2085,13 @@
             }
         });
 
-        // Show/hide playlist name input when checkbox is toggled
+        // Show/hide playlist name input (and Playlists folder checkbox) when checkbox is toggled
         createPlaylistCheckbox.addEventListener('change', () => {
             playlistNameInput.style.display = createPlaylistCheckbox.checked ? 'block' : 'none';
+            const playlistsDirRow = document.getElementById('usePlaylistsDirRow');
+            if (playlistsDirRow) {
+                playlistsDirRow.style.display = (createPlaylistCheckbox.checked && serverConfig.playlists_subdir) ? 'flex' : 'none';
+            }
             if (createPlaylistCheckbox.checked) {
                 playlistNameInput.focus();
             }
@@ -2091,12 +2193,27 @@
                         </div>
                         <div style="display: flex; flex-direction: column; gap: 6px;">
                             <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 11px; color: var(--text-secondary);">
-                                <span>FLAC</span>
-                                <label class="toggle-switch" title="Convert new tracks to FLAC">
+                                <span>Convert</span>
+                                <label class="toggle-switch" title="Convert new tracks to the selected audio format">
                                     <input type="checkbox" ${p.convert_to_flac ? 'checked' : ''} onchange="updateWatchedPlaylistFlac('${p.id}', this.checked)">
                                     <span class="toggle-slider"></span>
                                 </label>
                             </div>
+                            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 11px; color: var(--text-secondary);">
+                                <span>M3U</span>
+                                <label class="toggle-switch" title="Generate and update a .m3u playlist file as tracks are downloaded">
+                                    <input type="checkbox" ${p.make_m3u ? 'checked' : ''} onchange="updateWatchedPlaylistM3u('${p.id}', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                            ${serverConfig.playlists_subdir ? `
+                            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 11px; color: var(--text-secondary);">
+                                <span>Playlists folder</span>
+                                <label class="toggle-switch" title="Save downloaded tracks to the Playlists folder instead of Singles">
+                                    <input type="checkbox" ${p.use_playlists_dir ? 'checked' : ''} onchange="updateWatchedPlaylistUsePlaylists('${p.id}', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>` : ''}
                             <button onclick="refreshWatchedPlaylist('${p.id}')" style="padding: 6px 12px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;" title="Check for new tracks now">
                                 Refresh
                             </button>
@@ -2138,7 +2255,9 @@
                     body: JSON.stringify({
                         url: url,
                         refresh_interval_hours: parseInt(watchedIntervalSelect.value),
-                        convert_to_flac: watchedConvertToFlac ? watchedConvertToFlac.checked : convertToFlacCheckbox.checked
+                        convert_to_flac: watchedConvertToFlac ? watchedConvertToFlac.checked : convertToFlacCheckbox.checked,
+                        make_m3u: document.getElementById('watchedMakeM3u') ? document.getElementById('watchedMakeM3u').checked : false,
+                        use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false
                     })
                 });
 
@@ -2235,9 +2354,43 @@
 
                 if (!response.ok) throw new Error('Update failed');
 
-                showToast(convertToFlac ? 'Convert to FLAC enabled' : 'Convert to FLAC disabled');
+                showToast(convertToFlac ? 'Format: FLAC' : 'Format: Opus');
             } catch (error) {
-                showToast('Failed to update FLAC setting', true);
+                showToast('Failed to update format setting', true);
+                loadWatchedPlaylists();
+            }
+        }
+
+        async function updateWatchedPlaylistM3u(playlistId, makeM3u) {
+            try {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ make_m3u: makeM3u })
+                });
+
+                if (!response.ok) throw new Error('Update failed');
+
+                showToast(makeM3u ? 'M3U generation enabled' : 'M3U generation disabled');
+            } catch (error) {
+                showToast('Failed to update M3U setting', true);
+                loadWatchedPlaylists();
+            }
+        }
+
+        async function updateWatchedPlaylistUsePlaylists(playlistId, usePlaylists) {
+            try {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ use_playlists_dir: usePlaylists })
+                });
+
+                if (!response.ok) throw new Error('Update failed');
+
+                showToast(usePlaylists ? 'Downloads going to Playlists folder' : 'Downloads going to Singles folder');
+            } catch (error) {
+                showToast('Failed to update Playlists folder setting', true);
                 loadWatchedPlaylists();
             }
         }
@@ -2503,8 +2656,10 @@
             'enable_musicbrainz': 'settingEnableMusicbrainz',
             'enable_lyrics': 'settingEnableLyrics',
             'default_convert_to_flac': 'settingDefaultFlac',
+            'audio_format': 'settingAudioFormat',
             'min_audio_bitrate': 'settingMinBitrate',
             'singles_subdir': 'settingSinglesSubdir',
+            'playlists_subdir': 'settingPlaylistsSubdir',
             'organise_by_artist': 'settingOrganiseByArtist',
             'slskd_url': 'settingSlskdUrl',
             'slskd_user': 'settingSlskdUser',
@@ -2578,6 +2733,10 @@
                         } else {
                             element.value = value || '';
                         }
+                        // Sync format picker buttons when audio_format loads
+                        if (key === 'audio_format') {
+                            setAudioFormat(value);
+                        }
                     }
 
                     // Mark fields locked by env vars
@@ -2595,12 +2754,21 @@
 
                 // Populate singles subfolder dropdown from actual directories
                 await _populateSubdirDropdown(settings['singles_subdir'] || 'Singles');
+                // Populate playlists subfolder dropdown
+                await _populatePlaylistsSubdirDropdown(settings['playlists_subdir'] || '');
+
+                // Live path preview: update whenever organise-by-artist toggle changes
+                const organiseToggle = document.getElementById('settingOrganiseByArtist');
+                if (organiseToggle) organiseToggle.onchange = _updatePathPreviews;
 
                 // Update browser API key status
                 updateBrowserApiKeyStatus();
 
                 // Inject clear buttons into settings rows
                 _injectSettingsClearButtons();
+
+                // Show cookie expiry status if cookies are configured
+                _updateCookieExpiryHint();
             } catch (error) {
                 console.error('Failed to load settings:', error);
                 showToast('Failed to load settings', true);
@@ -2697,16 +2865,190 @@
                 if (select.value === SUBDIR_CUSTOM_VALUE) {
                     customRow.style.display = 'block';
                     customInput.focus();
+                    _updatePathPreviews();
                     return;
                 }
                 customRow.style.display = 'none';
                 customInput.value = '';
+                _updatePathPreviews();
             };
+            customInput.oninput = _updatePathPreviews;
+            _updatePathPreviews();
+        }
+
+        async function _populatePlaylistsSubdirDropdown(currentValue) {
+            const select = document.getElementById('settingPlaylistsSubdir');
+            const customRow = document.getElementById('customPlaylistsSubdirRow');
+            const customInput = document.getElementById('customPlaylistsSubdirInput');
+            if (!select || !customRow || !customInput) return;
+
+            const currentRaw = String(currentValue || '').trim();
+            const current = currentRaw === '.' ? '.' : (_normaliseSubdirPath(currentRaw) || '');
+
+            let dirs = [];
+            try {
+                const resp = await apiFetch('/api/music-dirs?recursive=true&max_depth=2');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    dirs = Array.isArray(data.directories) ? data.directories : [];
+                }
+            } catch (e) {
+                console.warn('Could not fetch music directories:', e);
+            }
+
+            const unique = new Set();
+            for (const dir of dirs) {
+                const normalised = _normaliseSubdirPath(dir);
+                if (normalised && normalised !== '.') {
+                    unique.add(normalised);
+                }
+            }
+
+            // Always include "Playlists" as a sensible default option
+            unique.add('Playlists');
+            if (current && current !== '.') {
+                unique.add(current);
+            }
+
+            const sortedDirs = Array.from(unique).sort((a, b) =>
+                a.localeCompare(b, undefined, { sensitivity: 'base' })
+            );
+
+            select.innerHTML = '';
+
+            // First option: disabled (feature off)
+            const disabledOpt = document.createElement('option');
+            disabledOpt.value = '';
+            disabledOpt.textContent = '(disabled)';
+            select.appendChild(disabledOpt);
+
+            // Second option: /music/Playlists as the obvious default
+            const playlistsOpt = document.createElement('option');
+            playlistsOpt.value = 'Playlists';
+            playlistsOpt.textContent = '/music/Playlists';
+            select.appendChild(playlistsOpt);
+
+            const rootOpt = document.createElement('option');
+            rootOpt.value = '.';
+            rootOpt.textContent = '/music (root)';
+            select.appendChild(rootOpt);
+
+            for (const relPath of sortedDirs.filter(d => d !== 'Playlists')) {
+                const opt = document.createElement('option');
+                opt.value = relPath;
+                opt.textContent = `/music/${relPath}`;
+                select.appendChild(opt);
+            }
+
+            const customOpt = document.createElement('option');
+            customOpt.value = SUBDIR_CUSTOM_VALUE;
+            customOpt.textContent = 'Custom path\u2026';
+            select.appendChild(customOpt);
+
+            const currentIsKnown = !current || current === '.' || sortedDirs.includes(current);
+            customInput.disabled = !!select.disabled;
+            if (currentIsKnown) {
+                select.value = current;
+                customRow.style.display = 'none';
+                customInput.value = '';
+            } else {
+                select.value = SUBDIR_CUSTOM_VALUE;
+                customRow.style.display = 'block';
+                customInput.value = current;
+            }
+
+            select.onchange = () => {
+                if (select.value === SUBDIR_CUSTOM_VALUE) {
+                    customRow.style.display = 'block';
+                    customInput.focus();
+                    _updatePathPreviews();
+                    return;
+                }
+                customRow.style.display = 'none';
+                customInput.value = '';
+                _updatePathPreviews();
+            };
+            customInput.oninput = _updatePathPreviews;
+            _updatePathPreviews();
+        }
+
+        async function _updateCookieExpiryHint() {
+            const hint = document.getElementById('cookieExpiryHint');
+            if (!hint) return;
+            try {
+                const resp = await apiFetch('/api/settings/youtube-cookies/status');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                if (!data.has_setting || !data.auth_cookie_expiry) {
+                    hint.style.display = 'none';
+                    return;
+                }
+                const expiryMs = data.auth_cookie_expiry * 1000;
+                const now = Date.now();
+                const daysLeft = Math.floor((expiryMs - now) / 86400000);
+                const expiryDate = new Date(expiryMs).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+
+                hint.style.display = 'block';
+                if (now > expiryMs) {
+                    hint.style.color = 'var(--error-color, #e53e3e)';
+                    hint.textContent = `Cookies expired on ${expiryDate} — re-export them`;
+                } else if (daysLeft <= 7) {
+                    hint.style.color = 'var(--warning-color, #d97706)';
+                    hint.textContent = `Cookies expire in ${daysLeft} day${daysLeft !== 1 ? 's' : ''} (${expiryDate}) — consider re-exporting soon`;
+                } else {
+                    hint.style.color = 'var(--text-secondary)';
+                    hint.textContent = `Cookies valid until ${expiryDate}`;
+                }
+            } catch (e) {
+                // Status fetch failing is not the end of the world
+            }
+        }
+
+        function _updatePathPreviews() {
+            const singlesEl = document.getElementById('singlesPathPreview');
+            const playlistsEl = document.getElementById('playlistsPathPreview');
+            if (!singlesEl && !playlistsEl) return;
+
+            const singlesSelect = document.getElementById('settingSinglesSubdir');
+            const singlesCustom = document.getElementById('customSubdirInput');
+            const playlistsSelect = document.getElementById('settingPlaylistsSubdir');
+            const playlistsCustom = document.getElementById('customPlaylistsSubdirInput');
+            const organiseToggle = document.getElementById('settingOrganiseByArtist');
+
+            const singlesVal = singlesSelect && singlesSelect.value === SUBDIR_CUSTOM_VALUE
+                ? (singlesCustom ? singlesCustom.value.trim() : '')
+                : (singlesSelect ? singlesSelect.value : '');
+            const playlistsVal = playlistsSelect && playlistsSelect.value === SUBDIR_CUSTOM_VALUE
+                ? (playlistsCustom ? playlistsCustom.value.trim() : '')
+                : (playlistsSelect ? playlistsSelect.value : '');
+            const organise = organiseToggle ? organiseToggle.checked : true;
+
+            if (singlesEl) {
+                let p = '/music';
+                if (singlesVal && singlesVal !== '.') p += '/' + singlesVal;
+                if (organise) {
+                    p += '/Artist Name/Track Title.flac';
+                } else {
+                    p += '/Artist Name - Track Title.flac';
+                }
+                singlesEl.textContent = 'Files saved to: ' + p;
+            }
+
+            if (playlistsEl) {
+                if (!playlistsVal || playlistsVal === '') {
+                    playlistsEl.textContent = '(playlist tracks go to Singles folder)';
+                } else {
+                    let p = '/music';
+                    if (playlistsVal !== '.') p += '/' + playlistsVal;
+                    p += '/Playlist Name/Artist - Title.flac';
+                    playlistsEl.textContent = 'Files saved to: ' + p;
+                }
+            }
         }
 
         function _injectSettingsClearButtons() {
             // Skip these — they already have dedicated clear mechanisms
-            const skipIds = new Set(['settingYoutubeCookies', 'settingSmtpPort', 'settingMinBitrate', 'customSubdirInput']);
+            const skipIds = new Set(['settingYoutubeCookies', 'settingSmtpPort', 'settingMinBitrate', 'customSubdirInput', 'customPlaylistsSubdirInput']);
 
             for (const row of document.querySelectorAll('.settings-row')) {
                 const input = row.querySelector('input[type="text"], input[type="password"], input[type="number"]');
@@ -2809,6 +3151,17 @@
                                 value = _normaliseSubdirPath(value) || 'Singles';
                             }
                         }
+                        // Playlists subfolder: same pattern, empty string = disabled
+                        if (key === 'playlists_subdir') {
+                            if (value === '' || value === '.') {
+                                // keep as-is (empty = disabled, '.' = root)
+                            } else if (value === SUBDIR_CUSTOM_VALUE) {
+                                const customInput = document.getElementById('customPlaylistsSubdirInput');
+                                value = _normaliseSubdirPath(customInput?.value || '') || 'Playlists';
+                            } else {
+                                value = _normaliseSubdirPath(value);
+                            }
+                        }
                         // For sensitive fields with hidden values (null), only send if user entered something
                         if (sensitiveFields.includes(key)) {
                             if (originalValues[key] === null) {
@@ -2875,13 +3228,23 @@
                         // Update tracked original value
                         originalValues[key] = value;
 
-                        // Sync FLAC default setting with header toggle
+                        // Sync header toggle when default_convert_to_flac is saved
                         if (key === 'default_convert_to_flac') {
                             convertToFlacCheckbox.checked = value;
                             localStorage.setItem('convertToFlac', value);
                             if (watchedConvertToFlac && !watchedFlacTouched) {
                                 watchedConvertToFlac.checked = value;
                             }
+                        }
+                        // Sync format picker when audio_format is saved
+                        if (key === 'audio_format') {
+                            setAudioFormat(value);
+                        }
+                        // Sync playlists_subdir in serverConfig so watched/bulk-import UI updates
+                        if (key === 'playlists_subdir') {
+                            serverConfig.playlists_subdir = value;
+                            const watchedToggle = document.getElementById('watchedPlaylistsDirToggle');
+                            if (watchedToggle) watchedToggle.style.display = value ? 'flex' : 'none';
                         }
                     }
                 }
@@ -3007,6 +3370,7 @@
                 showToast('Cookies loaded, saving...');
                 await saveSettings();
                 showToast('Cookies updated');
+                _updateCookieExpiryHint();
             } catch (error) {
                 console.error('Failed to read cookies file:', error);
                 showToast('Failed to read cookies file', true);
@@ -3025,19 +3389,11 @@
             youtubeCookiesTextarea.dataset.forceClear = 'true';
             showToast('Clearing cookies...');
             await saveSettings();
+            _updateCookieExpiryHint();
         });
 
-        // Sync FLAC toggles: Settings checkbox <-> Header toggle
-        const settingDefaultFlac = document.getElementById('settingDefaultFlac');
-        settingDefaultFlac.addEventListener('change', () => {
-            convertToFlacCheckbox.checked = settingDefaultFlac.checked;
-            localStorage.setItem('convertToFlac', settingDefaultFlac.checked);
-        });
-
-        // Also sync header toggle -> settings checkbox (if Settings tab is visible)
-        convertToFlacCheckbox.addEventListener('change', () => {
-            settingDefaultFlac.checked = convertToFlacCheckbox.checked;
-        });
+        // Audio format segmented buttons (FLAC/Opus) and header toggle are wired
+        // through setAudioFormat() — no direct sync needed here.
     </script>
 </body>
 </html>

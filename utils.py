@@ -84,6 +84,10 @@ def hash_track(artist: str, title: str) -> str:
 
 def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
     """Try to extract artist and title from YouTube video title"""
+    # Guard against None — some YouTube videos have no channel/uploader in their metadata
+    full_title = full_title or "Unknown Title"
+    channel = channel or "Unknown Artist"
+
     # Common patterns: "Artist -- Title", "Artist - Title", "Artist — Title", "Artist | Title"
     # Require spaces around hyphens to avoid splitting compound words like "T-4"
     patterns = [
@@ -117,33 +121,38 @@ def check_duplicate(artist: str, title: str) -> Optional[Path]:
 
     Checks the current download directory (artist subfolder or flat) and also
     peeks at the other layout so switching modes doesn't silently re-download.
+    Handles both plain 'Title' stems and 'Artist - Title' stems (flat mode format).
     """
     try:
         sanitized_title = sanitize_filename(title)
+        sanitized_artist = sanitize_filename(artist or "")
+        artist_title_stem = f"{sanitized_artist} - {sanitized_title}" if sanitized_artist else sanitized_title
 
-        # Check both possible locations so mode switches don't cause re-downloads
-        dirs_to_check = [
-            get_download_dir(artist),                           # current mode
-            get_singles_dir() / sanitize_filename(artist),      # artist subfolder
-            get_singles_dir(),                                  # flat
+        # Check both possible locations so mode switches don't cause re-downloads.
+        # Each entry is (directory, stems_to_check).
+        checks = [
+            (get_download_dir(artist), [sanitized_title, artist_title_stem]),  # current mode
+            (get_singles_dir() / sanitize_filename(artist), [sanitized_title, artist_title_stem]),  # artist subfolder
+            (get_singles_dir(), [sanitized_title, artist_title_stem]),          # flat
         ]
         seen = set()
-        for d in dirs_to_check:
+        for d, stems in checks:
             d_str = str(d)
             if d_str in seen or not d.exists():
                 continue
             seen.add(d_str)
 
-            for ext in AUDIO_EXTENSIONS:
-                expected_file = d / f"{sanitized_title}{ext}"
-                if expected_file.exists():
-                    return expected_file
+            for stem in stems:
+                for ext in AUDIO_EXTENSIONS:
+                    expected_file = d / f"{stem}{ext}"
+                    if expected_file.exists():
+                        return expected_file
 
             # Case-insensitive fallback
-            title_lower = sanitized_title.lower()
+            stem_lowers = {s.lower() for s in stems}
             for ext in AUDIO_EXTENSIONS:
                 for file in d.glob(f"*{ext}"):
-                    if file.stem.lower() == title_lower:
+                    if file.stem.lower() in stem_lowers:
                         return file
 
         return None

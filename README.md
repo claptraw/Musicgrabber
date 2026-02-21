@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v2.0.4**
+**v2.0.5** (2026-02-21)
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless) -- tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -23,18 +23,18 @@ and the rest of them:
 - **Dark/light theme** -- toggle between themes with the moon/sun button; preference saved per browser
 - **Settings tab** -- configure all integrations via UI (no docker-compose editing required)
 - **Optional API authentication** -- protect your instance with an API key
-- **Hover to preview** -- on desktop, hover over a result for 2 seconds to hear a preview (works for YouTube, SoundCloud, and Monochrome)
+- **Preview** -- hover over a result for 2 seconds on desktop, or tap the `Preview ▶` button on mobile (works for YouTube, SoundCloud, and Monochrome)
 - **Multi-source search** -- YouTube, SoundCloud, and Monochrome (Tidal lossless) with parallel searching and quality-based ranking
 - **Soulseek integration** -- optional slskd support for higher quality sources (FLAC from P2P) *(in progress -- needs testing)*
 - **Playlist support** -- download entire playlists with automatic M3U generation
-- **Watched playlists** -- monitor Spotify/YouTube playlists and auto-download new tracks; searches all sources and grabs the best quality available
+- **Watched playlists** -- monitor Spotify/YouTube playlists and auto-download new tracks; searches all sources and grabs the best quality available. Optional M3U generation keeps a playlist file in sync as new tracks arrive
 - **Bulk import** -- paste or upload a text file of songs to auto-search and queue; searches YouTube, SoundCloud, and Monochrome in parallel, picks the best result
 - **Best quality FLAC** -- extracts highest available audio quality
 - **Minimum bitrate enforcement** -- optionally reject downloads below a configurable bitrate threshold
 - **Audio quality display** -- completed downloads show codec and bitrate in the queue details, with honest reporting for lossy-to-FLAC conversions
 - **Enhanced metadata** -- AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source-embedded/guessed tags
 - **Synced lyrics** -- automatic lyrics fetching from LRClib, saved as `.lrc` files
-- **Auto-organise** -- creates `Singles/Artist/Title.flac` structure (or flat `Singles/Title.flac` when "Organise by Artist" is off)
+- **Auto-organise** -- creates `Singles/Artist/Title.flac` structure (or flat `Singles/Artist - Title.flac` when "Organise by Artist" is off)
 - **Duplicate detection** -- skips already-downloaded tracks
 - **Job queue** -- track download progress, retry failed jobs, re-download or delete files from the queue, and see metadata provenance (`Metadata:` shows AcoustID fingerprint, MusicBrainz text match, or source guessed)
 - **Statistics dashboard** -- download counts, success rate, daily chart, top artists, search analytics
@@ -351,7 +351,8 @@ Automatically monitor Spotify or YouTube playlists for new tracks. When new song
 1. Add a playlist URL in the "Watched" tab
 2. MusicGrabber fetches the current tracklist and stores hashes of each track
 3. A built-in scheduler checks playlists periodically (default: daily)
-4. New tracks are queued for download via YouTube search
+4. New tracks are queued for download, searching all sources for the best quality available
+5. If "Generate M3U" is enabled, a `.m3u` file is created and updated on every refresh as new tracks are downloaded
 
 **Configuration:**
 
@@ -427,15 +428,16 @@ Downloads are organised as:
 ```
 /music/
 └── Singles/
-    ├── Artist Name/          # When "Organise by Artist" is on (default)
+    ├── Artist Name/              # When "Organise by Artist" is on (default)
     │   └── Track Title.flac
-    ├── Track Title.flac      # When "Organise by Artist" is off
+    ├── Artist Name - Track Title.flac  # When "Organise by Artist" is off
     └── Playlist Name.m3u
 ```
 
 - By default, tracks go into `Singles/Artist/` directories
-- Disable "Organise by Artist" in Settings to put all tracks directly in `Singles/`
+- Disable "Organise by Artist" in Settings to put all tracks directly in `Singles/` with `Artist - Title` filenames
 - Playlist downloads generate `.m3u` files with relative paths
+- Watched playlists with M3U enabled keep their `.m3u` file updated on every refresh cycle
 - Artist and title are extracted from source metadata (Monochrome provides accurate Tidal metadata; YouTube/SoundCloud are parsed from titles)
 - Common patterns like "Artist - Title" are parsed automatically
 - YouTube annotations (Official Audio, Lyrics, etc.) are cleaned from titles
@@ -580,6 +582,17 @@ docker compose up -d
     - PGID=1000
   ```
 - Find your UID/GID with: `id $USER`
+- Double-check the values are correct -- a wrong `PUID`/`PGID` can also break Spotify playlist imports (Chromium won't launch if it can't write to its temp directories)
+
+**Spotify playlists over 100 tracks not importing fully?**
+- Large playlists require the headless browser fallback, which needs extra shared memory:
+  ```yaml
+  shm_size: '2gb'
+  ```
+  Add this to the `music-grabber` service block in `docker-compose.yml`
+- If you see a truncation warning in the UI, the headless browser crashed -- the error message should tell you why
+- On ARM (NAS, Raspberry Pi) or low-RAM hosts, Chromium can silently crash even with `shm_size` set; in that case the embed result (up to ~100 tracks) is returned as a fallback
+- Wrong `PUID`/`PGID` values can also prevent Chromium from launching -- check those first
 
 **Downloads failing with 403 errors?**
 - YouTube's bot detection may be blocking requests
@@ -608,11 +621,12 @@ docker compose up -d
 - Check the results summary for failed searches
 
 **Metadata quality issues?**
-- Ensure `ENABLE_MUSICBRAINZ=true` in environment variables
-- AcoustID fingerprinting identifies most well-known tracks automatically
+- Ensure `ENABLE_MUSICBRAINZ=true` in environment variables (or enable it in the Settings tab)
+- AcoustID fingerprinting identifies most well-known tracks automatically; MusicBrainz text search is the fallback
+- Both are confidence-gated -- low-confidence matches are rejected rather than applied, so no metadata is better than wrong metadata
 - Very short clips (under ~5 seconds) may not fingerprint reliably
-- Obscure or newly released tracks may not be in AcoustID or MusicBrainz yet
-- Falls back to text-based MusicBrainz search, then to cleaned YouTube metadata
+- Obscure or newly released tracks may not be in AcoustID or MusicBrainz yet -- metadata will come from YouTube/SoundCloud channel info instead
+- Monochrome (Tidal) downloads always use Tidal's own metadata for artist/title/album; MusicBrainz is only consulted for the release year
 
 ## Contributors
 

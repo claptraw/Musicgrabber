@@ -276,6 +276,22 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+        # Migration: add make_m3u to watched_playlists
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN make_m3u INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
+        # Migration: add use_playlists_dir to watched_playlists and bulk_imports
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN use_playlists_dir INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_imports ADD COLUMN use_playlists_dir INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
         conn.commit()
 
 
@@ -314,6 +330,10 @@ def _stale_job_monitor():
         try:
             cleanup_stale_jobs()
             cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
+            # While we're here, evict any expired YouTube cookies so they don't
+            # silently rot in settings causing mysterious 403s
+            from youtube import clear_expired_cookies
+            clear_expired_cookies()
         except Exception as e:
             print(f"Stale job monitor error: {e}")
 

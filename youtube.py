@@ -62,6 +62,65 @@ def _cookie_lines_for_domain_check(cookies_text: str) -> list[str]:
     return lines
 
 
+# Auth cookies are the ones that actually matter for YouTube login. Session/state
+# cookies (ST-*, CONSISTENCY, YSC, etc.) are ephemeral noise and don't gate access.
+_AUTH_COOKIE_NAMES = {
+    "SID", "HSID", "SSID", "APISID", "SAPISID",
+    "__Secure-1PSID", "__Secure-3PSID",
+    "__Secure-1PAPISID", "__Secure-3PAPISID",
+    "__Secure-1PSIDTS", "__Secure-3PSIDTS",
+    "__Secure-1PSIDCC", "__Secure-3PSIDCC",
+    "LOGIN_INFO",
+}
+
+
+def get_cookies_expiry(cookies_text: str) -> int | None:
+    """Return the soonest expiry Unix timestamp among auth cookies, or None if
+    no expiry info is found (session cookies with expiry=0 are ignored)."""
+    soonest = None
+    for raw_line in cookies_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Strip #HttpOnly_ prefix so the tab-split works normally
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        name = parts[5]
+        if name not in _AUTH_COOKIE_NAMES:
+            continue
+        try:
+            expiry = int(parts[4])
+        except ValueError:
+            continue
+        if expiry <= 0:
+            continue  # Session cookie — no fixed expiry
+        if soonest is None or expiry < soonest:
+            soonest = expiry
+    return soonest
+
+
+def clear_expired_cookies() -> bool:
+    """Delete cookies from settings if all auth cookies have expired.
+    Returns True if cookies were cleared, False otherwise."""
+    from settings import get_setting, set_setting
+    cookies_text = get_setting("youtube_cookies", "")
+    if not cookies_text.strip():
+        return False
+    expiry = get_cookies_expiry(cookies_text)
+    if expiry is None:
+        return False
+    if time.time() < expiry:
+        return False
+    # Every auth cookie has expired — bin them
+    print("YouTube cookies have expired — clearing from settings")
+    set_setting("youtube_cookies", "")
+    _sync_cookies_file()
+    return True
+
+
 def _sync_cookies_file():
     """Write YouTube cookies from settings to the cookies file on disk.
     Called when settings are saved and at startup."""

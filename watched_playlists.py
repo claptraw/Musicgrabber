@@ -21,6 +21,7 @@ from db import db_conn
 from bulk_import import start_bulk_import_for_tracks
 from models import SpotifyPlaylistRequest
 from amazon import fetch_amazon_playlist
+from downloads import rebuild_watched_playlist_m3u
 from spotify import fetch_spotify_playlist_via_browser
 from utils import extract_artist_title, hash_track, spawn_daemon_thread
 from youtube import _ytdlp_base_args
@@ -43,8 +44,8 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if spotify_album:
         return "spotify", spotify_album.group(1)
 
-    # YouTube playlist
-    youtube_playlist = re.match(r'https?://(www\.)?(youtube\.com|youtu\.be)/playlist\?list=([a-zA-Z0-9_-]+)', url)
+    # YouTube / YouTube Music playlist
+    youtube_playlist = re.match(r'https?://(www\.|music\.)?(youtube\.com|youtu\.be)/playlist\?list=([a-zA-Z0-9_-]+)', url)
     if youtube_playlist:
         return "youtube", youtube_playlist.group(3)
 
@@ -55,7 +56,7 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
 
     raise HTTPException(
         status_code=400,
-        detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube playlists, Amazon Music playlists."
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube/YouTube Music playlists, Amazon Music playlists."
     )
 
 
@@ -132,21 +133,29 @@ def _fetch_spotify_playlist_embed(url: str) -> dict:
     # If near the embed limit, try headless browser for full list
     if len(tracks) >= 95:
         print(f"Spotify embed returned {len(tracks)} tracks (near limit), trying headless browser...")
+        browser_error = None
         try:
             browser_result = fetch_spotify_playlist_via_browser(spotify_id, spotify_type)
             if browser_result["count"] > len(tracks):
                 print(f"Headless browser returned {browser_result['count']} tracks (embed had {len(tracks)})")
                 return browser_result
         except HTTPException as e:
+            browser_error = e.detail
             print(f"Headless browser failed ({e.detail}), using embed results")
         except Exception as e:
+            browser_error = str(e)
             print(f"Headless browser error: {e}, using embed results")
 
+        warning = (
+            f"Playlist truncated at {len(tracks)} tracks — headless browser failed"
+            + (f": {browser_error}" if browser_error else "")
+            + ". Check that shm_size: '2gb' is set in docker-compose.yml."
+        )
         return {
             "tracks": tracks,
             "playlist_name": playlist_name,
             "count": len(tracks),
-            "warning": f"Playlist may be truncated at {len(tracks)} tracks. Full extraction failed."
+            "warning": warning,
         }
 
     return {
@@ -305,12 +314,14 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                 """, (playlist_id, track_hash, artist, title))
 
             tracks_to_import = [(artist, title) for artist, title, _ in new_tracks + missing_tracks]
+            use_playlists_dir = bool(playlist.get("use_playlists_dir", False))
             import_id = None
             if tracks_to_import:
                 import_id = start_bulk_import_for_tracks(
                     tracks_to_import,
                     bool(playlist["convert_to_flac"]),
-                    watch_playlist_id=playlist_id
+                    watch_playlist_id=playlist_id,
+                    use_playlists_dir=use_playlists_dir,
                 )
 
             # Update playlist metadata
@@ -321,6 +332,11 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             """, (len(tracks), playlist_id))
 
             conn.commit()
+
+            # Rebuild M3U from all tracks downloaded so far (new ones are still queued,
+            # so they'll appear next refresh once marked downloaded)
+            if playlist.get("make_m3u"):
+                rebuild_watched_playlist_m3u(playlist_id, playlist["name"], use_playlists_dir=use_playlists_dir)
 
             queued_count = len(tracks_to_import)
             if queued_count:

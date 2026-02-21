@@ -32,7 +32,7 @@ from constants import (
 )
 from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs, cleanup_old_search_logs
 from settings import (
-    get_setting, get_setting_bool, set_setting, get_singles_dir,
+    get_setting, get_setting_bool, set_setting, get_singles_dir, get_playlists_dir,
     SETTINGS_SCHEMA, SENSITIVE_SETTINGS, _get_typed_setting, _is_env_override,
 )
 from models import (
@@ -45,11 +45,13 @@ from middleware import AuthMiddleware
 from youtube import (
     _has_valid_cookie_entries, _cookie_lines_for_domain_check, _sync_cookies_file,
     _ytdlp_base_args, _is_ytdlp_403, parse_duration,
+    get_cookies_expiry, clear_expired_cookies,
 )
 from search import search_source, search_all, get_available_sources, SOURCE_REGISTRY
 from slskd import slskd_enabled, search_slskd
 from downloads import (
     process_download, process_playlist_download, process_slskd_download,
+    rebuild_watched_playlist_m3u,
 )
 from bulk_import import clean_bulk_import_line, start_bulk_import_for_tracks, process_bulk_import_worker
 from amazon import fetch_amazon_playlist
@@ -114,9 +116,36 @@ def _is_volume_mounted() -> bool:
 def get_config():
     """Expose server configuration and version for the UI"""
     api_key = get_setting("api_key", "")
+    organise_by_artist = get_setting_bool("organise_by_artist", True)
+    singles_dir = get_singles_dir()
+    playlists_dir = get_playlists_dir()
+
+    # Build human-readable example paths relative to the music root so the
+    # frontend can show the user exactly where their files will land.
+    try:
+        singles_example = str(singles_dir.relative_to(MUSIC_DIR))
+    except ValueError:
+        singles_example = str(singles_dir)
+    if organise_by_artist:
+        singles_example += "/Artist Name"
+    singles_example += "/Track Title.flac"
+
+    playlists_example = None
+    if playlists_dir:
+        try:
+            pl_rel = str(playlists_dir.relative_to(MUSIC_DIR))
+        except ValueError:
+            pl_rel = str(playlists_dir)
+        playlists_example = f"{pl_rel}/Playlist Name/Artist - Title.flac"
+
     return {
         "version": VERSION,
         "default_convert_to_flac": get_setting_bool("default_convert_to_flac", True),
+        "audio_format": get_setting("audio_format", "flac"),
+        "playlists_subdir": get_setting("playlists_subdir", ""),
+        "organise_by_artist": organise_by_artist,
+        "singles_path_example": singles_example,
+        "playlists_path_example": playlists_example,
         "auth_required": bool(api_key),
         "volume_mounted": _is_volume_mounted()
     }
@@ -243,11 +272,11 @@ def update_settings(updates: SettingsUpdate):
         else:
             value = str(value)
 
-        # Validate singles_subdir to keep writes under MUSIC_DIR.
-        if key == "singles_subdir":
+        # Validate singles_subdir / playlists_subdir to keep writes under MUSIC_DIR.
+        if key in ("singles_subdir", "playlists_subdir"):
             raw = value.strip().replace("\\", "/")
-            if raw == ".":
-                value = "."
+            if raw == "." or raw == "":
+                value = raw
             else:
                 parts = [
                     part.strip()
@@ -255,12 +284,12 @@ def update_settings(updates: SettingsUpdate):
                     if part.strip() and part.strip() != "."
                 ]
                 if any(part == ".." for part in parts):
-                    raise HTTPException(status_code=400, detail="Invalid singles subfolder path")
-                value = "/".join(parts) or "Singles"
+                    raise HTTPException(status_code=400, detail=f"Invalid {key.replace('_', ' ')} path")
+                value = "/".join(parts) or ("Singles" if key == "singles_subdir" else "Playlists")
                 try:
                     (MUSIC_DIR / value).resolve().relative_to(MUSIC_DIR.resolve())
                 except ValueError:
-                    raise HTTPException(status_code=400, detail="Singles subfolder must stay within music directory")
+                    raise HTTPException(status_code=400, detail=f"{key.replace('_', ' ')} must stay within music directory")
 
         # Validate cookie format before saving
         if key == "youtube_cookies" and value.strip() and not _has_valid_cookie_entries(value):
@@ -402,14 +431,18 @@ def test_youtube_cookies(request: TestYouTubeCookiesRequest = None):
             f.write(cookies_text)
             tmp_path = f.name
 
-        # Use a short, well-known public video (Rick Astley - official)
+        # Age-restricted video — this is the real test. Without valid cookies,
+        # yt-dlp returns a 403 or "Sign in to confirm your age" error.
+        # Using a public video would tell us nothing useful about cookie auth.
+        AGE_RESTRICTED_VIDEO = "https://www.youtube.com/watch?v=6_b7RDuLwcI"
+
         test_cmd = [
             "yt-dlp",
             "--cookies", tmp_path,
             "--dump-json",
             "--no-warnings",
-            "--no-download",
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            "--skip-download",
+            AGE_RESTRICTED_VIDEO,
         ]
 
         result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
@@ -418,14 +451,35 @@ def test_youtube_cookies(request: TestYouTubeCookiesRequest = None):
             try:
                 info = json.loads(result.stdout)
                 title = info.get("title", "Unknown")
-                return {"success": True, "message": f"Cookies valid — fetched: {title}"}
+                return {"success": True, "message": f"Cookies valid — age-restricted test passed: \"{title}\""}
             except json.JSONDecodeError:
-                return {"success": True, "message": "Cookies appear valid (got a response)"}
+                return {"success": True, "message": "Cookies appear valid (age-restricted test passed)"}
         else:
             stderr = result.stderr
+            if "sign in to confirm" in stderr.lower() or "age" in stderr.lower():
+                return {"success": False, "message": "Cookies rejected — YouTube asked for age confirmation. Re-export cookies while logged in."}
             if _is_ytdlp_403(stderr):
                 return {"success": False, "message": "Cookies rejected by YouTube (403). They may be expired — try re-exporting."}
-            return {"success": False, "message": f"yt-dlp failed: {stderr[:200]}"}
+            # Might be geo-blocked rather than a cookie problem — try without cookies to check
+            test_cmd_nocookies = [
+                "yt-dlp",
+                "--dump-json",
+                "--no-warnings",
+                "--skip-download",
+                AGE_RESTRICTED_VIDEO,
+            ]
+            result2 = subprocess.run(test_cmd_nocookies, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
+            if result2.returncode == 0:
+                # Cookieless worked — that means the video isn't actually age-restricted here,
+                # but the cookies themselves are probably fine (or at least not breaking things)
+                return {"success": True, "message": "Cookies loaded successfully (test video not restricted in your region — real-world auth untested)"}
+            # Both with and without cookies failed — likely the test video is unavailable
+            # in this region, not a cookie problem. Don't dump raw yt-dlp errors at the user.
+            stderr2 = result2.stderr.lower()
+            print(f"Cookie test: both with-cookies and cookieless failed. stderr={result2.stderr[:200]!r}")
+            if "not available" in stderr2 or "unavailable" in stderr2 or "format" in stderr2 or "private" in stderr2:
+                return {"success": True, "message": "Cookies loaded (test video unavailable in your region — real-world auth untested)"}
+            return {"success": False, "message": f"yt-dlp test failed: {stderr[:200]}"}
 
     except subprocess.TimeoutExpired:
         return {"success": False, "message": "Test timed out"}
@@ -444,12 +498,14 @@ def youtube_cookies_status():
     file_exists = COOKIES_FILE.exists()
     file_size = COOKIES_FILE.stat().st_size if file_exists else 0
     file_mtime = COOKIES_FILE.stat().st_mtime if file_exists else None
+    expiry = get_cookies_expiry(cookies_text) if has_setting else None
     return {
         "has_setting": has_setting,
         "file_exists": file_exists,
         "file_size": file_size,
         "file_mtime": file_mtime,
-        "file_has_valid_entries": _has_valid_cookie_entries(cookies_text) if has_setting else False
+        "file_has_valid_entries": _has_valid_cookie_entries(cookies_text) if has_setting else False,
+        "auth_cookie_expiry": expiry,  # Unix timestamp of soonest auth cookie expiry, or null
     }
 
 
@@ -880,7 +936,7 @@ def download(request: DownloadRequest):
 
     # Queue the download based on source
     if request.download_type == "playlist":
-        spawn_daemon_thread(process_playlist_download, job_id, request.video_id, title, request.convert_to_flac)
+        spawn_daemon_thread(process_playlist_download, job_id, request.video_id, title, request.convert_to_flac, True)
     elif source == "soulseek":
         spawn_daemon_thread(
             process_slskd_download,
@@ -1002,7 +1058,7 @@ def retry_job(job_id: str):
     convert_to_flac = bool(job.get("convert_to_flac", 1))
 
     if job["download_type"] == "playlist":
-        spawn_daemon_thread(process_playlist_download, job_id, job["video_id"], job["playlist_name"], convert_to_flac)
+        spawn_daemon_thread(process_playlist_download, job_id, job["video_id"], job["playlist_name"], convert_to_flac, True)
     elif job.get("source") == "soulseek" and job.get("slskd_username") and job.get("slskd_filename"):
         spawn_daemon_thread(
             process_slskd_download,
@@ -1225,10 +1281,10 @@ def bulk_import_async(request: AsyncBulkImportRequest):
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO bulk_imports
-               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac)
-               VALUES (?, 'pending', ?, ?, ?, ?)""",
+               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, use_playlists_dir)
+               VALUES (?, 'pending', ?, ?, ?, ?, ?)""",
             (import_id, len(tracks_to_import), int(request.create_playlist),
-             request.playlist_name, int(request.convert_to_flac))
+             request.playlist_name, int(request.convert_to_flac), int(request.use_playlists_dir))
         )
 
         # Insert all tracks
@@ -1381,10 +1437,11 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
 
         conn.execute("""
             INSERT INTO watched_playlists
-            (id, url, name, platform, refresh_interval_hours, convert_to_flac, last_track_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, last_track_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (playlist_id, request.url, playlist_name, platform,
-              request.refresh_interval_hours, int(request.convert_to_flac), len(tracks)))
+              request.refresh_interval_hours, int(request.convert_to_flac),
+              int(request.make_m3u), int(request.use_playlists_dir), len(tracks)))
 
         # Insert all current tracks as "seen"
         for artist, title in tracks:
@@ -1402,7 +1459,8 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
         import_id = start_bulk_import_for_tracks(
             tracks,
             request.convert_to_flac,
-            watch_playlist_id=playlist_id
+            watch_playlist_id=playlist_id,
+            use_playlists_dir=request.use_playlists_dir,
         )
 
     return {
@@ -1498,6 +1556,14 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate):
         if request.convert_to_flac is not None:
             updates.append("convert_to_flac = ?")
             params.append(int(request.convert_to_flac))
+
+        if request.make_m3u is not None:
+            updates.append("make_m3u = ?")
+            params.append(int(request.make_m3u))
+
+        if request.use_playlists_dir is not None:
+            updates.append("use_playlists_dir = ?")
+            params.append(int(request.use_playlists_dir))
 
         if updates:
             params.append(playlist_id)

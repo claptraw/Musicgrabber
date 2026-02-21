@@ -37,16 +37,21 @@ class AsyncBulkImportRequest(BaseModel):
     create_playlist: bool = False
     playlist_name: Optional[str] = None
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+    use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
 
 class WatchedPlaylistRequest(BaseModel):
     url: str  # Spotify, YouTube, or Amazon Music playlist URL
     refresh_interval_hours: int = 24
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+    make_m3u: bool = False
+    use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
 
 class WatchedPlaylistUpdate(BaseModel):
     refresh_interval_hours: Optional[int] = None
     enabled: Optional[bool] = None
     convert_to_flac: Optional[bool] = None
+    make_m3u: Optional[bool] = None
+    use_playlists_dir: Optional[bool] = None
 
 class SettingsUpdate(BaseModel):
     """Settings that can be updated via the UI"""
@@ -55,8 +60,10 @@ class SettingsUpdate(BaseModel):
     enable_musicbrainz: Optional[bool] = None
     enable_lyrics: Optional[bool] = None
     default_convert_to_flac: Optional[bool] = None
+    audio_format: Optional[str] = None  # "flac" or "opus"
     min_audio_bitrate: Optional[int] = None
     singles_subdir: Optional[str] = None
+    playlists_subdir: Optional[str] = None
     organise_by_artist: Optional[bool] = None
     # Soulseek/slskd
     slskd_url: Optional[str] = None

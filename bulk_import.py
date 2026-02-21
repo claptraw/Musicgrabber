@@ -58,6 +58,7 @@ def start_bulk_import_for_tracks(
     tracks: list[tuple[str, str]],
     convert_to_flac: bool,
     watch_playlist_id: Optional[str] = None,
+    use_playlists_dir: bool = False,
 ) -> str:
     """Create a bulk import job from a list of (artist, title) tuples."""
     import_id = str(uuid.uuid4())[:8]
@@ -65,9 +66,9 @@ def start_bulk_import_for_tracks(
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO bulk_imports
-               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, watch_playlist_id)
-               VALUES (?, 'pending', ?, 0, NULL, ?, ?)""",
-            (import_id, len(tracks), int(convert_to_flac), watch_playlist_id)
+               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, watch_playlist_id, use_playlists_dir)
+               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?)""",
+            (import_id, len(tracks), int(convert_to_flac), watch_playlist_id, int(use_playlists_dir))
         )
 
         for line_num, (artist, song) in enumerate(tracks, 1):
@@ -101,6 +102,7 @@ def process_bulk_import_worker(import_id: str):
         create_playlist = bool(import_row["create_playlist"])
         playlist_name = import_row["playlist_name"]
         watch_playlist_id = import_row["watch_playlist_id"]
+        use_playlists_dir = bool(import_row["use_playlists_dir"])
 
         conn.execute("UPDATE bulk_imports SET status = 'processing' WHERE id = ?", (import_id,))
         conn.commit()
@@ -190,7 +192,8 @@ def process_bulk_import_worker(import_id: str):
                     conn.commit()
 
                 # Submit download to bounded pool (max 3 concurrent)
-                _download_pool.submit(process_download, job_id, video_id, convert_to_flac, source_url)
+                _download_pool.submit(process_download, job_id, video_id, convert_to_flac, source_url,
+                                      playlist_name if use_playlists_dir else None, use_playlists_dir)
 
             except Exception as e:
                 with db_conn() as conn:
@@ -244,7 +247,8 @@ def process_bulk_import_worker(import_id: str):
                 create_bulk_playlist,
                 import_id,
                 playlist_name or f"Playlist {import_id}",
-                final_queued
+                final_queued,
+                use_playlists_dir
             )
 
     except Exception as e:

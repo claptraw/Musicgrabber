@@ -78,8 +78,10 @@ SETTINGS_SCHEMA = {
     "enable_musicbrainz": {"type": "bool", "default": True, "env": "ENABLE_MUSICBRAINZ"},
     "enable_lyrics": {"type": "bool", "default": True, "env": "ENABLE_LYRICS"},
     "default_convert_to_flac": {"type": "bool", "default": True, "env": "DEFAULT_CONVERT_TO_FLAC"},
+    "audio_format": {"type": "str", "default": "flac", "env": "AUDIO_FORMAT"},
     "min_audio_bitrate": {"type": "int", "default": 0, "env": "MIN_AUDIO_BITRATE"},
     "singles_subdir": {"type": "str", "default": "Singles", "env": "SINGLES_SUBDIR"},
+    "playlists_subdir": {"type": "str", "default": "", "env": "PLAYLISTS_SUBDIR"},
     "organise_by_artist": {"type": "bool", "default": True, "env": "ORGANISE_BY_ARTIST"},
     # Soulseek/slskd
     "slskd_url": {"type": "str", "default": "", "env": "SLSKD_URL"},
@@ -138,6 +140,20 @@ def get_singles_dir() -> Path:
     A value of "." means the music root itself (no subfolder).
     """
     subdir = get_setting("singles_subdir", "Singles").strip() or "Singles"
+    if subdir == ".":
+        return MUSIC_DIR
+    return MUSIC_DIR / subdir
+
+
+def get_playlists_dir() -> Path | None:
+    """Get the playlists download directory, or None if disabled (empty string).
+
+    When set, playlist downloads go to e.g. /music/Playlists/PlaylistName/
+    rather than being mixed in with singles.
+    """
+    subdir = get_setting("playlists_subdir", "").strip()
+    if not subdir:
+        return None  # Feature disabled — fall back to Singles behaviour
     if subdir == ".":
         return MUSIC_DIR
     return MUSIC_DIR / subdir

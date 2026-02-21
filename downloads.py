@@ -29,7 +29,7 @@ from constants import (
 from db import db_conn
 from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
 from notifications import send_notification
-from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir
+from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir
 from slskd import (
     download_from_slskd, extract_track_info_from_path,
     search_slskd, should_retry_slskd_error,
@@ -67,6 +67,33 @@ def _safe_sanitized_title(title: str, fallback: str) -> str:
         return cleaned
     fallback_cleaned = sanitize_filename(fallback or "")
     return fallback_cleaned or "Unknown Title"
+
+
+def _output_stem(artist: str, title: str, fallback: str) -> str:
+    """Return the output filename stem for a track.
+
+    In flat (no-artist-subfolder) mode: 'Artist - Title'
+    In organised mode: 'Title'
+
+    The artist prefix in flat mode saves you from a directory full of files
+    called 'Track 1.flac' with no idea who they belong to.
+    """
+    safe_title = _safe_sanitized_title(title, fallback)
+    if not get_setting_bool("organise_by_artist", True):
+        safe_artist = sanitize_filename(artist or "Unknown Artist")
+        return f"{safe_artist} - {safe_title}"
+    return safe_title
+
+
+def _playlist_stem(artist: str, title: str, fallback: str) -> str:
+    """Return 'Artist - Title' filename stem for tracks inside a playlist folder.
+
+    Always flat — no organise_by_artist logic needed since the playlist folder
+    itself provides the organisational context.
+    """
+    safe_artist = sanitize_filename(artist or "Unknown Artist")
+    safe_title = _safe_sanitized_title(title, fallback)
+    return f"{safe_artist} - {safe_title}"
 
 
 def _find_downloaded_audio_or_raise(artist_dir: Path, sanitized_title: str) -> Path:
@@ -217,7 +244,11 @@ def _build_ytdlp_download_cmd(
     source_url overrides the default YouTube URL (used for SoundCloud etc.).
     use_cookies=False skips cookie/player-client args (not needed for SoundCloud).
     """
-    flac_args = ["--audio-format", "flac"] if convert_to_flac else []
+    if convert_to_flac:
+        fmt = get_setting("audio_format", "flac")
+        format_args = ["--audio-format", fmt if fmt in ("flac", "opus") else "flac"]
+    else:
+        format_args = []  # Keep original format from source
     base_args = _ytdlp_base_args() if use_cookies else []
     url = source_url or f"https://www.youtube.com/watch?v={video_id}"
     return [
@@ -225,7 +256,7 @@ def _build_ytdlp_download_cmd(
         *base_args,
         "-f", "bestaudio/best",
         "-x",
-        *flac_args,
+        *format_args,
         "--audio-quality", "0",
         "--embed-metadata",
         "--embed-thumbnail",
@@ -355,13 +386,16 @@ def _run_ytdlp_with_retries(
         else:
             break
 
+    cookies_may_be_at_fault = has_cookies and download_result and _should_retry_without_cookies(download_result.stderr)
+
     if download_timed_out or (download_result and _should_retry_without_cookies(download_result.stderr)):
         _note_bot_block()
-        if has_cookies and download_result and _should_retry_without_cookies(download_result.stderr):
-            _note_cookie_failure()
 
     if (download_timed_out or (download_result and download_result.returncode != 0)) and has_cookies:
         if download_timed_out or _should_retry_without_cookies(download_result.stderr):
+            # Retry without cookies — if this succeeds, it confirms cookies were the problem.
+            # If it also fails, the video itself is blocked (geo-lock, ContentID, etc.) and
+            # cookies were innocent bystanders — don't penalise them.
             download_cmd_no_cookies = _strip_cookies_args(download_cmd)
             try:
                 download_result = subprocess.run(
@@ -371,16 +405,23 @@ def _run_ytdlp_with_retries(
                     timeout=timeout_secs
                 )
                 download_timed_out = False
+                if download_result.returncode == 0 and cookies_may_be_at_fault:
+                    # Cookieless worked — so cookies were actively causing the 403.
+                    # Disable them for a while so they don't break other downloads too.
+                    print("Cookie-related 403 confirmed (cookieless retry succeeded) — disabling cookies temporarily")
+                    _note_cookie_failure()
             except subprocess.TimeoutExpired:
                 download_timed_out = True
 
     return download_result, download_timed_out
 
 
-def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count: int):
+def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count: int, use_playlists_dir: bool = False):
     """Create an M3U playlist from a bulk import after all downloads complete
 
     Waits for all jobs with the matching playlist_name to complete, then generates the M3U file.
+    When use_playlists_dir is True and playlists_subdir is configured, the M3U and its
+    relative track paths are written into the Playlists folder instead of Singles.
     """
     # Wait for all downloads to complete (with timeout)
     max_wait_time = PLAYLIST_WAIT_MAX
@@ -417,23 +458,38 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
     if not jobs:
         return  # No successful downloads
 
+    # Determine whether to write into the Playlists folder
+    playlists_dir = get_playlists_dir() if use_playlists_dir else None
+    safe_playlist = sanitize_filename(playlist_name)
+
     # Build M3U playlist
     playlist_files = []
     for job in jobs:
         artist = job.get("artist", "Unknown")
         title = job.get("title", "Unknown")
 
-        # Resolve track path across both flat and artist-subfolder layouts
-        audio_file = check_duplicate(artist, title)
-
-        if audio_file:
-            # Store relative path from Singles directory
-            rel_path = audio_file.relative_to(get_singles_dir())
-            playlist_files.append(str(rel_path))
+        if playlists_dir:
+            # Tracks were downloaded into Playlists/PlaylistName/
+            track_dir = playlists_dir / safe_playlist
+            stem = _playlist_stem(artist, title, title)
+            for ext in ['.flac', '.opus', '.m4a', '.mp3', '.ogg', '.webm']:
+                candidate = track_dir / f"{stem}{ext}"
+                if candidate.exists():
+                    # Path in M3U is relative to the M3U file (which sits one level up)
+                    playlist_files.append(f"{safe_playlist}/{stem}{ext}")
+                    break
+        else:
+            audio_file = check_duplicate(artist, title)
+            if audio_file:
+                rel_path = audio_file.relative_to(get_singles_dir())
+                playlist_files.append(str(rel_path))
 
     if playlist_files:
-        # Create M3U file
-        m3u_path = get_singles_dir() / f"{sanitize_filename(playlist_name)}.m3u"
+        if playlists_dir:
+            m3u_path = playlists_dir / f"{safe_playlist}.m3u"
+            playlists_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            m3u_path = get_singles_dir() / f"{safe_playlist}.m3u"
         with open(m3u_path, 'w', encoding='utf-8') as f:
             f.write("#EXTM3U\n")
             for file_path in playlist_files:
@@ -441,8 +497,71 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
         set_file_permissions(m3u_path)
 
 
-def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str, convert_to_flac: bool = True):
-    """Process a playlist download job"""
+def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playlists_dir: bool = False) -> Path | None:
+    """Rebuild the M3U file for a watched playlist from all tracks marked as downloaded.
+
+    Walks every downloaded track in the playlist, resolves the file on disk, and
+    writes (or overwrites) the M3U. Called after each refresh cycle so the playlist
+    file grows in step with the library.
+
+    Returns the M3U path on success, None if no files could be resolved.
+    """
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT artist, title FROM watched_playlist_tracks
+               WHERE playlist_id = ? AND downloaded_at IS NOT NULL
+               ORDER BY first_seen""",
+            (playlist_id,)
+        ).fetchall()
+
+    playlists_dir = get_playlists_dir() if use_playlists_dir else None
+    safe_playlist = sanitize_filename(playlist_name)
+
+    playlist_files = []
+    for row in rows:
+        artist, title = row["artist"], row["title"]
+        if playlists_dir:
+            track_dir = playlists_dir / safe_playlist
+            stem = _playlist_stem(artist, title, title)
+            for ext in ['.flac', '.opus', '.m4a', '.mp3', '.ogg', '.webm']:
+                candidate = track_dir / f"{stem}{ext}"
+                if candidate.exists():
+                    playlist_files.append(f"{safe_playlist}/{stem}{ext}")
+                    break
+        else:
+            audio_file = check_duplicate(artist, title)
+            if audio_file:
+                try:
+                    rel_path = audio_file.relative_to(get_singles_dir())
+                    playlist_files.append(str(rel_path))
+                except ValueError:
+                    pass  # File outside Singles dir — skip it
+
+    if not playlist_files:
+        return None
+
+    if playlists_dir:
+        m3u_path = playlists_dir / f"{safe_playlist}.m3u"
+        playlists_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        m3u_path = get_singles_dir() / f"{safe_playlist}.m3u"
+
+    with open(m3u_path, 'w', encoding='utf-8') as f:
+        f.write("#EXTM3U\n")
+        for file_path in playlist_files:
+            f.write(f"{file_path}\n")
+    set_file_permissions(m3u_path)
+    print(f"Watched playlist M3U updated: {m3u_path.name} ({len(playlist_files)} tracks)")
+    return m3u_path
+
+
+def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str, convert_to_flac: bool = True, use_playlists_dir: bool = True):
+    """Process a playlist download job.
+
+    When use_playlists_dir is True and playlists_subdir is configured, tracks are saved to
+    Playlists/PlaylistName/ with 'Artist - Title' naming. Otherwise falls back to Singles.
+    """
     try:
         _update_job(job_id, status="downloading")
 
@@ -481,6 +600,13 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
         _update_job(job_id, total_tracks=len(videos))
 
+        # Resolve the download directory for this playlist
+        playlists_dir = get_playlists_dir() if use_playlists_dir else None
+        safe_playlist = sanitize_filename(playlist_name)
+        if playlists_dir:
+            playlist_track_dir = playlists_dir / safe_playlist
+            playlist_track_dir.mkdir(parents=True, exist_ok=True)
+
         # Download each video in the playlist
         downloaded_files = []
         completed_tracks = 0
@@ -512,18 +638,25 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 channel = info.get("channel", info.get("uploader", "Unknown"))
                 artist, title = extract_artist_title(full_title, channel)
 
-                # Check for duplicates
+                # Check for duplicates — still add to M3U even if we're not downloading
                 existing_file = check_duplicate(artist, title)
                 if existing_file:
                     skipped_tracks += 1
+                    if playlists_dir:
+                        stem = _playlist_stem(artist, title, video_id)
+                        downloaded_files.append(f"{safe_playlist}/{stem}{existing_file.suffix}")
+                    else:
+                        downloaded_files.append(str(existing_file.relative_to(get_singles_dir())))
                     continue
 
-                # Create download directory (with or without artist subfolder)
-                artist_dir = get_download_dir(artist)
-                artist_dir.mkdir(parents=True, exist_ok=True)
-
-                # Download with best audio quality
-                safe_title = _safe_sanitized_title(title, video_id)
+                # Create download directory
+                if playlists_dir:
+                    artist_dir = playlist_track_dir
+                    safe_title = _playlist_stem(artist, title, video_id)
+                else:
+                    artist_dir = get_download_dir(artist)
+                    artist_dir.mkdir(parents=True, exist_ok=True)
+                    safe_title = _output_stem(artist, title, video_id)
                 output_template = str(artist_dir / f"{safe_title}.%(ext)s")
                 download_cmd = _build_ytdlp_download_cmd(video_id, output_template, convert_to_flac)
 
@@ -564,7 +697,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     mb_title = mb_metadata.get("title", title)
                     apply_metadata_to_file(
                         audio_file, mb_artist, mb_title,
-                        mb_metadata.get("album", "Singles"),
+                        mb_metadata.get("album", ""),
                         mb_metadata.get("year")
                     )
                     # Use canonical artist/title from MusicBrainz
@@ -574,14 +707,17 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     if mb_title != title:
                         title = mb_title
                 else:
-                    apply_metadata_to_file(audio_file, artist, title, "Singles")
+                    apply_metadata_to_file(audio_file, artist, title)
 
                 # Fetch and save lyrics
                 lyrics = fetch_lyrics(artist, title)
                 if lyrics:
                     save_lyrics_file(audio_file, lyrics)
 
-                downloaded_files.append(str(audio_file.relative_to(get_singles_dir())))
+                if playlists_dir:
+                    downloaded_files.append(f"{safe_playlist}/{safe_title}{audio_file.suffix}")
+                else:
+                    downloaded_files.append(str(audio_file.relative_to(get_singles_dir())))
                 completed_tracks += 1
 
             except Exception as track_error:
@@ -598,7 +734,10 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
         # Generate M3U playlist file
         if downloaded_files:
-            m3u_path = get_singles_dir() / f"{sanitize_filename(playlist_name)}.m3u"
+            if playlists_dir:
+                m3u_path = playlists_dir / f"{safe_playlist}.m3u"
+            else:
+                m3u_path = get_singles_dir() / f"{safe_playlist}.m3u"
             with open(m3u_path, 'w', encoding='utf-8') as f:
                 f.write("#EXTM3U\n")
                 for file_path in downloaded_files:
@@ -726,7 +865,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             raise Exception("Download completed but file not found")
 
         # Rename to our standard naming
-        sanitized_title = _safe_sanitized_title(title, Path(filename).stem or job_id)
+        sanitized_title = _output_stem(artist, title, Path(filename).stem or job_id)
         source_ext = downloaded_file.suffix.lower()
 
         # Probe the source file BEFORE conversion so we know the real quality
@@ -738,22 +877,30 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 source_format_info = (src_codec, src_bitrate)
 
         # Determine final filename
-        if convert_to_flac and source_ext != '.flac':
-            # Convert to FLAC
-            final_file = artist_dir / f"{sanitized_title}.flac"
-            convert_cmd = [
-                "ffmpeg", "-y", "-i", str(downloaded_file),
-                "-c:a", "flac", str(final_file)
-            ]
+        audio_fmt = get_setting("audio_format", "flac") if convert_to_flac else None
+        if audio_fmt not in ("flac", "opus"):
+            audio_fmt = "flac"
+
+        target_ext = f".{audio_fmt}" if audio_fmt else source_ext
+        needs_convert = convert_to_flac and source_ext != target_ext
+
+        if needs_convert:
+            # Convert to the target format
+            ffmpeg_codec = "flac" if audio_fmt == "flac" else "libopus"
+            final_file = artist_dir / f"{sanitized_title}{target_ext}"
+            convert_cmd = ["ffmpeg", "-y", "-i", str(downloaded_file), "-c:a", ffmpeg_codec]
+            if audio_fmt == "opus":
+                convert_cmd += ["-b:a", "320k"]
+            convert_cmd.append(str(final_file))
             result = subprocess.run(convert_cmd, capture_output=True, timeout=TIMEOUT_FFMPEG_CONVERT)
             if result.returncode == 0:
-                downloaded_file.unlink()  # Remove original
+                downloaded_file.unlink()
             else:
                 # Conversion failed, keep original with new name
                 final_file = artist_dir / f"{sanitized_title}{source_ext}"
                 downloaded_file.rename(final_file)
         else:
-            # Keep original format
+            # Already in target format (or no conversion requested), just rename
             final_file = artist_dir / f"{sanitized_title}{source_ext}"
             if downloaded_file != final_file:
                 downloaded_file.rename(final_file)
@@ -777,7 +924,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             mb_title = mb_metadata.get("title", title)
             apply_metadata_to_file(
                 final_file, mb_artist, mb_title,
-                mb_metadata.get("album", "Singles"),
+                mb_metadata.get("album", ""),
                 mb_metadata.get("year")
             )
             # Use canonical artist/title from MusicBrainz
@@ -788,7 +935,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 title = mb_title
             _update_job(job_id, artist=artist, title=title)
         else:
-            apply_metadata_to_file(final_file, artist, title, "Singles")
+            apply_metadata_to_file(final_file, artist, title)
 
         # Fetch and save lyrics
         lyrics = fetch_lyrics(artist, title)
@@ -973,7 +1120,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         artist_dir = get_download_dir(artist)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
-        safe_title = _safe_sanitized_title(title, track_id)
+        safe_title = _output_stem(artist, title, track_id)
         output_path = artist_dir / f"{safe_title}.flac"
 
         # Download the FLAC
@@ -994,27 +1141,14 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             output_path.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
 
-        # Metadata enrichment — we already have album + ISRC from Tidal,
-        # but MusicBrainz might have a better canonical artist name or year
+        # Metadata enrichment — Tidal already gave us artist/title/album, which is authoritative.
+        # We only use MusicBrainz to fill in the year (which Tidal doesn't provide).
+        # We deliberately don't let MusicBrainz overwrite artist/title/album here — it has
+        # a nasty habit of matching a live recording or remaster and silently making things worse.
         metadata_source = "monochrome_api"
         mb_metadata = lookup_metadata(artist, title, output_path)
-        if mb_metadata:
-            metadata_source = mb_metadata.get("metadata_source", metadata_source)
-            mb_artist = mb_metadata.get("artist", artist)
-            mb_title = mb_metadata.get("title", title)
-            # Prefer MusicBrainz album if found, otherwise use Tidal's
-            mb_album = mb_metadata.get("album", album_title)
-            mb_year = mb_metadata.get("year")
-            apply_metadata_to_file(output_path, mb_artist, mb_title, mb_album, mb_year)
-            if mb_artist != artist:
-                output_path = _relocate_for_normalised_artist(output_path, artist, mb_artist)
-                artist = mb_artist
-            if mb_title != title:
-                title = mb_title
-            _update_job(job_id, artist=artist, title=title)
-        else:
-            # Use the Tidal metadata directly — it's already better than YouTube guesswork
-            apply_metadata_to_file(output_path, artist, title, album_title)
+        year = mb_metadata.get("year") if mb_metadata else None
+        apply_metadata_to_file(output_path, artist, title, album_title, year)
 
         # Lyrics
         lyrics = fetch_lyrics(artist, title)
@@ -1063,12 +1197,14 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         )
 
 
-def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, source_url: str = None):
+def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, source_url: str = None,
+                     playlist_name: str = None, use_playlists_dir: bool = False):
     """Process a download job.
 
     source_url overrides the default YouTube URL construction — used for
     SoundCloud and any future yt-dlp-supported source.
     Monochrome tracks bypass yt-dlp entirely and download via the API.
+    playlist_name + use_playlists_dir route bulk import tracks into the Playlists folder.
     """
     is_soundcloud = source_url and "soundcloud.com" in source_url
     is_monochrome = source_url and "monochrome.tf" in source_url
@@ -1141,12 +1277,17 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             _mark_watched_track_downloaded(job_id)
             return
 
-        # Create download directory (with or without artist subfolder)
-        artist_dir = get_download_dir(artist)
+        # Create download directory — either Playlists/Name/ or the standard Singles layout
+        playlists_dir = get_playlists_dir() if (use_playlists_dir and playlist_name) else None
+        if playlists_dir:
+            artist_dir = playlists_dir / sanitize_filename(playlist_name)
+            safe_title = _playlist_stem(artist, title, video_id)
+        else:
+            artist_dir = get_download_dir(artist)
+            safe_title = _output_stem(artist, title, video_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download with best audio quality
-        safe_title = _safe_sanitized_title(title, video_id)
         output_template = str(artist_dir / f"{safe_title}.%(ext)s")
         download_cmd = _build_ytdlp_download_cmd(
             video_id, output_template, convert_to_flac,
@@ -1209,7 +1350,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             mb_title = mb_metadata.get("title", title)
             apply_metadata_to_file(
                 audio_file, mb_artist, mb_title,
-                mb_metadata.get("album", "Singles"),
+                mb_metadata.get("album", ""),
                 mb_metadata.get("year")
             )
             # Use the canonical artist/title from MusicBrainz everywhere
@@ -1220,7 +1361,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 title = mb_title
             _update_job(job_id, artist=artist, title=title)
         else:
-            apply_metadata_to_file(audio_file, artist, title, "Singles")
+            apply_metadata_to_file(audio_file, artist, title)
 
         # Fetch and save lyrics
         lyrics = fetch_lyrics(artist, title)
