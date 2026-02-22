@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.1.1 (2026-02-22)
+
+### Fixed
+- **Watched playlist "Playlists folder" toggle ignored**: Enabling the Playlists folder toggle on an existing watched playlist had no effect -- new tracks still landed in Singles. The bulk import worker was reading the playlist name as NULL (watched playlists store their name separately, not in the bulk_imports row) so folder routing silently fell through. Worker now fetches the playlist name from `watched_playlists` when needed
+- **Mobile: Preview and Similar buttons overlapping**: On touch devices both buttons were rendering on top of each other. Buttons now live in a dedicated row below the card content, side by side, each taking equal width. On desktop the row appears on hover with only the Similar button (hover-to-preview handles the rest); on mobile both are always visible
+- **Similar artists: flaky first-load error**: The ListenBrainz-powered similar artists service would occasionally fail on the first request, immediately showing an error. Now retries up to 3 times with a short pause between attempts before giving up
+
+---
+
 ## v2.1.0 (2026-02-22)
 
 ### Added

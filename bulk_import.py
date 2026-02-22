@@ -104,6 +104,15 @@ def process_bulk_import_worker(import_id: str):
         watch_playlist_id = import_row["watch_playlist_id"]
         use_playlists_dir = bool(import_row["use_playlists_dir"])
 
+        # For watched playlist imports, playlist_name is stored as NULL in bulk_imports.
+        # Fetch the actual name from watched_playlists so folder routing works correctly.
+        if use_playlists_dir and not playlist_name and watch_playlist_id:
+            row = conn.execute(
+                "SELECT name FROM watched_playlists WHERE id = ?", (watch_playlist_id,)
+            ).fetchone()
+            if row:
+                playlist_name = row["name"]
+
         conn.execute("UPDATE bulk_imports SET status = 'processing' WHERE id = ?", (import_id,))
         conn.commit()
 
