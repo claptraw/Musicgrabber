@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v2.0.5** (2026-02-21)
+**v2.1.0**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless) -- tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -9,6 +9,19 @@ If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 ## Why?
 
 Lidarr's great for albums, but grabbing a single track you heard on the radio shouldn't require navigating menus or pulling an artist's entire discography. This is for the "I want one song, not a commitment" use case.
+
+## What this project is not
+
+MusicGrabber is intentionally narrow. It is **not**:
+
+- **A full music manager** (not Lidarr, not a replacement for Navidrome/Jellyfin)
+- **An album-discography automation tool** (no "grab everything by this artist" workflow)
+- **A recommendation engine** (no "discover new music from your history" system)
+- **A streaming server/player** (it acquires files; it does not serve or stream your library)
+- **A DJ/pro-audio workflow tool** (no Atmos/spatial-audio specialist pipeline)
+- **A custom library templating engine** (no advanced token-based naming/structure rules)
+
+If your use case is "I heard a song, I want that song in my library fast," this is the project.
 
 ## Features
 New in **v2.0.0**:
@@ -25,9 +38,10 @@ and the rest of them:
 - **Optional API authentication** -- protect your instance with an API key
 - **Preview** -- hover over a result for 2 seconds on desktop, or tap the `Preview ▶` button on mobile (works for YouTube, SoundCloud, and Monochrome)
 - **Multi-source search** -- YouTube, SoundCloud, and Monochrome (Tidal lossless) with parallel searching and quality-based ranking
+- **Similar artist discovery** -- hover any result and click `~ Similar` to explore artists similar to whoever you searched. Powered by MusicBrainz + ListenBrainz Labs (no account needed). Download the whole lot in one go with "Download All", optionally saved as a playlist
 - **Soulseek integration** -- optional slskd support for higher quality sources (FLAC from P2P) *(in progress -- needs testing)*
 - **Playlist support** -- download entire playlists with automatic M3U generation
-- **Watched playlists** -- monitor Spotify/YouTube playlists and auto-download new tracks; searches all sources and grabs the best quality available. Optional M3U generation keeps a playlist file in sync as new tracks arrive
+- **Watched playlists** -- monitor Spotify, YouTube, Amazon Music, and Tidal playlists and auto-download new tracks; searches all sources and grabs the best quality available. Optional M3U generation keeps a playlist file in sync as new tracks arrive
 - **Bulk import** -- paste or upload a text file of songs to auto-search and queue; searches YouTube, SoundCloud, and Monochrome in parallel, picks the best result
 - **Best quality FLAC** -- extracts highest available audio quality
 - **Minimum bitrate enforcement** -- optionally reject downloads below a configurable bitrate threshold
@@ -313,14 +327,16 @@ slskd organises downloads as `{downloads}/{username}/{filename}`, which MusicGra
 
 **Status:** Soulseek integration is in progress and needs testing. New Soulseek users may experience rejected downloads until they build reputation by sharing files.
 
-### Spotify Playlist Import
+### Playlist Import (Spotify, Amazon Music, Tidal)
 
-MusicGrabber can import tracks from Spotify playlists and albums. Paste a Spotify URL in the Bulk Import tab to fetch the track list, then import them via YouTube.
+MusicGrabber can import tracks from Spotify, Amazon Music, and Tidal playlists. Paste a supported URL in the Bulk Import tab to fetch the track list, then import them via YouTube/Monochrome/SoundCloud.
 
-**How it works:**
+**How it works by source:**
 
-1. **Small playlists (under ~100 tracks)**: Uses Spotify's embed endpoint to quickly fetch track data
-2. **Large playlists (100+ tracks)**: Automatically falls back to headless browser scraping
+- **Tidal**: One API call to the Monochrome API (`/playlist/`). Returns the full track list instantly -- no browser, no auth, no fuss. Public playlists only
+- **Amazon Music**: Headless browser scraping via Playwright. Slower but reliable for most public playlists
+- **Spotify small playlists (under ~100 tracks)**: Uses Spotify's embed endpoint to quickly fetch track data
+- **Spotify large playlists (100+ tracks)**: Automatically falls back to headless browser scraping
 
 **Headless browser method:**
 
@@ -344,7 +360,7 @@ shm_size: '2gb'  # Required for Chromium
 
 ### Watched Playlists
 
-Automatically monitor Spotify or YouTube playlists for new tracks. When new songs are added to a watched playlist, MusicGrabber will detect them and queue them for download.
+Automatically monitor Spotify, YouTube, Amazon Music, or Tidal playlists for new tracks. When new songs are added to a watched playlist, MusicGrabber will detect them and queue them for download.
 
 **How it works:**
 
@@ -477,7 +493,7 @@ environment:
 When enabled:
 - All API requests require the `X-API-Key` header
 - The frontend prompts for the key on first visit and stores it in browser localStorage
-- Rate limiting applies: 60 requests per minute per IP address
+- Rate limiting applies: 200 requests per minute per IP address
 
 **Setting up:**
 
@@ -522,7 +538,7 @@ music.yourdomain.com {
 | `POST` | `/api/bulk-import-async` | Bulk import songs (async, returns immediately) |
 | `GET` | `/api/bulk-import/{id}/status` | Get async bulk import progress |
 | `GET` | `/api/bulk-imports` | List recent bulk imports |
-| `POST` | `/api/fetch-playlist` | Fetch tracks from supported playlist URL (Spotify or Amazon Music) |
+| `POST` | `/api/fetch-playlist` | Fetch tracks from supported playlist URL (Spotify, Amazon Music, or Tidal) |
 | `POST` | `/api/spotify-playlist` | Backwards-compat alias for Spotify playlist/album fetch |
 | `GET` | `/api/stats` | Get statistics (download counts, daily chart, top artists, search analytics) |
 | `DELETE` | `/api/stats?confirm=true` | Reset stats history (deletes completed/failed job history and search logs; confirmation required) |
@@ -544,6 +560,7 @@ music.yourdomain.com {
 | `GET` | `/api/watched-playlists/schedule` | Get next scheduled check time |
 | `POST` | `/api/settings/test/youtube-cookies` | Test YouTube cookie validity |
 | `GET` | `/api/settings/youtube-cookies/status` | Get cookie upload status |
+| `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
 
 ## Updating yt-dlp
 

@@ -9,9 +9,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp (latest version)
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod a+rx /usr/local/bin/yt-dlp
+# Install yt-dlp (latest version) — pick the right binary for the host arch
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then \
+        YT_DLP_BIN="yt-dlp_linux_aarch64"; \
+    else \
+        YT_DLP_BIN="yt-dlp"; \
+    fi && \
+    curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YT_DLP_BIN}" \
+        -o /usr/local/bin/yt-dlp && \
+    chmod a+rx /usr/local/bin/yt-dlp
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \

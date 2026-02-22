@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.1.0 (2026-02-22)
+
+### Added
+- **ARM64 Docker image**: Multi-arch build now published to Docker Hub. ARM64 users (Raspberry Pi 4/5, Apple Silicon VMs, Hetzner ARM) get a native image automatically -- no more running x86 under emulation
+- **Similar artist exploration**: Hover any result card and click `~ Similar` to discover artists similar to whoever you just searched. Powered by MusicBrainz + ListenBrainz Labs -- no account required, fully public APIs. Results load progressively with the same source/quality badges as normal search
+- **Download All from explore**: The explore panel has a "Download All" button (disabled until results finish loading) with an optional "Save as playlist" checkbox. Downloads feed straight into the bulk importer, auto-named "Similar to [Artist]". Supports M3U generation and all the usual duplicate detection
+- **Tidal public playlist import**: Paste a `tidal.com/playlist/...` URL into the playlist importer or watched playlists. Track list is fetched via the Monochrome API -- no browser, no scraping, no auth required. Works for any playlist marked public on Tidal
+
+### Changed
+- **Rate limit raised from 60 to 200 req/min**: Was too tight for legitimate burst usage (explore fires up to 25 searches in parallel). Single-user self-hosted tool; no reason to be stingy
+
+### Fixed
+- **Scheduler started at import time**: `start_scheduler()` was called at module scope, meaning any process that imported `app` would spawn a watched-playlist scheduler thread. Now correctly starts alongside the other background monitors at app boot
+- **Stale cleanup could delete active jobs**: `DELETE /api/jobs/cleanup?status=stale` was deleting all queued/downloading jobs regardless of age -- including ones that were 5 seconds old and actively downloading. Now only deletes jobs older than the stale timeout (15 minutes), matching the stale job monitor's own logic
+- **Internal errors leaked to API clients**: Test endpoints for slskd, Navidrome, Jellyfin, and YouTube cookies were returning raw `str(e)` and stderr fragments to the client, potentially exposing internal hostnames, file paths, and command output. Now logs full detail server-side and returns a safe generic message
+- **X-Forwarded-For trusted unconditionally**: Rate limiting could be bypassed by any client spoofing the `X-Forwarded-For` header. Now only trusted when the direct connection is from a localhost/loopback address (i.e. a genuine reverse proxy)
+- **Storage stats ignored playlist directory**: Dashboard file count and storage usage only scanned `Singles/`. Users with a separate Playlists folder configured would see underreported stats. Now scans both, deduplicated by inode to avoid double-counting
+- **Bulk import completion count underreported**: Progress counter only counted `completed` jobs, missing `completed_with_errors`. Both now count as done
+- **Playlists folder toggle defaulted to off in key flows**: Even with `playlists_subdir` configured, new bulk imports with "Create M3U playlist" and newly added watched playlists could still save into `Singles/` unless the per-action toggle was manually enabled. UI now defaults those `use_playlists_dir` toggles to on when a Playlists folder is configured, while still allowing explicit opt-out
+- **Explore "Download All" saved to Singles instead of Playlists**: When "Save as playlist" was ticked, tracks were still landing in `Singles/` due to two bugs: `use_playlists_dir` was not passed in the request, and Monochrome downloads bypassed playlist routing entirely (always writing to `Singles/Artist/`). Both fixed
+- **Duplicate tracks excluded from explore playlist M3U**: Tracks that already existed in the library were skipped by the duplicate check before reaching the playlist folder, so they never appeared in the generated M3U. The M3U builder now falls back to `check_duplicate()` for any track not found in the playlist folder, so pre-existing tracks are still included in the playlist file from wherever they live
+
+---
+
 ## v2.0.5 (2026-02-21)
 
 ### Added

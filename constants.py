@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.0.5"
+VERSION = "2.1.0"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -64,7 +64,7 @@ BOT_BACKOFF_MAX_SECONDS = 20
 YTDLP_PLAYER_CLIENT = os.getenv("YTDLP_PLAYER_CLIENT", "")
 
 # Rate limiting
-RATE_LIMIT_REQUESTS = 60         # Max requests per IP per window
+RATE_LIMIT_REQUESTS = 200        # Max requests per IP per window — single-user tool, be generous
 RATE_LIMIT_WINDOW = 60           # Window size in seconds
 
 # Configuration from environment - structural paths
@@ -80,6 +80,10 @@ WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24
 # is about as reliable as asking YouTube commenters for facts
 ACOUSTID_API_KEY = os.getenv("ACOUSTID_API_KEY", "0NILMQojj4")
 ACOUSTID_MIN_SCORE = 0.8         # Below this, the match is too dodgy to trust
+
+# ListenBrainz API — used for similar artist exploration (public, no auth required)
+LISTENBRAINZ_API_URL = "https://api.listenbrainz.org"
+TIMEOUT_LISTENBRAINZ = 10
 
 # Monochrome API — Tidal frontend with public lossless FLAC streams.
 # Points at the official instance by default; users can override to use

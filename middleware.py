@@ -20,16 +20,20 @@ _rate_limit_store: dict[str, list[float]] = defaultdict(list)
 _rate_limit_lock = threading.Lock()
 _rate_limit_last_cleanup = 0.0
 
-# Paths that don't require authentication (static files, health checks)
-AUTH_EXEMPT_PATHS = {"/", "/static", "/api/config"}
+# Only trust X-Forwarded-For from these direct connection IPs (i.e. reverse proxies on localhost)
+_TRUSTED_PROXY_IPS = {"127.0.0.1", "::1"}
 
 
 def _get_client_ip(request: Request) -> str:
-    """Get client IP, respecting X-Forwarded-For for reverse proxies."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """Get client IP. Only trusts X-Forwarded-For when the direct connection is from a
+    known local reverse proxy — prevents external clients spoofing the header to bypass
+    rate limiting."""
+    direct_ip = request.client.host if request.client else None
+    if direct_ip in _TRUSTED_PROXY_IPS:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return direct_ip or "unknown"
 
 
 def _check_rate_limit(ip: str) -> tuple[bool, int]:

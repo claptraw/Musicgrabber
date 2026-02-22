@@ -472,12 +472,19 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
             # Tracks were downloaded into Playlists/PlaylistName/
             track_dir = playlists_dir / safe_playlist
             stem = _playlist_stem(artist, title, title)
+            found = False
             for ext in ['.flac', '.opus', '.m4a', '.mp3', '.ogg', '.webm']:
                 candidate = track_dir / f"{stem}{ext}"
                 if candidate.exists():
                     # Path in M3U is relative to the M3U file (which sits one level up)
                     playlist_files.append(f"{safe_playlist}/{stem}{ext}")
+                    found = True
                     break
+            if not found:
+                # Track already existed in Singles (duplicate skip) — include it from wherever it lives
+                audio_file = check_duplicate(artist, title)
+                if audio_file:
+                    playlist_files.append(str(audio_file))
         else:
             audio_file = check_duplicate(artist, title)
             if audio_file:
@@ -1075,7 +1082,8 @@ def _get_monochrome_track_info(track_id: str) -> dict | None:
         return None
 
 
-def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bool = True):
+def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bool = True,
+                                  playlist_name: str = None, use_playlists_dir: bool = False):
     """Download a track directly from Monochrome/Tidal — no yt-dlp needed.
 
     The API gives us proper metadata (artist, album, ISRC) so we don't need
@@ -1116,11 +1124,16 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             _mark_watched_track_downloaded(job_id)
             return
 
-        # Create download directory
-        artist_dir = get_download_dir(artist)
+        # Create download directory — respect playlist routing if requested
+        playlists_dir = get_playlists_dir() if (use_playlists_dir and playlist_name) else None
+        if playlists_dir:
+            artist_dir = playlists_dir / sanitize_filename(playlist_name)
+            safe_title = _playlist_stem(artist, title, track_id)
+        else:
+            artist_dir = get_download_dir(artist)
+            safe_title = _output_stem(artist, title, track_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
-        safe_title = _output_stem(artist, title, track_id)
         output_path = artist_dir / f"{safe_title}.flac"
 
         # Download the FLAC
@@ -1212,7 +1225,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
     # Monochrome gets its own dedicated download path — no yt-dlp needed
     if is_monochrome:
-        _process_monochrome_download(job_id, video_id, convert_to_flac)
+        _process_monochrome_download(job_id, video_id, convert_to_flac, playlist_name, use_playlists_dir)
         return
 
     if is_soundcloud:

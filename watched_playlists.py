@@ -14,12 +14,11 @@ import time
 from fastapi import HTTPException
 
 from constants import (
-    TIMEOUT_YTDLP_PLAYLIST, TIMEOUT_HTTP_SPOTIFY,
-    WATCHED_PLAYLIST_CHECK_HOURS,
+    TIMEOUT_YTDLP_PLAYLIST, TIMEOUT_HTTP_SPOTIFY, TIMEOUT_MONOCHROME_API,
+    MONOCHROME_API_URL, WATCHED_PLAYLIST_CHECK_HOURS,
 )
 from db import db_conn
 from bulk_import import start_bulk_import_for_tracks
-from models import SpotifyPlaylistRequest
 from amazon import fetch_amazon_playlist
 from downloads import rebuild_watched_playlist_m3u
 from spotify import fetch_spotify_playlist_via_browser
@@ -54,9 +53,14 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if amazon_playlist:
         return "amazon", url  # Full URL needed — no extractable ID
 
+    # Tidal public playlist
+    tidal_playlist = re.match(r'https?://(?:www\.)?tidal\.com/(?:browse/)?playlist/([0-9a-f-]{36})', url, re.IGNORECASE)
+    if tidal_playlist:
+        return "tidal", tidal_playlist.group(1)
+
     raise HTTPException(
         status_code=400,
-        detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube/YouTube Music playlists, Amazon Music playlists."
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube/YouTube Music playlists, Amazon Music playlists, Tidal public playlists."
     )
 
 
@@ -165,6 +169,52 @@ def _fetch_spotify_playlist_embed(url: str) -> dict:
     }
 
 
+def _fetch_tidal_playlist(playlist_uuid: str) -> dict:
+    """Fetch Tidal playlist tracks via the Monochrome API.
+
+    Monochrome exposes a public /playlist/ endpoint that returns the full
+    track list in one shot — no pagination, no headless browser required.
+    Each item has artist.name and title at the top level. Simple.
+    """
+    api_url = f"{MONOCHROME_API_URL}/playlist/?id={playlist_uuid}"
+    try:
+        with httpx.Client(timeout=TIMEOUT_MONOCHROME_API) as client:
+            response = client.get(api_url)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Tidal playlist not found or is private")
+        raise HTTPException(status_code=502, detail=f"Monochrome API error: {e.response.status_code}")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to connect to Monochrome API: {e}")
+
+    data = response.json()
+    playlist_info = data.get("playlist", {})
+    playlist_name = playlist_info.get("title", "Tidal Playlist")
+    items = data.get("items", [])
+
+    tracks = []
+    for item in items:
+        track = item.get("item", {})
+        if item.get("type") != "track":
+            continue
+        title = track.get("title", "").strip()
+        # Prefer the primary artist; fall back to the first in the artists list
+        artist_obj = track.get("artist") or (track.get("artists") or [{}])[0]
+        artist = artist_obj.get("name", "").strip()
+        if title and artist:
+            tracks.append(f"{artist} - {title}")
+
+    if not tracks:
+        raise HTTPException(
+            status_code=422,
+            detail="No tracks found in Tidal playlist. It may be empty or private."
+        )
+
+    print(f"Fetched {len(tracks)} tracks from Tidal playlist '{playlist_name}' via Monochrome API")
+    return {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks)}
+
+
 def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]], str]:
     """Fetch tracks from a playlist URL
 
@@ -235,6 +285,22 @@ def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]
 
     elif platform == "amazon":
         result = fetch_amazon_playlist(url)
+
+        tracks = []
+        for track_str in result["tracks"]:
+            if " - " in track_str:
+                artist, title = track_str.split(" - ", 1)
+                tracks.append((artist.strip(), title.strip()))
+            else:
+                tracks.append(("Unknown", track_str.strip()))
+
+        return tracks, result["playlist_name"]
+
+    elif platform == "tidal":
+        m = re.search(r'([0-9a-f-]{36})', url, re.IGNORECASE)
+        if not m:
+            raise HTTPException(status_code=400, detail="Invalid Tidal playlist URL: no playlist UUID found")
+        result = _fetch_tidal_playlist(m.group(1))
 
         tracks = []
         for track_str in result["tracks"]:

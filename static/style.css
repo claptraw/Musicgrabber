@@ -1240,3 +1240,124 @@ h1 {
         font-size: 14px;
     }
 }
+
+/* Explore similar — "~ Similar" button on result cards */
+.explore-btn {
+    display: none;  /* hidden by default, shown on hover */
+    font-size: 10px;
+    font-family: inherit;
+    font-weight: 500;
+    padding: 2px 7px;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+    margin-left: auto;
+}
+
+.result-item:hover .explore-btn {
+    display: inline-block;
+}
+
+.explore-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--bg-tertiary);
+}
+
+/* Always show on touch devices (no hover) */
+@media (hover: none) {
+    .explore-btn {
+        display: inline-block;
+        font-size: 10px;
+    }
+}
+
+/* Explore bar — shown above results when in similar mode */
+.explore-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 10px;
+    font-size: 13px;
+}
+
+.explore-bar-label {
+    color: var(--text-secondary);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.explore-bar-label strong {
+    color: var(--text-primary);
+}
+
+.explore-bar-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.explore-download-all-btn {
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 500;
+    padding: 4px 10px;
+    background: var(--accent);
+    color: var(--bg-primary);
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+.explore-download-all-btn:hover {
+    opacity: 0.85;
+}
+
+.explore-download-all-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.explore-back-btn {
+    font-size: 12px;
+    font-family: inherit;
+    padding: 4px 10px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.explore-back-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.explore-playlist-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.explore-playlist-label input[type="checkbox"] {
+    accent-color: var(--accent);
+    cursor: pointer;
+}

@@ -29,8 +29,6 @@ class DownloadRequest(BaseModel):
 class PlaylistFetchRequest(BaseModel):
     url: str  # Spotify, Amazon Music, etc. playlist URL
 
-# Backwards compat alias — older code references this name
-SpotifyPlaylistRequest = PlaylistFetchRequest
 
 class AsyncBulkImportRequest(BaseModel):
     songs: str  # Multi-line text with "Artist - Song" format
@@ -137,3 +135,8 @@ class TestJellyfinRequest(BaseModel):
 
 class TestYouTubeCookiesRequest(BaseModel):
     cookies: Optional[str] = None
+
+class ExploreRequest(BaseModel):
+    artist: str
+    mode: str = "easy"   # easy / medium / hard
+    limit: int = 25

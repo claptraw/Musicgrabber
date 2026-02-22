@@ -24,11 +24,14 @@ import base64
 from constants import (
     VERSION, MUSIC_DIR, DB_PATH, COOKIES_FILE,
     MONOCHROME_API_URL, TIMEOUT_MONOCHROME_API,
+    LISTENBRAINZ_API_URL, TIMEOUT_LISTENBRAINZ,
     TIMEOUT_YTDLP_INFO,
     TIMEOUT_YTDLP_PREVIEW,
     TIMEOUT_SLSKD_SEARCH,
     WATCHED_PLAYLIST_CHECK_HOURS,
     SEARCH_LOG_RETENTION_DAYS,
+    STALE_JOB_TIMEOUT,
+    AUDIO_EXTENSIONS,
 )
 from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs, cleanup_old_search_logs
 from settings import (
@@ -40,6 +43,7 @@ from models import (
     AsyncBulkImportRequest, WatchedPlaylistRequest, WatchedPlaylistUpdate,
     SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestYouTubeCookiesRequest,
+    ExploreRequest,
 )
 from middleware import AuthMiddleware
 from youtube import (
@@ -54,10 +58,9 @@ from downloads import (
     rebuild_watched_playlist_m3u,
 )
 from bulk_import import clean_bulk_import_line, start_bulk_import_for_tracks, process_bulk_import_worker
-from amazon import fetch_amazon_playlist
 from watched_playlists import (
     detect_playlist_platform, fetch_playlist_tracks, refresh_watched_playlist,
-    start_scheduler, _fetch_spotify_playlist_embed,
+    start_scheduler,
 )
 from utils import hash_track, is_valid_youtube_id, spawn_daemon_thread, subsonic_auth_params
 
@@ -78,6 +81,7 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 init_db()
 cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
 start_stale_job_monitor()
+start_scheduler()
 
 # Sync cookies file from settings at startup
 _sync_cookies_file()
@@ -338,7 +342,8 @@ def test_slskd_connection(request: TestSlskdRequest = None):
     except httpx.TimeoutException:
         return {"success": False, "message": "Connection timed out"}
     except Exception as e:
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
+        print(f"slskd connection test error: {type(e).__name__}: {e}")
+        return {"success": False, "message": "Connection failed — check server logs for details"}
 
 
 @app.post("/api/settings/test/navidrome")
@@ -370,7 +375,8 @@ def test_navidrome_connection(request: TestNavidromeRequest = None):
     except httpx.TimeoutException:
         return {"success": False, "message": "Connection timed out"}
     except Exception as e:
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
+        print(f"Navidrome connection test error: {type(e).__name__}: {e}")
+        return {"success": False, "message": "Connection failed — check server logs for details"}
 
 
 @app.post("/api/settings/test/jellyfin")
@@ -401,7 +407,8 @@ def test_jellyfin_connection(request: TestJellyfinRequest = None):
     except httpx.TimeoutException:
         return {"success": False, "message": "Connection timed out"}
     except Exception as e:
-        return {"success": False, "message": f"Connection failed: {str(e)}"}
+        print(f"Jellyfin connection test error: {type(e).__name__}: {e}")
+        return {"success": False, "message": "Connection failed — check server logs for details"}
 
 
 @app.post("/api/settings/test/youtube-cookies")
@@ -484,7 +491,8 @@ def test_youtube_cookies(request: TestYouTubeCookiesRequest = None):
     except subprocess.TimeoutExpired:
         return {"success": False, "message": "Test timed out"}
     except Exception as e:
-        return {"success": False, "message": f"Test failed: {str(e)}"}
+        print(f"YouTube cookie test error: {type(e).__name__}: {e}")
+        return {"success": False, "message": "Cookie test failed — check server logs for details"}
     finally:
         if tmp_path:
             Path(tmp_path).unlink(missing_ok=True)
@@ -663,14 +671,22 @@ def get_stats():
         ).fetchone()
         converted_searches = int(search_to_download["converted_searches"] or 0)
 
-        # Storage usage
+        # Storage usage — scan both Singles and Playlists dirs, deduplicate by inode
         storage_bytes = 0
         file_count = 0
+        seen_inodes: set[tuple] = set()
         try:
-            for f in get_singles_dir().rglob("*"):
-                if f.is_file() and f.suffix.lower() in ('.flac', '.opus', '.m4a', '.mp3', '.ogg', '.webm'):
-                    storage_bytes += f.stat().st_size
-                    file_count += 1
+            for base_dir in [get_singles_dir(), get_playlists_dir()]:
+                if not base_dir.exists():
+                    continue
+                for f in base_dir.rglob("*"):
+                    if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS:
+                        st = f.stat()
+                        key = (st.st_dev, st.st_ino)
+                        if key not in seen_inodes:
+                            storage_bytes += st.st_size
+                            file_count += 1
+                            seen_inodes.add(key)
         except OSError:
             pass
 
@@ -875,8 +891,63 @@ def search_slskd_endpoint(request: SearchRequest):
         return {"results": final_results, "slskd_enabled": True}
 
     except Exception as e:
-        print(f"slskd search error: {e}")
-        return {"results": [], "slskd_enabled": True, "error": str(e)}
+        print(f"slskd search error: {type(e).__name__}: {e}")
+        return {"results": [], "slskd_enabled": True, "error": "Search failed — check server logs for details"}
+
+
+@app.post("/api/explore/similar")
+def explore_similar(request: ExploreRequest):
+    """Return a list of similar artists via MusicBrainz + ListenBrainz Labs.
+    Two-step: MusicBrainz name search → artist MBID, then ListenBrainz Labs
+    similar-artists → ranked list of similar artist names. No auth required.
+    Returns {artist} entries; the frontend searches each artist to find a top track."""
+    artist = request.artist.strip()
+    if not artist:
+        raise HTTPException(status_code=400, detail="Artist name required")
+
+    limit = max(1, min(request.limit, 25))  # Hard cap at 25
+
+    MB_ALGO = "session_based_days_7500_session_300_contribution_5_threshold_10_limit_100_filter_True_skip_30"
+    MB_HEADERS = {"User-Agent": f"MusicGrabber/{VERSION} (self-hosted music tool)"}
+
+    with httpx.Client(timeout=TIMEOUT_LISTENBRAINZ, headers=MB_HEADERS) as client:
+        # Step 1: look up the artist MBID via MusicBrainz search
+        try:
+            mb_resp = client.get(
+                "https://musicbrainz.org/ws/2/artist",
+                params={"query": artist, "limit": 1, "fmt": "json"},
+            )
+            mb_resp.raise_for_status()
+            artists = mb_resp.json().get("artists", [])
+            if not artists:
+                return {"artists": [], "artist": artist}
+            mbid = artists[0]["id"]
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="MusicBrainz timed out")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"MusicBrainz lookup failed: {e}")
+
+        # Step 2: ListenBrainz Labs similar-artists — fully public, no token needed
+        try:
+            lb_resp = client.get(
+                "https://labs.api.listenbrainz.org/similar-artists/json",
+                params={"artist_mbids": mbid, "algorithm": MB_ALGO},
+            )
+            lb_resp.raise_for_status()
+            similar = lb_resp.json()
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="ListenBrainz Labs timed out")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"ListenBrainz Labs failed: {e}")
+
+    # Results are pre-sorted by score descending — just take the top N names
+    result_artists = [
+        {"artist": entry["name"]}
+        for entry in similar
+        if entry.get("name")
+    ][:limit]
+
+    return {"artists": result_artists, "artist": artist}
 
 
 # =============================================================================
@@ -1097,7 +1168,7 @@ def delete_job_file(job_id: str):
     if not artist or not title:
         raise HTTPException(status_code=400, detail="Job has no artist/title metadata")
 
-    from utils import sanitize_filename, check_duplicate
+    from utils import check_duplicate
     existing = check_duplicate(artist, title)
     if not existing:
         # File already gone — just mark it as deleted and move on
@@ -1145,7 +1216,11 @@ def cleanup_jobs(status: Optional[str] = None):
         elif status == "failed":
             cursor = conn.execute("DELETE FROM jobs WHERE status = 'failed'")
         elif status == "stale":
-            cursor = conn.execute("DELETE FROM jobs WHERE status IN ('downloading', 'queued')")
+            cursor = conn.execute(
+                "DELETE FROM jobs WHERE status IN ('downloading', 'queued') "
+                "AND created_at < datetime('now', ? || ' seconds')",
+                (str(-STALE_JOB_TIMEOUT),)
+            )
         else:
             cursor = conn.execute("DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors', 'failed')")
 
@@ -1340,7 +1415,7 @@ def get_bulk_import_status(import_id: str):
         # Count download statuses by joining bulk_import_tracks with jobs
         cursor = conn.execute(
             """SELECT
-                   SUM(CASE WHEN j.status = 'completed' THEN 1 ELSE 0 END) as completed,
+                   SUM(CASE WHEN j.status IN ('completed', 'completed_with_errors') THEN 1 ELSE 0 END) as completed,
                    SUM(CASE WHEN j.status = 'failed' THEN 1 ELSE 0 END) as download_failed,
                    SUM(CASE WHEN j.status IN ('queued', 'downloading') THEN 1 ELSE 0 END) as still_queued
                FROM bulk_import_tracks t
@@ -1395,15 +1470,15 @@ def list_bulk_imports(limit: int = 10):
 @app.post("/api/fetch-playlist")
 @app.post("/api/spotify-playlist")  # Backwards compat
 def fetch_playlist(request: PlaylistFetchRequest):
-    """Fetch track list from a public Spotify or Amazon Music playlist URL."""
+    """Fetch track list from a supported public playlist URL (Spotify, Amazon Music, Tidal)."""
     url = request.url.strip()
+    platform, _ = detect_playlist_platform(url)
 
-    # Route to the right scraper based on URL
-    if re.match(r'https?://music\.amazon\.[a-z.]+/(user-playlists|playlists)/', url):
-        return fetch_amazon_playlist(url)
-
-    # Default: Spotify (the original behaviour)
-    return _fetch_spotify_playlist_embed(url)
+    # fetch_playlist_tracks returns (artist, title) tuples -- reformat to the
+    # "Artist - Title" strings the bulk import UI expects, plus a playlist name.
+    tracks_tuples, playlist_name = fetch_playlist_tracks(url, platform)
+    tracks = [f"{artist} - {title}" for artist, title in tracks_tuples]
+    return {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks)}
 
 
 # =============================================================================
@@ -1413,7 +1488,7 @@ def fetch_playlist(request: PlaylistFetchRequest):
 @app.post("/api/watched-playlists")
 def add_watched_playlist(request: WatchedPlaylistRequest):
     """Add a new playlist to watch for new tracks"""
-    platform, playlist_ext_id = detect_playlist_platform(request.url)
+    platform, _ = detect_playlist_platform(request.url)
 
     with db_conn() as conn:
         # Check for duplicate
@@ -1649,13 +1724,6 @@ def check_all_watched_playlists():
         "total_queued": total_queued,
         "results": results
     }
-
-
-# =============================================================================
-# Start Background Scheduler
-# =============================================================================
-
-start_scheduler()
 
 
 if __name__ == "__main__":

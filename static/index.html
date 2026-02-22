@@ -58,6 +58,7 @@
         </div>
 
         <div id="relatedSuggestions" style="display: none;"></div>
+        <div id="exploreBar" style="display: none;"></div>
         <div id="resultsTab" class="results"></div>
 
         <div id="bulkTabContainer" style="display: none;">
@@ -89,15 +90,15 @@
                     </div>
                     <div id="spotifyError" style="margin-top: 8px; font-size: 12px; color: var(--error); display: none;"></div>
                     <div style="margin-top: 6px; display: flex; align-items: center; gap: 6px;">
-                        <span id="playlistServicesHint" style="font-size: 11px; color: var(--text-secondary);">Supported services: Spotify, YouTube, Amazon Music</span>
+                        <span id="playlistServicesHint" style="font-size: 11px; color: var(--text-secondary);">Supported services: Spotify, YouTube, Amazon Music, Tidal</span>
                         <span
                             id="playlistServicesTooltip"
-                            title="Supported services: Spotify, YouTube, Amazon Music"
+                            title="Supported services: Spotify, YouTube, Amazon Music, Tidal"
                             style="width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border); color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; cursor: help;"
                         >i</span>
                     </div>
                     <div style="margin-top: 6px; font-size: 11px; color: var(--text-secondary);">
-                        Large Spotify playlists may take a few seconds to load. YouTube playlists are unlimited.
+                        Large Spotify playlists may take a few seconds to load. YouTube playlists are unlimited. Tidal requires a public playlist URL.
                     </div>
                 </div>
                 <div style="position: relative;">
@@ -142,14 +143,14 @@
             </div>
             <div style="margin-bottom: 16px; padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px;">
                 <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
-                    Add a Spotify, YouTube, or Amazon Music playlist to automatically download new tracks when they're added.
+                    Add a Spotify, YouTube, Amazon Music, or Tidal playlist to automatically download new tracks when they're added.
                 </p>
                 <p id="watchedScheduleInfo" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 12px; opacity: 0.8;"></p>
                 <div style="display: flex; gap: 8px; margin-bottom: 8px;">
                     <input
                         type="text"
                         id="watchedUrlInput"
-                        placeholder="Spotify, YouTube, or Amazon Music playlist URL"
+                        placeholder="Spotify, YouTube, Amazon Music, or Tidal playlist URL"
                         style="flex: 1; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);"
                     >
                     <button
@@ -444,7 +445,7 @@
                             <input type="password" id="settingApiKey" placeholder="Leave empty to disable authentication">
                             <button type="button" class="password-toggle" data-target="settingApiKey">Show</button>
                         </div>
-                        <span class="settings-hint">When set, all API requests require this key. Rate limit: 60 requests/minute per IP.</span>
+                        <span class="settings-hint">When set, all API requests require this key. Rate limit: 200 requests/minute per IP.</span>
                     </div>
                     <div class="settings-row">
                         <label>Browser API Key</label>
@@ -674,7 +675,7 @@
         }
 
         const versionLabel = document.getElementById('versionLabel');
-        const PLAYLIST_SERVICES = ["Spotify", "YouTube", "Amazon Music"];
+        const PLAYLIST_SERVICES = ["Spotify", "YouTube", "Amazon Music", "Tidal"];
 
         function renderPlaylistServicesText() {
             const text = PLAYLIST_SERVICES.join(", ");
@@ -722,6 +723,8 @@
                     if (config.playlists_subdir) {
                         const toggle = document.getElementById('watchedPlaylistsDirToggle');
                         if (toggle) toggle.style.display = 'flex';
+                        const watchedUsePlaylistsDir = document.getElementById('watchedUsePlaylistsDir');
+                        if (watchedUsePlaylistsDir) watchedUsePlaylistsDir.checked = true;
                     }
                 }
             })
@@ -969,6 +972,9 @@
             searchBtn.disabled = true;
             resultsTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
             relatedSuggestions.style.display = 'none';
+            exploreBar.style.display = 'none';
+            _exploreOriginalResults = null;
+            _exploreResolvedResults = null;
             stopPreview(); // Stop any playing preview
 
             try {
@@ -1088,6 +1094,241 @@
             relatedSuggestions.style.display = 'block';
         }
 
+        // -----------------------------------------------------------------------
+        // Explore similar artists via ListenBrainz
+        // -----------------------------------------------------------------------
+
+        let _exploreOriginalResults = null;  // stash so Back restores them
+        let _exploreResolvedResults = null;  // the actual search results from the explore run
+
+        const exploreBar = document.getElementById('exploreBar');
+
+        async function exploreSimilar(artist) {
+            if (!artist) return;
+            stopPreview();
+
+            // Stash current results so "Back" can restore them
+            _exploreOriginalResults = lastResults ? [...lastResults] : [];
+
+            // Show the explore bar with a loading state
+            _showExploreBar(artist, null);
+
+            // Show a spinner in results while we fetch
+            resultsTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            relatedSuggestions.style.display = 'none';
+
+            let tracks;
+            try {
+                const resp = await apiFetch('/api/explore/similar', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ artist, mode: 'easy', limit: 25 })
+                });
+                if (!resp.ok) throw new Error('Could not reach similar-artists service');
+                const data = await resp.json();
+                tracks = data.artists || [];
+            } catch (e) {
+                resultsTab.innerHTML = `<div class="empty-state"><p>Could not load similar artists: ${escapeHtml(e.message)}</p></div>`;
+                return;
+            }
+
+            if (!tracks.length) {
+                resultsTab.innerHTML = `<div class="empty-state"><p>No similar artists found for "${escapeHtml(artist)}"</p></div>`;
+                return;
+            }
+
+            // Update bar now we know the count
+            _showExploreBar(artist, tracks);
+
+            // Search each similar artist in parallel (batches of 5) and render as results arrive
+            resultsTab.innerHTML = '';
+            const exploreResults = [];
+
+            async function searchOne(track) {
+                // track is {artist} — search by artist name to get their top result
+                const query = track.artist;
+                try {
+                    const resp = await apiFetch('/api/search', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ query, limit: 1, source: currentSource })
+                    });
+                    if (!resp.ok) return null;
+                    const data = await resp.json();
+                    return data.results && data.results[0] ? data.results[0] : null;
+                } catch { return null; }
+            }
+
+            // Batch into groups of 5 to avoid hammering the backend
+            for (let i = 0; i < tracks.length; i += 5) {
+                const batch = tracks.slice(i, i + 5);
+                const batchResults = await Promise.all(batch.map(searchOne));
+                batchResults.forEach(r => {
+                    if (r) {
+                        exploreResults.push(r);
+                        // Render incrementally — append each card as it arrives
+                        const tmp = document.createElement('div');
+                        tmp.innerHTML = _renderOneResult(r, exploreResults.length - 1);
+                        const item = tmp.firstElementChild;
+                        resultsTab.appendChild(item);
+                        _attachResultHandlers(item, r, exploreResults.length - 1);
+                    }
+                });
+            }
+
+            // Update lastResults so individual downloads work, and stash for Download All
+            lastResults = exploreResults;
+            _exploreResolvedResults = exploreResults;
+
+            // All batches done — enable the Download All button now it has real data
+            const dlBtn = document.getElementById('exploreDownloadAllBtn');
+            if (dlBtn) { dlBtn.disabled = false; dlBtn.textContent = 'Download All'; }
+
+            if (!exploreResults.length) {
+                resultsTab.innerHTML = `<div class="empty-state"><p>Couldn't find playable tracks for similar artists</p></div>`;
+            }
+        }
+
+        function _showExploreBar(artist, tracks) {
+            const trackCount = tracks ? tracks.length : null;
+            const countText = trackCount ? ` (${trackCount} similar artists)` : '';
+            exploreBar.innerHTML = `
+                <div class="explore-bar">
+                    <span class="explore-bar-label">~ Similar to <strong>${escapeHtml(artist)}</strong>${escapeHtml(countText)}</span>
+                    <div class="explore-bar-actions">
+                        ${tracks ? `
+                            <label class="explore-playlist-label">
+                                <input type="checkbox" id="explorePlaylistCheckbox" checked>
+                                <span>Save as playlist</span>
+                            </label>
+                            <button class="explore-download-all-btn" id="exploreDownloadAllBtn" disabled>Loading...</button>
+                        ` : ''}
+                        <button class="explore-back-btn" id="exploreBackBtn">&#x2715; Back</button>
+                    </div>
+                </div>
+            `;
+            exploreBar.style.display = 'block';
+
+            document.getElementById('exploreBackBtn').addEventListener('click', () => {
+                exploreBar.style.display = 'none';
+                stopPreview();
+                if (_exploreOriginalResults) {
+                    renderResults(_exploreOriginalResults);
+                    showRelatedSuggestions(_exploreOriginalResults);
+                }
+                _exploreOriginalResults = null;
+                _exploreResolvedResults = null;
+            });
+
+            const dlAllBtn = document.getElementById('exploreDownloadAllBtn');
+            if (dlAllBtn && tracks) {
+                dlAllBtn.addEventListener('click', () => _exploreDownloadAll(artist, tracks));
+            }
+        }
+
+        async function _exploreDownloadAll(artist, tracks) {
+            const dlAllBtn = document.getElementById('exploreDownloadAllBtn');
+            if (dlAllBtn) { dlAllBtn.disabled = true; dlAllBtn.textContent = 'Queuing...'; }
+
+            // Use the dedicated explore results (not lastResults, which may still hold the original search).
+            const resolvedResults = _exploreResolvedResults && _exploreResolvedResults.length ? _exploreResolvedResults : null;
+            let songs;
+            if (resolvedResults) {
+                songs = resolvedResults.map(r => {
+                    const a = (r.artist || r.channel || '').trim();
+                    const t = (r.title || '').trim();
+                    return a && t ? `${a} - ${t}` : (a || t);
+                }).filter(Boolean).join('\n');
+            } else {
+                songs = tracks.map(t => `${t.artist} - top track`).join('\n');
+            }
+            const now = new Date();
+            const dateSuffix = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+            const playlistName = `Similar to ${artist} (${dateSuffix})`;
+            const makePlaylist = document.getElementById('explorePlaylistCheckbox')?.checked ?? true;
+
+            const requestBody = { songs, convert_to_flac: true };
+            if (makePlaylist) {
+                requestBody.create_playlist = true;
+                requestBody.playlist_name = playlistName;
+                requestBody.use_playlists_dir = true;
+            }
+
+            try {
+                const resp = await apiFetch('/api/bulk-import-async', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+                if (!resp.ok) throw new Error('Bulk import failed');
+                if (dlAllBtn) { dlAllBtn.textContent = 'Queued!'; }
+                // Switch to the Queue tab so they can watch progress
+                setTimeout(() => {
+                    document.querySelector('[data-tab="queue"]')?.click();
+                }, 800);
+            } catch (e) {
+                if (dlAllBtn) { dlAllBtn.disabled = false; dlAllBtn.textContent = 'Download All'; }
+                showToast(`Could not queue downloads: ${e.message}`, true);
+            }
+        }
+
+        // Render a single result card as an HTML string (mirrors the main renderResults template)
+        function _renderOneResult(r, index) {
+            return `
+                <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''} ${r.source === 'soulseek' ? 'soulseek' : ''}"
+                     data-video-id="${r.video_id}"
+                     data-index="${index}"
+                     data-title="${escapeHtml(r.title)}"
+                     data-tooltip="${r.source !== 'soulseek' ? 'Hover to preview, click to download' : 'Click to download'}">
+                    ${r.source !== 'soulseek' ? '<div class="preview-indicator">▶</div>' : ''}
+                    ${r.source !== 'soulseek' ? `<button class="preview-btn" data-video-id="${r.video_id}" data-index="${index}" title="Preview">Preview &#9654;</button>` : ''}
+                    ${r.thumbnail ? `<img class="result-thumb" src="${r.thumbnail}" alt="" loading="lazy">` : '<div class="result-thumb"></div>'}
+                    <div class="result-info">
+                        <div class="result-title">${escapeHtml(r.title)}</div>
+                        <div class="result-meta">${formatResultMeta(r)}</div>
+                        <div class="result-badges">
+                            <span class="source-badge ${r.source}">${getSourceBadge(r.source)}</span>
+                            ${r.quality ? `<span class="quality-badge ${getQualityBadgeClass(r.quality)}">${formatQualityLabel(r.quality)}</span>` : ''}
+                            ${r.duration ? `<span class="result-duration">${r.duration}</span>` : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Attach download/preview handlers to a single result card element
+        function _attachResultHandlers(item, result, index) {
+            const videoId = item.dataset.videoId;
+
+            item.addEventListener('click', () => {
+                if (!downloadingIds.has(videoId)) {
+                    stopPreview();
+                    downloadTrack(result, item);
+                }
+            });
+
+            item.addEventListener('mouseenter', () => {
+                if (!downloadingIds.has(videoId) && result.source !== 'soulseek') {
+                    startHoverTimer(videoId, item, result);
+                }
+            });
+
+            item.addEventListener('mouseleave', () => stopPreview());
+
+            const previewBtn = item.querySelector('.preview-btn');
+            if (previewBtn) {
+                previewBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (downloadingIds.has(videoId)) return;
+                    if (currentPreviewId === videoId) {
+                        stopPreview();
+                    } else {
+                        startPreview(videoId, item, result);
+                    }
+                });
+            }
+        }
+
         function getSourceBadge(source) {
             const badges = { youtube: 'YT', soundcloud: 'SC', monochrome: 'MO', soulseek: 'SLK' };
             return badges[source] || source.toUpperCase().slice(0, 3);
@@ -1165,6 +1406,7 @@
                             <span class="source-badge ${r.source}">${getSourceBadge(r.source)}</span>
                             ${r.quality ? `<span class="quality-badge ${getQualityBadgeClass(r.quality)}">${formatQualityLabel(r.quality)}</span>` : ''}
                             ${r.duration ? `<span class="result-duration">${r.duration}</span>` : ''}
+                            <button class="explore-btn" data-artist="${escapeAttr(r.artist || r.channel)}" title="Find similar artists via ListenBrainz">~ Similar</button>
                         </div>
                     </div>
                 </div>
@@ -1206,6 +1448,15 @@
                         } else {
                             startPreview(videoId, item, result);
                         }
+                    });
+                }
+
+                // Similar artists button — explore via ListenBrainz
+                const exploreBtn = item.querySelector('.explore-btn');
+                if (exploreBtn) {
+                    exploreBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        exploreSimilar(exploreBtn.dataset.artist);
                     });
                 }
             });
@@ -1695,7 +1946,7 @@
                     requestBody.create_playlist = true;
                     requestBody.playlist_name = playlistName;
                     const usePlaylistsDirCheckbox = document.getElementById('usePlaylistsDirCheckbox');
-                    if (usePlaylistsDirCheckbox && usePlaylistsDirCheckbox.checked) {
+                    if ((usePlaylistsDirCheckbox && usePlaylistsDirCheckbox.checked) || (!usePlaylistsDirCheckbox && serverConfig.playlists_subdir)) {
                         requestBody.use_playlists_dir = true;
                     }
                 }
@@ -2011,11 +2262,12 @@
                 return;
             }
 
-            // URL validation - Spotify playlists/albums and Amazon Music playlists
+            // URL validation - Spotify playlists/albums, Amazon Music playlists, and Tidal public playlists
             const isSpotify = url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//);
             const isAmazon = url.match(/^https?:\/\/music\.amazon\.[a-z.]+\/(user-playlists|playlists)\//);
-            if (!isSpotify && !isAmazon) {
-                spotifyError.textContent = 'Unsupported URL. Paste a Spotify or Amazon Music playlist link.';
+            const isTidal = url.match(/^https?:\/\/(www\.)?tidal\.com\/(browse\/)?playlist\/[0-9a-f-]{36}/i);
+            if (!isSpotify && !isAmazon && !isTidal) {
+                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, Amazon Music, or Tidal playlist link.';
                 spotifyError.style.display = 'block';
                 return;
             }
@@ -2089,8 +2341,13 @@
         createPlaylistCheckbox.addEventListener('change', () => {
             playlistNameInput.style.display = createPlaylistCheckbox.checked ? 'block' : 'none';
             const playlistsDirRow = document.getElementById('usePlaylistsDirRow');
+            const usePlaylistsDirCheckbox = document.getElementById('usePlaylistsDirCheckbox');
             if (playlistsDirRow) {
                 playlistsDirRow.style.display = (createPlaylistCheckbox.checked && serverConfig.playlists_subdir) ? 'flex' : 'none';
+            }
+            if (usePlaylistsDirCheckbox && createPlaylistCheckbox.checked && serverConfig.playlists_subdir) {
+                // Default playlist-creation imports to the Playlists folder when configured.
+                usePlaylistsDirCheckbox.checked = true;
             }
             if (createPlaylistCheckbox.checked) {
                 playlistNameInput.focus();
@@ -3245,6 +3502,10 @@
                             serverConfig.playlists_subdir = value;
                             const watchedToggle = document.getElementById('watchedPlaylistsDirToggle');
                             if (watchedToggle) watchedToggle.style.display = value ? 'flex' : 'none';
+                            const watchedUsePlaylistsDir = document.getElementById('watchedUsePlaylistsDir');
+                            if (watchedUsePlaylistsDir) watchedUsePlaylistsDir.checked = !!value;
+                            const usePlaylistsDirCheckbox = document.getElementById('usePlaylistsDirCheckbox');
+                            if (usePlaylistsDirCheckbox && value) usePlaylistsDirCheckbox.checked = true;
                         }
                     }
                 }
