@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.2.0 (in development)
+
+---
+
+## v2.1.2 (2026-02-23)
+
+### Added
+- **Watched playlist sync mode**: Each watched playlist now has a Sync setting — Append (default, existing behaviour: M3U grows as new tracks arrive) or Mirror (M3U stays in sync with the upstream playlist; tracks removed from the source drop out of the M3U on next refresh). Audio files are never deleted either way — only the M3U changes
+- **Missing tracks view**: Each watched playlist card now has a "Missing" button that shows tracks which failed to download (never got a `downloaded_at`, job failed or was never started). Click again to dismiss
+- **M3U updated per-track**: Watched playlist M3U files now update immediately each time a track finishes downloading, rather than waiting for the next full refresh cycle. It grows as downloads complete
+- **MP3 output format**: Settings now offers FLAC | Opus | MP3 as the audio format picker. MP3 uses LAME VBR ~192 kbps (`-q:a 2`) — roughly 4-5 MB per track, noticeably smaller than FLAC/Opus at equivalent duration. A warning note appears in the UI when MP3 is selected, because nobody should be surprised by lossy-to-lossy re-encoding
+
+### Fixed
+- **YouTube Music playlist URLs rejected**: `music.youtube.com/playlist?list=...` URLs were blocked by the frontend validator despite the backend supporting them just fine. Now accepted alongside regular `youtube.com` playlist URLs
+- **YouTube Mix/Radio playlists rejected**: Watch-page URLs with a `list=RD...` parameter (Mixes, Radio, auto-generated playlists) were rejected by both the frontend validator and the backend. Both now accept any YouTube URL containing a `list=` parameter. Mix playlists are also passed to yt-dlp as-is rather than being reconstructed as a bare `/playlist?list=RD...` URL, which YouTube refuses
+
+---
+
 ## v2.1.1 (2026-02-22)
 
 ### Fixed

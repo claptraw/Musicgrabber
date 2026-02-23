@@ -1510,13 +1510,14 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
         # Create playlist record
         playlist_id = str(uuid.uuid4())[:8]
 
+        sync_mode = request.sync_mode if request.sync_mode in ("append", "mirror") else "append"
         conn.execute("""
             INSERT INTO watched_playlists
-            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, last_track_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (playlist_id, request.url, playlist_name, platform,
               request.refresh_interval_hours, int(request.convert_to_flac),
-              int(request.make_m3u), int(request.use_playlists_dir), len(tracks)))
+              int(request.make_m3u), int(request.use_playlists_dir), sync_mode, len(tracks)))
 
         # Insert all current tracks as "seen"
         for artist, title in tracks:
@@ -1640,6 +1641,10 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate):
             updates.append("use_playlists_dir = ?")
             params.append(int(request.use_playlists_dir))
 
+        if request.sync_mode is not None and request.sync_mode in ("append", "mirror"):
+            updates.append("sync_mode = ?")
+            params.append(request.sync_mode)
+
         if updates:
             params.append(playlist_id)
             conn.execute(
@@ -1675,6 +1680,40 @@ def delete_watched_playlist(playlist_id: str):
         conn.commit()
 
     return {"message": f"Deleted watched playlist '{playlist['name']}'"}
+
+
+@app.get("/api/watched-playlists/{playlist_id}/missing")
+def get_missing_watched_tracks(playlist_id: str):
+    """Return tracks that were never successfully downloaded for a watched playlist.
+
+    A track is 'missing' if it has no downloaded_at timestamp and either has no job,
+    or its job ended in failure. Tracks still actively queued or downloading are excluded.
+    """
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+
+        playlist = conn.execute(
+            "SELECT name FROM watched_playlists WHERE id = ?", (playlist_id,)
+        ).fetchone()
+
+        if not playlist:
+            raise HTTPException(status_code=404, detail="Watched playlist not found")
+
+        rows = conn.execute(
+            """SELECT wpt.artist, wpt.title, wpt.first_seen, wpt.removed_at, j.status as job_status
+               FROM watched_playlist_tracks wpt
+               LEFT JOIN jobs j ON wpt.job_id = j.id
+               WHERE wpt.playlist_id = ?
+                 AND wpt.downloaded_at IS NULL
+                 AND (j.status IS NULL OR j.status IN ('failed', 'completed_with_errors'))""",
+            (playlist_id,)
+        ).fetchall()
+
+    return {
+        "playlist_name": playlist["name"],
+        "missing": [dict(r) for r in rows],
+        "count": len(rows),
+    }
 
 
 @app.post("/api/watched-playlists/{playlist_id}/refresh")

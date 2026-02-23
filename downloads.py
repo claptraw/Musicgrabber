@@ -246,9 +246,14 @@ def _build_ytdlp_download_cmd(
     """
     if convert_to_flac:
         fmt = get_setting("audio_format", "flac")
-        format_args = ["--audio-format", fmt if fmt in ("flac", "opus") else "flac"]
+        fmt = fmt if fmt in ("flac", "opus", "mp3") else "flac"
+        format_args = ["--audio-format", fmt]
     else:
+        fmt = None
         format_args = []  # Keep original format from source
+    # MP3 VBR ~192k (LAME -V 2) — good trade-off between size and quality.
+    # For FLAC/Opus, quality 0 = best (lossless / highest bitrate).
+    audio_quality = "2" if fmt == "mp3" else "0"
     base_args = _ytdlp_base_args() if use_cookies else []
     url = source_url or f"https://www.youtube.com/watch?v={video_id}"
     return [
@@ -257,7 +262,7 @@ def _build_ytdlp_download_cmd(
         "-f", "bestaudio/best",
         "-x",
         *format_args,
-        "--audio-quality", "0",
+        "--audio-quality", audio_quality,
         "--embed-metadata",
         "--embed-thumbnail",
         "--convert-thumbnails", "jpg",
@@ -283,12 +288,33 @@ def _update_job(job_id: str, **fields) -> None:
 
 
 def _mark_watched_track_downloaded(job_id: str) -> None:
+    """Mark a watched playlist track as downloaded and rebuild the M3U if enabled."""
     with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
         conn.execute(
             "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now') WHERE job_id = ?",
             (job_id,)
         )
         conn.commit()
+
+        # Rebuild the M3U immediately if this job belongs to a watched playlist
+        # so the file grows track-by-track rather than waiting for the next full refresh
+        row = conn.execute(
+            """SELECT wp.id, wp.name, wp.make_m3u, wp.use_playlists_dir, wp.sync_mode
+               FROM watched_playlists wp
+               JOIN bulk_imports bi ON bi.watch_playlist_id = wp.id
+               JOIN bulk_import_tracks bt ON bt.import_id = bi.id AND bt.job_id = ?
+               WHERE wp.make_m3u = 1
+               LIMIT 1""",
+            (job_id,)
+        ).fetchone()
+
+    if row:
+        rebuild_watched_playlist_m3u(
+            row["id"], row["name"],
+            use_playlists_dir=bool(row["use_playlists_dir"]),
+            sync_mode=row["sync_mode"] or "append",
+        )
 
 
 def _cleanup_temp_files(artist_dir: Path, sanitized_title: str) -> int:
@@ -504,23 +530,36 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
         set_file_permissions(m3u_path)
 
 
-def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playlists_dir: bool = False) -> Path | None:
+def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playlists_dir: bool = False, sync_mode: str = "append") -> Path | None:
     """Rebuild the M3U file for a watched playlist from all tracks marked as downloaded.
 
     Walks every downloaded track in the playlist, resolves the file on disk, and
     writes (or overwrites) the M3U. Called after each refresh cycle so the playlist
     file grows in step with the library.
 
+    In mirror mode, tracks that have been removed from the upstream playlist (removed_at IS NOT NULL)
+    are excluded from the M3U. Audio files are never deleted — only the playlist file changes.
+
     Returns the M3U path on success, None if no files could be resolved.
     """
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """SELECT artist, title FROM watched_playlist_tracks
-               WHERE playlist_id = ? AND downloaded_at IS NOT NULL
-               ORDER BY first_seen""",
-            (playlist_id,)
-        ).fetchall()
+        # In mirror mode, exclude tracks that have been removed from the upstream playlist.
+        # In append mode, keep everything ever downloaded regardless of upstream state.
+        if sync_mode == "mirror":
+            rows = conn.execute(
+                """SELECT artist, title FROM watched_playlist_tracks
+                   WHERE playlist_id = ? AND downloaded_at IS NOT NULL AND removed_at IS NULL
+                   ORDER BY first_seen""",
+                (playlist_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT artist, title FROM watched_playlist_tracks
+                   WHERE playlist_id = ? AND downloaded_at IS NOT NULL
+                   ORDER BY first_seen""",
+                (playlist_id,)
+            ).fetchall()
 
     playlists_dir = get_playlists_dir() if use_playlists_dir else None
     safe_playlist = sanitize_filename(playlist_name)
@@ -885,7 +924,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
         # Determine final filename
         audio_fmt = get_setting("audio_format", "flac") if convert_to_flac else None
-        if audio_fmt not in ("flac", "opus"):
+        if audio_fmt not in ("flac", "opus", "mp3"):
             audio_fmt = "flac"
 
         target_ext = f".{audio_fmt}" if audio_fmt else source_ext
@@ -893,11 +932,17 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
         if needs_convert:
             # Convert to the target format
-            ffmpeg_codec = "flac" if audio_fmt == "flac" else "libopus"
+            if audio_fmt == "flac":
+                ffmpeg_codec = "flac"
+                extra_args = []
+            elif audio_fmt == "opus":
+                ffmpeg_codec = "libopus"
+                extra_args = ["-b:a", "320k"]
+            else:  # mp3 — VBR ~192k
+                ffmpeg_codec = "libmp3lame"
+                extra_args = ["-q:a", "2"]
             final_file = artist_dir / f"{sanitized_title}{target_ext}"
-            convert_cmd = ["ffmpeg", "-y", "-i", str(downloaded_file), "-c:a", ffmpeg_codec]
-            if audio_fmt == "opus":
-                convert_cmd += ["-b:a", "320k"]
+            convert_cmd = ["ffmpeg", "-y", "-i", str(downloaded_file), "-c:a", ffmpeg_codec, *extra_args]
             convert_cmd.append(str(final_file))
             result = subprocess.run(convert_cmd, capture_output=True, timeout=TIMEOUT_FFMPEG_CONVERT)
             if result.returncode == 0:

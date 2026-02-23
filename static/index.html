@@ -190,6 +190,13 @@
                             <span class="toggle-slider"></span>
                         </div>
                     </label>
+                    <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary);" title="Append: M3U grows as new tracks are added. Mirror: M3U stays in sync with upstream — removed tracks drop out (audio files are never deleted).">
+                        Sync:
+                        <select id="watchedSyncModeSelect" style="padding: 6px 10px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary);">
+                            <option value="append" selected>Append</option>
+                            <option value="mirror">Mirror</option>
+                        </select>
+                    </label>
                 </div>
                 <div id="watchedError" style="margin-top: 8px; font-size: 12px; color: var(--error); display: none;"></div>
             </div>
@@ -230,12 +237,14 @@
                             <span class="toggle-slider"></span>
                         </div>
                     </label>
-                    <label class="settings-label">
+                    <label class="settings-label" style="flex-wrap:wrap;row-gap:4px;">
                         <span>Audio Format</span>
                         <div style="display:flex;gap:2px;padding:3px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;">
                             <button type="button" id="formatBtnFlac" class="format-option active" onclick="setAudioFormat('flac'); saveSettings();">FLAC</button>
                             <button type="button" id="formatBtnOpus" class="format-option" onclick="setAudioFormat('opus'); saveSettings();">Opus</button>
+                            <button type="button" id="formatBtnMp3"  class="format-option" onclick="setAudioFormat('mp3');  saveSettings();">MP3</button>
                         </div>
+                        <span id="mp3FormatNote" style="display:none;width:100%;font-size:10px;color:var(--text-secondary);">MP3 is encoded at ~192 kbps variable bitrate. May cause quality loss if the source is already lossy (e.g. from YouTube).</span>
                         <input type="checkbox" id="settingDefaultFlac" checked style="display:none;">
                         <input type="text" id="settingAudioFormat" value="flac" style="display:none;">
                     </label>
@@ -648,24 +657,29 @@
         const convertToFlacCheckbox = document.getElementById('convertToFlac');
         let watchedFlacTouched = false;
 
-        // audioFormat tracks which format to use when conversion is on ("flac" or "opus")
+        // audioFormat tracks which format to use when conversion is on ("flac", "opus", or "mp3")
         let audioFormat = 'flac';
 
         function setAudioFormat(format) {
-            audioFormat = (format === 'opus') ? 'opus' : 'flac';
-            const isFlac = audioFormat === 'flac';
+            audioFormat = ['flac', 'opus', 'mp3'].includes(format) ? format : 'flac';
 
             const btnFlac = document.getElementById('formatBtnFlac');
             const btnOpus = document.getElementById('formatBtnOpus');
-            if (btnFlac) btnFlac.classList.toggle('active', isFlac);
-            if (btnOpus) btnOpus.classList.toggle('active', !isFlac);
+            const btnMp3  = document.getElementById('formatBtnMp3');
+            if (btnFlac) btnFlac.classList.toggle('active', audioFormat === 'flac');
+            if (btnOpus) btnOpus.classList.toggle('active', audioFormat === 'opus');
+            if (btnMp3)  btnMp3.classList.toggle('active',  audioFormat === 'mp3');
 
-            const label = isFlac ? 'FLAC' : 'Opus';
+            const labels = { flac: 'FLAC', opus: 'Opus', mp3: 'MP3' };
+            const label = labels[audioFormat];
             const headerLabel = document.getElementById('headerFormatLabel');
             if (headerLabel) headerLabel.textContent = label;
 
             const watchedLabel = document.getElementById('watchedFormatLabel');
             if (watchedLabel) watchedLabel.textContent = `Convert to ${label}`;
+
+            const mp3Note = document.getElementById('mp3FormatNote');
+            if (mp3Note) mp3Note.style.display = audioFormat === 'mp3' ? 'block' : 'none';
 
             // Keep hidden input in sync so settings save picks it up
             const hiddenInput = document.getElementById('settingAudioFormat');
@@ -2275,12 +2289,13 @@
                 return;
             }
 
-            // URL validation - Spotify playlists/albums, Amazon Music playlists, and Tidal public playlists
+            // URL validation - Spotify playlists/albums, Amazon Music playlists, Tidal, and YouTube/YT Music playlists
             const isSpotify = url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//);
             const isAmazon = url.match(/^https?:\/\/music\.amazon\.[a-z.]+\/(user-playlists|playlists)\//);
             const isTidal = url.match(/^https?:\/\/(www\.)?tidal\.com\/(browse\/)?playlist\/[0-9a-f-]{36}/i);
-            if (!isSpotify && !isAmazon && !isTidal) {
-                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, Amazon Music, or Tidal playlist link.';
+            const isYouTube = url.match(/^https?:\/\/(www\.|music\.)?youtube\.com\/(playlist|watch)\?[^"]*list=/i);
+            if (!isSpotify && !isAmazon && !isTidal && !isYouTube) {
+                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Amazon Music, or Tidal playlist link.';
                 spotifyError.style.display = 'block';
                 return;
             }
@@ -2484,8 +2499,18 @@
                                     <span class="toggle-slider"></span>
                                 </label>
                             </div>` : ''}
+                            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 11px; color: var(--text-secondary);">
+                                <span>Sync</span>
+                                <select onchange="updateWatchedPlaylistSyncMode('${p.id}', this.value)" style="padding: 3px 6px; font-size: 11px; font-family: inherit; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 4px; color: var(--text-primary);" title="Append: M3U grows as new tracks arrive. Mirror: M3U stays in sync with upstream — removed tracks drop out (audio files kept).">
+                                    <option value="append" ${(p.sync_mode || 'append') === 'append' ? 'selected' : ''}>Append</option>
+                                    <option value="mirror" ${p.sync_mode === 'mirror' ? 'selected' : ''}>Mirror</option>
+                                </select>
+                            </div>
                             <button onclick="refreshWatchedPlaylist('${p.id}')" style="padding: 6px 12px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;" title="Check for new tracks now">
                                 Refresh
+                            </button>
+                            <button onclick="toggleMissingTracks('${p.id}')" style="padding: 6px 12px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;" title="Show tracks that failed to download">
+                                Missing
                             </button>
                             <button onclick="copyWatchedPlaylistUrl('${escapeHtml(p.url)}')" style="padding: 6px 12px; font-size: 12px; font-family: inherit; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;" title="Copy playlist URL">
                                 Copy URL
@@ -2497,6 +2522,9 @@
                                 Delete
                             </button>
                         </div>
+                    </div>
+                    <div id="missing-${p.id}" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary);">
+                        Loading...
                     </div>
                 `;
             }).join('');
@@ -2527,7 +2555,8 @@
                         refresh_interval_hours: parseInt(watchedIntervalSelect.value),
                         convert_to_flac: watchedConvertToFlac ? watchedConvertToFlac.checked : convertToFlacCheckbox.checked,
                         make_m3u: document.getElementById('watchedMakeM3u') ? document.getElementById('watchedMakeM3u').checked : false,
-                        use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false
+                        use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false,
+                        sync_mode: document.getElementById('watchedSyncModeSelect') ? document.getElementById('watchedSyncModeSelect').value : 'append'
                     })
                 });
 
@@ -2661,6 +2690,59 @@
                 showToast(usePlaylists ? 'Downloads going to Playlists folder' : 'Downloads going to Singles folder');
             } catch (error) {
                 showToast('Failed to update Playlists folder setting', true);
+                loadWatchedPlaylists();
+            }
+        }
+
+        async function toggleMissingTracks(playlistId) {
+            const panel = document.getElementById(`missing-${playlistId}`);
+            if (!panel) return;
+
+            if (panel.style.display !== 'none') {
+                panel.style.display = 'none';
+                return;
+            }
+
+            panel.style.display = 'block';
+            panel.textContent = 'Loading...';
+
+            try {
+                const resp = await apiFetch(`/api/watched-playlists/${playlistId}/missing`);
+                if (!resp.ok) throw new Error('Failed to fetch');
+                const data = await resp.json();
+
+                if (!data.count) {
+                    panel.textContent = 'No missing tracks — everything downloaded successfully.';
+                    return;
+                }
+
+                const rows = data.missing.map(t => {
+                    const removed = t.removed_at ? ' <span style="color: var(--text-secondary); font-size: 10px;">(removed upstream)</span>' : '';
+                    return `<div style="padding: 3px 0; display: flex; justify-content: space-between; align-items: center;">
+                        <span>${escapeHtml(t.artist)} &ndash; ${escapeHtml(t.title)}${removed}</span>
+                        <span style="font-size: 10px; color: var(--text-secondary); margin-left: 12px; white-space: nowrap;">${t.job_status || 'not attempted'}</span>
+                    </div>`;
+                }).join('');
+
+                panel.innerHTML = `<div style="font-weight: 600; margin-bottom: 6px;">${data.count} missing track${data.count !== 1 ? 's' : ''}:</div>${rows}`;
+            } catch (e) {
+                panel.textContent = 'Could not load missing tracks.';
+            }
+        }
+
+        async function updateWatchedPlaylistSyncMode(playlistId, syncMode) {
+            try {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sync_mode: syncMode })
+                });
+
+                if (!response.ok) throw new Error('Update failed');
+
+                showToast(syncMode === 'mirror' ? 'Sync mode: Mirror (M3U tracks upstream)' : 'Sync mode: Append (M3U grows over time)');
+            } catch (error) {
+                showToast('Failed to update sync mode', true);
                 loadWatchedPlaylists();
             }
         }

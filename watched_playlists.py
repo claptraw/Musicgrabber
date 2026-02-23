@@ -43,10 +43,10 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if spotify_album:
         return "spotify", spotify_album.group(1)
 
-    # YouTube / YouTube Music playlist
-    youtube_playlist = re.match(r'https?://(www\.|music\.)?(youtube\.com|youtu\.be)/playlist\?list=([a-zA-Z0-9_-]+)', url)
-    if youtube_playlist:
-        return "youtube", youtube_playlist.group(3)
+    # YouTube / YouTube Music — /playlist?list=... or /watch?v=...&list=... (Mixes, Radio, etc.)
+    youtube_list = re.search(r'https?://(www\.|music\.)?youtube\.com/(?:playlist|watch)\?[^"]*list=([a-zA-Z0-9_-]+)', url)
+    if youtube_list:
+        return "youtube", youtube_list.group(2)
 
     # Amazon Music playlist (user or curated, any regional TLD)
     amazon_playlist = re.match(r'https?://music\.amazon\.[a-z.]+/(user-playlists|playlists)/\S+', url)
@@ -241,13 +241,20 @@ def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]
             raise HTTPException(status_code=400, detail="Invalid YouTube playlist URL: no list= parameter found")
         playlist_id = m.group(1)
 
+        # Mix/Radio playlists (RD prefix) only work when seeded with the original watch URL —
+        # YouTube refuses the bare /playlist?list=RD... form. Pass the URL as-is in that case.
+        if playlist_id.startswith("RD"):
+            ytdlp_url = url
+        else:
+            ytdlp_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+
         info_cmd = [
             "yt-dlp",
             *_ytdlp_base_args(),
             "--dump-json",
             "--flat-playlist",
             "--no-warnings",
-            f"https://www.youtube.com/playlist?list={playlist_id}"
+            ytdlp_url
         ]
 
         try:
@@ -335,10 +342,15 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
         try:
             # Fetch current tracks
             tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
+            sync_mode = playlist.get("sync_mode", "append")
 
-            # Load existing track state (including job status)
+            # Build a set of hashes for what the upstream playlist currently contains
+            current_hashes = {hash_track(artist, title) for artist, title in tracks}
+
+            # Load existing track state (including job status and removal flag)
             track_rows = conn.execute(
-                """SELECT wpt.track_hash, wpt.downloaded_at, wpt.job_id, j.status as job_status
+                """SELECT wpt.track_hash, wpt.downloaded_at, wpt.job_id, wpt.removed_at,
+                          wpt.artist, wpt.title, j.status as job_status
                    FROM watched_playlist_tracks wpt
                    LEFT JOIN jobs j ON wpt.job_id = j.id
                    WHERE wpt.playlist_id = ?""",
@@ -348,12 +360,21 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
 
             new_tracks = []
             missing_tracks = []
+            removed_count = 0
+
             for artist, title in tracks:
                 track_hash = hash_track(artist, title)
                 existing = tracked.get(track_hash)
                 if not existing:
                     new_tracks.append((artist, title, track_hash))
                     continue
+
+                # Track has reappeared after being removed upstream — clear the removal flag
+                if existing["removed_at"] and sync_mode == "mirror":
+                    conn.execute(
+                        "UPDATE watched_playlist_tracks SET removed_at = NULL WHERE playlist_id = ? AND track_hash = ?",
+                        (playlist_id, track_hash)
+                    )
 
                 if existing["downloaded_at"]:
                     continue
@@ -370,6 +391,22 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     continue
 
                 missing_tracks.append((artist, title, track_hash))
+
+            # In mirror mode: mark any previously tracked tracks that are no longer in the upstream
+            if sync_mode == "mirror":
+                for track_hash, row in tracked.items():
+                    if track_hash not in current_hashes and not row["removed_at"]:
+                        conn.execute(
+                            "UPDATE watched_playlist_tracks SET removed_at = datetime('now') WHERE playlist_id = ? AND track_hash = ?",
+                            (playlist_id, track_hash)
+                        )
+                        removed_count += 1
+
+                if removed_count:
+                    print(
+                        f"Watched playlist '{playlist['name']}' (mirror): "
+                        f"{removed_count} track(s) removed from upstream, marked in DB"
+                    )
 
             # Insert any new tracks so they are tracked before download
             for artist, title, track_hash in new_tracks:
@@ -402,7 +439,11 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             # Rebuild M3U from all tracks downloaded so far (new ones are still queued,
             # so they'll appear next refresh once marked downloaded)
             if playlist.get("make_m3u"):
-                rebuild_watched_playlist_m3u(playlist_id, playlist["name"], use_playlists_dir=use_playlists_dir)
+                rebuild_watched_playlist_m3u(
+                    playlist_id, playlist["name"],
+                    use_playlists_dir=use_playlists_dir,
+                    sync_mode=sync_mode,
+                )
 
             queued_count = len(tracks_to_import)
             if queued_count:
@@ -417,6 +458,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                 "total_tracks": len(tracks),
                 "new_tracks": len(new_tracks),
                 "missing_tracks": len(missing_tracks),
+                "removed_tracks": removed_count,
                 "queued": queued_count,
                 "import_id": import_id,
                 "jobs": []

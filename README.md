@@ -1,6 +1,6 @@
 # Music Grabber 🎵
 
-**v2.1.1**
+**v2.1.2**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless) -- tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -41,9 +41,9 @@ and the rest of them:
 - **Similar artist discovery** -- hover any result and click `~ Similar` to explore artists similar to whoever you searched. Powered by MusicBrainz + ListenBrainz Labs (no account needed). Download the whole lot in one go with "Download All", optionally saved as a playlist
 - **Soulseek integration** -- optional slskd support for higher quality sources (FLAC from P2P) *(in progress -- needs testing)*
 - **Playlist support** -- download entire playlists with automatic M3U generation
-- **Watched playlists** -- monitor Spotify, YouTube, Amazon Music, and Tidal playlists and auto-download new tracks; searches all sources and grabs the best quality available. Optional M3U generation keeps a playlist file in sync as new tracks arrive
+- **Watched playlists** -- monitor Spotify, YouTube (including Mixes), Amazon Music, and Tidal playlists and auto-download new tracks; searches all sources and grabs the best quality available. Per-playlist sync mode: Append (M3U grows forever) or Mirror (M3U reflects the upstream — removed tracks drop out). "Missing" button shows tracks that failed to download. M3U updates immediately as each track finishes
 - **Bulk import** -- paste or upload a text file of songs to auto-search and queue; searches YouTube, SoundCloud, and Monochrome in parallel, picks the best result
-- **Best quality FLAC** -- extracts highest available audio quality
+- **Best quality audio** -- extracts highest available audio quality; output format is configurable (FLAC, Opus, or MP3 ~192 kbps VBR) per your storage preference
 - **Minimum bitrate enforcement** -- optionally reject downloads below a configurable bitrate threshold
 - **Audio quality display** -- completed downloads show codec and bitrate in the queue details, with honest reporting for lossy-to-FLAC conversions
 - **Enhanced metadata** -- AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source-embedded/guessed tags

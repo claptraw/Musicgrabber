@@ -292,6 +292,18 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+        # Migration: sync_mode for watched playlists (append = grow forever, mirror = track removals)
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN sync_mode TEXT DEFAULT 'append'")
+        except sqlite3.OperationalError:
+            pass
+
+        # Migration: removed_at for tracked playlist tracks (set when a track vanishes from upstream)
+        try:
+            conn.execute("ALTER TABLE watched_playlist_tracks ADD COLUMN removed_at TIMESTAMP")
+        except sqlite3.OperationalError:
+            pass
+
         conn.commit()
 
 

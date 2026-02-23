@@ -43,6 +43,7 @@ class WatchedPlaylistRequest(BaseModel):
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
     make_m3u: bool = False
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
+    sync_mode: str = "append"  # "append" = grow forever; "mirror" = track upstream removals in M3U
 
 class WatchedPlaylistUpdate(BaseModel):
     refresh_interval_hours: Optional[int] = None
@@ -50,6 +51,7 @@ class WatchedPlaylistUpdate(BaseModel):
     convert_to_flac: Optional[bool] = None
     make_m3u: Optional[bool] = None
     use_playlists_dir: Optional[bool] = None
+    sync_mode: Optional[str] = None  # "append" or "mirror"
 
 class SettingsUpdate(BaseModel):
     """Settings that can be updated via the UI"""
