@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.2.1 (2026-02-24)
+
+### Fixed
+- **"Already exists" shows track number instead of artist name**: Navidrome returns paths like `Artist/Album/01-01 - Title.flac`. Showing just the filename gave useless output like `Already exists: 01-01 - Song Title.flac`. Queue messages now show `Artist/filename.flac` so it's immediately clear whose track it is
+- **Monochrome downloads wrong artist when track not on Tidal**: When searching for "Venjent - Who Are Ya", Monochrome would return "Wolf Parade - Who Are Ya" and the +100 lossless quality bonus meant it ranked above every correct YouTube result. Monochrome results now receive a -150 penalty when the result artist clearly doesn't match the query artist, which is more than enough to sink a wrong lossless match below a correct YouTube result
+
+---
+
 ## v2.2.0 (2026-02-24)
 
 ### Added

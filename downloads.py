@@ -137,6 +137,18 @@ def trigger_navidrome_scan():
         pass  # Non-critical, scan will happen on schedule anyway
 
 
+def _display_path(p: Path) -> str:
+    """Return a human-readable path for queue messages.
+
+    Uses 'Artist/filename.flac' format so Navidrome paths like
+    'Artist/Album/01-01 - Title.flac' show the artist rather than
+    just the bare filename (which is useless for numbered tracks).
+    """
+    if p.parent and p.parent.name:
+        return f"{p.parent.name}/{p.name}"
+    return p.name
+
+
 def check_navidrome_duplicate(artist: str, title: str) -> Optional[Path]:
     """Check if a track already exists in Navidrome via the Subsonic search2 API.
 
@@ -985,7 +997,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 job_id,
                 status="completed",
                 completed_at=datetime.now(timezone.utc).isoformat(),
-                error=f"Already exists: {existing_file.name}"
+                error=f"Already exists: {_display_path(existing_file)}"
             )
             _mark_watched_track_downloaded(job_id)
             return
@@ -1304,7 +1316,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             # file isn't locally accessible (e.g. Navidrome path on a different mount point).
             _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
             source_label = "library" if existing_file.exists() else "Navidrome"
-            error_label = f"Already exists in {source_label}: {existing_file.name} (added to playlist)"
+            error_label = f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
             _update_job(
                 job_id,
                 status="completed",
@@ -1318,7 +1330,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                 job_id,
                 status="completed",
                 completed_at=datetime.now(timezone.utc).isoformat(),
-                error=f"Already exists: {existing_file.name}"
+                error=f"Already exists: {_display_path(existing_file)}"
             )
             _mark_watched_track_downloaded(job_id)
             return
@@ -1548,7 +1560,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             # file isn't locally accessible (e.g. Navidrome path on a different mount point).
             _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
             source_label = "library" if existing_file.exists() else "Navidrome"
-            error_label = f"Already exists in {source_label}: {existing_file.name} (added to playlist)"
+            error_label = f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
             _update_job(
                 job_id,
                 status="completed",
@@ -1562,7 +1574,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 job_id,
                 status="completed",
                 completed_at=datetime.now(timezone.utc).isoformat(),
-                error=f"Already exists: {existing_file.name}"
+                error=f"Already exists: {_display_path(existing_file)}"
             )
             _mark_watched_track_downloaded(job_id)
             return

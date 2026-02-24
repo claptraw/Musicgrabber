@@ -23,7 +23,7 @@ from constants import (
     MONOCHROME_API_URL, MONOCHROME_COVER_BASE, TIMEOUT_MONOCHROME_API,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
-from youtube import search_youtube, score_search_result, parse_duration
+from youtube import search_youtube, score_search_result, parse_duration, _normalise_search_text, _parse_query_artist_title
 
 # Penalty large enough to push blacklisted uploaders to the bottom of results
 # without hiding them entirely  -  the user might still want to see them
@@ -152,6 +152,21 @@ def _score_monochrome_result(item: dict, query: str | None = None) -> int:
         "HIGH": 30,
     }
     score += quality_bonuses.get(audio_quality, 0)
+
+    # Artist mismatch penalty: if the query specifies an artist and the Tidal
+    # result is by a completely different artist, the quality bonus must not
+    # override a correct-artist YouTube result.  "Venjent - Who Are Ya" should
+    # not match "Wolf Parade - Who Are Ya" just because Tidal has it lossless.
+    if query:
+        expected_artist, _ = _parse_query_artist_title(query)
+        if expected_artist:
+            expected_norm = _normalise_search_text(expected_artist)
+            result_norm = _normalise_search_text(artist_name)
+            # Neither contains the other  -  completely different artist.
+            # Subtract enough to neutralise even Hi-Res lossless bonus.
+            if expected_norm and result_norm and \
+                    expected_norm not in result_norm and result_norm not in expected_norm:
+                score -= 150
 
     # Popularity tiebreaker (0–15 points, log-ish scale)
     score += min(popularity // 10, 15)
