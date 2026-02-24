@@ -254,7 +254,7 @@ def init_db():
         )
     """)
 
-        # Blacklist — reported bad tracks and blocked uploaders
+        # Blacklist  -  reported bad tracks and blocked uploaders
         conn.execute("""
         CREATE TABLE IF NOT EXISTS blacklist (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -358,7 +358,7 @@ def start_stale_job_monitor():
 
 
 # ---------------------------------------------------------------------------
-# Blacklist helpers — kept close to the DB layer for easy reuse
+# Blacklist helpers  -  kept close to the DB layer for easy reuse
 # ---------------------------------------------------------------------------
 
 def get_blacklisted_video_ids() -> set[str]:

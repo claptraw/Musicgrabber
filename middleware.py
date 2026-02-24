@@ -26,7 +26,7 @@ _TRUSTED_PROXY_IPS = {"127.0.0.1", "::1"}
 
 def _get_client_ip(request: Request) -> str:
     """Get client IP. Only trusts X-Forwarded-For when the direct connection is from a
-    known local reverse proxy — prevents external clients spoofing the header to bypass
+    known local reverse proxy  -  prevents external clients spoofing the header to bypass
     rate limiting."""
     direct_ip = request.client.host if request.client else None
     if direct_ip in _TRUSTED_PROXY_IPS:

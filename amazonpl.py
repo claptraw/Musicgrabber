@@ -166,7 +166,7 @@ def _accept_cookie_banner(page) -> None:
         except Exception:
             continue
 
-    # Amazon Music uses <music-button> web components -- find by text content
+    # Amazon Music uses <music-button> web components - find by text content
     accepted = page.evaluate(r"""
 () => {
   const targets = ['Accept Cookies', 'Accept cookies', 'Accept all', 'Allow all', 'Agree'];

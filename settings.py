@@ -95,9 +95,12 @@ SETTINGS_SCHEMA = {
     # Jellyfin
     "jellyfin_url": {"type": "str", "default": "", "env": "JELLYFIN_URL"},
     "jellyfin_api_key": {"type": "str", "default": "", "env": "JELLYFIN_API_KEY", "sensitive": True},
+    # Navidrome dupe check
+    "navidrome_dupe_check": {"type": "bool", "default": True, "env": "NAVIDROME_DUPE_CHECK"},
     # Notifications
     "notify_on": {"type": "str", "default": "playlists,bulk,errors", "env": "NOTIFY_ON"},
     "telegram_webhook_url": {"type": "str", "default": "", "env": "TELEGRAM_WEBHOOK_URL", "sensitive": True},
+    "apprise_url": {"type": "str", "default": "", "env": "APPRISE_URL"},
     "smtp_host": {"type": "str", "default": "", "env": "SMTP_HOST"},
     "smtp_port": {"type": "int", "default": 587, "env": "SMTP_PORT"},
     "smtp_user": {"type": "str", "default": "", "env": "SMTP_USER"},
@@ -105,6 +108,8 @@ SETTINGS_SCHEMA = {
     "smtp_from": {"type": "str", "default": "", "env": "SMTP_FROM"},
     "smtp_to": {"type": "str", "default": "", "env": "SMTP_TO"},
     "smtp_tls": {"type": "bool", "default": True, "env": "SMTP_TLS"},
+    # AcoustID fingerprinting
+    "acoustid_api_key": {"type": "str", "default": "0NILMQojj4", "env": "ACOUSTID_API_KEY"},
     # YouTube
     "youtube_cookies": {"type": "str", "default": "", "env": "YOUTUBE_COOKIES", "sensitive": True},
     "youtube_bot_backoff_min": {"type": "int", "default": BOT_BACKOFF_MIN_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MIN"},
@@ -153,7 +158,7 @@ def get_playlists_dir() -> Path | None:
     """
     subdir = get_setting("playlists_subdir", "").strip()
     if not subdir:
-        return None  # Feature disabled — fall back to Singles behaviour
+        return None  # Feature disabled  -  fall back to Singles behaviour
     if subdir == ".":
         return MUSIC_DIR
     return MUSIC_DIR / subdir

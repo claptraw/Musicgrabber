@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.2.0-dev"
+VERSION = "2.2.0"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -64,7 +64,7 @@ BOT_BACKOFF_MAX_SECONDS = 20
 YTDLP_PLAYER_CLIENT = os.getenv("YTDLP_PLAYER_CLIENT", "")
 
 # Rate limiting
-RATE_LIMIT_REQUESTS = 200        # Max requests per IP per window — single-user tool, be generous
+RATE_LIMIT_REQUESTS = 200        # Max requests per IP per window  -  single-user tool, be generous
 RATE_LIMIT_WINDOW = 60           # Window size in seconds
 
 # Configuration from environment - structural paths
@@ -76,16 +76,18 @@ SLSKD_REQUIRE_FREE_SLOT = os.getenv("SLSKD_REQUIRE_FREE_SLOT", "true").lower() =
 SLSKD_MAX_RETRIES = int(os.getenv("SLSKD_MAX_RETRIES", "5"))
 WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24"))
 
-# AcoustID audio fingerprinting — because guessing metadata from titles
-# is about as reliable as asking YouTube commenters for facts
-ACOUSTID_API_KEY = os.getenv("ACOUSTID_API_KEY", "0NILMQojj4")
+# AcoustID audio fingerprinting  -  because guessing metadata from titles
+# is about as reliable as asking YouTube commenters for facts.
+# API key is now configurable via Settings; this is just the confidence threshold.
 ACOUSTID_MIN_SCORE = 0.8         # Below this, the match is too dodgy to trust
 
-# ListenBrainz API — used for similar artist exploration (public, no auth required)
+# ListenBrainz API  -  used for similar artist exploration and "Created for You" playlists
+# (public API, no auth required for either)
 LISTENBRAINZ_API_URL = "https://api.listenbrainz.org"
 TIMEOUT_LISTENBRAINZ = 10
+TIMEOUT_LISTENBRAINZ_PLAYLIST = 15   # Per-playlist JSPF fetch
 
-# Monochrome API — Tidal frontend with public lossless FLAC streams.
+# Monochrome API  -  Tidal frontend with public lossless FLAC streams.
 # Points at the official instance by default; users can override to use
 # community mirrors listed at github.com/monochrome-music/monochrome/blob/main/INSTANCES.md
 MONOCHROME_API_URL = os.getenv("MONOCHROME_API_URL", "https://api.monochrome.tf")

@@ -26,7 +26,7 @@ from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from youtube import search_youtube, score_search_result, parse_duration
 
 # Penalty large enough to push blacklisted uploaders to the bottom of results
-# without hiding them entirely — the user might still want to see them
+# without hiding them entirely  -  the user might still want to see them
 _BLACKLIST_UPLOADER_PENALTY = 500
 _MONOCHROME_URL_RE = re.compile(r"^https?://(?:www\.)?monochrome\.tf/", re.IGNORECASE)
 
@@ -43,7 +43,7 @@ def parse_soundcloud_search_results(stdout: str, query: str | None = None) -> li
             continue
         try:
             data = json.loads(line)
-            # SoundCloud sets are 'playlist' type — skip them for single-track search
+            # SoundCloud sets are 'playlist' type  -  skip them for single-track search
             is_playlist = data.get("_type") == "playlist"
             if is_playlist:
                 continue
@@ -107,7 +107,7 @@ def search_soundcloud(query: str, limit: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Monochrome — full search via the Monochrome/Tidal API, plus URL resolution
+# Monochrome  -  full search via the Monochrome/Tidal API, plus URL resolution
 # ---------------------------------------------------------------------------
 
 def _monochrome_cover_url(cover_uuid: str) -> str:
@@ -124,23 +124,26 @@ def _monochrome_cover_url(cover_uuid: str) -> str:
 def _score_monochrome_result(item: dict, query: str | None = None) -> int:
     """Score a Monochrome/Tidal search result.
 
-    Lossless gets a genuine quality bonus — unlike YouTube where 'FLAC'
+    Lossless gets a genuine quality bonus  -  unlike YouTube where 'FLAC'
     is just a lossy-to-lossless transcode, this is the real deal.
     """
     title = item.get("title", "")
     artist_name = (item.get("artist") or {}).get("name", "")
+    album_title = (item.get("album") or {}).get("title", "")
     audio_quality = item.get("audioQuality", "")
     popularity = item.get("popularity") or 0
     duration = item.get("duration") or 0
 
-    # Start with the standard relevance scoring
+    # Start with the standard relevance scoring  -  pass album title so cover/tribute
+    # albums (e.g. "Piano Covers of Taylor Swift") get penalised correctly.
     score = score_search_result(
         title, artist_name, query,
         duration_seconds=duration or None,
         view_count=None,
+        album=album_title,
     )
 
-    # Quality bonus — the whole point of Monochrome.  Needs to be hefty
+    # Quality bonus  -  the whole point of Monochrome.  Needs to be hefty
     # enough to overcome YouTube's "Official Video" title-stuffing bonuses
     # (~55 points) so genuine lossless reliably floats above lossy transcodes.
     quality_bonuses = {
@@ -198,7 +201,7 @@ def _search_monochrome_api(query: str, limit: int) -> list[dict]:
             "quality_score": _score_monochrome_result(item, query),
             "slskd_username": None,
             "slskd_filename": None,
-            # Extra Monochrome metadata — available for richer tagging at download time
+            # Extra Monochrome metadata  -  available for richer tagging at download time
             "monochrome_album": album_obj.get("title"),
             "monochrome_album_cover": album_obj.get("cover"),
             "monochrome_isrc": item.get("isrc"),
@@ -273,7 +276,7 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
     if not query:
         return []
 
-    # Pasted URL — resolve via yt-dlp (handles edge cases the API can't)
+    # Pasted URL  -  resolve via yt-dlp (handles edge cases the API can't)
     if _MONOCHROME_URL_RE.match(query):
         return _resolve_monochrome_url(query, limit)
 
@@ -332,7 +335,7 @@ def get_monochrome_track_info(track_id: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Source registry — add new sources here
+# Source registry  -  add new sources here
 # ---------------------------------------------------------------------------
 
 SOURCE_REGISTRY = {
@@ -363,7 +366,7 @@ SOURCE_REGISTRY = {
 def _apply_blacklist_filter(results: list[dict], source: str | None = None) -> list[dict]:
     """Remove blacklisted videos and penalise blacklisted uploaders.
 
-    Loads the blacklist once per call (not per result) — the lists are small
+    Loads the blacklist once per call (not per result)  -  the lists are small
     so this is cheap and avoids hammering the DB.
     """
     blocked_ids = get_blacklisted_video_ids()

@@ -96,7 +96,7 @@ def get_cookies_expiry(cookies_text: str) -> int | None:
         except ValueError:
             continue
         if expiry <= 0:
-            continue  # Session cookie — no fixed expiry
+            continue  # Session cookie  -  no fixed expiry
         if soonest is None or expiry < soonest:
             soonest = expiry
     return soonest
@@ -114,8 +114,8 @@ def clear_expired_cookies() -> bool:
         return False
     if time.time() < expiry:
         return False
-    # Every auth cookie has expired — bin them
-    print("YouTube cookies have expired — clearing from settings")
+    # Every auth cookie has expired  -  bin them
+    print("YouTube cookies have expired  -  clearing from settings")
     set_setting("youtube_cookies", "")
     _sync_cookies_file()
     return True
@@ -172,7 +172,15 @@ def _strip_cookies_args(cmd: list[str]) -> list[str]:
 def _should_retry_without_cookies(stderr: str) -> bool:
     """Decide if a download failure likely stems from cookie/auth issues."""
     lower = stderr.lower()
-    return _is_ytdlp_403(stderr) or "downloaded file is empty" in lower or "http error 403" in lower
+    return (
+        _is_ytdlp_403(stderr)
+        or "downloaded file is empty" in lower
+        or "http error 403" in lower
+        # Cookies from premium/broken sessions can cause YouTube to return a
+        # different format manifest where bestaudio/best finds nothing.
+        # Retry without cookies  -  the cookieless manifest is usually saner.
+        or "requested format is not available" in lower
+    )
 
 
 def _get_bot_backoff_window() -> tuple[float, float]:
@@ -241,7 +249,7 @@ def _normalise_search_text(text: str) -> str:
 def _parse_query_artist_title(query: str) -> tuple[str | None, str | None]:
     if not query:
         return None, None
-    for sep in (" - ", " – ", " — ", " | "):
+    for sep in (" - ", " – ", "  -  ", " | "):
         if sep in query:
             artist, title = query.split(sep, 1)
             return artist.strip(), title.strip()
@@ -254,6 +262,7 @@ def score_search_result(
     query: str | None = None,
     duration_seconds: float | None = None,
     view_count: int | None = None,
+    album: str | None = None,
 ) -> int:
     """Score a search result to prioritise official content over live versions
 
@@ -262,14 +271,18 @@ def score_search_result(
     """
     title_lower = title.lower()
     channel_lower = channel.lower()
+    album_lower = (album or "").lower()
     score = 100  # Start with base score
 
     # Penalties for live performances
     if re.search(r'\b(live|concert|tour|performance|unplugged)\b', title_lower):
         score -= 50
 
-    # Penalties for covers, remixes, instrumentals
-    if re.search(r'\b(cover|remix|instrumental|karaoke|acoustic version|live session)\b', title_lower):
+    # Penalties for covers, remixes, instrumentals  -  check title AND album name.
+    # Piano cover albums tag the track artist as the original artist, so the
+    # album is often the only place the word "cover" appears.
+    _cover_re = r'\b(cover|remix|instrumental|karaoke|acoustic version|live session|piano version|tribute)\b'
+    if re.search(_cover_re, title_lower) or re.search(_cover_re, album_lower):
         score -= 40
 
     # Penalties for lyric videos (usually lower quality)
@@ -360,7 +373,7 @@ def score_search_result(
     if re.search(r'\b(nightcore|sped up|slowed|8d|reverb|bass boosted)\b', title_lower):
         score -= 45
 
-    # Duration scoring — typical songs are 2-6 minutes
+    # Duration scoring  -  typical songs are 2-6 minutes
     if duration_seconds is not None and duration_seconds > 0:
         if duration_seconds < 30:
             score -= 40   # Clips, intros, previews
@@ -369,13 +382,13 @@ def score_search_result(
         elif duration_seconds <= 420:
             score += 10   # Sweet spot (1:30 – 7:00)
         elif duration_seconds <= 720:
-            pass          # 7-12 min — could be legit long track
+            pass          # 7-12 min  -  could be legit long track
         elif duration_seconds <= 1200:
-            score -= 20   # 12-20 min — likely extended mix
+            score -= 20   # 12-20 min  -  likely extended mix
         else:
-            score -= 40   # 20+ min — album, mix, or compilation
+            score -= 40   # 20+ min  -  album, mix, or compilation
 
-    # View count — modest tiebreaker, log-scale to avoid domination
+    # View count  -  modest tiebreaker, log-scale to avoid domination
     if view_count is not None and view_count >= 0:
         if view_count < 1_000:
             score -= 10   # Suspiciously low

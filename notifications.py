@@ -1,7 +1,7 @@
 """
 MusicGrabber - Notification System
 
-Telegram webhook and SMTP email dispatch.
+Telegram webhook, SMTP email, generic webhook, and Apprise dispatch.
 """
 
 import smtplib
@@ -185,6 +185,21 @@ def _send_webhook(
         pass
 
 
+def _send_apprise(title: str, message: str):
+    """Send notification via Apprise (supports Gotify, ntfy, Discord, Pushover, and 50+ more)."""
+    url = get_setting("apprise_url")
+    if not url:
+        return
+
+    try:
+        import apprise
+        a = apprise.Apprise()
+        a.add(url)
+        a.notify(title=title, body=message)
+    except Exception:
+        pass
+
+
 def send_notification(
     notification_type: str,
     title: str,
@@ -221,6 +236,7 @@ def send_notification(
 
     _send_telegram(message)
     _send_email(subject, message)
+    _send_apprise(subject, message)
     _send_webhook(
         notification_type, title, artist, source, status,
         error, track_count, failed_count, skipped_count, playlist_name

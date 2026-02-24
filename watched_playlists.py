@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from constants import (
     TIMEOUT_YTDLP_PLAYLIST, TIMEOUT_HTTP_SPOTIFY, TIMEOUT_MONOCHROME_API,
     MONOCHROME_API_URL, WATCHED_PLAYLIST_CHECK_HOURS,
+    LISTENBRAINZ_API_URL, TIMEOUT_LISTENBRAINZ, TIMEOUT_LISTENBRAINZ_PLAYLIST,
 )
 from db import db_conn
 from bulk_import import start_bulk_import_for_tracks
@@ -43,7 +44,7 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if spotify_album:
         return "spotify", spotify_album.group(1)
 
-    # YouTube / YouTube Music — /playlist?list=... or /watch?v=...&list=... (Mixes, Radio, etc.)
+    # YouTube / YouTube Music  -  /playlist?list=... or /watch?v=...&list=... (Mixes, Radio, etc.)
     youtube_list = re.search(r'https?://(www\.|music\.)?youtube\.com/(?:playlist|watch)\?[^"]*list=([a-zA-Z0-9_-]+)', url)
     if youtube_list:
         return "youtube", youtube_list.group(2)
@@ -51,16 +52,30 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     # Amazon Music playlist (user or curated, any regional TLD)
     amazon_playlist = re.match(r'https?://music\.amazon\.[a-z.]+/(user-playlists|playlists)/\S+', url)
     if amazon_playlist:
-        return "amazon", url  # Full URL needed — no extractable ID
+        return "amazon", url  # Full URL needed  -  no extractable ID
 
     # Tidal public playlist
     tidal_playlist = re.match(r'https?://(?:www\.)?tidal\.com/(?:browse/)?playlist/([0-9a-f-]{36})', url, re.IGNORECASE)
     if tidal_playlist:
         return "tidal", tidal_playlist.group(1)
 
+    # ListenBrainz individual playlist URL
+    lb_playlist = re.match(r'https?://listenbrainz\.org/playlist/([0-9a-f-]{36})', url, re.IGNORECASE)
+    if lb_playlist:
+        return "listenbrainz", lb_playlist.group(1)
+
+    # ListenBrainz user profile URL  -  triggers "Created for You" fan-out
+    lb_user_url = re.match(r'https?://listenbrainz\.org/user/([a-zA-Z0-9_-]+)', url, re.IGNORECASE)
+    if lb_user_url:
+        return "listenbrainz_user", lb_user_url.group(1)
+
+    # Bare ListenBrainz username (no protocol, no dots  -  just alphanumeric/underscore/hyphen)
+    if re.match(r'^[a-zA-Z0-9_-]+$', url) and '.' not in url:
+        return "listenbrainz_user", url
+
     raise HTTPException(
         status_code=400,
-        detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube/YouTube Music playlists, Amazon Music playlists, Tidal public playlists."
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube/YouTube Music playlists, Amazon Music playlists, Tidal public playlists, ListenBrainz playlists or usernames."
     )
 
 
@@ -151,7 +166,7 @@ def _fetch_spotify_playlist_embed(url: str) -> dict:
             print(f"Headless browser error: {e}, using embed results")
 
         warning = (
-            f"Playlist truncated at {len(tracks)} tracks — headless browser failed"
+            f"Playlist truncated at {len(tracks)} tracks  -  headless browser failed"
             + (f": {browser_error}" if browser_error else "")
             + ". Check that shm_size: '2gb' is set in docker-compose.yml."
         )
@@ -173,7 +188,7 @@ def _fetch_tidal_playlist(playlist_uuid: str) -> dict:
     """Fetch Tidal playlist tracks via the Monochrome API.
 
     Monochrome exposes a public /playlist/ endpoint that returns the full
-    track list in one shot — no pagination, no headless browser required.
+    track list in one shot  -  no pagination, no headless browser required.
     Each item has artist.name and title at the top level. Simple.
     """
     api_url = f"{MONOCHROME_API_URL}/playlist/?id={playlist_uuid}"
@@ -215,6 +230,112 @@ def _fetch_tidal_playlist(playlist_uuid: str) -> dict:
     return {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks)}
 
 
+def _parse_listenbrainz_jspf_tracks(jspf_playlist: dict) -> list[tuple[str, str]]:
+    """Extract (artist, title) pairs from a JSPF playlist dict.
+
+    JSPF uses 'creator' for artist and 'title' for track name. Tracks with
+    either field missing are skipped -- a song with no name is no song at all.
+    """
+    tracks = []
+    for track in jspf_playlist.get("track", []):
+        artist = (track.get("creator") or "").strip()
+        title = (track.get("title") or "").strip()
+        if artist and title:
+            tracks.append((artist, title))
+    return tracks
+
+
+def fetch_listenbrainz_createdfor(username: str) -> list[dict]:
+    """Fetch all 'Created for You' playlists for a ListenBrainz user.
+
+    Returns a list of dicts, each with:
+        playlist_url  -- stable JSPF URL for the individual playlist
+        playlist_uuid -- UUID extracted from the URL
+        name          -- playlist title from LB
+        tracks        -- list of (artist, title) tuples
+
+    Raises HTTPException on error.
+    """
+    url = f"{LISTENBRAINZ_API_URL}/1/user/{username}/playlists/createdfor"
+    try:
+        with httpx.Client(timeout=TIMEOUT_LISTENBRAINZ) as client:
+            resp = client.get(url, headers={"Accept": "application/json"})
+            if resp.status_code == 404:
+                raise HTTPException(status_code=404, detail=f"ListenBrainz user '{username}' not found")
+            resp.raise_for_status()
+    except HTTPException:
+        raise
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to connect to ListenBrainz: {e}")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"ListenBrainz API error: {e.response.status_code}")
+
+    data = resp.json()
+    raw_playlists = data.get("playlists", [])
+
+    if not raw_playlists:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No 'Created for You' playlists found for '{username}'. "
+                   "ListenBrainz generates these weekly  -  check back after your account has some listening history."
+        )
+
+    results = []
+    for entry in raw_playlists:
+        playlist = entry.get("playlist", {})
+        name = playlist.get("title", "ListenBrainz Playlist").strip()
+        # The identifier is a URL like https://listenbrainz.org/playlist/UUID/
+        identifier = playlist.get("identifier", "")
+        uuid_match = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', identifier, re.IGNORECASE)
+        if not uuid_match:
+            print(f"ListenBrainz: skipping playlist '{name}'  -  no UUID in identifier '{identifier}'")
+            continue
+        playlist_uuid = uuid_match.group(1)
+        # Store the canonical per-playlist URL (without trailing slash for consistency)
+        playlist_url = f"https://listenbrainz.org/playlist/{playlist_uuid}"
+        tracks = _parse_listenbrainz_jspf_tracks(playlist)
+        results.append({
+            "playlist_url": playlist_url,
+            "playlist_uuid": playlist_uuid,
+            "name": name,
+            "tracks": tracks,
+        })
+
+    return results
+
+
+def _fetch_listenbrainz_playlist(playlist_uuid: str) -> tuple[list[tuple[str, str]], str]:
+    """Fetch a single ListenBrainz playlist by UUID via the JSPF API.
+
+    Used during the regular refresh cycle for individual LB playlists.
+    Returns (list of (artist, title) tuples, playlist_name).
+    """
+    url = f"{LISTENBRAINZ_API_URL}/1/playlist/{playlist_uuid}"
+    try:
+        with httpx.Client(timeout=TIMEOUT_LISTENBRAINZ_PLAYLIST) as client:
+            resp = client.get(url, headers={"Accept": "application/json"})
+            if resp.status_code == 404:
+                raise HTTPException(status_code=404, detail="ListenBrainz playlist not found (may have been rotated)")
+            resp.raise_for_status()
+    except HTTPException:
+        raise
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to connect to ListenBrainz: {e}")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"ListenBrainz API error: {e.response.status_code}")
+
+    data = resp.json()
+    playlist = data.get("playlist", {})
+    name = playlist.get("title", "ListenBrainz Playlist").strip()
+    tracks = _parse_listenbrainz_jspf_tracks(playlist)
+
+    if not tracks:
+        raise HTTPException(status_code=422, detail="No tracks found in ListenBrainz playlist")
+
+    print(f"Fetched {len(tracks)} tracks from ListenBrainz playlist '{name}'")
+    return tracks, name
+
+
 def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]], str]:
     """Fetch tracks from a playlist URL
 
@@ -241,7 +362,7 @@ def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]
             raise HTTPException(status_code=400, detail="Invalid YouTube playlist URL: no list= parameter found")
         playlist_id = m.group(1)
 
-        # Mix/Radio playlists (RD prefix) only work when seeded with the original watch URL —
+        # Mix/Radio playlists (RD prefix) only work when seeded with the original watch URL  - 
         # YouTube refuses the bare /playlist?list=RD... form. Pass the URL as-is in that case.
         if playlist_id.startswith("RD"):
             ytdlp_url = url
@@ -319,6 +440,21 @@ def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]
 
         return tracks, result["playlist_name"]
 
+    elif platform == "listenbrainz":
+        # Single LB playlist by UUID  -  regular refresh path
+        m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', url, re.IGNORECASE)
+        if not m:
+            raise HTTPException(status_code=400, detail="Invalid ListenBrainz playlist URL: no UUID found")
+        return _fetch_listenbrainz_playlist(m.group(1))
+
+    elif platform == "listenbrainz_user":
+        # Username URLs are handled at the add-watched level (fan-out to multiple playlists).
+        # If we ever reach here at refresh time something has gone wrong.
+        raise HTTPException(
+            status_code=400,
+            detail="ListenBrainz user URLs are only valid when adding a watched playlist. Individual playlist URLs are stored for refresh."
+        )
+
     raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
 
 
@@ -369,7 +505,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     new_tracks.append((artist, title, track_hash))
                     continue
 
-                # Track has reappeared after being removed upstream — clear the removal flag
+                # Track has reappeared after being removed upstream  -  clear the removal flag
                 if existing["removed_at"] and sync_mode == "mirror":
                     conn.execute(
                         "UPDATE watched_playlist_tracks SET removed_at = NULL WHERE playlist_id = ? AND track_hash = ?",

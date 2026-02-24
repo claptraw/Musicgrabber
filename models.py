@@ -25,6 +25,9 @@ class DownloadRequest(BaseModel):
     # Soulseek-specific fields
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
+    # Playlist routing  -  optional, defaults to Singles
+    playlist_name: Optional[str] = None  # Name of target playlist (M3U stem)
+    use_playlists_dir: bool = False  # Route into Playlists dir instead of Singles
 
 class PlaylistFetchRequest(BaseModel):
     url: str  # Spotify, Amazon Music, etc. playlist URL
@@ -87,6 +90,8 @@ class SettingsUpdate(BaseModel):
     smtp_from: Optional[str] = None
     smtp_to: Optional[str] = None
     smtp_tls: Optional[bool] = None
+    # Apprise notifications
+    apprise_url: Optional[str] = None
     # YouTube
     youtube_cookies: Optional[str] = None
     # Security
@@ -135,8 +140,15 @@ class TestJellyfinRequest(BaseModel):
     url: Optional[str] = None
     api_key: Optional[str] = None
 
+class TestAppriseRequest(BaseModel):
+    url: Optional[str] = None
+
 class TestYouTubeCookiesRequest(BaseModel):
     cookies: Optional[str] = None
+
+class RetryMissingTrackRequest(BaseModel):
+    artist: str
+    title: str
 
 class ExploreRequest(BaseModel):
     artist: str

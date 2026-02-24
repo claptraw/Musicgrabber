@@ -43,6 +43,7 @@ from models import (
     AsyncBulkImportRequest, WatchedPlaylistRequest, WatchedPlaylistUpdate,
     SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestYouTubeCookiesRequest,
+    TestAppriseRequest, RetryMissingTrackRequest,
     ExploreRequest,
 )
 from middleware import AuthMiddleware
@@ -60,7 +61,7 @@ from downloads import (
 from bulk_import import clean_bulk_import_line, start_bulk_import_for_tracks, process_bulk_import_worker
 from watched_playlists import (
     detect_playlist_platform, fetch_playlist_tracks, refresh_watched_playlist,
-    start_scheduler,
+    fetch_listenbrainz_createdfor, start_scheduler,
 )
 from utils import hash_track, is_valid_youtube_id, spawn_daemon_thread, subsonic_auth_params
 
@@ -163,7 +164,7 @@ def get_config():
 def list_music_dirs(path: str = "", recursive: bool = False, max_depth: int | None = None):
     """List subdirectories of MUSIC_DIR (or a subpath) for the subfolder picker.
 
-    Returns directory names/paths only — no hidden/system dirs, sorted alphabetically.
+    Returns directory names/paths only  -  no hidden/system dirs, sorted alphabetically.
     Filters out dotfiles and @-prefixed system dirs (Synology, etc.).
     The path parameter lets users browse deeper into the tree.
     Set recursive=true to list descendants as full paths relative to MUSIC_DIR.
@@ -224,6 +225,49 @@ def list_music_dirs(path: str = "", recursive: bool = False, max_depth: int | No
         "path": clean,
         "directories": dirs,
     }
+
+
+# =============================================================================
+# Playlist listing (watched + physical .m3u files)
+# =============================================================================
+
+@app.get("/api/playlists")
+def list_playlists():
+    """List available playlists for the playlist routing selector.
+
+    Returns watched playlists (from DB) and any physical .m3u files found in the
+    Playlists directory. Watched playlists take priority if names collide.
+    """
+    results = {}
+
+    # Physical .m3u files from Playlists dir (lowest priority)
+    playlists_dir = get_playlists_dir()
+    if playlists_dir and playlists_dir.exists():
+        for m3u in sorted(playlists_dir.rglob("*.m3u"), key=lambda p: p.stem.casefold()):
+            name = m3u.stem
+            results[name] = {
+                "name": name,
+                "is_watched": False,
+                "watched_id": None,
+                "platform": None,
+            }
+
+    # Watched playlists from DB (higher priority  -  overwrite any same-named .m3u entry)
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, name, platform FROM watched_playlists ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+
+    for row in rows:
+        results[row["name"]] = {
+            "name": row["name"],
+            "is_watched": True,
+            "watched_id": row["id"],
+            "platform": row["platform"],
+        }
+
+    return {"playlists": sorted(results.values(), key=lambda p: p["name"].casefold())}
 
 
 # =============================================================================
@@ -343,7 +387,7 @@ def test_slskd_connection(request: TestSlskdRequest = None):
         return {"success": False, "message": "Connection timed out"}
     except Exception as e:
         print(f"slskd connection test error: {type(e).__name__}: {e}")
-        return {"success": False, "message": "Connection failed — check server logs for details"}
+        return {"success": False, "message": "Connection failed  -  check server logs for details"}
 
 
 @app.post("/api/settings/test/navidrome")
@@ -376,7 +420,7 @@ def test_navidrome_connection(request: TestNavidromeRequest = None):
         return {"success": False, "message": "Connection timed out"}
     except Exception as e:
         print(f"Navidrome connection test error: {type(e).__name__}: {e}")
-        return {"success": False, "message": "Connection failed — check server logs for details"}
+        return {"success": False, "message": "Connection failed  -  check server logs for details"}
 
 
 @app.post("/api/settings/test/jellyfin")
@@ -408,7 +452,7 @@ def test_jellyfin_connection(request: TestJellyfinRequest = None):
         return {"success": False, "message": "Connection timed out"}
     except Exception as e:
         print(f"Jellyfin connection test error: {type(e).__name__}: {e}")
-        return {"success": False, "message": "Connection failed — check server logs for details"}
+        return {"success": False, "message": "Connection failed  -  check server logs for details"}
 
 
 @app.post("/api/settings/test/youtube-cookies")
@@ -438,7 +482,7 @@ def test_youtube_cookies(request: TestYouTubeCookiesRequest = None):
             f.write(cookies_text)
             tmp_path = f.name
 
-        # Age-restricted video — this is the real test. Without valid cookies,
+        # Age-restricted video  -  this is the real test. Without valid cookies,
         # yt-dlp returns a 403 or "Sign in to confirm your age" error.
         # Using a public video would tell us nothing useful about cookie auth.
         AGE_RESTRICTED_VIDEO = "https://www.youtube.com/watch?v=6_b7RDuLwcI"
@@ -458,16 +502,16 @@ def test_youtube_cookies(request: TestYouTubeCookiesRequest = None):
             try:
                 info = json.loads(result.stdout)
                 title = info.get("title", "Unknown")
-                return {"success": True, "message": f"Cookies valid — age-restricted test passed: \"{title}\""}
+                return {"success": True, "message": f"Cookies valid  -  age-restricted test passed: \"{title}\""}
             except json.JSONDecodeError:
                 return {"success": True, "message": "Cookies appear valid (age-restricted test passed)"}
         else:
             stderr = result.stderr
             if "sign in to confirm" in stderr.lower() or "age" in stderr.lower():
-                return {"success": False, "message": "Cookies rejected — YouTube asked for age confirmation. Re-export cookies while logged in."}
+                return {"success": False, "message": "Cookies rejected  -  YouTube asked for age confirmation. Re-export cookies while logged in."}
             if _is_ytdlp_403(stderr):
-                return {"success": False, "message": "Cookies rejected by YouTube (403). They may be expired — try re-exporting."}
-            # Might be geo-blocked rather than a cookie problem — try without cookies to check
+                return {"success": False, "message": "Cookies rejected by YouTube (403). They may be expired  -  try re-exporting."}
+            # Might be geo-blocked rather than a cookie problem  -  try without cookies to check
             test_cmd_nocookies = [
                 "yt-dlp",
                 "--dump-json",
@@ -477,25 +521,49 @@ def test_youtube_cookies(request: TestYouTubeCookiesRequest = None):
             ]
             result2 = subprocess.run(test_cmd_nocookies, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
             if result2.returncode == 0:
-                # Cookieless worked — that means the video isn't actually age-restricted here,
+                # Cookieless worked  -  that means the video isn't actually age-restricted here,
                 # but the cookies themselves are probably fine (or at least not breaking things)
-                return {"success": True, "message": "Cookies loaded successfully (test video not restricted in your region — real-world auth untested)"}
-            # Both with and without cookies failed — likely the test video is unavailable
+                return {"success": True, "message": "Cookies loaded successfully (test video not restricted in your region  -  real-world auth untested)"}
+            # Both with and without cookies failed  -  likely the test video is unavailable
             # in this region, not a cookie problem. Don't dump raw yt-dlp errors at the user.
             stderr2 = result2.stderr.lower()
             print(f"Cookie test: both with-cookies and cookieless failed. stderr={result2.stderr[:200]!r}")
             if "not available" in stderr2 or "unavailable" in stderr2 or "format" in stderr2 or "private" in stderr2:
-                return {"success": True, "message": "Cookies loaded (test video unavailable in your region — real-world auth untested)"}
-            return {"success": False, "message": f"yt-dlp test failed: {stderr[:200]}"}
+                return {"success": True, "message": "Cookies loaded (test video unavailable in your region  -  real-world auth untested)"}
+            return {"success": False, "message": "Cookie test inconclusive  -  could not reach test video. Check server logs for detail."}
 
     except subprocess.TimeoutExpired:
         return {"success": False, "message": "Test timed out"}
     except Exception as e:
         print(f"YouTube cookie test error: {type(e).__name__}: {e}")
-        return {"success": False, "message": "Cookie test failed — check server logs for details"}
+        return {"success": False, "message": "Cookie test failed  -  check server logs for details"}
     finally:
         if tmp_path:
             Path(tmp_path).unlink(missing_ok=True)
+
+
+@app.post("/api/settings/test/apprise")
+def test_apprise_notification(request: TestAppriseRequest = None):
+    """Send a test notification via Apprise. Uses form URL if provided, otherwise saved setting."""
+    url = (request.url if request and request.url else None) or get_setting("apprise_url")
+
+    if not url:
+        return {"success": False, "message": "Apprise URL not configured"}
+
+    try:
+        import apprise
+        a = apprise.Apprise()
+        if not a.add(url):
+            return {"success": False, "message": "Invalid Apprise URL  -  could not parse the notification service"}
+        result = a.notify(title="MusicGrabber", body="Test notification from MusicGrabber. If you can see this, it works!")
+        if result:
+            return {"success": True, "message": "Test notification sent successfully"}
+        return {"success": False, "message": "Apprise returned failure  -  check the URL and service configuration"}
+    except ImportError:
+        return {"success": False, "message": "Apprise library not installed  -  rebuild the Docker image"}
+    except Exception as e:
+        print(f"Apprise test error: {type(e).__name__}: {e}")
+        return {"success": False, "message": "Notification failed  -  check server logs for details"}
 
 
 @app.get("/api/settings/youtube-cookies/status")
@@ -527,7 +595,7 @@ def _extract_search_artist(query: str) -> str | None:
     if not q:
         return None
 
-    # "Artist - Song", "Artist – Song", "Artist — Song"
+    # "Artist - Song", "Artist – Song", "Artist  -  Song"
     split_match = re.split(r"\s*[-–—]\s*", q, maxsplit=1)
     if len(split_match) == 2 and split_match[0].strip():
         return split_match[0].strip()[:120]
@@ -601,7 +669,7 @@ def get_stats():
         ).fetchall()
         daily = [{"day": r["day"], "count": r["count"]} for r in daily_rows]
 
-        # Top artists (by completed downloads) — case-insensitive grouping,
+        # Top artists (by completed downloads)  -  case-insensitive grouping,
         # display the most popular casing variant for each artist
         artist_rows = conn.execute(
             "SELECT artist, total_count as count FROM ("
@@ -637,7 +705,7 @@ def get_stats():
         total_searches = int(search_summary["total_searches"] or 0)
         successful_searches = int(search_summary["successful_searches"] or 0)
 
-        # Case-insensitive grouping — display the most popular casing variant
+        # Case-insensitive grouping  -  display the most popular casing variant
         searched_artist_rows = conn.execute(
             "SELECT artist, total_count as count, total_successful as successful_searches FROM ("
             "  SELECT artist, "
@@ -671,7 +739,7 @@ def get_stats():
         ).fetchone()
         converted_searches = int(search_to_download["converted_searches"] or 0)
 
-        # Storage usage — scan both Singles and Playlists dirs, deduplicate by inode
+        # Storage usage  -  scan both Singles and Playlists dirs, deduplicate by inode
         storage_bytes = 0
         file_count = 0
         seen_inodes: set[tuple] = set()
@@ -734,7 +802,7 @@ def reset_stats(confirm: bool = False):
 def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
     """Get a streamable audio URL for preview playback."""
     try:
-        # Monochrome: fetch an AAC stream URL from the API — no yt-dlp needed,
+        # Monochrome: fetch an AAC stream URL from the API  -  no yt-dlp needed,
         # and browsers play MP4/AAC natively without any fuss
         if source == "monochrome":
             with httpx.Client(timeout=TIMEOUT_MONOCHROME_API) as client:
@@ -766,7 +834,7 @@ def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
             raise HTTPException(status_code=400, detail=f"Preview not supported for source: {source}")
 
         # SoundCloud returns HLS (.m3u8) for bestaudio which browsers can't
-        # play natively — prefer the direct HTTP MP3 stream for previews.
+        # play natively  -  prefer the direct HTTP MP3 stream for previews.
         # Format IDs vary by track: older ones use http_mp3_1_0, newer ones
         # use http_mp3_standard. Both resolve to a direct .mp3 on cf-media.sndcdn.com.
         if source == "soundcloud":
@@ -892,7 +960,7 @@ def search_slskd_endpoint(request: SearchRequest):
 
     except Exception as e:
         print(f"slskd search error: {type(e).__name__}: {e}")
-        return {"results": [], "slskd_enabled": True, "error": "Search failed — check server logs for details"}
+        return {"results": [], "slskd_enabled": True, "error": "Search failed  -  check server logs for details"}
 
 
 @app.post("/api/explore/similar")
@@ -927,7 +995,7 @@ def explore_similar(request: ExploreRequest):
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"MusicBrainz lookup failed: {e}")
 
-        # Step 2: ListenBrainz Labs similar-artists — fully public, no token needed
+        # Step 2: ListenBrainz Labs similar-artists  -  fully public, no token needed
         try:
             lb_resp = client.get(
                 "https://labs.api.listenbrainz.org/similar-artists/json",
@@ -940,7 +1008,7 @@ def explore_similar(request: ExploreRequest):
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"ListenBrainz Labs failed: {e}")
 
-    # Results are pre-sorted by score descending — just take the top N names
+    # Results are pre-sorted by score descending  -  just take the top N names
     result_artists = [
         {"artist": entry["name"]}
         for entry in similar
@@ -1019,9 +1087,18 @@ def download(request: DownloadRequest):
             request.convert_to_flac
         )
     elif source in URL_BASED_SOURCES:
-        spawn_daemon_thread(process_download, job_id, request.video_id, request.convert_to_flac, source_url=source_url)
+        spawn_daemon_thread(
+            process_download, job_id, request.video_id, request.convert_to_flac,
+            source_url=source_url,
+            playlist_name=request.playlist_name,
+            use_playlists_dir=request.use_playlists_dir,
+        )
     else:
-        spawn_daemon_thread(process_download, job_id, request.video_id, request.convert_to_flac)
+        spawn_daemon_thread(
+            process_download, job_id, request.video_id, request.convert_to_flac,
+            playlist_name=request.playlist_name,
+            use_playlists_dir=request.use_playlists_dir,
+        )
 
     return {"job_id": job_id, "status": "queued"}
 
@@ -1169,39 +1246,80 @@ def delete_job_file(job_id: str):
         raise HTTPException(status_code=400, detail="Job has no artist/title metadata")
 
     from utils import check_duplicate
+    from settings import get_playlists_dir
     existing = check_duplicate(artist, title)
     if not existing:
-        # File already gone — just mark it as deleted and move on
+        # File already gone  -  just mark it as deleted and move on
         with db_conn() as conn:
             conn.execute("UPDATE jobs SET file_deleted = 1 WHERE id = ?", (job_id,))
             conn.commit()
-        return {"deleted": [], "job_id": job_id}
+        return {"deleted": [], "job_id": job_id, "file_kept": False}
+
+    # Decide whether to actually delete the file.
+    # If it lives inside the playlists directory it was downloaded specifically for a playlist
+    # and is safe to nuke. If it lives in Singles (or anywhere else) it belongs to the broader
+    # library and may be referenced by other playlists  -  remove it from this playlist's M3U
+    # only, leave the file alone.
+    playlists_dir = get_playlists_dir()
+    file_is_playlist_owned = False
+    if playlists_dir:
+        try:
+            existing.relative_to(playlists_dir)
+            file_is_playlist_owned = True
+        except ValueError:
+            pass  # File lives outside the playlists dir  -  library file, hands off
 
     deleted_files = []
-    try:
-        # Delete audio file
-        existing.unlink()
-        deleted_files.append(existing.name)
+    if file_is_playlist_owned:
+        try:
+            existing.unlink()
+            deleted_files.append(existing.name)
 
-        # Delete lyrics file if present
-        lrc_file = existing.with_suffix(".lrc")
-        if lrc_file.exists():
-            lrc_file.unlink()
-            deleted_files.append(lrc_file.name)
+            lrc_file = existing.with_suffix(".lrc")
+            if lrc_file.exists():
+                lrc_file.unlink()
+                deleted_files.append(lrc_file.name)
 
-        # Remove empty artist directory
-        artist_dir = existing.parent
-        if artist_dir.exists() and not any(artist_dir.iterdir()):
-            artist_dir.rmdir()
+            # Remove empty playlist subfolder
+            track_dir = existing.parent
+            if track_dir.exists() and not any(track_dir.iterdir()):
+                track_dir.rmdir()
 
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
 
     with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
         conn.execute("UPDATE jobs SET file_deleted = 1 WHERE id = ?", (job_id,))
+
+        # Clear downloaded_at so the track reappears as missing and can be retried/replaced.
+        conn.execute(
+            "UPDATE watched_playlist_tracks SET downloaded_at = NULL WHERE job_id = ?",
+            (job_id,)
+        )
+
+        # Fetch playlist info for M3U rebuild (if this job belongs to a watched playlist)
+        playlist_row = conn.execute(
+            """SELECT wp.id, wp.name, wp.make_m3u, wp.use_playlists_dir, wp.sync_mode
+               FROM watched_playlists wp
+               JOIN bulk_imports bi ON bi.watch_playlist_id = wp.id
+               JOIN bulk_import_tracks bt ON bt.import_id = bi.id AND bt.job_id = ?
+               WHERE wp.make_m3u = 1
+               LIMIT 1""",
+            (job_id,)
+        ).fetchone()
+
         conn.commit()
 
-    return {"deleted": deleted_files, "job_id": job_id}
+    # Rebuild M3U to remove this track (deleted or unlinked) from the playlist file
+    if playlist_row:
+        rebuild_watched_playlist_m3u(
+            playlist_row["id"], playlist_row["name"],
+            use_playlists_dir=bool(playlist_row["use_playlists_dir"]),
+            sync_mode=playlist_row["sync_mode"] or "append",
+        )
+
+    return {"deleted": deleted_files, "job_id": job_id, "file_kept": not file_is_playlist_owned}
 
 
 @app.delete("/api/jobs/cleanup")
@@ -1245,7 +1363,7 @@ def add_blacklist_entry(request: BlacklistRequest):
     with db_conn() as conn:
         # Blacklist the specific video
         if request.video_id:
-            # Upsert — if the same video_id is already blacklisted, update the reason
+            # Upsert  -  if the same video_id is already blacklisted, update the reason
             existing = conn.execute(
                 "SELECT id FROM blacklist WHERE video_id = ?", (request.video_id,)
             ).fetchone()
@@ -1474,7 +1592,7 @@ def fetch_playlist(request: PlaylistFetchRequest):
     url = request.url.strip()
     platform, _ = detect_playlist_platform(url)
 
-    # fetch_playlist_tracks returns (artist, title) tuples -- reformat to the
+    # fetch_playlist_tracks returns (artist, title) tuples - reformat to the
     # "Artist - Title" strings the bulk import UI expects, plus a playlist name.
     tracks_tuples, playlist_name = fetch_playlist_tracks(url, platform)
     tracks = [f"{artist} - {title}" for artist, title in tracks_tuples]
@@ -1488,7 +1606,72 @@ def fetch_playlist(request: PlaylistFetchRequest):
 @app.post("/api/watched-playlists")
 def add_watched_playlist(request: WatchedPlaylistRequest):
     """Add a new playlist to watch for new tracks"""
-    platform, _ = detect_playlist_platform(request.url)
+    platform, platform_id = detect_playlist_platform(request.url)
+
+    # ListenBrainz username: fan out into one watched playlist per "Created for You" playlist
+    if platform == "listenbrainz_user":
+        lb_playlists = fetch_listenbrainz_createdfor(platform_id)
+
+        # LB playlists are weekly  -  mirror mode is the sensible default
+        sync_mode = "mirror"
+        # Weekly refresh makes sense since LB regenerates them weekly
+        refresh_hours = max(request.refresh_interval_hours, 168)
+
+        created = []
+        skipped = 0
+
+        with db_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            for lb in lb_playlists:
+                existing = conn.execute(
+                    "SELECT id FROM watched_playlists WHERE url = ?", (lb["playlist_url"],)
+                ).fetchone()
+                if existing:
+                    skipped += 1
+                    continue
+
+                playlist_id = str(uuid.uuid4())[:8]
+                conn.execute("""
+                    INSERT INTO watched_playlists
+                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (playlist_id, lb["playlist_url"], lb["name"], "listenbrainz",
+                      refresh_hours, int(request.convert_to_flac),
+                      int(request.make_m3u), int(request.use_playlists_dir), sync_mode, len(lb["tracks"])))
+
+                for artist, title in lb["tracks"]:
+                    track_hash = hash_track(artist, title)
+                    conn.execute("""
+                        INSERT OR IGNORE INTO watched_playlist_tracks
+                        (playlist_id, track_hash, artist, title)
+                        VALUES (?, ?, ?, ?)
+                    """, (playlist_id, track_hash, artist, title))
+
+                created.append({"id": playlist_id, "name": lb["name"], "track_count": len(lb["tracks"])})
+
+            conn.commit()
+
+        if not created:
+            raise HTTPException(status_code=409, detail="All ListenBrainz 'Created for You' playlists are already being watched")
+
+        # Kick off bulk imports in background for each new playlist
+        for i, lb in enumerate([p for p in lb_playlists if any(c["name"] == p["name"] for c in created)]):
+            playlist_id = created[i]["id"]
+            if lb["tracks"]:
+                start_bulk_import_for_tracks(
+                    lb["tracks"],
+                    request.convert_to_flac,
+                    watch_playlist_id=playlist_id,
+                    use_playlists_dir=request.use_playlists_dir,
+                )
+
+        return {
+            "created": len(created),
+            "skipped": skipped,
+            "playlists": created,
+            "message": f"Added {len(created)} ListenBrainz playlist(s)"
+            + (f" ({skipped} already watched)" if skipped else ""),
+        }
 
     with db_conn() as conn:
         # Check for duplicate
@@ -1714,6 +1897,78 @@ def get_missing_watched_tracks(playlist_id: str):
         "missing": [dict(r) for r in rows],
         "count": len(rows),
     }
+
+
+@app.get("/api/watched-playlists/{playlist_id}/tracks")
+def get_watched_playlist_tracks(playlist_id: str):
+    """Return all tracks for a watched playlist with their download status.
+
+    Each track includes its current job status so the UI can show downloaded,
+    failed, pending, and mirror-removed tracks in one place.
+    """
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+
+        playlist = conn.execute(
+            "SELECT name FROM watched_playlists WHERE id = ?", (playlist_id,)
+        ).fetchone()
+
+        if not playlist:
+            raise HTTPException(status_code=404, detail="Watched playlist not found")
+
+        rows = conn.execute(
+            """SELECT wpt.artist, wpt.title, wpt.downloaded_at, wpt.job_id,
+                      wpt.first_seen, wpt.removed_at,
+                      j.status as job_status, j.error as job_error
+               FROM watched_playlist_tracks wpt
+               LEFT JOIN jobs j ON wpt.job_id = j.id
+               WHERE wpt.playlist_id = ?
+               ORDER BY wpt.first_seen""",
+            (playlist_id,)
+        ).fetchall()
+
+    tracks = [dict(r) for r in rows]
+    downloaded = sum(1 for t in tracks if t["downloaded_at"])
+    failed = sum(1 for t in tracks if not t["downloaded_at"] and t["job_status"] in ("failed", "completed_with_errors", None))
+    pending = sum(1 for t in tracks if not t["downloaded_at"] and t["job_status"] in ("queued", "downloading"))
+
+    return {
+        "playlist_name": playlist["name"],
+        "tracks": tracks,
+        "total": len(tracks),
+        "downloaded": downloaded,
+        "failed": failed,
+        "pending": pending,
+    }
+
+
+@app.post("/api/watched-playlists/{playlist_id}/retry-track")
+def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest):
+    """Manually retry a single missing track for a watched playlist.
+
+    Searches all sources for the best match and queues a download, routing the
+    result back into the watched playlist's folder and M3U (if enabled).
+    """
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        playlist = conn.execute(
+            "SELECT id, name, convert_to_flac, use_playlists_dir FROM watched_playlists WHERE id = ?",
+            (playlist_id,)
+        ).fetchone()
+
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Watched playlist not found")
+
+    # Kick off a single-track bulk import linked to this watched playlist so the
+    # M3U rebuild and watched_playlist_tracks update happen automatically on completion.
+    import_id = start_bulk_import_for_tracks(
+        tracks=[(request.artist, request.title)],
+        convert_to_flac=bool(playlist["convert_to_flac"]),
+        watch_playlist_id=playlist_id,
+        use_playlists_dir=bool(playlist["use_playlists_dir"]),
+    )
+
+    return {"import_id": import_id, "status": "queued", "message": f"Searching for {request.artist} - {request.title}"}
 
 
 @app.post("/api/watched-playlists/{playlist_id}/refresh")

@@ -15,9 +15,9 @@ from mutagen.flac import FLAC
 
 from constants import (
     VERSION, TIMEOUT_HTTP_REQUEST, TIMEOUT_FPCALC,
-    ACOUSTID_API_KEY, ACOUSTID_MIN_SCORE,
+    ACOUSTID_MIN_SCORE,
 )
-from settings import get_setting_bool
+from settings import get_setting, get_setting_bool
 from utils import set_file_permissions
 
 
@@ -49,7 +49,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
 
         recording = data["recordings"][0]
 
-        # MusicBrainz scores text matches 0-100. Below 85 is too shaky to trust —
+        # MusicBrainz scores text matches 0-100. Below 85 is too shaky to trust  - 
         # at that point we'd be replacing decent YouTube/Tidal metadata with a guess.
         mb_score = int(recording.get("score", 0))
         if mb_score < 85:
@@ -114,7 +114,7 @@ def _run_fpcalc(file_path: Path) -> Optional[tuple[int, str]]:
 def _score_recording(recording: dict, expected_artist: str, expected_title: str) -> int:
     """Score how well an AcoustID recording matches what we think we downloaded.
 
-    AcoustID returns a pile of recordings for a fingerprint — covers, remasters,
+    AcoustID returns a pile of recordings for a fingerprint  -  covers, remasters,
     compilations, and occasionally Kylie Minogue. This picks the one that
     actually matches what we asked for.
     """
@@ -128,17 +128,17 @@ def _score_recording(recording: dict, expected_artist: str, expected_title: str)
     if any(exp_artist in name or name in exp_artist for name in artist_names):
         score += 10
 
-    # Title match — bonus for exact match, smaller bonus for substring
+    # Title match  -  bonus for exact match, smaller bonus for substring
     if exp_title == rec_title:
         score += 8
     elif exp_title in rec_title or rec_title in exp_title:
         score += 5
 
-    # Penalise covers, remixes, and karaoke — we want the real deal
+    # Penalise covers, remixes, and karaoke  -  we want the real deal
     if "cover" in rec_title or "karaoke" in rec_title or "tribute" in rec_title:
         score -= 8
 
-    # Penalise remastered/live/session versions — prefer the original
+    # Penalise remastered/live/session versions  -  prefer the original
     if "remaster" in rec_title or "live" in rec_title or "session" in rec_title:
         score -= 2
 
@@ -165,7 +165,7 @@ def _extract_recording_metadata(recording: dict) -> dict:
             a.get("name", "") for a in artists if a.get("name")
         )
 
-    # Extract album from release groups — prefer actual albums over singles/compilations
+    # Extract album from release groups  -  prefer actual albums over singles/compilations
     releasegroups = recording.get("releasegroups", [])
     if releasegroups:
         album_rg = next(
@@ -190,7 +190,7 @@ def _lookup_acoustid(duration: int, fingerprint: str,
         headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
 
         params = {
-            "client": ACOUSTID_API_KEY,
+            "client": get_setting("acoustid_api_key", "0NILMQojj4"),
             "duration": duration,
             "fingerprint": fingerprint,
             "meta": "recordings releasegroups",
@@ -233,7 +233,7 @@ def _lookup_acoustid(duration: int, fingerprint: str,
         fp_score, recording = best_rec
         match_score = _score_recording(recording, expected_artist, expected_title)
 
-        # Require at least some positive signal — a negative score means nothing
+        # Require at least some positive signal  -  a negative score means nothing
         # matched our expected artist or title, and we'd just be making things worse.
         if match_score < 0:
             print(f"AcoustID: best recording match score {match_score} is too low, skipping")

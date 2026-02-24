@@ -8,11 +8,13 @@ Library scan triggers and M3U playlist generation.
 import base64
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import httpx
 
@@ -88,7 +90,7 @@ def _output_stem(artist: str, title: str, fallback: str) -> str:
 def _playlist_stem(artist: str, title: str, fallback: str) -> str:
     """Return 'Artist - Title' filename stem for tracks inside a playlist folder.
 
-    Always flat — no organise_by_artist logic needed since the playlist folder
+    Always flat  -  no organise_by_artist logic needed since the playlist folder
     itself provides the organisational context.
     """
     safe_artist = sanitize_filename(artist or "Unknown Artist")
@@ -133,6 +135,115 @@ def trigger_navidrome_scan():
             )
     except Exception:
         pass  # Non-critical, scan will happen on schedule anyway
+
+
+def check_navidrome_duplicate(artist: str, title: str) -> Optional[Path]:
+    """Check if a track already exists in Navidrome via the Subsonic search2 API.
+
+    Only runs when Navidrome is configured and navidrome_dupe_check is enabled.
+    Returns the Path to the file on disk if found (from Navidrome's 'path' field),
+    or None if not found / check is disabled / Navidrome is unreachable.
+    Silently swallows all errors  -  this is a best-effort check, not a blocker.
+    """
+    from settings import get_setting_bool
+    if not get_setting_bool("navidrome_dupe_check", True):
+        return None
+
+    navidrome_url = get_setting("navidrome_url")
+    navidrome_user = get_setting("navidrome_user")
+    navidrome_pass = get_setting("navidrome_pass")
+
+    if not (navidrome_url and navidrome_user and navidrome_pass):
+        return None
+
+    try:
+        params = subsonic_auth_params(navidrome_user, navidrome_pass)
+        params.update({
+            "query": title,
+            "artistCount": 0,
+            "albumCount": 0,
+            "songCount": 20,
+        })
+
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
+            response = client.get(f"{navidrome_url.rstrip('/')}/rest/search2", params=params)
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json().get("subsonic-response", {})
+        if data.get("status") != "ok":
+            return None
+
+        songs = data.get("searchResult2", {}).get("song", [])
+
+        # Normalise punctuation so "Guns N' Roses" == "Guns N' Roses", etc.
+        # Collapse all apostrophe/quote variants and strip non-alphanumeric noise.
+        _punct_re = re.compile(r"[''`´\u2018\u2019\u201b\u02bc]")
+
+        def _norm(s: str) -> str:
+            return _punct_re.sub("'", (s or "").strip()).casefold()
+
+        title_norm = _norm(title)
+        artist_norm = _norm(artist or "")
+
+        # Strip trailing version qualifiers (Remaster, Live, Radio Edit, etc.) from a title
+        # so "Everytime (Remastered)" and "Everytime" are treated as the same song,
+        # but "Everytime [Remix]" is kept distinct  -  remixes are different recordings.
+        _version_re = re.compile(
+            r'[\s\(\[]+(?:remaster(?:ed)?|remastered \d{4}|\d{4} remaster|'
+            r'radio edit|single (?:version|edit)|album (?:version|edit)|'
+            r'original (?:version|mix)|mono|stereo|explicit|clean)([\s\)\]]+|$)',
+            re.IGNORECASE
+        )
+
+        def _base_title(t: str) -> str:
+            return _version_re.sub("", t).strip().casefold()
+
+        title_base = _base_title(title)
+
+        # Albums whose names contain these keywords are covers/tributes/karaoke  - 
+        # definitely not the same recording even if artist and title match.
+        _covers_re = re.compile(
+            r'\b(?:cover[s]?|tribute|karaoke|piano version|instrumental version|'
+            r'made famous|in the style of|as made|acoustic version)\b',
+            re.IGNORECASE
+        )
+
+        for song in songs:
+            song_raw_title = (song.get("title") or "").strip()
+            song_title_norm = _norm(song_raw_title)
+            song_title_base = _base_title(song_raw_title)
+            song_artist_norm = _norm(song.get("artist") or "")
+            # albumArtist is the reliable "who actually recorded this" field  -
+            # track artist on covers albums is often the original artist.
+            song_album_artist_norm = _norm(song.get("albumArtist") or song.get("artist") or "")
+            song_album = (song.get("album") or "")
+
+            # Reject covers/tribute/karaoke albums outright
+            if _covers_re.search(song_album):
+                continue
+
+            # Track artist OR album artist matching is enough  -  requiring both breaks
+            # tracks on compilations where albumArtist is "Various Artists".
+            artist_match = not artist_norm or (
+                song_artist_norm == artist_norm or song_album_artist_norm == artist_norm
+            )
+
+            # Exact title match always wins; also match if both titles share the same base
+            # (e.g. we want "Everytime" and Navidrome has "Everytime (Remastered 2004)").
+            # Remix/version titles in the search query must match exactly  -  they are distinct recordings.
+            title_match = (song_title_norm == title_norm) or (song_title_base == title_base and title_base == title_norm)
+
+            if title_match and artist_match:
+                # Navidrome returns the absolute path on disk  -  use it if present
+                raw_path = song.get("path")
+                return Path(raw_path) if raw_path else Path(title)  # fallback is display-only
+
+        return None
+
+    except Exception:
+        return None  # Never let a dupe check failure block a download
 
 
 def trigger_jellyfin_scan():
@@ -201,7 +312,7 @@ def probe_audio_quality(
             parts = ["FLAC", sample_khz]
             if bit_depth:
                 parts.append(f"{bit_depth}bit")
-            return " ".join(p for p in parts if p), 0  # Lossless — always passes
+            return " ".join(p for p in parts if p), 0  # Lossless  -  always passes
         else:
             kbps = f"{bitrate_kbps}kbps" if bitrate_kbps else ""
             label = " ".join(p for p in [codec, kbps] if p) or None
@@ -251,7 +362,7 @@ def _build_ytdlp_download_cmd(
     else:
         fmt = None
         format_args = []  # Keep original format from source
-    # MP3 VBR ~192k (LAME -V 2) — good trade-off between size and quality.
+    # MP3 VBR ~192k (LAME -V 2)  -  good trade-off between size and quality.
     # For FLAC/Opus, quality 0 = best (lossless / highest bitrate).
     audio_quality = "2" if fmt == "mp3" else "0"
     base_args = _ytdlp_base_args() if use_cookies else []
@@ -336,7 +447,7 @@ def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artis
     Because MusicBrainz actually knows how to spell, unlike half the uploaders on YouTube.
     Returns the new file path (or the original if no move was needed).
     """
-    # Flat directory mode doesn't use artist names — nothing to shuffle
+    # Flat directory mode doesn't use artist names  -  nothing to shuffle
     if not get_setting_bool("organise_by_artist", True):
         return audio_file
 
@@ -349,7 +460,7 @@ def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artis
     new_dir.mkdir(parents=True, exist_ok=True)
     new_path = new_dir / audio_file.name
 
-    # Don't trample an existing file — paranoia beats regret
+    # Don't trample an existing file  -  paranoia beats regret
     if new_path.exists():
         print(f"Artist normalisation: target already exists, skipping move: {new_path}")
         return audio_file
@@ -419,9 +530,9 @@ def _run_ytdlp_with_retries(
 
     if (download_timed_out or (download_result and download_result.returncode != 0)) and has_cookies:
         if download_timed_out or _should_retry_without_cookies(download_result.stderr):
-            # Retry without cookies — if this succeeds, it confirms cookies were the problem.
+            # Retry without cookies  -  if this succeeds, it confirms cookies were the problem.
             # If it also fails, the video itself is blocked (geo-lock, ContentID, etc.) and
-            # cookies were innocent bystanders — don't penalise them.
+            # cookies were innocent bystanders  -  don't penalise them.
             download_cmd_no_cookies = _strip_cookies_args(download_cmd)
             try:
                 download_result = subprocess.run(
@@ -432,9 +543,9 @@ def _run_ytdlp_with_retries(
                 )
                 download_timed_out = False
                 if download_result.returncode == 0 and cookies_may_be_at_fault:
-                    # Cookieless worked — so cookies were actively causing the 403.
+                    # Cookieless worked  -  so cookies were actively causing the 403.
                     # Disable them for a while so they don't break other downloads too.
-                    print("Cookie-related 403 confirmed (cookieless retry succeeded) — disabling cookies temporarily")
+                    print("Cookie-related 403 confirmed (cookieless retry succeeded)  -  disabling cookies temporarily")
                     _note_cookie_failure()
             except subprocess.TimeoutExpired:
                 download_timed_out = True
@@ -507,7 +618,7 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
                     found = True
                     break
             if not found:
-                # Track already existed in Singles (duplicate skip) — include it from wherever it lives
+                # Track already existed in Singles (duplicate skip)  -  include it from wherever it lives
                 audio_file = check_duplicate(artist, title)
                 if audio_file:
                     playlist_files.append(str(audio_file))
@@ -538,7 +649,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
     file grows in step with the library.
 
     In mirror mode, tracks that have been removed from the upstream playlist (removed_at IS NOT NULL)
-    are excluded from the M3U. Audio files are never deleted — only the playlist file changes.
+    are excluded from the M3U. Audio files are never deleted  -  only the playlist file changes.
 
     Returns the M3U path on success, None if no files could be resolved.
     """
@@ -570,19 +681,28 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         if playlists_dir:
             track_dir = playlists_dir / safe_playlist
             stem = _playlist_stem(artist, title, title)
+            found = False
             for ext in ['.flac', '.opus', '.m4a', '.mp3', '.ogg', '.webm']:
                 candidate = track_dir / f"{stem}{ext}"
                 if candidate.exists():
                     playlist_files.append(f"{safe_playlist}/{stem}{ext}")
+                    found = True
                     break
+            if not found:
+                # Track wasn't downloaded into the playlist folder  -  it was a duplicate that
+                # already existed elsewhere (Singles, another playlist, or only in Navidrome).
+                # Fall back through local check then Navidrome; use absolute path in all cases.
+                existing = check_duplicate(artist, title) or check_navidrome_duplicate(artist, title)
+                if existing:
+                    playlist_files.append(str(existing))
         else:
-            audio_file = check_duplicate(artist, title)
+            audio_file = check_duplicate(artist, title) or check_navidrome_duplicate(artist, title)
             if audio_file:
                 try:
                     rel_path = audio_file.relative_to(get_singles_dir())
                     playlist_files.append(str(rel_path))
                 except ValueError:
-                    pass  # File outside Singles dir — skip it
+                    playlist_files.append(str(audio_file))  # Navidrome path  -  use absolute
 
     if not playlist_files:
         return None
@@ -684,7 +804,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 channel = info.get("channel", info.get("uploader", "Unknown"))
                 artist, title = extract_artist_title(full_title, channel)
 
-                # Check for duplicates — still add to M3U even if we're not downloading
+                # Check for duplicates  -  still add to M3U even if we're not downloading
                 existing_file = check_duplicate(artist, title)
                 if existing_file:
                     skipped_tracks += 1
@@ -713,7 +833,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 )
 
                 if download_timed_out or not download_result or download_result.returncode != 0:
-                    # Permission denied on temp file rename — clean up and retry once
+                    # Permission denied on temp file rename  -  clean up and retry once
                     stderr = download_result.stderr if download_result else ""
                     if not download_timed_out and download_result and _is_permission_error(stderr):
                         cleaned = _cleanup_temp_files(artist_dir, safe_title)
@@ -856,8 +976,10 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         # Update job with extracted info (store slskd peer as uploader for blacklist)
         _update_job(job_id, title=title, artist=artist, uploader=username)
 
-        # Check for duplicates
+        # Check for duplicates (local filesystem, then Navidrome if configured)
         existing_file = check_duplicate(artist, title)
+        if not existing_file:
+            existing_file = check_navidrome_duplicate(artist, title)
         if existing_file:
             _update_job(
                 job_id,
@@ -938,7 +1060,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             elif audio_fmt == "opus":
                 ffmpeg_codec = "libopus"
                 extra_args = ["-b:a", "320k"]
-            else:  # mp3 — VBR ~192k
+            else:  # mp3  -  VBR ~192k
                 ffmpeg_codec = "libmp3lame"
                 extra_args = ["-q:a", "2"]
             final_file = artist_dir / f"{sanitized_title}{target_ext}"
@@ -1046,15 +1168,24 @@ def _monochrome_cover_url(cover_uuid: str) -> str:
     return f"{MONOCHROME_COVER_BASE}/{cover_uuid.replace('-', '/')}/640x640.jpg"
 
 
+class _MonochromeAllTiers403(Exception):
+    """Raised when every Monochrome quality tier returns 403 for a track.
+
+    Caught by _process_monochrome_download to trigger a YouTube fallback
+    rather than marking the job as outright failed.
+    """
+
+
 def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
     """Download a FLAC directly from the Monochrome/Tidal API.
 
-    No yt-dlp, no messing about — just a straight FLAC off the CDN.
-    Tries LOSSLESS first; falls back to HIGH on 403 (some tracks are restricted
-    at the lossless tier). Raises on any other failure.
+    No yt-dlp, no messing about  -  just a straight FLAC off the CDN.
+    Tries LOSSLESS → HIGH in order; if all tiers 403, raises _MonochromeAllTiers403
+    so the caller can fall back to YouTube rather than giving up entirely.
     """
     quality_attempts = ["LOSSLESS", "HIGH"]
     resp = None
+    all_403 = True
     with httpx.Client(timeout=TIMEOUT_MONOCHROME_API) as client:
         for quality in quality_attempts:
             resp = client.get(
@@ -1062,8 +1193,13 @@ def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
                 params={"id": track_id, "quality": quality},
             )
             if resp.status_code != 403:
+                all_403 = False
                 break
             print(f"Monochrome: {quality} quality returned 403 for track {track_id}, trying next tier...")
+
+    if all_403:
+        raise _MonochromeAllTiers403(f"All Monochrome quality tiers returned 403 for track {track_id}")
+
     resp.raise_for_status()
     data = resp.json().get("data") or {}
     if not data.get("manifest"):
@@ -1072,7 +1208,7 @@ def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
     manifest = json.loads(base64.b64decode(data["manifest"]))
     encryption = manifest.get("encryptionType", "NONE")
     if encryption != "NONE":
-        raise Exception(f"Monochrome track {track_id} is encrypted ({encryption}) — cannot download")
+        raise Exception(f"Monochrome track {track_id} is encrypted ({encryption})  -  cannot download")
 
     urls = manifest.get("urls") or []
     if not urls:
@@ -1108,7 +1244,7 @@ def _embed_monochrome_cover(audio_file: Path, cover_uuid: str) -> None:
         audio.add_picture(pic)
         audio.save()
     except Exception as e:
-        # Non-critical — the track still plays fine without cover art
+        # Non-critical  -  the track still plays fine without cover art
         print(f"Monochrome cover embed failed: {e}")
 
 
@@ -1129,7 +1265,7 @@ def _get_monochrome_track_info(track_id: str) -> dict | None:
 
 def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bool = True,
                                   playlist_name: str = None, use_playlists_dir: bool = False):
-    """Download a track directly from Monochrome/Tidal — no yt-dlp needed.
+    """Download a track directly from Monochrome/Tidal  -  no yt-dlp needed.
 
     The API gives us proper metadata (artist, album, ISRC) so we don't need
     to guess from dodgy YouTube titles. The audio is genuine lossless FLAC
@@ -1142,7 +1278,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
     try:
         _update_job(job_id, status="downloading")
 
-        # Get track metadata from the API — artist, title, album, the lot
+        # Get track metadata from the API  -  artist, title, album, the lot
         info = _get_monochrome_track_info(track_id)
         if not info:
             raise Exception(f"Failed to get track info for Monochrome track {track_id}")
@@ -1157,9 +1293,27 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
 
         _update_job(job_id, title=title, artist=artist, uploader=artist)
 
-        # Duplicate check
+        # Duplicate check  -  local filesystem first, then Navidrome if configured
         existing_file = check_duplicate(artist, title)
-        if existing_file:
+        if not existing_file:
+            existing_file = check_navidrome_duplicate(artist, title)
+        if existing_file and playlist_name:
+            # Track already exists somewhere  -  add it to the target playlist and call it done.
+            # No re-download needed; the user just wants it in the playlist.
+            # _append_to_physical_m3u writes a path string only, so it works even when the
+            # file isn't locally accessible (e.g. Navidrome path on a different mount point).
+            _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+            source_label = "library" if existing_file.exists() else "Navidrome"
+            error_label = f"Already exists in {source_label}: {existing_file.name} (added to playlist)"
+            _update_job(
+                job_id,
+                status="completed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error=error_label
+            )
+            _mark_watched_track_downloaded(job_id)
+            return
+        elif existing_file:
             _update_job(
                 job_id,
                 status="completed",
@@ -1169,7 +1323,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             _mark_watched_track_downloaded(job_id)
             return
 
-        # Create download directory — respect playlist routing if requested
+        # Create download directory  -  respect playlist routing if requested
         playlists_dir = get_playlists_dir() if (use_playlists_dir and playlist_name) else None
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_filename(playlist_name)
@@ -1192,16 +1346,16 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         # Embed cover art from Tidal CDN
         _embed_monochrome_cover(output_path, cover_uuid)
 
-        # Probe audio quality — this is genuine lossless, no transcode shenanigans
+        # Probe audio quality  -  this is genuine lossless, no transcode shenanigans
         audio_quality, bitrate_kbps = probe_audio_quality(output_path)
         min_bitrate = get_setting_int("min_audio_bitrate", 0)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             output_path.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
 
-        # Metadata enrichment — Tidal already gave us artist/title/album, which is authoritative.
+        # Metadata enrichment  -  Tidal already gave us artist/title/album, which is authoritative.
         # We only use MusicBrainz to fill in the year (which Tidal doesn't provide).
-        # We deliberately don't let MusicBrainz overwrite artist/title/album here — it has
+        # We deliberately don't let MusicBrainz overwrite artist/title/album here  -  it has
         # a nasty habit of matching a live recording or remaster and silently making things worse.
         metadata_source = "monochrome_api"
         mb_metadata = lookup_metadata(artist, title, output_path)
@@ -1230,6 +1384,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             completed_at=datetime.now(timezone.utc).isoformat()
         )
         _mark_watched_track_downloaded(job_id)
+        _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
 
         print(f"Monochrome: Downloaded {artist} - {title} (lossless FLAC)")
 
@@ -1240,6 +1395,33 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             source=source_label,
             status="completed"
         )
+
+    except _MonochromeAllTiers403:
+        # Track is geo-restricted or unlicensed on every Tidal quality tier.
+        # Fall back to YouTube rather than leaving the user with a failed job.
+        print(f"Monochrome: all tiers 403 for '{artist} - {title}', falling back to YouTube search")
+        try:
+            from youtube import search_youtube
+            query = f"{artist} - {title}" if artist and artist != "Unknown" else title
+            # Search YouTube directly  -  search_all merges sources by quality_score and Monochrome's
+            # lossless bonuses would push YouTube results out of the top-N slice every time.
+            yt_results = search_youtube(query, limit=5)
+            if not yt_results:
+                raise Exception("No YouTube results found as fallback")
+            best = yt_results[0]
+            print(f"Monochrome fallback: using YouTube result '{best.get('title')}' ({best['video_id']})")
+            # Re-use the same job, just route it through the YouTube path
+            process_download(job_id, best["video_id"], convert_to_flac,
+                             source_url=None, playlist_name=playlist_name,
+                             use_playlists_dir=use_playlists_dir)
+        except Exception as fallback_err:
+            print(f"Monochrome YouTube fallback failed: {fallback_err}")
+            _update_job(job_id, status="failed",
+                        error=f"Monochrome: all tiers restricted. YouTube fallback also failed: {fallback_err}",
+                        completed_at=datetime.now(timezone.utc).isoformat())
+            send_notification(notification_type="error", title=title, artist=artist,
+                              source=source_label, status="failed",
+                              error="All Monochrome tiers restricted, YouTube fallback failed")
 
     except Exception as e:
         print(f"Monochrome download failed: {e}")
@@ -1255,11 +1437,43 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         )
 
 
+def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_dir: bool) -> None:
+    """Append a downloaded track's path to a physical .m3u file.
+
+    Only runs when use_playlists_dir is True and playlist_name is set.
+    Skips silently if the Playlists directory is not configured.
+    Avoids duplicating entries that are already in the file.
+    """
+    if not (use_playlists_dir and playlist_name):
+        return
+
+    playlists_dir = get_playlists_dir()
+    if not playlists_dir:
+        return
+
+    m3u_path = playlists_dir / f"{sanitize_filename(playlist_name)}.m3u"
+    relative_path = str(audio_file)
+
+    try:
+        # Write header if new file; avoid duplicate entries if it already exists
+        is_new = not m3u_path.exists()
+        if not is_new:
+            existing = m3u_path.read_text(encoding="utf-8")
+            if relative_path in existing:
+                return
+        with m3u_path.open("a", encoding="utf-8") as f:
+            if is_new:
+                f.write("#EXTM3U\n")
+            f.write(f"{relative_path}\n")
+    except Exception as e:
+        print(f"Warning: could not update {m3u_path}: {e}")
+
+
 def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, source_url: str = None,
                      playlist_name: str = None, use_playlists_dir: bool = False):
     """Process a download job.
 
-    source_url overrides the default YouTube URL construction — used for
+    source_url overrides the default YouTube URL construction  -  used for
     SoundCloud and any future yt-dlp-supported source.
     Monochrome tracks bypass yt-dlp entirely and download via the API.
     playlist_name + use_playlists_dir route bulk import tracks into the Playlists folder.
@@ -1268,7 +1482,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
     is_monochrome = source_url and "monochrome.tf" in source_url
     is_url_source = bool(source_url)
 
-    # Monochrome gets its own dedicated download path — no yt-dlp needed
+    # Monochrome gets its own dedicated download path  -  no yt-dlp needed
     if is_monochrome:
         _process_monochrome_download(job_id, video_id, convert_to_flac, playlist_name, use_playlists_dir)
         return
@@ -1306,7 +1520,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             if not is_url_source and _is_ytdlp_403(info_result.stderr):
                 if has_cookies:
                     _note_cookie_failure()
-                hint = "Your cookies may have expired — try re-exporting them in Settings." if has_cookies else "Add browser cookies in Settings to authenticate."
+                hint = "Your cookies may have expired  -  try re-exporting them in Settings." if has_cookies else "Add browser cookies in Settings to authenticate."
                 raise Exception(f"YouTube blocked this request (403). {hint}")
             raise Exception("Failed to get video info")
 
@@ -1315,7 +1529,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         # Capture source audio format before yt-dlp converts it
         source_format_info = _extract_source_format_from_info(info) if convert_to_flac else None
 
-        # Extract artist and title — SoundCloud uses 'uploader' for artist
+        # Extract artist and title  -  SoundCloud uses 'uploader' for artist
         full_title = info.get("title", "Unknown")
         channel = info.get("uploader", info.get("channel", "Unknown")) if is_url_source else info.get("channel", info.get("uploader", "Unknown"))
         artist, title = extract_artist_title(full_title, channel)
@@ -1323,9 +1537,27 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         # Update job with extracted info (store raw uploader for blacklist reporting)
         _update_job(job_id, title=title, artist=artist, uploader=channel)
 
-        # Check for duplicates
+        # Duplicate check  -  local filesystem first, then Navidrome if configured
         existing_file = check_duplicate(artist, title)
-        if existing_file:
+        if not existing_file:
+            existing_file = check_navidrome_duplicate(artist, title)
+        if existing_file and playlist_name:
+            # Track already exists somewhere  -  add it to the target playlist and call it done.
+            # No re-download needed; the user just wants it in the playlist.
+            # _append_to_physical_m3u writes a path string only, so it works even when the
+            # file isn't locally accessible (e.g. Navidrome path on a different mount point).
+            _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+            source_label = "library" if existing_file.exists() else "Navidrome"
+            error_label = f"Already exists in {source_label}: {existing_file.name} (added to playlist)"
+            _update_job(
+                job_id,
+                status="completed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error=error_label
+            )
+            _mark_watched_track_downloaded(job_id)
+            return
+        elif existing_file:
             _update_job(
                 job_id,
                 status="completed",
@@ -1335,7 +1567,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             _mark_watched_track_downloaded(job_id)
             return
 
-        # Create download directory — either Playlists/Name/ or the standard Singles layout
+        # Create download directory  -  either Playlists/Name/ or the standard Singles layout
         playlists_dir = get_playlists_dir() if (use_playlists_dir and playlist_name) else None
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_filename(playlist_name)
@@ -1367,7 +1599,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         if not download_result or download_result.returncode != 0:
             stderr = download_result.stderr if download_result else ""
 
-            # Permission denied on temp file rename — clean up and retry once
+            # Permission denied on temp file rename  -  clean up and retry once
             if download_result and _is_permission_error(stderr):
                 cleaned = _cleanup_temp_files(artist_dir, safe_title)
                 if cleaned:
@@ -1376,13 +1608,13 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         download_cmd, TIMEOUT_YTDLP_DOWNLOAD, has_cookies
                     )
                     if not download_timed_out and download_result and download_result.returncode == 0:
-                        stderr = None  # Clear error — retry succeeded
+                        stderr = None  # Clear error  -  retry succeeded
 
             if stderr:
                 error_msg = f"Download failed: {stderr}"
                 if not is_url_source and download_result and _is_ytdlp_403(stderr):
                     if has_cookies:
-                        error_msg = "YouTube blocked this download (403). Your cookies may have expired — try re-exporting them in Settings."
+                        error_msg = "YouTube blocked this download (403). Your cookies may have expired  -  try re-exporting them in Settings."
                     else:
                         error_msg = "YouTube blocked this download (403). Add browser cookies in Settings to authenticate."
                 raise Exception(error_msg)
@@ -1443,6 +1675,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             completed_at=datetime.now(timezone.utc).isoformat()
         )
         _mark_watched_track_downloaded(job_id)
+        _append_to_physical_m3u(audio_file, playlist_name, use_playlists_dir)
 
         # Send notification for single track
         send_notification(

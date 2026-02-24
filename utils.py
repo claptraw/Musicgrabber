@@ -84,11 +84,11 @@ def hash_track(artist: str, title: str) -> str:
 
 def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
     """Try to extract artist and title from YouTube video title"""
-    # Guard against None — some YouTube videos have no channel/uploader in their metadata
+    # Guard against None  -  some YouTube videos have no channel/uploader in their metadata
     full_title = full_title or "Unknown Title"
     channel = channel or "Unknown Artist"
 
-    # Common patterns: "Artist -- Title", "Artist - Title", "Artist — Title", "Artist | Title"
+    # Common patterns: "Artist -- Title", "Artist - Title", "Artist  -  Title", "Artist | Title"
     # Require spaces around hyphens to avoid splitting compound words like "T-4"
     patterns = [
         r'^(.+?)\s+--\s+(.+)$',

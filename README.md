@@ -1,8 +1,8 @@
-# Music Grabber 🎵
+# Music Grabber
 
-**v2.1.2**
+**v2.2.0**
 
-A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless) -- tap a result and it downloads the best quality audio as FLAC straight into your music library.
+A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
 If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 
@@ -16,7 +16,6 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 - **A full music manager** (not Lidarr, not a replacement for Navidrome/Jellyfin)
 - **An album-discography automation tool** (no "grab everything by this artist" workflow)
-- **A recommendation engine** (no "discover new music from your history" system)
 - **A streaming server/player** (it acquires files; it does not serve or stream your library)
 - **A DJ/pro-audio workflow tool** (no Atmos/spatial-audio specialist pipeline)
 - **A custom library templating engine** (no advanced token-based naming/structure rules)
@@ -24,37 +23,35 @@ MusicGrabber is intentionally narrow. It is **not**:
 If your use case is "I heard a song, I want that song in my library fast," this is the project.
 
 ## Features
-New in **v2.0.0**:
-- **Monochrome/Tidal lossless search** -- full free-text search via the Monochrome API. Returns genuine lossless FLAC results with proper artist, album, cover art, and quality metadata. Results show "Lossless" or "Hi-Res" badges and rank above YouTube when available
-- **Direct FLAC downloads** -- Monochrome downloads bypass yt-dlp entirely. FLAC streams directly from the Tidal CDN with embedded cover art and accurate metadata from the Tidal catalogue. Faster and more reliable than YouTube extraction
-- **"All" is now the default search** -- searches YouTube, SoundCloud, and Monochrome in parallel. Lossless Monochrome results float to the top; YouTube and SoundCloud fill in the gaps for tracks not on Tidal
-- **Monochrome preview** -- hover-to-preview works for Monochrome tracks using AAC streams (browser-native, no yt-dlp subprocess)
-- **Configurable Monochrome instance** -- `MONOCHROME_API_URL` env var lets you point at community mirror instances
 
-and the rest of them:
-- **Mobile-friendly UI** -- designed for quick searches from your phone
-- **Dark/light theme** -- toggle between themes with the moon/sun button; preference saved per browser
-- **Settings tab** -- configure all integrations via UI (no docker-compose editing required)
-- **Optional API authentication** -- protect your instance with an API key
-- **Preview** -- hover over a result for 2 seconds on desktop, or tap the `Preview ▶` button on mobile (works for YouTube, SoundCloud, and Monochrome)
-- **Multi-source search** -- YouTube, SoundCloud, and Monochrome (Tidal lossless) with parallel searching and quality-based ranking
-- **Similar artist discovery** -- hover any result and click `~ Similar` to explore artists similar to whoever you searched. Powered by MusicBrainz + ListenBrainz Labs (no account needed). Download the whole lot in one go with "Download All", optionally saved as a playlist
-- **Soulseek integration** -- optional slskd support for higher quality sources (FLAC from P2P) *(in progress -- needs testing)*
-- **Playlist support** -- download entire playlists with automatic M3U generation
-- **Watched playlists** -- monitor Spotify, YouTube (including Mixes), Amazon Music, and Tidal playlists and auto-download new tracks; searches all sources and grabs the best quality available. Per-playlist sync mode: Append (M3U grows forever) or Mirror (M3U reflects the upstream — removed tracks drop out). "Missing" button shows tracks that failed to download. M3U updates immediately as each track finishes
-- **Bulk import** -- paste or upload a text file of songs to auto-search and queue; searches YouTube, SoundCloud, and Monochrome in parallel, picks the best result
-- **Best quality audio** -- extracts highest available audio quality; output format is configurable (FLAC, Opus, or MP3 ~192 kbps VBR) per your storage preference
-- **Minimum bitrate enforcement** -- optionally reject downloads below a configurable bitrate threshold
-- **Audio quality display** -- completed downloads show codec and bitrate in the queue details, with honest reporting for lossy-to-FLAC conversions
-- **Enhanced metadata** -- AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source-embedded/guessed tags
+- **Multi-source search** -- YouTube, SoundCloud, and Monochrome (Tidal lossless) searched in parallel; quality-ranked results with "Lossless" and "Hi-Res" badges. Lossless Monochrome results float to the top; YouTube and SoundCloud fill in the gaps
+- **Direct FLAC downloads from Monochrome** -- bypasses yt-dlp entirely; FLAC streams from the Tidal CDN with embedded cover art and accurate catalogue metadata
+- **Automatic Monochrome fallback** -- if Monochrome returns 403 on all quality tiers, MusicGrabber automatically retries on YouTube under the same job ID
+- **Watched playlists** -- monitor Spotify, YouTube (including Mixes), Amazon Music, Tidal, and ListenBrainz playlists; auto-downloads new tracks and grabs the best quality available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
+- **Playlist routing** -- pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
+- **Bulk import** -- paste or upload a text file of "Artist - Title" lines; searches all sources in parallel and grabs the best result for each
+- **Similar artist discovery** -- hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
+- **Apprise notifications** -- one URL covers Gotify, ntfy, Discord, Pushover, Slack, and about 50 others. Also supports Telegram webhook and SMTP email
+- **Navidrome pre-download duplicate check** -- queries the Subsonic API before downloading; if the track is already in your library, the existing path is used for playlist routing without re-downloading
+- **Best quality audio** -- output format is configurable (FLAC, Opus, or MP3 ~192 kbps VBR)
+- **Enhanced metadata** -- AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source tags
 - **Synced lyrics** -- automatic lyrics fetching from LRClib, saved as `.lrc` files
-- **Auto-organise** -- creates `Singles/Artist/Title.flac` structure (or flat `Singles/Artist - Title.flac` when "Organise by Artist" is off)
-- **Duplicate detection** -- skips already-downloaded tracks
-- **Job queue** -- track download progress, retry failed jobs, re-download or delete files from the queue, and see metadata provenance (`Metadata:` shows AcoustID fingerprint, MusicBrainz text match, or source guessed)
+- **Auto-organise** -- `Singles/Artist/Title.flac` (or flat `Singles/Artist - Title.flac` with "Organise by Artist" off)
+- **Duplicate detection** -- local filesystem check plus optional Navidrome Subsonic API check
+- **Job queue** -- track progress, retry failures, re-download or delete files, see metadata provenance
 - **Statistics dashboard** -- download counts, success rate, daily chart, top artists, search analytics
-- **Webhook notifications** -- get notified via Telegram, email, or generic webhook on download events
-- **YouTube cookie support** -- upload browser cookies in Settings to bypass YouTube bot detection
+- **Release notes modal** -- shows once after each update; also accessible from the Settings tab
+- **Preview** -- hover a result for 2 seconds on desktop, or tap Preview on mobile (YouTube, SoundCloud, Monochrome)
+- **Dark/light theme** -- toggle in the header; preference saved per browser
+- **Mobile-friendly UI** -- designed for quick searches from your phone
+- **Settings tab** -- configure all integrations via UI; no docker-compose editing required
+- **Optional API authentication** -- protect your instance with an API key
+- **YouTube cookie support** -- upload browser cookies in Settings to bypass bot detection
+- **Minimum bitrate enforcement** -- optionally reject downloads below a configurable threshold
+- **PUID/PGID support** -- run as a specific user for correct file ownership on NAS/SMB shares
 - **Optional Navidrome/Jellyfin integration** -- auto-triggers library rescan after downloads
+- **Soulseek integration** -- optional slskd support for P2P sources *(in progress)*
+- **Report/blacklist** -- flag bad results from the queue; blacklisted videos and uploaders are suppressed from future searches
 
 ## Why FLAC?
 
@@ -184,6 +181,7 @@ Settings are stored in the database and persist across container restarts.
 | `DB_PATH` | `/data/music_grabber.db` | SQLite database path |
 | `ENABLE_MUSICBRAINZ` | `true` | Enable MusicBrainz metadata lookups |
 | `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
+| `ACOUSTID_API_KEY` | *(shared built-in)* | AcoustID API key for audio fingerprinting. A shared key is built in but **may hit rate limits**. Register a free key at [acoustid.org](https://acoustid.org/login) and set it here (or via Settings tab) to avoid sharing quota |
 | `DEFAULT_CONVERT_TO_FLAC` | `true` | Convert downloads to FLAC by default (can be toggled per-download in UI) |
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
 | `ORGANISE_BY_ARTIST` | `true` | Create artist subfolders under Singles. Set to `false` for a flat directory |
@@ -409,7 +407,7 @@ music.yourdomain.com {
 1. **Single tracks** -- Search for a song, tap/click the result to download. By default, searches YouTube, SoundCloud, and Monochrome in parallel -- lossless results rank highest
 2. **Preview** -- On desktop, hover over a result for 2 seconds to hear a preview (works for all sources)
 3. **Playlists** -- Search for a playlist URL or name, tap the playlist result to download all tracks (YouTube playlists only)
-4. **Processing feedback** -- Shows "Processing..." immediately when tapped, then "Added to queue ✓"
+4. **Processing feedback** -- Shows "Processing..." immediately when tapped, then "Added to queue"
 
 ### Bulk Import
 
@@ -643,6 +641,7 @@ docker compose up -d
 - Both are confidence-gated -- low-confidence matches are rejected rather than applied, so no metadata is better than wrong metadata
 - Very short clips (under ~5 seconds) may not fingerprint reliably
 - Obscure or newly released tracks may not be in AcoustID or MusicBrainz yet -- metadata will come from YouTube/SoundCloud channel info instead
+- If fingerprinting stops working, the shared built-in AcoustID key may have hit its rate limit. Register a free personal key at [acoustid.org](https://acoustid.org/login) and enter it in Settings > General > AcoustID API Key (or set `ACOUSTID_API_KEY` env var)
 - Monochrome (Tidal) downloads always use Tidal's own metadata for artist/title/album; MusicBrainz is only consulted for the release year
 
 ## Contributors
@@ -654,4 +653,4 @@ Built with a mix of human creativity and AI assistance.
 
 ## License
 
-Do whatever you want with it. 🤷
+Do whatever you want with it.
