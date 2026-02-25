@@ -17,16 +17,77 @@ from constants import (
     TIMEOUT_YTDLP_PLAYLIST, TIMEOUT_HTTP_SPOTIFY, TIMEOUT_MONOCHROME_API,
     MONOCHROME_API_URL, WATCHED_PLAYLIST_CHECK_HOURS,
     LISTENBRAINZ_API_URL, TIMEOUT_LISTENBRAINZ, TIMEOUT_LISTENBRAINZ_PLAYLIST,
+    AUDIO_EXTENSIONS,
 )
 from db import db_conn
 from bulk_import import start_bulk_import_for_tracks
 from amazon import fetch_amazon_playlist
 from downloads import rebuild_watched_playlist_m3u
+from settings import get_playlists_dir
 from spotify import fetch_spotify_playlist_via_browser
-from utils import extract_artist_title, hash_track, spawn_daemon_thread
+from utils import extract_artist_title, hash_track, spawn_daemon_thread, sanitize_filename, check_duplicate
 from youtube import _ytdlp_base_args
 
 import httpx
+
+
+def _normalise_match_text(text: str) -> str:
+    """Normalise text for loose track/file matching."""
+    t = (text or "").lower()
+    t = t.replace("’", "'").replace("‘", "'").replace("`", "'")
+    t = re.sub(r"\s*[\(\[].*?[\)\]]", "", t)
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _playlist_file_exists(playlist_name: str, artist: str, title: str) -> bool:
+    """Check whether a track exists inside Playlists/<playlist_name>/."""
+    playlists_dir = get_playlists_dir()
+    if not playlists_dir:
+        return False
+    track_dir = playlists_dir / sanitize_filename(playlist_name)
+    if not track_dir.exists():
+        return False
+
+    stem = f"{sanitize_filename(artist or 'Unknown Artist')} - {sanitize_filename(title or 'Unknown Title')}"
+    for ext in AUDIO_EXTENSIONS:
+        if (track_dir / f"{stem}{ext}").exists():
+            return True
+
+    # Fuzzy fallback so metadata wobble does not hide real files.
+    artist_n = _normalise_match_text(artist)
+    title_n = _normalise_match_text(title)
+    if not artist_n or not title_n:
+        return False
+    for ext in AUDIO_EXTENSIONS:
+        for p in track_dir.glob(f"*{ext}"):
+            if " - " not in p.stem:
+                continue
+            f_artist, f_title = p.stem.split(" - ", 1)
+            fa = _normalise_match_text(f_artist)
+            ft = _normalise_match_text(f_title)
+            artist_ok = fa and (artist_n in fa or fa in artist_n)
+            title_ok = ft and (title_n in ft or ft in title_n)
+            if artist_ok and title_ok:
+                return True
+    return False
+
+
+def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: str, title: str, job_artist: str = "", job_title: str = "") -> bool:
+    """Return True if we can resolve a local file for this watched track."""
+    pairs = []
+    for a, t in ((job_artist, job_title), (artist, title)):
+        a = (a or "").strip()
+        t = (t or "").strip()
+        if a and t and (a, t) not in pairs:
+            pairs.append((a, t))
+
+    for a, t in pairs:
+        if check_duplicate(a, t):
+            return True
+        if use_playlists_dir and _playlist_file_exists(playlist_name, a, t):
+            return True
+    return False
 
 
 def detect_playlist_platform(url: str) -> tuple[str, str]:
@@ -486,7 +547,8 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             # Load existing track state (including job status and removal flag)
             track_rows = conn.execute(
                 """SELECT wpt.track_hash, wpt.downloaded_at, wpt.job_id, wpt.removed_at,
-                          wpt.artist, wpt.title, j.status as job_status
+                          wpt.artist, wpt.title, j.status as job_status,
+                          j.artist as job_artist, j.title as job_title
                    FROM watched_playlist_tracks wpt
                    LEFT JOIN jobs j ON wpt.job_id = j.id
                    WHERE wpt.playlist_id = ?""",
@@ -513,6 +575,22 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     )
 
                 if existing["downloaded_at"]:
+                    # File was deleted manually after being marked downloaded.
+                    # If we cannot resolve it locally anymore, treat it as missing and re-queue.
+                    if not _has_local_track_file(
+                        playlist["name"],
+                        bool(playlist.get("use_playlists_dir", False)),
+                        existing["artist"] or artist,
+                        existing["title"] or title,
+                        existing["job_artist"] or "",
+                        existing["job_title"] or "",
+                    ):
+                        conn.execute(
+                            "UPDATE watched_playlist_tracks SET downloaded_at = NULL WHERE playlist_id = ? AND track_hash = ?",
+                            (playlist_id, track_hash)
+                        )
+                        missing_tracks.append((artist, title, track_hash))
+                        continue
                     continue
 
                 job_status = existing["job_status"]

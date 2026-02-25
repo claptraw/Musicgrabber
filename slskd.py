@@ -19,6 +19,7 @@ from constants import (
     SLSKD_REQUIRE_FREE_SLOT,
 )
 from settings import get_setting
+from youtube import score_search_result
 
 
 # slskd auth token cache
@@ -278,8 +279,17 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                         continue
                     seen_tracks.add(track_key)
 
-                    # Boost score for free slots and fast uploaders
-                    adjusted_score = quality_score
+                    # Blend relevance + quality, then apply Soulseek-specific bonuses.
+                    duration_secs = file_info.get("length")
+                    duration_secs = duration_secs if isinstance(duration_secs, (int, float)) and duration_secs > 0 else None
+                    relevance_score = score_search_result(
+                        title,
+                        artist,
+                        query,
+                        duration_seconds=duration_secs,
+                        view_count=None,
+                    )
+                    adjusted_score = relevance_score + quality_score
                     if has_free_slot:
                         adjusted_score += 10
                     if upload_speed > 1000000:  # > 1MB/s

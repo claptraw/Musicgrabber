@@ -429,6 +429,9 @@ def parse_youtube_search_results(stdout: str, query: str | None = None) -> list[
                 "is_playlist": is_playlist,
                 "video_count": video_count,
                 "source": "youtube",
+                "source_url": data.get("webpage_url") or (
+                    f"https://www.youtube.com/watch?v={data.get('id')}" if data.get("id") else ""
+                ),
                 "quality": None,
                 "quality_score": quality_score,
                 "slskd_username": None,
@@ -456,6 +459,65 @@ def search_youtube(query: str, limit: int) -> list[dict]:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_SEARCH)
 
         if result.returncode != 0:
+            stderr = result.stderr or ""
+            lower = stderr.lower()
+
+            def _reason(err_lower: str) -> str:
+                if not err_lower.strip():
+                    return "unknown provider error"
+                if "sign in to confirm your age" in err_lower or "age-restricted" in err_lower:
+                    return "age-restricted content requires valid cookies"
+                if "private video" in err_lower:
+                    return "private video"
+                if "video unavailable" in err_lower:
+                    return "video unavailable or region-restricted"
+                if "http error 429" in err_lower or "too many requests" in err_lower:
+                    return "rate-limited by YouTube"
+                if _is_ytdlp_403(err_lower):
+                    return "request blocked (403)"
+                if "unable to extract" in err_lower or "failed to extract" in err_lower:
+                    return "metadata extraction failed"
+                if "unable to download webpage" in err_lower or "timed out" in err_lower:
+                    return "provider/network timeout"
+                if "requested format is not available" in err_lower:
+                    return "format manifest unavailable"
+                return "provider rejected the request"
+
+            reason = _reason(lower)
+            if _should_retry_without_cookies(stderr):
+                _note_bot_block()
+
+            used_cookies = "--cookies" in cmd
+            if used_cookies and _should_retry_without_cookies(stderr):
+                cmd_no_cookies = _strip_cookies_args(cmd)
+                try:
+                    result_no_cookies = subprocess.run(
+                        cmd_no_cookies,
+                        capture_output=True,
+                        text=True,
+                        timeout=TIMEOUT_YTDLP_SEARCH,
+                    )
+                except Exception as e:
+                    print(f"YouTube search failed for '{query}': {reason}. Cookieless retry error: {e}")
+                    return []
+
+                if result_no_cookies.returncode == 0:
+                    results = parse_youtube_search_results(result_no_cookies.stdout, query=query)
+                    results.sort(key=lambda x: x["quality_score"], reverse=True)
+                    if results:
+                        print(f"YouTube search cookieless retry succeeded for '{query}', cookies look stale")
+                        _note_cookie_failure()
+                        return results[:limit]
+                    print(f"YouTube search failed for '{query}': {reason}. Cookieless retry returned no parseable results")
+                    return []
+
+                reason2 = _reason((result_no_cookies.stderr or "").lower())
+                if _should_retry_without_cookies(result_no_cookies.stderr):
+                    _note_bot_block()
+                print(f"YouTube search failed for '{query}': {reason}. Cookieless retry failed: {reason2}")
+                return []
+
+            print(f"YouTube search failed for '{query}': {reason}")
             return []
 
         results = parse_youtube_search_results(result.stdout, query=query)

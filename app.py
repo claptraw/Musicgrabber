@@ -408,14 +408,73 @@ def test_navidrome_connection(request: TestNavidromeRequest = None):
                 f"{url.rstrip('/')}/rest/ping",
                 params=params
             )
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("subsonic-response", {}).get("status") == "ok":
-                    return {"success": True, "message": "Connected to Navidrome successfully"}
-                else:
-                    return {"success": False, "message": "Authentication failed"}
-            else:
+            if response.status_code != 200:
                 return {"success": False, "message": f"Connection failed: {response.status_code}"}
+
+            data = response.json()
+            if data.get("subsonic-response", {}).get("status") != "ok":
+                return {"success": False, "message": "Authentication failed"}
+
+            # Ping succeeded  -  now check and auto-enable real paths via Navidrome's native API.
+            # Navidrome returns synthetic paths by default (Artist/Album/Track.mp3), which are
+            # useless for M3U playlist entries. We auto-flip any MusicGrabber player records we
+            # find that have reportRealPath=false so users don't have to do it manually.
+            real_path_enabled = False
+            real_path_auto_fixed = False
+            try:
+                auth_resp = client.post(
+                    f"{url.rstrip('/')}/auth/login",
+                    json={"username": user, "password": password}
+                )
+                if auth_resp.status_code == 200:
+                    token = auth_resp.json().get("token")
+                    if token:
+                        nd_headers = {"X-ND-Authorization": f"Bearer {token}"}
+                        players_resp = client.get(
+                            f"{url.rstrip('/')}/api/player",
+                            headers=nd_headers
+                        )
+                        if players_resp.status_code == 200:
+                            for player in players_resp.json():
+                                if "musicgrabber" not in (player.get("client") or "").lower():
+                                    continue
+                                if player.get("reportRealPath"):
+                                    real_path_enabled = True
+                                else:
+                                    # Auto-enable real paths for this player
+                                    updated = {**player, "reportRealPath": True}
+                                    put_resp = client.put(
+                                        f"{url.rstrip('/')}/api/player/{player['id']}",
+                                        json=updated,
+                                        headers=nd_headers
+                                    )
+                                    if put_resp.status_code == 200:
+                                        real_path_enabled = True
+                                        real_path_auto_fixed = True
+            except Exception as e:
+                print(f"Navidrome real-path check failed: {type(e).__name__}: {e}")  # Non-critical
+
+            if real_path_enabled:
+                msg = ("Connected to Navidrome successfully. Real file paths auto-enabled for MusicGrabber."
+                       if real_path_auto_fixed else "Connected to Navidrome successfully")
+                return {
+                    "success": True,
+                    "message": msg,
+                    "real_path": True
+                }
+            return {
+                "success": True,
+                "message": "Connected to Navidrome successfully",
+                "real_path": False,
+                "real_path_hint": (
+                    "Real file paths could not be enabled automatically. Without them, Navidrome "
+                    "duplicate detection still works but M3U playlist entries cannot be populated "
+                    "for Navidrome-only tracks. To fix this manually, add "
+                    "<code>ND_SUBSONIC_DEFAULTREPORTREALPATH=true</code> to your Navidrome "
+                    "docker-compose environment, or enable &ldquo;Report real path&rdquo; "
+                    "for MusicGrabber in Navidrome admin &rsaquo; Players."
+                )
+            }
     except httpx.TimeoutException:
         return {"success": False, "message": "Connection timed out"}
     except Exception as e:
@@ -744,7 +803,7 @@ def get_stats():
         file_count = 0
         seen_inodes: set[tuple] = set()
         try:
-            for base_dir in [get_singles_dir(), get_playlists_dir()]:
+            for base_dir in [d for d in (get_singles_dir(), get_playlists_dir()) if d is not None]:
                 if not base_dir.exists():
                     continue
                 for f in base_dir.rglob("*"):
@@ -2022,4 +2081,6 @@ def check_all_watched_playlists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    host = os.getenv("LISTEN_ADDR", "0.0.0.0")
+    port = int(os.getenv("LISTEN_PORT", "8080"))
+    uvicorn.run(app, host=host, port=port)

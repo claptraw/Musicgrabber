@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,13 +21,14 @@ import httpx
 
 from constants import (
     AUDIO_EXTENSIONS,
-    COOKIES_FILE, MUSIC_DIR,
+    MUSIC_DIR,
     MONOCHROME_API_URL, MONOCHROME_COVER_BASE, TIMEOUT_MONOCHROME_API,
-    TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
+    TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_SEARCH, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
     TIMEOUT_FFMPEG_CONVERT, TIMEOUT_HTTP_REQUEST,
     YTDLP_403_MAX_RETRIES, YTDLP_403_RETRY_DELAY,
     SLSKD_MAX_RETRIES, TIMEOUT_SLSKD_SEARCH,
     PLAYLIST_WAIT_MAX, PLAYLIST_WAIT_INTERVAL,
+    YOUTUBE_SEARCH_MULTIPLIER, YOUTUBE_SEARCH_MIN_FETCH,
 )
 from db import db_conn
 from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
@@ -47,7 +49,12 @@ from utils import (
 from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, _strip_cookies_args,
     _should_retry_without_cookies, _sleep_if_botted, _note_bot_block, _note_cookie_failure,
+    parse_youtube_search_results,
 )
+
+
+_AUDIO_RECHECK_MAX_ATTEMPTS = 2
+_AUDIO_RESEARCH_MAX_ALTERNATES = 2
 
 
 def _default_metadata_source(source: str) -> str:
@@ -116,6 +123,131 @@ def _find_downloaded_audio_or_raise(artist_dir: Path, sanitized_title: str) -> P
     )
 
 
+def _validate_audio_integrity(file_path: Path) -> tuple[bool, str]:
+    """Validate that a downloaded audio file is decodable and non-empty.
+
+    Uses ffprobe to ensure at least one audio stream exists and duration is > 0.
+    This catches common "downloaded but corrupted/truncated" failure modes.
+    """
+    if not file_path.exists():
+        return False, "File not found after download"
+    try:
+        if file_path.stat().st_size <= 0:
+            return False, "Downloaded file is empty"
+    except OSError as e:
+        return False, f"Unable to stat file: {e}"
+
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration,size:stream=codec_type,codec_name,duration",
+                "-of", "json",
+                str(file_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception as e:
+        return False, f"ffprobe execution failed: {e}"
+
+    if probe.returncode != 0:
+        stderr = (probe.stderr or "").strip()
+        return False, f"ffprobe failed: {stderr or 'unknown ffprobe error'}"
+
+    try:
+        info = json.loads(probe.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, "ffprobe returned invalid JSON"
+
+    streams = info.get("streams") or []
+    audio_streams = [s for s in streams if (s.get("codec_type") == "audio" or s.get("codec_name"))]
+    if not audio_streams:
+        return False, "No audio stream found"
+
+    fmt = info.get("format") or {}
+    duration_raw = fmt.get("duration")
+    if duration_raw in (None, "", "N/A"):
+        duration_raw = audio_streams[0].get("duration")
+    try:
+        duration = float(duration_raw or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration <= 0:
+        return False, "Audio duration is zero or unreadable"
+
+    return True, ""
+
+
+def _note_blacklist_entry(
+    *,
+    source: str,
+    reason: str,
+    note: str,
+    job_id: str | None = None,
+    video_id: str | None = None,
+    uploader: str | None = None,
+) -> None:
+    """Write/update a blacklist entry for known-bad files/sources."""
+    src = (source or "").strip().lower() or "youtube"
+    vid = (video_id or "").strip() or None
+    upl = (uploader or "").strip() or None
+    try:
+        with db_conn() as conn:
+            if vid:
+                existing = conn.execute(
+                    "SELECT id FROM blacklist WHERE video_id = ? AND source = ?",
+                    (vid, src),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE blacklist SET reason = ?, note = ?, job_id = COALESCE(?, job_id) WHERE id = ?",
+                        (reason, note, job_id, existing[0]),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO blacklist (video_id, uploader, source, reason, note, job_id) VALUES (?, ?, ?, ?, ?, ?)",
+                        (vid, upl, src, reason, note, job_id),
+                    )
+            elif upl:
+                existing = conn.execute(
+                    "SELECT id FROM blacklist WHERE lower(uploader) = ? AND source = ? AND (video_id IS NULL OR video_id = '')",
+                    (upl.lower(), src),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE blacklist SET reason = ?, note = ?, job_id = COALESCE(?, job_id) WHERE id = ?",
+                        (reason, note, job_id, existing[0]),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO blacklist (uploader, source, reason, note, job_id) VALUES (?, ?, ?, ?, ?)",
+                        (upl, src, reason, note, job_id),
+                    )
+            conn.commit()
+    except Exception as e:
+        print(f"Blacklist write skipped: {e}")
+
+
+def _find_alternate_search_candidate(query: str, attempted_ids: set[str]) -> dict | None:
+    """Search across sources and return the best untried candidate."""
+    if not query.strip():
+        return None
+    try:
+        from search import search_all
+
+        for cand in search_all(query, limit=12):
+            cand_id = (cand.get("video_id") or "").strip()
+            if not cand_id or cand_id in attempted_ids:
+                continue
+            return cand
+    except Exception as e:
+        print(f"Alternate candidate search failed: {e}")
+    return None
+
+
 def trigger_navidrome_scan():
     """Trigger a Navidrome library scan via API"""
     navidrome_url = get_setting("navidrome_url")
@@ -170,11 +302,13 @@ def check_navidrome_duplicate(artist: str, title: str) -> Optional[Path]:
 
     try:
         params = subsonic_auth_params(navidrome_user, navidrome_pass)
+        query = f"{artist} {title}".strip() if artist else title
         params.update({
-            "query": title,
+            "query": query,
             "artistCount": 0,
             "albumCount": 0,
-            "songCount": 20,
+            # Common titles (Numb, Back In Black, etc.) need a wider net.
+            "songCount": 100,
         })
 
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
@@ -210,7 +344,18 @@ def check_navidrome_duplicate(artist: str, title: str) -> Optional[Path]:
         )
 
         def _base_title(t: str) -> str:
-            return _version_re.sub("", t).strip().casefold()
+            t = _version_re.sub("", t).strip()
+            # Strip common promo/session suffixes so
+            # "A Couple Minutes | A COLORS SHOW" matches "A Couple Minutes".
+            t = re.sub(
+                r'(?:\s*\|\s*|\s+)(?:a\s+colors?\s+show|colors?\s+show|'
+                r'(?:official\s+)?(?:music\s+)?(?:video|audio)|'
+                r'lyric(?:\s+video|s)?|visuali[sz]er|live\s+session|session)\s*$',
+                '',
+                t,
+                flags=re.IGNORECASE,
+            )
+            return t.strip().casefold()
 
         title_base = _base_title(title)
 
@@ -248,9 +393,15 @@ def check_navidrome_duplicate(artist: str, title: str) -> Optional[Path]:
             title_match = (song_title_norm == title_norm) or (song_title_base == title_base and title_base == title_norm)
 
             if title_match and artist_match:
-                # Navidrome returns the absolute path on disk  -  use it if present
-                raw_path = song.get("path")
-                return Path(raw_path) if raw_path else Path(title)  # fallback is display-only
+                raw_path = song.get("path") or ""
+                if raw_path.startswith("/"):
+                    # Real path mode is on  -  absolute path we can actually use
+                    return Path(raw_path)
+                # Synthetic path (e.g. "Artist/Album/01-Track.mp3")  -  tells us the track
+                # exists but is useless as a filesystem reference. Return a sentinel that is
+                # truthy (so callers block re-downloads) but won't pass .exists() (so M3U
+                # builders skip it rather than writing garbage into the playlist).
+                return Path(title)
 
         return None
 
@@ -410,10 +561,96 @@ def _update_job(job_id: str, **fields) -> None:
         conn.commit()
 
 
-def _mark_watched_track_downloaded(job_id: str) -> None:
-    """Mark a watched playlist track as downloaded and rebuild the M3U if enabled."""
+def _normalise_watched_match_text(text: str) -> str:
+    """Normalise artist/title text for strict watched-track match checks."""
+    t = (text or "").lower()
+    t = t.replace("’", "'").replace("‘", "'").replace("`", "'")
+    t = re.sub(r"\s*[\(\[].*?[\)\]]", "", t)
+    t = re.sub(
+        r"\b(remaster(?:ed)?|radio edit|album version|single version|single edit|live|explicit|clean|"
+        r"(?:official\s+)?(?:music\s+)?(?:video|audio)|lyric(?:\s+video|s)?|visuali[sz]er|"
+        r"a\s+colors?\s+show|colors?\s+show)\b.*$",
+        "",
+        t,
+    )
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _watched_track_matches_expected(expected_artist: str, expected_title: str, actual_artist: str, actual_title: str) -> bool:
+    """Return True when downloaded metadata matches watched-track expectation."""
+    exp_artist = _normalise_watched_match_text(expected_artist)
+    exp_title = _normalise_watched_match_text(expected_title)
+    got_artist = _normalise_watched_match_text(actual_artist)
+    got_title = _normalise_watched_match_text(actual_title)
+
+    def _base_title(t: str) -> str:
+        # Drop common trailing version suffixes, including punctuation-stripped forms
+        # like "the chain 2004 remaster".
+        t = re.sub(r"\b\d{4}\s*remaster(?:ed)?\b", "", t)
+        t = re.sub(r"\bremaster(?:ed)?\s*\d{4}\b", "", t)
+        t = re.sub(r"\b(remaster(?:ed)?|radio edit|single edit|single version|album version|live)\b$", "", t)
+        t = re.sub(r"\s+", " ", t).strip()
+        parts = t.split()
+        # If a trailing year is left behind after stripping version words, bin it.
+        # Keep pure year titles intact (for example "1999").
+        if len(parts) > 1 and re.fullmatch(r"\d{4}", parts[-1]):
+            t = " ".join(parts[:-1]).strip()
+        return t
+
+    # Title must be genuinely the same track; substring matches are too risky.
+    # Allow remaster/version suffix drift, but not different songs.
+    if not exp_title or not got_title:
+        return False
+    if exp_title != got_title and _base_title(exp_title) != _base_title(got_title):
+        return False
+    if not exp_artist:
+        return True
+    # Artist can include collaborators on one side.
+    return bool(got_artist and (exp_artist in got_artist or got_artist in exp_artist))
+
+
+def _mark_watched_track_downloaded(job_id: str) -> bool:
+    """Mark a watched playlist track as downloaded and rebuild the M3U if enabled.
+
+    Returns False when the final downloaded metadata does not match the expected
+    watched track for this job.
+    """
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
+        link = conn.execute(
+            """SELECT wpt.playlist_id, wpt.artist AS expected_artist, wpt.title AS expected_title,
+                      j.artist AS actual_artist, j.title AS actual_title
+               FROM watched_playlist_tracks wpt
+               LEFT JOIN jobs j ON j.id = wpt.job_id
+               WHERE wpt.job_id = ?
+               LIMIT 1""",
+            (job_id,),
+        ).fetchone()
+        if not link:
+            return True
+
+        if not _watched_track_matches_expected(
+            link["expected_artist"] or "",
+            link["expected_title"] or "",
+            link["actual_artist"] or "",
+            link["actual_title"] or "",
+        ):
+            msg = (
+                f"Watched track mismatch: expected '{link['expected_artist']} - {link['expected_title']}', "
+                f"got '{link['actual_artist'] or 'Unknown'} - {link['actual_title'] or 'Unknown'}'"
+            )
+            print(msg)
+            old = conn.execute("SELECT error FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            old_error = (old[0] or "").strip() if old else ""
+            merged_error = f"{old_error} | {msg}" if old_error else msg
+            conn.execute(
+                "UPDATE jobs SET status = 'completed_with_errors', error = ? WHERE id = ?",
+                (merged_error, job_id),
+            )
+            conn.commit()
+            return False
+
         conn.execute(
             "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now') WHERE job_id = ?",
             (job_id,)
@@ -438,6 +675,7 @@ def _mark_watched_track_downloaded(job_id: str) -> None:
             use_playlists_dir=bool(row["use_playlists_dir"]),
             sync_mode=row["sync_mode"] or "append",
         )
+    return True
 
 
 def _cleanup_temp_files(artist_dir: Path, sanitized_title: str) -> int:
@@ -502,6 +740,101 @@ def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artis
 def _is_permission_error(stderr: str) -> bool:
     """Check if yt-dlp failed due to a permission denied error on rename."""
     return "Permission denied" in stderr and ".temp." in stderr
+
+
+def _summarise_ytdlp_stderr(stderr: str) -> str:
+    """Return a short, user-safe failure reason from yt-dlp stderr."""
+    lower = (stderr or "").lower()
+    if not lower.strip():
+        return "provider returned an unknown error"
+    if "sign in to confirm your age" in lower or "age-restricted" in lower:
+        return "age-restricted content requires valid account cookies"
+    if "private video" in lower:
+        return "video is private"
+    if "video unavailable" in lower:
+        return "video is unavailable or region-restricted"
+    if "http error 429" in lower or "too many requests" in lower:
+        return "rate-limited by YouTube"
+    if _is_ytdlp_403(stderr):
+        return "request blocked (403)"
+    if "unable to extract" in lower or "failed to extract" in lower:
+        return "provider metadata extraction failed"
+    if "unable to download webpage" in lower or "timed out" in lower:
+        return "provider/network timeout"
+    if "requested format is not available" in lower:
+        return "format manifest unavailable for this request"
+    return "provider rejected the request"
+
+
+def _format_info_lookup_error(source_label: str, stderr: str, has_cookies: bool) -> str:
+    """Build a concise, provider-specific info lookup error message."""
+    src = (source_label or "youtube").lower()
+    reason = _summarise_ytdlp_stderr(stderr)
+    if src == "youtube":
+        if _is_ytdlp_403(stderr):
+            if has_cookies:
+                return "YouTube info lookup blocked (403). Cookies may be stale, re-export in Settings."
+            return "YouTube info lookup blocked (403). Add fresh cookies in Settings or retry later."
+        return f"YouTube info lookup failed: {reason}"
+    if src == "soundcloud":
+        return f"SoundCloud info lookup failed: {reason}"
+    return f"Source info lookup failed: {reason}"
+
+
+def _search_youtube_for_monochrome_fallback(query: str, limit: int = 5) -> tuple[list[dict], str]:
+    """Search YouTube for Monochrome fallback with cookie-aware diagnostics."""
+    fetch_limit = max(limit * YOUTUBE_SEARCH_MULTIPLIER, YOUTUBE_SEARCH_MIN_FETCH)
+    cmd = [
+        "yt-dlp",
+        *_ytdlp_base_args(),
+        "--dump-json",
+        "--flat-playlist",
+        "--no-warnings",
+        f"ytsearch{fetch_limit}:{query}",
+    ]
+    used_cookies = "--cookies" in cmd
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_SEARCH)
+    except subprocess.TimeoutExpired:
+        return [], "YouTube fallback search timed out"
+
+    if result.returncode == 0:
+        results = parse_youtube_search_results(result.stdout, query=query)
+        results.sort(key=lambda x: x["quality_score"], reverse=True)
+        if results:
+            return results[:limit], ""
+        return [], "YouTube fallback search returned no parseable results"
+
+    reason = _summarise_ytdlp_stderr(result.stderr)
+    if _should_retry_without_cookies(result.stderr):
+        _note_bot_block()
+
+    if not used_cookies:
+        return [], f"YouTube fallback search failed: {reason}"
+
+    # One explicit cookieless retry: this often recovers from stale/premium cookies.
+    cmd_no_cookies = _strip_cookies_args(cmd)
+    try:
+        result_no_cookies = subprocess.run(
+            cmd_no_cookies, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_SEARCH
+        )
+    except subprocess.TimeoutExpired:
+        return [], f"YouTube fallback search failed: {reason}. Cookieless retry timed out."
+
+    if result_no_cookies.returncode == 0:
+        results = parse_youtube_search_results(result_no_cookies.stdout, query=query)
+        results.sort(key=lambda x: x["quality_score"], reverse=True)
+        if results:
+            print("Monochrome fallback: cookieless YouTube search succeeded, cookies appear stale")
+            _note_cookie_failure()
+            return results[:limit], ""
+        return [], f"YouTube fallback search failed: {reason}. Cookieless retry returned no parseable results."
+
+    reason_no_cookies = _summarise_ytdlp_stderr(result_no_cookies.stderr)
+    if _should_retry_without_cookies(result_no_cookies.stderr):
+        _note_bot_block()
+    return [], f"YouTube fallback search failed: {reason}. Cookieless retry failed: {reason_no_cookies}."
 
 
 def _run_ytdlp_with_retries(
@@ -665,20 +998,98 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
 
     Returns the M3U path on success, None if no files could be resolved.
     """
+    def _normalise_m3u_match_text(text: str) -> str:
+        """Loose normaliser for matching playlist rows to on-disk files.
+
+        Strips punctuation and common metadata fluff (remaster/live/edit suffixes)
+        so tiny naming drift does not cause silent M3U drops.
+        """
+        t = (text or "").lower()
+        # Unify apostrophes/quotes so ASCII and curly forms compare cleanly.
+        t = t.replace("’", "'").replace("‘", "'").replace("`", "'")
+        # Remove bracketed descriptors.
+        t = re.sub(r"\s*[\(\[].*?[\)\]]", "", t)
+        # Remove common suffix noise.
+        t = re.sub(r"\b(remaster(?:ed)?|radio edit|album version|live)\b.*$", "", t).strip()
+        # Drop punctuation, keep alnum/space.
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        return re.sub(r"\s+", " ", t).strip()
+
+    def _candidate_pairs(row: sqlite3.Row) -> list[tuple[str, str]]:
+        """Return artist/title pairs to try, preferring resolved job metadata."""
+        pairs = []
+        for a, t in (
+            (row["job_artist"], row["job_title"]),
+            (row["wpt_artist"], row["wpt_title"]),
+        ):
+            a = (a or "").strip()
+            t = (t or "").strip()
+            if not a or not t:
+                continue
+            if (a, t) not in pairs:
+                pairs.append((a, t))
+        return pairs
+
+    def _resolve_from_playlist_folder(track_dir: Path, pairs: list[tuple[str, str]]) -> str | None:
+        """Resolve a path for tracks expected in Playlists/<name>/.
+
+        First try exact stems, then a loose match pass for metadata drift.
+        """
+        # Exact stem pass
+        for artist, title in pairs:
+            stem = _playlist_stem(artist, title, title)
+            for ext in AUDIO_EXTENSIONS:
+                candidate = track_dir / f"{stem}{ext}"
+                if candidate.exists():
+                    return f"{safe_playlist}/{candidate.name}"
+
+        # Loose match pass
+        parsed_files = []
+        for ext in AUDIO_EXTENSIONS:
+            parsed_files.extend(track_dir.glob(f"*{ext}"))
+
+        for candidate in parsed_files:
+            stem = candidate.stem
+            if " - " not in stem:
+                continue
+            file_artist, file_title = stem.split(" - ", 1)
+            file_artist_n = _normalise_m3u_match_text(file_artist)
+            file_title_n = _normalise_m3u_match_text(file_title)
+            for artist, title in pairs:
+                artist_n = _normalise_m3u_match_text(artist)
+                title_n = _normalise_m3u_match_text(title)
+                artist_ok = (
+                    artist_n and file_artist_n and
+                    (artist_n in file_artist_n or file_artist_n in artist_n)
+                )
+                title_ok = (
+                    title_n and file_title_n and
+                    (title_n in file_title_n or file_title_n in title_n)
+                )
+                if artist_ok and title_ok:
+                    return f"{safe_playlist}/{candidate.name}"
+        return None
+
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         # In mirror mode, exclude tracks that have been removed from the upstream playlist.
         # In append mode, keep everything ever downloaded regardless of upstream state.
         if sync_mode == "mirror":
             rows = conn.execute(
-                """SELECT artist, title FROM watched_playlist_tracks
+                """SELECT wpt.artist AS wpt_artist, wpt.title AS wpt_title,
+                          j.artist AS job_artist, j.title AS job_title
+                   FROM watched_playlist_tracks wpt
+                   LEFT JOIN jobs j ON j.id = wpt.job_id
                    WHERE playlist_id = ? AND downloaded_at IS NOT NULL AND removed_at IS NULL
                    ORDER BY first_seen""",
                 (playlist_id,)
             ).fetchall()
         else:
             rows = conn.execute(
-                """SELECT artist, title FROM watched_playlist_tracks
+                """SELECT wpt.artist AS wpt_artist, wpt.title AS wpt_title,
+                          j.artist AS job_artist, j.title AS job_title
+                   FROM watched_playlist_tracks wpt
+                   LEFT JOIN jobs j ON j.id = wpt.job_id
                    WHERE playlist_id = ? AND downloaded_at IS NOT NULL
                    ORDER BY first_seen""",
                 (playlist_id,)
@@ -688,33 +1099,65 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
     safe_playlist = sanitize_filename(playlist_name)
 
     playlist_files = []
+    seen_paths = set()
+    unresolved_rows: list[tuple[str, str, str, str]] = []
     for row in rows:
-        artist, title = row["artist"], row["title"]
+        pairs = _candidate_pairs(row)
+        if not pairs:
+            continue
+
         if playlists_dir:
             track_dir = playlists_dir / safe_playlist
-            stem = _playlist_stem(artist, title, title)
-            found = False
-            for ext in ['.flac', '.opus', '.m4a', '.mp3', '.ogg', '.webm']:
-                candidate = track_dir / f"{stem}{ext}"
-                if candidate.exists():
-                    playlist_files.append(f"{safe_playlist}/{stem}{ext}")
-                    found = True
-                    break
-            if not found:
-                # Track wasn't downloaded into the playlist folder  -  it was a duplicate that
-                # already existed elsewhere (Singles, another playlist, or only in Navidrome).
-                # Fall back through local check then Navidrome; use absolute path in all cases.
+            resolved = _resolve_from_playlist_folder(track_dir, pairs)
+            if resolved and resolved not in seen_paths:
+                seen_paths.add(resolved)
+                playlist_files.append(resolved)
+                continue
+
+            # Track wasn't resolved inside the playlist folder  -  fall back through
+            # duplicate checks using both job metadata and original watched metadata.
+            existing = None
+            for artist, title in pairs:
                 existing = check_duplicate(artist, title) or check_navidrome_duplicate(artist, title)
-                if existing:
-                    playlist_files.append(str(existing))
+                if existing and (existing.is_absolute() or existing.exists()):
+                    break
+            if existing and (existing.is_absolute() or existing.exists()):
+                existing_path = str(existing)
+                if existing_path not in seen_paths:
+                    seen_paths.add(existing_path)
+                    playlist_files.append(existing_path)
+            else:
+                unresolved_rows.append((
+                    row["wpt_artist"] or "",
+                    row["wpt_title"] or "",
+                    row["job_artist"] or "",
+                    row["job_title"] or "",
+                ))
         else:
-            audio_file = check_duplicate(artist, title) or check_navidrome_duplicate(artist, title)
-            if audio_file:
+            audio_file = None
+            for artist, title in pairs:
+                audio_file = check_duplicate(artist, title) or check_navidrome_duplicate(artist, title)
+                if audio_file and (audio_file.is_absolute() or audio_file.exists()):
+                    break
+            if audio_file and (audio_file.is_absolute() or audio_file.exists()):
                 try:
                     rel_path = audio_file.relative_to(get_singles_dir())
-                    playlist_files.append(str(rel_path))
+                    rel_path_str = str(rel_path)
+                    if rel_path_str not in seen_paths:
+                        seen_paths.add(rel_path_str)
+                        playlist_files.append(rel_path_str)
                 except ValueError:
-                    playlist_files.append(str(audio_file))  # Navidrome path  -  use absolute
+                    abs_path = str(audio_file)  # Navidrome path  -  use absolute
+                    if abs_path not in seen_paths:
+                        seen_paths.add(abs_path)
+                        playlist_files.append(abs_path)
+            if not audio_file:
+                unresolved_rows.append((
+                    row["wpt_artist"] or "",
+                    row["wpt_title"] or "",
+                    row["job_artist"] or "",
+                    row["job_title"] or "",
+                ))
 
     if not playlist_files:
         return None
@@ -730,6 +1173,16 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         for file_path in playlist_files:
             f.write(f"{file_path}\n")
     set_file_permissions(m3u_path)
+    if unresolved_rows:
+        print(
+            f"Watched playlist M3U unresolved tracks: {len(unresolved_rows)} "
+            f"(playlist '{playlist_name}')"
+        )
+        for w_artist, w_title, j_artist, j_title in unresolved_rows[:20]:
+            print(
+                f"  unresolved: expected '{w_artist} - {w_title}' | "
+                f"job '{j_artist or 'Unknown'} - {j_title or 'Unknown'}'"
+            )
     print(f"Watched playlist M3U updated: {m3u_path.name} ({len(playlist_files)} tracks)")
     return m3u_path
 
@@ -790,7 +1243,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         completed_tracks = 0
         failed_tracks = 0
         skipped_tracks = 0
-        has_cookies = COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
+        has_cookies = False
 
         for video in videos:
             track_label = video.get("title", "Unknown")
@@ -805,9 +1258,14 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     "--no-warnings",
                     f"https://www.youtube.com/watch?v={video_id}"
                 ]
+                has_cookies = "--cookies" in detail_cmd
 
                 detail_result = subprocess.run(detail_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
                 if detail_result.returncode != 0:
+                    print(
+                        f"Playlist track info lookup failed ({video_id}): "
+                        f"{_summarise_ytdlp_stderr(detail_result.stderr)}"
+                    )
                     failed_tracks += 1
                     continue
 
@@ -837,6 +1295,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     safe_title = _output_stem(artist, title, video_id)
                 output_template = str(artist_dir / f"{safe_title}.%(ext)s")
                 download_cmd = _build_ytdlp_download_cmd(video_id, output_template, convert_to_flac)
+                has_cookies = "--cookies" in download_cmd
 
                 download_result, download_timed_out = _run_ytdlp_with_retries(
                     download_cmd,
@@ -865,6 +1324,39 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     failed_tracks += 1
                     continue
 
+                valid_audio, integrity_reason = _validate_audio_integrity(audio_file)
+                if not valid_audio:
+                    audio_file.unlink(missing_ok=True)
+                    print(
+                        f"Playlist track integrity failed for {video_id}, retrying once: {integrity_reason}"
+                    )
+                    download_result, download_timed_out = _run_ytdlp_with_retries(
+                        download_cmd,
+                        TIMEOUT_YTDLP_DOWNLOAD,
+                        has_cookies
+                    )
+                    if download_timed_out or not download_result or download_result.returncode != 0:
+                        failed_tracks += 1
+                        continue
+                    try:
+                        audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
+                    except Exception:
+                        failed_tracks += 1
+                        continue
+                    valid_audio, integrity_reason = _validate_audio_integrity(audio_file)
+                    if not valid_audio:
+                        audio_file.unlink(missing_ok=True)
+                        _note_blacklist_entry(
+                            source="youtube",
+                            reason="corrupt_audio",
+                            note=f"Playlist track {video_id} failed integrity checks: {integrity_reason}",
+                            job_id=job_id,
+                            video_id=video_id,
+                            uploader=channel,
+                        )
+                        failed_tracks += 1
+                        continue
+
                 # Set permissions for NAS/SMB compatibility
                 set_file_permissions(audio_file)
 
@@ -880,7 +1372,11 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     )
                     # Use canonical artist/title from MusicBrainz
                     if mb_artist != artist:
-                        audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist)
+                        # Playlist-routed files must stay in the playlist folder.
+                        # Normalising artist names is fine for metadata, but moving them into
+                        # Singles breaks playlist locality and confuses M3U expectations.
+                        if not playlists_dir:
+                            audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist)
                         artist = mb_artist
                     if mb_title != title:
                         title = mb_title
@@ -962,6 +1458,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         )
 
     except Exception as e:
+        print(f"Playlist download job failed ({job_id}, playlist={playlist_name}): {e}")
         _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
 
         # Send notification for playlist failure
@@ -1021,6 +1518,21 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
             try:
                 downloaded_file = download_from_slskd(cand_username, cand_filename, artist_dir)
+                if not downloaded_file or not downloaded_file.exists():
+                    raise Exception("Download completed but file not found")
+
+                # Validate raw Soulseek payload before spending time tagging/conversion.
+                valid_raw, raw_reason = _validate_audio_integrity(downloaded_file)
+                if not valid_raw:
+                    downloaded_file.unlink(missing_ok=True)
+                    _note_blacklist_entry(
+                        source="soulseek",
+                        reason="corrupt_audio",
+                        note=f"Rejected candidate '{cand_filename}' from {cand_username}: {raw_reason}",
+                        job_id=job_id,
+                        uploader=cand_username,
+                    )
+                    raise Exception(f"Invalid downloaded audio from {cand_username}: {raw_reason}")
                 break
             except Exception as e:
                 last_error = str(e)
@@ -1040,9 +1552,6 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
         if not downloaded_file:
             raise Exception(last_error or "Soulseek download failed")
-
-        if not downloaded_file or not downloaded_file.exists():
-            raise Exception("Download completed but file not found")
 
         # Rename to our standard naming
         sanitized_title = _output_stem(artist, title, Path(filename).stem or job_id)
@@ -1100,6 +1609,18 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             final_file.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
+
+        valid_audio, invalid_reason = _validate_audio_integrity(final_file)
+        if not valid_audio:
+            final_file.unlink(missing_ok=True)
+            _note_blacklist_entry(
+                source="soulseek",
+                reason="corrupt_audio",
+                note=f"Final file failed integrity check: {invalid_reason}",
+                job_id=job_id,
+                uploader=username,
+            )
+            raise Exception(f"Soulseek audio integrity check failed: {invalid_reason}")
 
         # Apply metadata (AcoustID fingerprinting first, then text-based MusicBrainz fallback)
         metadata_source = _default_metadata_source("soulseek")
@@ -1191,11 +1712,11 @@ class _MonochromeAllTiers403(Exception):
 def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
     """Download a FLAC directly from the Monochrome/Tidal API.
 
-    No yt-dlp, no messing about  -  just a straight FLAC off the CDN.
-    Tries LOSSLESS → HIGH in order; if all tiers 403, raises _MonochromeAllTiers403
+    No yt-dlp, no messing about  -  just a straight stream off the CDN.
+    Tries HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW in order; if all tiers 403, raises _MonochromeAllTiers403
     so the caller can fall back to YouTube rather than giving up entirely.
     """
-    quality_attempts = ["LOSSLESS", "HIGH"]
+    quality_attempts = ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"]
     resp = None
     all_403 = True
     with httpx.Client(timeout=TIMEOUT_MONOCHROME_API) as client:
@@ -1217,22 +1738,86 @@ def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
     if not data.get("manifest"):
         raise Exception(f"No stream manifest returned for Monochrome track {track_id}")
 
-    manifest = json.loads(base64.b64decode(data["manifest"]))
-    encryption = manifest.get("encryptionType", "NONE")
-    if encryption != "NONE":
-        raise Exception(f"Monochrome track {track_id} is encrypted ({encryption})  -  cannot download")
+    manifest_raw = base64.b64decode(data["manifest"])
+    manifest_text = manifest_raw.decode("utf-8", errors="ignore").lstrip()
 
-    urls = manifest.get("urls") or []
-    if not urls:
-        raise Exception(f"Empty URL list in manifest for Monochrome track {track_id}")
+    # Legacy Monochrome manifest format: JSON blob with direct CDN URLs.
+    if manifest_text.startswith("{"):
+        manifest = json.loads(manifest_raw)
+        encryption = manifest.get("encryptionType", "NONE")
+        if encryption != "NONE":
+            raise Exception(f"Monochrome track {track_id} is encrypted ({encryption})  -  cannot download")
 
-    # Stream the FLAC to disk
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with httpx.stream("GET", urls[0], timeout=120) as stream_resp:
-        stream_resp.raise_for_status()
-        with open(output_path, "wb") as f:
-            for chunk in stream_resp.iter_bytes(chunk_size=8192):
-                f.write(chunk)
+        urls = manifest.get("urls") or []
+        if not urls:
+            raise Exception(f"Empty URL list in manifest for Monochrome track {track_id}")
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with httpx.stream("GET", urls[0], timeout=120) as stream_resp:
+            stream_resp.raise_for_status()
+            with open(output_path, "wb") as f:
+                for chunk in stream_resp.iter_bytes(chunk_size=8192):
+                    f.write(chunk)
+        return
+
+    # Current Monochrome manifest format: DASH MPD XML.
+    if manifest_text.startswith("<") and "<MPD" in manifest_text:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        mpd_tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mpd", delete=False) as tf:
+                tf.write(manifest_raw)
+                mpd_tmp = Path(tf.name)
+
+            # Prefer stream copy first; if container/codec combo complains, fall back
+            # to explicit FLAC encode for robustness.
+            ffmpeg_copy_cmd = [
+                "ffmpeg",
+                "-y",
+                "-v", "error",
+                "-protocol_whitelist", "file,https,tls,tcp,http,crypto",
+                "-i", str(mpd_tmp),
+                "-map", "0:a:0",
+                "-c:a", "copy",
+                str(output_path),
+            ]
+            copy_result = subprocess.run(
+                ffmpeg_copy_cmd,
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT_FFMPEG_CONVERT,
+            )
+            if copy_result.returncode == 0 and output_path.exists():
+                return
+
+            ffmpeg_encode_cmd = [
+                "ffmpeg",
+                "-y",
+                "-v", "error",
+                "-protocol_whitelist", "file,https,tls,tcp,http,crypto",
+                "-i", str(mpd_tmp),
+                "-map", "0:a:0",
+                "-c:a", "flac",
+                str(output_path),
+            ]
+            encode_result = subprocess.run(
+                ffmpeg_encode_cmd,
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT_FFMPEG_CONVERT,
+            )
+            if encode_result.returncode != 0 or not output_path.exists():
+                stderr = (encode_result.stderr or copy_result.stderr or "").strip()
+                raise Exception(f"DASH manifest download failed: {stderr or 'unknown ffmpeg error'}")
+            return
+        finally:
+            if mpd_tmp:
+                mpd_tmp.unlink(missing_ok=True)
+
+    raise Exception(
+        f"Unsupported manifest format for Monochrome track {track_id} "
+        f"(mime={data.get('manifestMimeType', 'unknown')})"
+    )
 
 
 def _embed_monochrome_cover(audio_file: Path, cover_uuid: str) -> None:
@@ -1309,12 +1894,15 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         existing_file = check_duplicate(artist, title)
         if not existing_file:
             existing_file = check_navidrome_duplicate(artist, title)
+        # For playlist routing, a synthetic Navidrome sentinel path is unusable.
+        # Don't mark as "already exists" if we cannot actually append a path.
+        if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
+            existing_file = None
         if existing_file and playlist_name:
             # Track already exists somewhere  -  add it to the target playlist and call it done.
-            # No re-download needed; the user just wants it in the playlist.
-            # _append_to_physical_m3u writes a path string only, so it works even when the
-            # file isn't locally accessible (e.g. Navidrome path on a different mount point).
-            _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+            # Local paths guard with .exists(); absolute Navidrome real paths are trusted directly
+            # (MusicGrabber may not share Navidrome's filesystem view, but the M3U consumer does).
+            # The sentinel Path(title) is neither absolute nor locally present, so it's still skipped.
             source_label = "library" if existing_file.exists() else "Navidrome"
             error_label = f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
             _update_job(
@@ -1323,7 +1911,9 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=error_label
             )
-            _mark_watched_track_downloaded(job_id)
+            marked = _mark_watched_track_downloaded(job_id)
+            if marked and (existing_file.is_absolute() or existing_file.exists()):
+                _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
             return
         elif existing_file:
             _update_job(
@@ -1347,11 +1937,28 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
 
         output_path = artist_dir / f"{safe_title}.flac"
 
-        # Download the FLAC
-        _download_monochrome_direct(track_id, output_path)
-
-        if not output_path.exists():
-            raise Exception("Download completed but FLAC file not found")
+        # Download + integrity recheck loop for occasionally truncated CDN responses.
+        integrity_reason = ""
+        for attempt in range(1, _AUDIO_RECHECK_MAX_ATTEMPTS + 1):
+            _download_monochrome_direct(track_id, output_path)
+            valid_audio, integrity_reason = _validate_audio_integrity(output_path)
+            if valid_audio:
+                break
+            output_path.unlink(missing_ok=True)
+            print(
+                f"Monochrome integrity check failed for '{artist} - {title}' "
+                f"(attempt {attempt}/{_AUDIO_RECHECK_MAX_ATTEMPTS}): {integrity_reason}"
+            )
+        else:
+            _note_blacklist_entry(
+                source="monochrome",
+                reason="corrupt_audio",
+                note=f"Track failed integrity check after retries: {integrity_reason}",
+                job_id=job_id,
+                video_id=track_id,
+                uploader=artist,
+            )
+            raise Exception(f"Monochrome download failed integrity checks: {integrity_reason}")
 
         set_file_permissions(output_path)
 
@@ -1395,8 +2002,9 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             metadata_source=metadata_source,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
-        _mark_watched_track_downloaded(job_id)
-        _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
+        marked = _mark_watched_track_downloaded(job_id)
+        if marked:
+            _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
 
         print(f"Monochrome: Downloaded {artist} - {title} (lossless FLAC)")
 
@@ -1413,17 +2021,25 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         # Fall back to YouTube rather than leaving the user with a failed job.
         print(f"Monochrome: all tiers 403 for '{artist} - {title}', falling back to YouTube search")
         try:
-            from youtube import search_youtube
             query = f"{artist} - {title}" if artist and artist != "Unknown" else title
+            _update_job(job_id, error="Monochrome all tiers returned 403, trying YouTube fallback")
             # Search YouTube directly  -  search_all merges sources by quality_score and Monochrome's
             # lossless bonuses would push YouTube results out of the top-N slice every time.
-            yt_results = search_youtube(query, limit=5)
+            yt_results, yt_reason = _search_youtube_for_monochrome_fallback(query, limit=5)
             if not yt_results:
-                raise Exception("No YouTube results found as fallback")
+                raise Exception(yt_reason or "No YouTube results found as fallback")
             best = yt_results[0]
             print(f"Monochrome fallback: using YouTube result '{best.get('title')}' ({best['video_id']})")
+            yt_video_id = best["video_id"]
+            _update_job(
+                job_id,
+                source="youtube",
+                video_id=yt_video_id,
+                source_url=best.get("source_url") or f"https://www.youtube.com/watch?v={yt_video_id}",
+                error="Monochrome all tiers returned 403, switched to YouTube fallback",
+            )
             # Re-use the same job, just route it through the YouTube path
-            process_download(job_id, best["video_id"], convert_to_flac,
+            process_download(job_id, yt_video_id, convert_to_flac,
                              source_url=None, playlist_name=playlist_name,
                              use_playlists_dir=use_playlists_dir)
         except Exception as fallback_err:
@@ -1463,8 +2079,15 @@ def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_
     if not playlists_dir:
         return
 
-    m3u_path = playlists_dir / f"{sanitize_filename(playlist_name)}.m3u"
-    relative_path = str(audio_file)
+    safe_playlist = sanitize_filename(playlist_name)
+    m3u_path = playlists_dir / f"{safe_playlist}.m3u"
+    track_dir = playlists_dir / safe_playlist
+    # Keep paths inside the playlist folder relative (Rock Mix/Track.ext) so the M3U
+    # remains portable and consistent after full rebuilds.
+    if audio_file.is_absolute() and str(audio_file).startswith(str(track_dir) + "/"):
+        relative_path = f"{safe_playlist}/{audio_file.name}"
+    else:
+        relative_path = str(audio_file)
 
     try:
         # Write header if new file; avoid duplicate entries if it already exists
@@ -1482,7 +2105,8 @@ def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_
 
 
 def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, source_url: str = None,
-                     playlist_name: str = None, use_playlists_dir: bool = False):
+                     playlist_name: str = None, use_playlists_dir: bool = False,
+                     attempted_ids: set[str] | None = None, integrity_attempt: int = 1):
     """Process a download job.
 
     source_url overrides the default YouTube URL construction  -  used for
@@ -1493,6 +2117,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
     is_soundcloud = source_url and "soundcloud.com" in source_url
     is_monochrome = source_url and "monochrome.tf" in source_url
     is_url_source = bool(source_url)
+
+    attempted_ids = set(attempted_ids or [])
+    attempted_ids.add(video_id)
 
     # Monochrome gets its own dedicated download path  -  no yt-dlp needed
     if is_monochrome:
@@ -1512,7 +2139,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         # Defaults in case extraction fails before artist/title are assigned
         artist = None
         title = video_id
-        has_cookies = (not is_url_source) and COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0
+        has_cookies = False
 
         # Update status to downloading
         _update_job(job_id, status="downloading")
@@ -1526,15 +2153,15 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             "--no-warnings",
             target_url,
         ]
+        has_cookies = "--cookies" in info_cmd
 
         info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
         if info_result.returncode != 0:
-            if not is_url_source and _is_ytdlp_403(info_result.stderr):
-                if has_cookies:
-                    _note_cookie_failure()
-                hint = "Your cookies may have expired  -  try re-exporting them in Settings." if has_cookies else "Add browser cookies in Settings to authenticate."
-                raise Exception(f"YouTube blocked this request (403). {hint}")
-            raise Exception("Failed to get video info")
+            if not is_url_source and _is_ytdlp_403(info_result.stderr) and has_cookies:
+                _note_cookie_failure()
+            reason_msg = _format_info_lookup_error(source_label, info_result.stderr, has_cookies)
+            print(f"Job {job_id} info lookup failed ({source_label}:{video_id}): {reason_msg}")
+            raise Exception(reason_msg)
 
         info = json.loads(info_result.stdout)
 
@@ -1553,12 +2180,15 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         existing_file = check_duplicate(artist, title)
         if not existing_file:
             existing_file = check_navidrome_duplicate(artist, title)
+        # For playlist routing, a synthetic Navidrome sentinel path is unusable.
+        # Don't mark as "already exists" if we cannot actually append a path.
+        if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
+            existing_file = None
         if existing_file and playlist_name:
             # Track already exists somewhere  -  add it to the target playlist and call it done.
-            # No re-download needed; the user just wants it in the playlist.
-            # _append_to_physical_m3u writes a path string only, so it works even when the
-            # file isn't locally accessible (e.g. Navidrome path on a different mount point).
-            _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+            # Local paths guard with .exists(); absolute Navidrome real paths are trusted directly
+            # (MusicGrabber may not share Navidrome's filesystem view, but the M3U consumer does).
+            # The sentinel Path(title) is neither absolute nor locally present, so it's still skipped.
             source_label = "library" if existing_file.exists() else "Navidrome"
             error_label = f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
             _update_job(
@@ -1567,7 +2197,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=error_label
             )
-            _mark_watched_track_downloaded(job_id)
+            marked = _mark_watched_track_downloaded(job_id)
+            if marked and (existing_file.is_absolute() or existing_file.exists()):
+                _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
             return
         elif existing_file:
             _update_job(
@@ -1596,6 +2228,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             source_url=source_url,
             use_cookies=not is_url_source,
         )
+        has_cookies = "--cookies" in download_cmd
 
         # Retry strategy: back off on suspected bot blocks; if cookies seem to cause 403s,
         # try again without cookies once to distinguish auth problems from general rate limits.
@@ -1633,6 +2266,61 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
         audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
 
+        # Integrity gate: if the file is corrupted/truncated, retry once then pivot.
+        valid_audio, integrity_reason = _validate_audio_integrity(audio_file)
+        if not valid_audio:
+            audio_file.unlink(missing_ok=True)
+            print(
+                f"Audio integrity check failed for {video_id} "
+                f"(attempt {integrity_attempt}/{_AUDIO_RECHECK_MAX_ATTEMPTS}): {integrity_reason}"
+            )
+            if integrity_attempt < _AUDIO_RECHECK_MAX_ATTEMPTS:
+                return process_download(
+                    job_id,
+                    video_id,
+                    convert_to_flac,
+                    source_url=source_url,
+                    playlist_name=playlist_name,
+                    use_playlists_dir=use_playlists_dir,
+                    attempted_ids=attempted_ids,
+                    integrity_attempt=integrity_attempt + 1,
+                )
+
+            _note_blacklist_entry(
+                source=source_label,
+                reason="corrupt_audio",
+                note=f"File failed integrity check after retry: {integrity_reason}",
+                job_id=job_id,
+                video_id=video_id,
+                uploader=channel,
+            )
+
+            if len(attempted_ids) < _AUDIO_RESEARCH_MAX_ALTERNATES + 1:
+                query = f"{artist} - {title}".strip(" -")
+                alternate = _find_alternate_search_candidate(query, attempted_ids)
+                if alternate:
+                    alt_id = alternate.get("video_id")
+                    alt_source_url = alternate.get("source_url")
+                    alt_source = alternate.get("source", "youtube")
+                    print(
+                        f"Retrying with alternate source after corruption: "
+                        f"{alt_source} {alt_id}"
+                    )
+                    return process_download(
+                        job_id,
+                        alt_id,
+                        convert_to_flac,
+                        source_url=alt_source_url,
+                        playlist_name=playlist_name,
+                        use_playlists_dir=use_playlists_dir,
+                        attempted_ids=attempted_ids,
+                        integrity_attempt=1,
+                    )
+
+            raise Exception(
+                f"Downloaded audio failed integrity checks and no alternate candidate succeeded: {integrity_reason}"
+            )
+
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(audio_file)
 
@@ -1657,7 +2345,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             )
             # Use the canonical artist/title from MusicBrainz everywhere
             if mb_artist != artist:
-                audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist)
+                # Playlist-routed files must stay in the playlist folder.
+                if not playlists_dir:
+                    audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist)
                 artist = mb_artist
             if mb_title != title:
                 title = mb_title
@@ -1686,8 +2376,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             metadata_source=metadata_source,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
-        _mark_watched_track_downloaded(job_id)
-        _append_to_physical_m3u(audio_file, playlist_name, use_playlists_dir)
+        marked = _mark_watched_track_downloaded(job_id)
+        if marked:
+            _append_to_physical_m3u(audio_file, playlist_name, use_playlists_dir)
 
         # Send notification for single track
         send_notification(
@@ -1699,6 +2390,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         )
 
     except Exception as e:
+        print(f"Download job failed ({job_id}, source={source_label}, id={video_id}): {e}")
         _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
 
         # Send notification for failure

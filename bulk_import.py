@@ -166,6 +166,11 @@ def process_bulk_import_worker(import_id: str):
                 video_id = best_match["video_id"]
                 source = best_match.get("source", "youtube")
                 source_url = best_match.get("source_url")
+                if watch_playlist_id:
+                    print(
+                        f"Watched import {watch_playlist_id}: selected {source} for "
+                        f"'{artist} - {song}' ({video_id})"
+                    )
 
                 # Create download job and update tracking
                 job_id = str(uuid.uuid4())[:8]

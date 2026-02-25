@@ -18,6 +18,10 @@ services:
       # Required paths
       - MUSIC_DIR=/music
       - DB_PATH=/data/music_grabber.db
+      # Optional: custom bind (defaults to 0.0.0.0:8080 if unset)
+      # IPv6 demo (commented out):
+      # - LISTEN_ADDR=::
+      # - LISTEN_PORT=8080
       # Optional: Run as specific user (like *arr stack)
       # - PUID=1000
       # - PGID=1000

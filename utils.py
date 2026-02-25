@@ -48,10 +48,30 @@ def clean_title(title: str) -> str:
         flags=re.IGNORECASE
     )
 
+    # Remove trailing pipe-separated promo/session suffixes.
+    # Example: "A Couple Minutes | A COLORS SHOW" -> "A Couple Minutes"
+    title = re.sub(
+        r'\s*\|\s*(?:a\s+colors?\s+show|colors?\s+show|'
+        r'(?:official\s+)?(?:music\s+)?(?:audio|video)|'
+        r'lyric(?:\s+video|s)?|visuali[sz]er|live\s+session|session)\s*$',
+        '',
+        title,
+        flags=re.IGNORECASE,
+    )
+
     # Strip any trailing dangling separators left after cleanup (e.g. "Title -")
     title = re.sub(r'\s+[-–—]\s*$', '', title)
 
     return title.strip()
+
+
+def _normalise_duplicate_stem(stem: str) -> str:
+    """Normalise a filename stem for duplicate comparisons."""
+    s = clean_title(stem or "")
+    s = s.replace("’", "'").replace("‘", "'").replace("`", "'")
+    s = re.sub(r"\s*[\(\[].*?[\)\]]", "", s)
+    s = re.sub(r"[^a-z0-9]+", " ", s.lower())
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def normalise_track_for_hash(artist: str, title: str) -> str:
@@ -154,6 +174,15 @@ def check_duplicate(artist: str, title: str) -> Optional[Path]:
                 for file in d.glob(f"*{ext}"):
                     if file.stem.lower() in stem_lowers:
                         return file
+
+            # Loose fallback: handles legacy files with promo suffixes like
+            # "| A COLORS SHOW" without creating false misses.
+            norm_targets = {_normalise_duplicate_stem(s) for s in stems if s}
+            if norm_targets:
+                for ext in AUDIO_EXTENSIONS:
+                    for file in d.glob(f"*{ext}"):
+                        if _normalise_duplicate_stem(file.stem) in norm_targets:
+                            return file
 
         return None
     except Exception:

@@ -353,6 +353,8 @@
                     </div>
                     <button type="button" class="test-btn" id="testNavidromeBtn">Test Connection</button>
                     <div id="navidromeTestResult" class="test-result"></div>
+                    <div id="navidromeRealPathStatus" class="test-result" style="display:none;"></div>
+                    <span class="settings-hint">For accurate M3U playlist entries, add <code>ND_SUBSONIC_DEFAULTREPORTREALPATH: "true"</code> to your Navidrome docker-compose environment. Test Connection will check whether this is enabled.</span>
                 </div>
             </div>
 
@@ -543,8 +545,8 @@
                     <i class="fa-solid fa-mug-hot"></i> Buy me a coffee
                 </a>
                 <button type="button" class="release-notes-btn" onclick="showReleaseNotes(serverConfig.version)" title="View release notes and what's new">Release Notes</button>
-                <div id="settingsSaveResult" class="save-result"></div>
             </div>
+            <div id="settingsSaveResult" class="save-result"></div>
         </div>
     </div>
 
@@ -604,6 +606,7 @@
     <div class="toast" id="toast"></div>
     <audio id="previewAudio" preload="none"></audio>
 
+    <script src="/static/release-notes.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

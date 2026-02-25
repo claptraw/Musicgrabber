@@ -1513,6 +1513,13 @@ h1 {
     color: var(--error);
 }
 
+.test-result.warning {
+    display: block;
+    background: rgba(234, 179, 8, 0.1);
+    border: 1px solid var(--warning);
+    color: var(--warning);
+}
+
 .settings-details {
     margin-top: 12px;
 }
@@ -1530,15 +1537,17 @@ h1 {
 
 .settings-actions {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     gap: 16px;
     margin-top: 8px;
 }
 
 .donation-link {
-    display: inline-flex;
+    display: flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
+    flex: 1;
     padding: 14px 28px;
     font-size: 14px;
     font-family: inherit;
@@ -1558,6 +1567,7 @@ h1 {
 }
 
 .save-btn {
+    flex: 1;
     padding: 14px 28px;
     font-size: 14px;
     font-family: inherit;
@@ -1580,6 +1590,7 @@ h1 {
 }
 
 .release-notes-btn {
+    flex: 1;
     padding: 14px 28px;
     font-size: 14px;
     font-family: inherit;
