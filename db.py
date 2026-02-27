@@ -304,6 +304,12 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+        # Migration: stale_navidrome_paths - count of dead Navidrome entries found during last M3U rebuild
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN stale_navidrome_paths INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
         conn.commit()
 
 

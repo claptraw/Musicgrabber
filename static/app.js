@@ -2186,6 +2186,11 @@
                                 </select>
                             </label>
                         </div>
+                        ${p.stale_navidrome_paths > 0 ? `
+                        <div class="watched-card-stale-warning">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                            <span><strong>${p.stale_navidrome_paths} track${p.stale_navidrome_paths === 1 ? '' : 's'}</strong> in the M3U point to files that no longer exist on disk but are still in Navidrome's database. To fix: open Navidrome, go to <strong>Settings &gt; Missing Files</strong>, select all, and click <strong>Remove from Database</strong>. Then trigger a library scan and refresh this playlist.</span>
+                        </div>` : ''}
                         <div class="watched-card-actions">
                             <button onclick="refreshWatchedPlaylist('${p.id}')" class="watched-action-btn" title="Check for new tracks now">Refresh</button>
                             <button onclick="toggleMissingTracks('${p.id}')" class="watched-action-btn" title="Show tracks that failed to download">Missing</button>

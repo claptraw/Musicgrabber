@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.2.4 (2026-02-27)
+
+### Fixed
+- **ARM64 image publish guard (prevent amd64-only releases)**: Added `scripts/publish-multiarch.sh`, which hard-fails before publish unless the selected buildx builder reports both `linux/amd64` and `linux/arm64`. This prevents accidental "multi-arch" pushes when `qemu/binfmt` arm64 support has dropped from the host. The script always publishes with explicit `--platform linux/amd64,linux/arm64`
+- **Watched playlist cards silently show fewer M3U tracks than expected when Navidrome has stale entries**: When Navidrome's database still contains records for files that have since been deleted (visible under Navidrome > Settings > Missing Files), MusicGrabber trusts those paths and writes them into the M3U, leaving dead entries that don't play. The playlist card now counts how many such stale paths were detected during the last M3U rebuild and shows a warning banner with instructions to clean up Navidrome's missing file records
+
+---
+
 ## v2.2.3 (2026-02-27)
 
 ### Fixed

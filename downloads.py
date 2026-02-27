@@ -1194,6 +1194,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
     seen_paths = set()
     unresolved_rows: list[tuple[str, str, str, str]] = []
     synthetic_path_rows: list[tuple[str, str]] = []  # Navidrome knows about it but can't give a real path
+    stale_navidrome_rows: list[tuple[str, str]] = []  # Navidrome path exists in DB but file is gone on disk
 
     def _is_real_path(p: Path) -> bool:
         """True when we have a path we can actually write into an M3U."""
@@ -1242,6 +1243,9 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                 if existing_path not in seen_paths:
                     seen_paths.add(existing_path)
                     playlist_files.append(existing_path)
+                    # Absolute path from Navidrome that doesn't exist on our filesystem = stale entry
+                    if existing.is_absolute() and not existing.exists():
+                        stale_navidrome_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
             elif navidrome_sentinel_hit:
                 synthetic_path_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
             else:
@@ -1278,6 +1282,9 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                     if abs_path not in seen_paths:
                         seen_paths.add(abs_path)
                         playlist_files.append(abs_path)
+                        # Navidrome says it exists but our filesystem disagrees = stale DB entry
+                        if not audio_file.exists():
+                            stale_navidrome_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
             elif navidrome_sentinel_hit:
                 synthetic_path_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
             else:
@@ -1302,6 +1309,24 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         for file_path in playlist_files:
             f.write(f"{file_path}\n")
     set_file_permissions(m3u_path)
+
+    # Persist stale path count so the frontend can warn the user
+    stale_count = len(stale_navidrome_rows)
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE watched_playlists SET stale_navidrome_paths = ? WHERE id = ?",
+            (stale_count, playlist_id)
+        )
+    if stale_count:
+        print(
+            f"WARNING: {stale_count} track(s) in playlist '{playlist_name}' have stale Navidrome entries "
+            f"(file deleted from disk but still in Navidrome's database). These are written into the M3U "
+            f"but won't play. Fix: Navidrome > Settings > Missing Files > Select All > Remove from Database, "
+            f"then re-scan your library."
+        )
+        for w_artist, w_title in stale_navidrome_rows[:20]:
+            print(f"  stale path: '{w_artist} - {w_title}'")
+
     if synthetic_path_rows:
         print(
             f"WARNING: Navidrome returned synthetic (fake) paths for {len(synthetic_path_rows)} track(s) "
