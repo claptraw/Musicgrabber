@@ -12,6 +12,9 @@ venv/
 ENV/
 .venv
 
+# Scripts dir
+scripts/
+
 # Database
 *.db
 *.sqlite
