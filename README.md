@@ -1,6 +1,6 @@
 # Music Grabber
 
-**v2.2.2**
+**v2.2.3**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
