@@ -29,6 +29,8 @@ from constants import (
     SLSKD_MAX_RETRIES, TIMEOUT_SLSKD_SEARCH,
     PLAYLIST_WAIT_MAX, PLAYLIST_WAIT_INTERVAL,
     YOUTUBE_SEARCH_MULTIPLIER, YOUTUBE_SEARCH_MIN_FETCH,
+    MAX_AUDIO_START_OFFSET_SECS,
+    MB_DURATION_TOLERANCE,
 )
 from db import db_conn
 from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
@@ -123,26 +125,28 @@ def _find_downloaded_audio_or_raise(artist_dir: Path, sanitized_title: str) -> P
     )
 
 
-def _validate_audio_integrity(file_path: Path) -> tuple[bool, str]:
+def _validate_audio_integrity(file_path: Path) -> tuple[bool, str, float]:
     """Validate that a downloaded audio file is decodable and non-empty.
 
-    Uses ffprobe to ensure at least one audio stream exists and duration is > 0.
-    This catches common "downloaded but corrupted/truncated" failure modes.
+    Uses ffprobe to ensure at least one audio stream exists, duration is > 0,
+    and the start offset is not suspiciously large (preview segment indicator).
+
+    Returns (ok, reason, actual_duration_secs). Duration is 0.0 on failure.
     """
     if not file_path.exists():
-        return False, "File not found after download"
+        return False, "File not found after download", 0.0
     try:
         if file_path.stat().st_size <= 0:
-            return False, "Downloaded file is empty"
+            return False, "Downloaded file is empty", 0.0
     except OSError as e:
-        return False, f"Unable to stat file: {e}"
+        return False, f"Unable to stat file: {e}", 0.0
 
     try:
         probe = subprocess.run(
             [
                 "ffprobe",
                 "-v", "error",
-                "-show_entries", "format=duration,size:stream=codec_type,codec_name,duration",
+                "-show_entries", "format=duration,size,start_time:stream=codec_type,codec_name,duration",
                 "-of", "json",
                 str(file_path),
             ],
@@ -151,21 +155,21 @@ def _validate_audio_integrity(file_path: Path) -> tuple[bool, str]:
             timeout=15,
         )
     except Exception as e:
-        return False, f"ffprobe execution failed: {e}"
+        return False, f"ffprobe execution failed: {e}", 0.0
 
     if probe.returncode != 0:
         stderr = (probe.stderr or "").strip()
-        return False, f"ffprobe failed: {stderr or 'unknown ffprobe error'}"
+        return False, f"ffprobe failed: {stderr or 'unknown ffprobe error'}", 0.0
 
     try:
         info = json.loads(probe.stdout or "{}")
     except json.JSONDecodeError:
-        return False, "ffprobe returned invalid JSON"
+        return False, "ffprobe returned invalid JSON", 0.0
 
     streams = info.get("streams") or []
     audio_streams = [s for s in streams if (s.get("codec_type") == "audio" or s.get("codec_name"))]
     if not audio_streams:
-        return False, "No audio stream found"
+        return False, "No audio stream found", 0.0
 
     fmt = info.get("format") or {}
     duration_raw = fmt.get("duration")
@@ -176,9 +180,44 @@ def _validate_audio_integrity(file_path: Path) -> tuple[bool, str]:
     except (TypeError, ValueError):
         duration = 0.0
     if duration <= 0:
-        return False, "Audio duration is zero or unreadable"
+        return False, "Audio duration is zero or unreadable", 0.0
 
-    return True, ""
+    # A start_time well above zero means this is a preview segment, not a full track.
+    # Normal encoder delay is a few milliseconds; anything above the threshold is a red flag.
+    start_raw = fmt.get("start_time")
+    if start_raw not in (None, "", "N/A"):
+        try:
+            start_time = float(start_raw)
+            if start_time > MAX_AUDIO_START_OFFSET_SECS:
+                return False, f"Audio start offset is {start_time:.1f}s - likely a preview segment, not a full track", 0.0
+        except (TypeError, ValueError):
+            pass  # Unparseable start_time: give it the benefit of the doubt
+
+    return True, "", duration
+
+
+def _check_duration_against_mb(actual_secs: float, mb_metadata: Optional[dict], artist: str, title: str) -> tuple[bool, str]:
+    """Compare the downloaded file's duration against the MusicBrainz expected duration.
+
+    Returns (ok, reason). ok=True means the duration is within MB_DURATION_TOLERANCE
+    of the expected value, or MB didn't return a duration (in which case we can't check).
+    This is a no-op when MusicBrainz is disabled, since lookup_metadata returns None.
+    """
+    if not mb_metadata:
+        return True, ""
+    expected = mb_metadata.get("expected_duration_secs")
+    if not expected or expected <= 0:
+        return True, ""
+    low = expected * (1 - MB_DURATION_TOLERANCE)
+    high = expected * (1 + MB_DURATION_TOLERANCE)
+    if low <= actual_secs <= high:
+        return True, ""
+    return (
+        False,
+        f"Duration mismatch for {artist} - {title}: got {actual_secs:.0f}s, "
+        f"MusicBrainz expects {expected:.0f}s "
+        f"(tolerance ±{MB_DURATION_TOLERANCE*100:.0f}%, allowed {low:.0f}s-{high:.0f}s)"
+    )
 
 
 def _note_blacklist_entry(
@@ -564,11 +603,15 @@ def _update_job(job_id: str, **fields) -> None:
 def _normalise_watched_match_text(text: str) -> str:
     """Normalise artist/title text for strict watched-track match checks."""
     t = (text or "").lower()
-    t = t.replace("’", "'").replace("‘", "'").replace("`", "'")
+    t = t.replace("\u2019", "’").replace("\u2018", "’").replace("`", "’")
+    # Strip bracketed clauses: (feat. X), [feat. X], etc.
     t = re.sub(r"\s*[\(\[].*?[\)\]]", "", t)
+    # Strip inline feat./ft./featuring clauses not in brackets, e.g. "Track feat. Artist"
+    t = re.sub(r"\s+(?:feat|ft|featuring)\.?\s+.*$", "", t)
+    # Strip trailing junk keywords and everything after them
     t = re.sub(
         r"\b(remaster(?:ed)?|radio edit|album version|single version|single edit|live|explicit|clean|"
-        r"(?:official\s+)?(?:music\s+)?(?:video|audio)|lyric(?:\s+video|s)?|visuali[sz]er|"
+        r"official|(?:music\s+)?(?:video|audio)|lyric(?:\s+video|s)?|visuali[sz]er|"
         r"a\s+colors?\s+show|colors?\s+show)\b.*$",
         "",
         t,
@@ -577,37 +620,86 @@ def _normalise_watched_match_text(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+_REMIX_INDICATOR_WORDS = frozenset({
+    "remix", "mix", "edit", "version", "bootleg", "rework", "flip", "refix",
+})
+
+_ARTIST_NOISE_WORDS = frozenset({"feat", "ft", "featuring", "vs", "x", "and", "the"})
+
+
+def _artist_words(artist_norm: str) -> set:
+    """Split a normalised artist string into a set of significant words."""
+    return {w for w in artist_norm.split() if w not in _ARTIST_NOISE_WORDS and len(w) > 1}
+
+
+def _has_remix_suffix(extra: str) -> bool:
+    """Return True if the extra words on a longer title end in a remix indicator."""
+    words = extra.strip().split()
+    return bool(words) and words[-1] in _REMIX_INDICATOR_WORDS
+
+
 def _watched_track_matches_expected(expected_artist: str, expected_title: str, actual_artist: str, actual_title: str) -> bool:
-    """Return True when downloaded metadata matches watched-track expectation."""
+    """Return True when downloaded metadata matches watched-track expectation.
+
+    Handles several real-world drift patterns:
+    - Remaster/version suffix drift (e.g. 'The Chain 2004 Remaster' vs 'The Chain')
+    - Remix suffix drift: Spotify stores 'Track - Remixer Remix' as the title (dash
+      becomes a space after normalisation), while YouTube brackets get stripped, leaving
+      just 'Track'. We accept the expected title as a prefix of got_title when the extra
+      words end in a remix indicator AND the remix direction is from expected (Spotify).
+    - Artist field remix additions: Spotify appends the remixer to the artist list
+      ('KH, Four Tet, MPH'), YouTube only tags primary artists ('KH, Four Tet').
+    - Collaborator separator differences: comma vs feat. vs x vs & all normalise.
+    - Artist order swaps: handled by set-based word comparison.
+    """
     exp_artist = _normalise_watched_match_text(expected_artist)
     exp_title = _normalise_watched_match_text(expected_title)
     got_artist = _normalise_watched_match_text(actual_artist)
     got_title = _normalise_watched_match_text(actual_title)
 
-    def _base_title(t: str) -> str:
-        # Drop common trailing version suffixes, including punctuation-stripped forms
-        # like "the chain 2004 remaster".
+    def _strip_version_suffix(t: str) -> str:
         t = re.sub(r"\b\d{4}\s*remaster(?:ed)?\b", "", t)
         t = re.sub(r"\bremaster(?:ed)?\s*\d{4}\b", "", t)
         t = re.sub(r"\b(remaster(?:ed)?|radio edit|single edit|single version|album version|live)\b$", "", t)
         t = re.sub(r"\s+", " ", t).strip()
         parts = t.split()
-        # If a trailing year is left behind after stripping version words, bin it.
-        # Keep pure year titles intact (for example "1999").
         if len(parts) > 1 and re.fullmatch(r"\d{4}", parts[-1]):
             t = " ".join(parts[:-1]).strip()
         return t
 
-    # Title must be genuinely the same track; substring matches are too risky.
-    # Allow remaster/version suffix drift, but not different songs.
     if not exp_title or not got_title:
         return False
-    if exp_title != got_title and _base_title(exp_title) != _base_title(got_title):
+
+    et, gt = _strip_version_suffix(exp_title), _strip_version_suffix(got_title)
+    title_ok = (et == gt)
+
+    if not title_ok:
+        # Remix-suffix prefix match: Spotify title has 'Track - Remixer Remix' which
+        # after normalisation becomes 'track remixer remix'. YouTube strips the brackets
+        # so the got_title is just 'track'. Accept when exp_title starts with got_title
+        # and the extra exp_title words end in a remix indicator. We only allow this in
+        # the expected->got direction (not got->expected) to avoid accepting a downloaded
+        # remix as a match for a plain original.
+        if et.startswith(gt) and et[len(gt):len(gt)+1] in (" ", ""):
+            extra = et[len(gt):].strip()
+            if extra and _has_remix_suffix(extra):
+                title_ok = True
+
+    if not title_ok:
         return False
     if not exp_artist:
         return True
-    # Artist can include collaborators on one side.
-    return bool(got_artist and (exp_artist in got_artist or got_artist in exp_artist))
+
+    # Artist matching: Spotify often appends the remixer to the artist list and/or
+    # uses different collaborator separators (comma vs feat. vs x vs &).
+    # Strategy: treat the smaller set of significant artist words as a subset of the larger.
+    # A remixer added to the Spotify artist field makes exp_artist a superset of got_artist,
+    # which passes the subset check. Order differences are naturally handled by set ops.
+    exp_words = _artist_words(exp_artist)
+    got_words = _artist_words(got_artist)
+    if not got_words:
+        return False
+    return got_words.issubset(exp_words) or exp_words.issubset(got_words)
 
 
 def _mark_watched_track_downloaded(job_id: str) -> bool:
@@ -1101,6 +1193,21 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
     playlist_files = []
     seen_paths = set()
     unresolved_rows: list[tuple[str, str, str, str]] = []
+    synthetic_path_rows: list[tuple[str, str]] = []  # Navidrome knows about it but can't give a real path
+
+    def _is_real_path(p: Path) -> bool:
+        """True when we have a path we can actually write into an M3U."""
+        return p.is_absolute() or p.exists()
+
+    def _is_navidrome_sentinel(p: Path | None) -> bool:
+        """True when Navidrome found the track but returned a synthetic (relative) path.
+
+        The sentinel is Path(title)  -  it's truthy so download blocking works,
+        but it's not absolute and won't exist on disk. If we see this we know real
+        path mode is off in Navidrome and the user needs to fix their settings.
+        """
+        return p is not None and not _is_real_path(p)
+
     for row in rows:
         pairs = _candidate_pairs(row)
         if not pairs:
@@ -1117,15 +1224,26 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
             # Track wasn't resolved inside the playlist folder  -  fall back through
             # duplicate checks using both job metadata and original watched metadata.
             existing = None
+            navidrome_sentinel_hit = False
             for artist, title in pairs:
-                existing = check_duplicate(artist, title) or check_navidrome_duplicate(artist, title)
-                if existing and (existing.is_absolute() or existing.exists()):
+                local = check_duplicate(artist, title)
+                if local and _is_real_path(local):
+                    existing = local
                     break
-            if existing and (existing.is_absolute() or existing.exists()):
+                nav = check_navidrome_duplicate(artist, title)
+                if nav and _is_real_path(nav):
+                    existing = nav
+                    break
+                if _is_navidrome_sentinel(nav):
+                    navidrome_sentinel_hit = True
+
+            if existing:
                 existing_path = str(existing)
                 if existing_path not in seen_paths:
                     seen_paths.add(existing_path)
                     playlist_files.append(existing_path)
+            elif navidrome_sentinel_hit:
+                synthetic_path_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
             else:
                 unresolved_rows.append((
                     row["wpt_artist"] or "",
@@ -1135,11 +1253,20 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                 ))
         else:
             audio_file = None
+            navidrome_sentinel_hit = False
             for artist, title in pairs:
-                audio_file = check_duplicate(artist, title) or check_navidrome_duplicate(artist, title)
-                if audio_file and (audio_file.is_absolute() or audio_file.exists()):
+                local = check_duplicate(artist, title)
+                if local and _is_real_path(local):
+                    audio_file = local
                     break
-            if audio_file and (audio_file.is_absolute() or audio_file.exists()):
+                nav = check_navidrome_duplicate(artist, title)
+                if nav and _is_real_path(nav):
+                    audio_file = nav
+                    break
+                if _is_navidrome_sentinel(nav):
+                    navidrome_sentinel_hit = True
+
+            if audio_file:
                 try:
                     rel_path = audio_file.relative_to(get_singles_dir())
                     rel_path_str = str(rel_path)
@@ -1147,11 +1274,13 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                         seen_paths.add(rel_path_str)
                         playlist_files.append(rel_path_str)
                 except ValueError:
-                    abs_path = str(audio_file)  # Navidrome path  -  use absolute
+                    abs_path = str(audio_file)  # Navidrome absolute path  -  use as-is
                     if abs_path not in seen_paths:
                         seen_paths.add(abs_path)
                         playlist_files.append(abs_path)
-            if not audio_file:
+            elif navidrome_sentinel_hit:
+                synthetic_path_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
+            else:
                 unresolved_rows.append((
                     row["wpt_artist"] or "",
                     row["wpt_title"] or "",
@@ -1173,6 +1302,15 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         for file_path in playlist_files:
             f.write(f"{file_path}\n")
     set_file_permissions(m3u_path)
+    if synthetic_path_rows:
+        print(
+            f"WARNING: Navidrome returned synthetic (fake) paths for {len(synthetic_path_rows)} track(s) "
+            f"in playlist '{playlist_name}'. These tracks exist in Navidrome but cannot be added to the "
+            f"M3U because real path mode is disabled. Enable it in Navidrome Settings > Players, or run "
+            f"'Test Connection' in MusicGrabber Settings to fix this automatically."
+        )
+        for w_artist, w_title in synthetic_path_rows[:20]:
+            print(f"  synthetic path: '{w_artist} - {w_title}'")
     if unresolved_rows:
         print(
             f"Watched playlist M3U unresolved tracks: {len(unresolved_rows)} "
@@ -1324,7 +1462,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     failed_tracks += 1
                     continue
 
-                valid_audio, integrity_reason = _validate_audio_integrity(audio_file)
+                valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(audio_file)
                 if not valid_audio:
                     audio_file.unlink(missing_ok=True)
                     print(
@@ -1343,7 +1481,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     except Exception:
                         failed_tracks += 1
                         continue
-                    valid_audio, integrity_reason = _validate_audio_integrity(audio_file)
+                    valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(audio_file)
                     if not valid_audio:
                         audio_file.unlink(missing_ok=True)
                         _note_blacklist_entry(
@@ -1362,6 +1500,15 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
                 # Try to enrich metadata with AcoustID fingerprinting, then MusicBrainz
                 mb_metadata = lookup_metadata(artist, title, audio_file)
+
+                # Duration sanity check against MusicBrainz expected length
+                dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title)
+                if not dur_ok:
+                    audio_file.unlink(missing_ok=True)
+                    print(dur_reason)
+                    failed_tracks += 1
+                    continue
+
                 if mb_metadata:
                     mb_artist = mb_metadata.get("artist", artist)
                     mb_title = mb_metadata.get("title", title)
@@ -1522,7 +1669,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                     raise Exception("Download completed but file not found")
 
                 # Validate raw Soulseek payload before spending time tagging/conversion.
-                valid_raw, raw_reason = _validate_audio_integrity(downloaded_file)
+                valid_raw, raw_reason, _raw_dur = _validate_audio_integrity(downloaded_file)
                 if not valid_raw:
                     downloaded_file.unlink(missing_ok=True)
                     _note_blacklist_entry(
@@ -1610,7 +1757,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             final_file.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
 
-        valid_audio, invalid_reason = _validate_audio_integrity(final_file)
+        valid_audio, invalid_reason, actual_duration_secs = _validate_audio_integrity(final_file)
         if not valid_audio:
             final_file.unlink(missing_ok=True)
             _note_blacklist_entry(
@@ -1625,6 +1772,13 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         # Apply metadata (AcoustID fingerprinting first, then text-based MusicBrainz fallback)
         metadata_source = _default_metadata_source("soulseek")
         mb_metadata = lookup_metadata(artist, title, final_file)
+
+        # Duration sanity check against MusicBrainz expected length
+        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title)
+        if not dur_ok:
+            final_file.unlink(missing_ok=True)
+            raise Exception(dur_reason)
+
         if mb_metadata:
             metadata_source = mb_metadata.get("metadata_source", metadata_source)
             mb_artist = mb_metadata.get("artist", artist)
@@ -1939,9 +2093,10 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
 
         # Download + integrity recheck loop for occasionally truncated CDN responses.
         integrity_reason = ""
+        actual_duration_secs = 0.0
         for attempt in range(1, _AUDIO_RECHECK_MAX_ATTEMPTS + 1):
             _download_monochrome_direct(track_id, output_path)
-            valid_audio, integrity_reason = _validate_audio_integrity(output_path)
+            valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(output_path)
             if valid_audio:
                 break
             output_path.unlink(missing_ok=True)
@@ -1978,6 +2133,13 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         # a nasty habit of matching a live recording or remaster and silently making things worse.
         metadata_source = "monochrome_api"
         mb_metadata = lookup_metadata(artist, title, output_path)
+
+        # Duration sanity check  -  Tidal should never serve the wrong track, but worth a nudge.
+        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title)
+        if not dur_ok:
+            output_path.unlink(missing_ok=True)
+            raise Exception(dur_reason)
+
         year = mb_metadata.get("year") if mb_metadata else None
         apply_metadata_to_file(output_path, artist, title, album_title, year)
 
@@ -2267,7 +2429,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
 
         # Integrity gate: if the file is corrupted/truncated, retry once then pivot.
-        valid_audio, integrity_reason = _validate_audio_integrity(audio_file)
+        valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(audio_file)
         if not valid_audio:
             audio_file.unlink(missing_ok=True)
             print(
@@ -2334,6 +2496,32 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         # Try to enrich metadata with AcoustID fingerprinting, then MusicBrainz
         metadata_source = _default_metadata_source(source_label)
         mb_metadata = lookup_metadata(artist, title, audio_file)
+
+        # Duration sanity check: if MusicBrainz knows the expected length, verify we're within 10%.
+        # Catches wrong tracks that passed the corruption check but are wildly the wrong length.
+        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title)
+        if not dur_ok:
+            audio_file.unlink(missing_ok=True)
+            print(dur_reason)
+            if len(attempted_ids) < _AUDIO_RESEARCH_MAX_ALTERNATES + 1:
+                query = f"{artist} - {title}".strip(" -")
+                alternate = _find_alternate_search_candidate(query, attempted_ids)
+                if alternate:
+                    alt_id = alternate.get("video_id")
+                    alt_source_url = alternate.get("source_url")
+                    print(f"Retrying with alternate source after duration mismatch: {alternate.get('source', 'youtube')} {alt_id}")
+                    return process_download(
+                        job_id,
+                        alt_id,
+                        convert_to_flac,
+                        source_url=alt_source_url,
+                        playlist_name=playlist_name,
+                        use_playlists_dir=use_playlists_dir,
+                        attempted_ids=attempted_ids,
+                        integrity_attempt=1,
+                    )
+            raise Exception(dur_reason)
+
         if mb_metadata:
             metadata_source = mb_metadata.get("metadata_source", metadata_source)
             mb_artist = mb_metadata.get("artist", artist)

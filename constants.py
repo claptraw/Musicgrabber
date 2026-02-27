@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.2.2"
+VERSION = "2.2.3-dev"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -22,6 +22,7 @@ TIMEOUT_SLSKD_SEARCH = 12        # Soulseek search polling
 TIMEOUT_SLSKD_DOWNLOAD = 600     # Soulseek download (10 minutes)
 TIMEOUT_SLSKD_API = 30           # slskd API calls
 TIMEOUT_SPOTIFY_BROWSER = 180    # Headless browser for large playlists (3 minutes)
+SPOTIFY_BROWSER_STALL_SECONDS = 30  # No-progress cutoff while scrolling long Spotify playlists
 TIMEOUT_AMAZON_BROWSER = 180     # Amazon Music playlist scraping (3 minutes)
 TIMEOUT_FPCALC = 30              # Audio fingerprinting via fpcalc
 TIMEOUT_MONOCHROME_API = 15      # Monochrome/Tidal API calls (search + manifest)
@@ -80,6 +81,9 @@ WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24
 # is about as reliable as asking YouTube commenters for facts.
 # API key is now configurable via Settings; this is just the confidence threshold.
 ACOUSTID_MIN_SCORE = 0.8         # Below this, the match is too dodgy to trust
+MIN_SONG_DURATION_SECS = 30      # Files shorter than this are too brief to fingerprint reliably
+MAX_AUDIO_START_OFFSET_SECS = 1.0  # Start offsets above this indicate a preview segment, not a full track
+MB_DURATION_TOLERANCE = 0.10     # 10% either side of MusicBrainz expected duration; outside = wrong track
 
 # ListenBrainz API  -  used for similar artist exploration and "Created for You" playlists
 # (public API, no auth required for either)

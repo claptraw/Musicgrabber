@@ -8,6 +8,7 @@ Outputs JSON to stdout: {success, tracks, playlist_name, count} or {success, err
 
 import json
 import os
+import re
 import sys
 import time
 
@@ -20,6 +21,10 @@ SELECTOR = '[data-testid="tracklist-row"]'
 
 tracks = []
 playlist_name = f"Spotify {spotify_type.title()}"
+stall_timeout_seconds = 30
+stall_raw = (os.environ.get("SPOTIFY_BROWSER_STALL_SECONDS") or "").strip()
+if stall_raw.isdigit():
+    stall_timeout_seconds = max(5, min(300, int(stall_raw)))
 
 try:
     with sync_playwright() as p:
@@ -33,6 +38,28 @@ try:
         page.goto(url, timeout=60000)
         time.sleep(3)
 
+        expected_total = None
+        expected_total_env = (os.environ.get("SPOTIFY_EXPECTED_TOTAL") or "").strip()
+        if expected_total_env.isdigit():
+            expected_total = int(expected_total_env)
+        try:
+            if expected_total is None:
+                total_meta = page.locator('meta[name="music:song_count"]').first
+                total_raw = total_meta.get_attribute("content")
+                if total_raw and total_raw.isdigit():
+                    expected_total = int(total_raw)
+        except Exception:
+            pass
+
+        if expected_total is None:
+            try:
+                og_desc = page.locator('meta[property="og:description"]').first.get_attribute("content") or ""
+                m = re.search(r"(\d[\d,]*)\s+items?", og_desc, re.IGNORECASE)
+                if m:
+                    expected_total = int(m.group(1).replace(",", ""))
+            except Exception:
+                expected_total = None
+
         # Accept cookie consent if present — this can block page rendering
         cookie_selectors = [
             "button:has-text('Accept cookies')",
@@ -43,12 +70,15 @@ try:
         ]
         for sel in cookie_selectors:
             try:
-                btn = page.query_selector(sel)
-                if btn:
-                    print(f"DEBUG: Found cookie button with selector: {sel}", file=sys.stderr)
-                    btn.click()
-                    time.sleep(2)
-                    break
+                btn = page.locator(sel).first
+                if btn.count() == 0:
+                    continue
+                if not btn.is_visible(timeout=750):
+                    continue
+                print(f"DEBUG: Found cookie button with selector: {sel}", file=sys.stderr)
+                btn.click(timeout=2000, force=True)
+                time.sleep(0.5)
+                break
             except Exception as e:
                 print(f"DEBUG: Cookie selector {sel} failed: {e}", file=sys.stderr)
 
@@ -71,9 +101,9 @@ try:
 
         # Spotify uses virtualised scrolling — tracks get unloaded as you scroll.
         # Extract tracks incrementally while scrolling.
-        seen_tracks = set()
-        stale_count = 0
+        seen_tracks_by_index = {}
         last_seen_count = 0
+        last_progress_at = time.monotonic()
 
         def extract_visible_tracks():
             for row in page.query_selector_all(SELECTOR):
@@ -82,9 +112,13 @@ try:
                     parts = text.split(chr(10))
                     parts = [pt.strip() for pt in parts if pt.strip()]
 
-                    # Only extract tracks that have a track number
-                    if not parts or not parts[0].isdigit():
+                    # Only extract tracks that start with a numeric row index.
+                    if not parts:
                         continue
+                    track_index_raw = re.sub(r"[^\d]", "", parts[0])
+                    if not track_index_raw:
+                        continue
+                    track_index = int(track_index_raw)
 
                     # Skip the track number
                     parts = parts[1:]
@@ -99,28 +133,39 @@ try:
                         if artist == "E" and len(parts) >= 3:
                             artist = parts[2].strip()
                         if track_name and artist and artist != "E":
-                            seen_tracks.add(f"{artist} - {track_name}")
+                            seen_tracks_by_index[track_index] = f"{artist} - {track_name}"
                 except Exception:
                     continue
 
         # First extraction before scrolling
         extract_visible_tracks()
 
-        while stale_count < 20:
+        while True:
+            if expected_total and len(seen_tracks_by_index) >= expected_total:
+                break
+            if time.monotonic() - last_progress_at > stall_timeout_seconds:
+                break
+
             rows = page.query_selector_all(SELECTOR)
             if rows:
                 rows[-1].scroll_into_view_if_needed()
+            else:
+                page.mouse.wheel(0, 2000)
             time.sleep(0.3)
 
             extract_visible_tracks()
 
-            if len(seen_tracks) == last_seen_count:
-                stale_count += 1
-            else:
-                stale_count = 0
-                last_seen_count = len(seen_tracks)
+            current_seen = len(seen_tracks_by_index)
+            if current_seen > last_seen_count:
+                last_seen_count = current_seen
+                last_progress_at = time.monotonic()
 
-        tracks = list(seen_tracks)
+        tracks = [seen_tracks_by_index[idx] for idx in sorted(seen_tracks_by_index)]
+        if expected_total and len(tracks) < expected_total:
+            print(
+                f"DEBUG: Track extraction incomplete ({len(tracks)}/{expected_total})",
+                file=sys.stderr,
+            )
         browser.close()
 
     print(json.dumps({"success": True, "tracks": tracks, "playlist_name": playlist_name, "count": len(tracks)}))

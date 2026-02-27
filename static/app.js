@@ -2939,6 +2939,8 @@
             'smtp_to': 'settingSmtpTo',
             'smtp_tls': 'settingSmtpTls',
             'youtube_cookies': 'settingYoutubeCookies',
+            'spotify_browser_timeout_seconds': 'settingSpotifyBrowserTimeout',
+            'spotify_browser_stall_seconds': 'settingSpotifyBrowserStall',
             'api_key': 'settingApiKey'
         };
 
@@ -3309,7 +3311,11 @@
 
         function _injectSettingsClearButtons() {
             // Skip these - they already have dedicated clear mechanisms
-            const skipIds = new Set(['settingYoutubeCookies', 'settingSmtpPort', 'settingMinBitrate', 'customSubdirInput', 'customPlaylistsSubdirInput']);
+            const skipIds = new Set([
+                'settingYoutubeCookies', 'settingSmtpPort', 'settingMinBitrate',
+                'settingSpotifyBrowserTimeout', 'settingSpotifyBrowserStall',
+                'customSubdirInput', 'customPlaylistsSubdirInput'
+            ]);
 
             for (const row of document.querySelectorAll('.settings-row')) {
                 const input = row.querySelector('input[type="text"], input[type="password"], input[type="number"]');

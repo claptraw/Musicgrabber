@@ -15,7 +15,7 @@ from constants import (
     BOT_BACKOFF_MIN_SECONDS, BOT_BACKOFF_MAX_SECONDS,
     COOKIES_FILE, TIMEOUT_YTDLP_SEARCH,
     YOUTUBE_SEARCH_MULTIPLIER, YOUTUBE_SEARCH_MIN_FETCH,
-    YTDLP_PLAYER_CLIENT,
+    YTDLP_PLAYER_CLIENT, MIN_SONG_DURATION_SECS,
 )
 from settings import get_setting, get_setting_int
 
@@ -278,12 +278,29 @@ def score_search_result(
     if re.search(r'\b(live|concert|tour|performance|unplugged)\b', title_lower):
         score -= 50
 
+    # Absolute disqualifiers: results containing these words are never what anyone wants,
+    # regardless of query or context. Scored so low they cannot win even against silence.
+    query_lower = (query or "").lower()
+    _never_re = r'\b(karaoke|nightcore|sped[- ]up|slowed|8d audio|bass boosted)\b'
+    if re.search(_never_re, title_lower) or re.search(_never_re, album_lower):
+        score -= 200
+
+    # Bootlegs, flips, and refixes are unofficial fan edits  -  never what we want unless
+    # the query explicitly names them (which would be unusual but technically possible).
+    _bootleg_re = r'\b(bootleg|flip|refix|rework|mashup)\b'
+    if re.search(_bootleg_re, title_lower):
+        if not re.search(_bootleg_re, query_lower):
+            score -= 100
+
     # Penalties for covers, remixes, instrumentals  -  check title AND album name.
     # Piano cover albums tag the track artist as the original artist, so the
     # album is often the only place the word "cover" appears.
-    _cover_re = r'\b(cover|remix|instrumental|karaoke|acoustic version|live session|piano version|tribute)\b'
+    # Remix/edit penalties are waived when the query itself requests that version.
+    _cover_re = r'\b(cover|remix|instrumental|acoustic version|live session|piano version|tribute)\b'
     if re.search(_cover_re, title_lower) or re.search(_cover_re, album_lower):
-        score -= 40
+        # Don't penalise a remix result when we're explicitly searching for a remix
+        if not re.search(r'\b(remix|edit|mix)\b', query_lower):
+            score -= 40
 
     # Penalties for lyric videos (usually lower quality)
     if re.search(r'\b(lyric|lyrics)\b', title_lower):
@@ -294,6 +311,11 @@ def score_search_result(
         score -= 30
     if re.search(r'\b(fan|fanpage|tribute|cover)\b', channel_lower):
         score -= 25
+
+    # Copyright-filtered uploads: audio muted, pitch-shifted, or otherwise butchered
+    # to dodge Content ID. The file is useless. Nuke it from orbit.
+    if re.search(r'filter(?:ed)?\s*(?:for\s*)?copyright|copyright\s*filter|pitch\s*shift|freq\s*shift', title_lower):
+        score -= 200
 
     # Bonuses for official content
     if re.search(r'\b(official|vevo)\b', title_lower):
@@ -360,7 +382,7 @@ def score_search_result(
                 score += 20
 
     # Penalty for reaction videos, compilations
-    if re.search(r'\b(reaction|react|compilation|mashup|vs)\b', title_lower):
+    if re.search(r'\b(reaction|react|compilation|vs)\b', title_lower):
         score -= 60
 
     # Penalty for extended versions (often DJ mixes)
@@ -370,15 +392,17 @@ def score_search_result(
     # Penalties for non-song results or modified audio
     if re.search(r'\b(full album|album|mix|playlist|soundtrack)\b', title_lower):
         score -= 40
-    if re.search(r'\b(nightcore|sped up|slowed|8d|reverb|bass boosted)\b', title_lower):
+    if re.search(r'\b(reverb)\b', title_lower):
         score -= 45
 
     # Duration scoring  -  typical songs are 2-6 minutes
     if duration_seconds is not None and duration_seconds > 0:
-        if duration_seconds < 30:
-            score -= 40   # Clips, intros, previews
+        if duration_seconds < MIN_SONG_DURATION_SECS:
+            score -= 80   # Previews, intros, clips  -  essentially disqualified
+        elif duration_seconds < 60:
+            score -= 40   # Very short  -  probably not the full track
         elif duration_seconds < 90:
-            score -= 15   # Short clips or snippets
+            score -= 15   # Short but could be a genuine interlude
         elif duration_seconds <= 420:
             score += 10   # Sweet spot (1:30 – 7:00)
         elif duration_seconds <= 720:

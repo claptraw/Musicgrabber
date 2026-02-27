@@ -108,6 +108,15 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
     full_title = full_title or "Unknown Title"
     channel = channel or "Unknown Artist"
 
+    # Some uploaders prefix titles with a label or channel tag: "[UKF release] Artist - Title"
+    # or "(Monstercat) Artist - Title". Strip the prefix and try the clean remainder first,
+    # but only when what's left starts with a real word (no leading punctuation), so we don't
+    # accidentally eat bracketed artist names like "[IVY], A Little Sound - Can't Love Me".
+    _prefix_stripped = re.sub(r'^\s*[\(\[][^\)\]]+[\)\]]\s*', '', full_title)
+    titles_to_try = [full_title]
+    if _prefix_stripped and _prefix_stripped != full_title and re.match(r'^[A-Za-z0-9]', _prefix_stripped):
+        titles_to_try = [_prefix_stripped, full_title]
+
     # Common patterns: "Artist -- Title", "Artist - Title", "Artist  -  Title", "Artist | Title"
     # Require spaces around hyphens to avoid splitting compound words like "T-4"
     patterns = [
@@ -116,15 +125,16 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
         r'^(.+?)\s*\|\s*(.+)$',
     ]
 
-    for pattern in patterns:
-        match = re.match(pattern, full_title)
-        if match:
-            artist, title = match.groups()
-            cleaned_title = clean_title(title)
-            # If suffix stripping nukes the whole title (e.g. "... - Official Video"),
-            # treat this split as invalid and try other patterns/fallback.
-            if cleaned_title:
-                return artist.strip(), cleaned_title
+    for try_title in titles_to_try:
+        for pattern in patterns:
+            match = re.match(pattern, try_title)
+            if match:
+                artist, title = match.groups()
+                cleaned_title = clean_title(title)
+                # If suffix stripping nukes the whole title (e.g. "... - Official Video"),
+                # treat this split as invalid and try other patterns/fallback.
+                if cleaned_title:
+                    return artist.strip(), cleaned_title
 
     # Fallback: use channel as artist, full title as title
     # Remove common channel suffixes like "VEVO", "Official", "- Topic"

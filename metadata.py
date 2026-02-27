@@ -15,7 +15,7 @@ from mutagen.flac import FLAC
 
 from constants import (
     VERSION, TIMEOUT_HTTP_REQUEST, TIMEOUT_FPCALC,
-    ACOUSTID_MIN_SCORE,
+    ACOUSTID_MIN_SCORE, MIN_SONG_DURATION_SECS,
 )
 from settings import get_setting, get_setting_bool
 from utils import set_file_permissions
@@ -49,7 +49,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
 
         recording = data["recordings"][0]
 
-        # MusicBrainz scores text matches 0-100. Below 85 is too shaky to trust  - 
+        # MusicBrainz scores text matches 0-100. Below 85 is too shaky to trust  -
         # at that point we'd be replacing decent YouTube/Tidal metadata with a guess.
         mb_score = int(recording.get("score", 0))
         if mb_score < 85:
@@ -62,6 +62,11 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
             "artist": recording["artist-credit"][0]["name"] if recording.get("artist-credit") else None,
             "metadata_source": "musicbrainz_text",
         }
+
+        # length is in milliseconds; convert to seconds for the duration check
+        length_ms = recording.get("length")
+        if length_ms:
+            metadata["expected_duration_secs"] = length_ms / 1000.0
 
         # Get release information for album and date
         if recording.get("releases"):
@@ -285,6 +290,11 @@ def _lookup_musicbrainz_by_id(recording_id: str) -> Optional[dict]:
         if release.get("title"):
             result["album"] = release["title"]
 
+        # Recording-level length (ms) is on the top-level recording object
+        length_ms = data.get("length")
+        if length_ms:
+            result["expected_duration_secs"] = length_ms / 1000.0
+
         return result if result else None
 
     except Exception:
@@ -309,6 +319,17 @@ def lookup_metadata(artist: str, title: str, file_path: Path = None) -> Optional
         fp_result = _run_fpcalc(file_path)
         if fp_result:
             duration, fingerprint = fp_result
+            if duration < MIN_SONG_DURATION_SECS:
+                # Clips this short fingerprint unreliably  -  AcoustID might return
+                # a confident match for the correct song, but we'd be tagging the wrong
+                # (too short) file with metadata that doesn't describe it. Skip it.
+                print(
+                    f"AcoustID skipped: file is only {duration}s "
+                    f"(< {MIN_SONG_DURATION_SECS}s), too short to fingerprint reliably"
+                )
+                fp_result = None
+        if fp_result:
+            duration, fingerprint = fp_result
             acoustid_meta = _lookup_acoustid(duration, fingerprint, artist, title)
 
             if acoustid_meta:
@@ -322,6 +343,8 @@ def lookup_metadata(artist: str, title: str, file_path: Path = None) -> Optional
                             acoustid_meta["year"] = mb_extra["year"]
                         if mb_extra.get("album") and not acoustid_meta.get("album"):
                             acoustid_meta["album"] = mb_extra["album"]
+                        if mb_extra.get("expected_duration_secs") and not acoustid_meta.get("expected_duration_secs"):
+                            acoustid_meta["expected_duration_secs"] = mb_extra["expected_duration_secs"]
 
                 return acoustid_meta
 

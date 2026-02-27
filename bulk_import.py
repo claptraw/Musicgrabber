@@ -23,6 +23,30 @@ from utils import hash_track, spawn_daemon_thread
 _download_pool = ThreadPoolExecutor(max_workers=3)
 
 
+def _normalise_candidate_match_text(text: str) -> str:
+    """Normalise text for loose artist matching in search candidates."""
+    t = re.sub(r"[^a-z0-9]+", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _candidate_mentions_expected_artist(candidate: dict, expected_artist: str) -> bool:
+    """Return True when candidate title/channel appears to include expected artist."""
+    artist_norm = _normalise_candidate_match_text(expected_artist)
+    if not artist_norm:
+        return False
+
+    title_norm = _normalise_candidate_match_text(candidate.get("title", ""))
+    channel_norm = _normalise_candidate_match_text(candidate.get("channel", ""))
+    combined = f"{title_norm} {channel_norm}".strip()
+
+    if artist_norm in combined:
+        return True
+
+    # Fallback: require all artist tokens to appear for multi-word artist names.
+    tokens = [t for t in artist_norm.split() if len(t) > 1]
+    return len(tokens) > 1 and all(t in combined for t in tokens)
+
+
 def clean_bulk_import_line(line: str) -> str:
     """Clean a line from bulk import text
 
@@ -161,8 +185,23 @@ def process_bulk_import_worker(import_id: str):
                     time.sleep(base_delay)
                     continue
 
-                # Results are already sorted by quality_score descending
+                # Results are already sorted by quality_score descending.
+                # For watched imports we know the expected artist upfront, so prefer the
+                # first candidate whose title or channel actually contains the artist name.
+                # This stops an identically-titled upload by a different artist from sneaking
+                # in ahead of the correct one just because it scored slightly higher overall.
                 best_match = search_results[0]
+                if watch_playlist_id and artist:
+                    for candidate in search_results:
+                        if _candidate_mentions_expected_artist(candidate, artist):
+                            best_match = candidate
+                            break
+                    else:
+                        print(
+                            f"Watched import {watch_playlist_id}: no candidate matched "
+                            f"expected artist '{artist}', using top result"
+                        )
+
                 video_id = best_match["video_id"]
                 source = best_match.get("source", "youtube")
                 source_url = best_match.get("source_url")

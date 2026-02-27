@@ -9,17 +9,58 @@ tracks, the embed is truncated and we fall back to Playwright.
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
+import httpx
 from fastapi import HTTPException
 
-from constants import TIMEOUT_SPOTIFY_BROWSER
+from constants import TIMEOUT_SPOTIFY_BROWSER, SPOTIFY_BROWSER_STALL_SECONDS
+from settings import get_setting_int
 
 _BROWSER_SCRIPT = Path(__file__).parent / "spotify_browser.py"
 
 
-def fetch_spotify_playlist_via_browser(spotify_id: str, spotify_type: str) -> dict:
+def _fetch_spotify_expected_total(spotify_id: str, spotify_type: str) -> int | None:
+    """Best-effort fetch of reported track count from the public Spotify page."""
+    url = f"https://open.spotify.com/{spotify_type}/{spotify_id}"
+    try:
+        with httpx.Client(timeout=15, follow_redirects=True) as client:
+            response = client.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    )
+                },
+            )
+        if response.status_code != 200:
+            return None
+
+        html = response.text
+        match = re.search(r'<meta\s+name="music:song_count"\s+content="(\d+)"', html)
+        if match:
+            return int(match.group(1))
+        match = re.search(
+            r'<meta\s+property="og:description"\s+content="[^"]*?(\d[\d,]*)\s+items"',
+            html,
+            re.IGNORECASE,
+        )
+        if match:
+            return int(match.group(1).replace(",", ""))
+    except Exception:
+        return None
+    return None
+
+
+def fetch_spotify_playlist_via_browser(
+    spotify_id: str,
+    spotify_type: str,
+    expected_total: int | None = None,
+) -> dict:
     """Fetch playlist/album tracks using a headless browser
 
     This method works without API credentials by loading the Spotify page
@@ -33,14 +74,46 @@ def fetch_spotify_playlist_via_browser(spotify_id: str, spotify_type: str) -> di
     url = f"https://open.spotify.com/{spotify_type}/{spotify_id}"
     print(f"Fetching Spotify {spotify_type} via headless browser: {url}")
 
+    configured_base_timeout = get_setting_int(
+        "spotify_browser_timeout_seconds", TIMEOUT_SPOTIFY_BROWSER
+    )
+    configured_stall_seconds = get_setting_int(
+        "spotify_browser_stall_seconds", SPOTIFY_BROWSER_STALL_SECONDS
+    )
+    configured_base_timeout = max(60, min(1800, configured_base_timeout))
+    configured_stall_seconds = max(5, min(300, configured_stall_seconds))
+
+    if not expected_total:
+        expected_total = _fetch_spotify_expected_total(spotify_id, spotify_type)
+
     env = {**os.environ, "SPOTIFY_TYPE": spotify_type, "SPOTIFY_ID": spotify_id}
+    if expected_total and expected_total > 0:
+        env["SPOTIFY_EXPECTED_TOTAL"] = str(expected_total)
+    env["SPOTIFY_BROWSER_STALL_SECONDS"] = str(configured_stall_seconds)
+
+    # Fixed timeout is tight on low-power hosts for very large playlists.
+    # Scale timeout by expected track count, while keeping an upper bound.
+    timeout_seconds = configured_base_timeout
+    if expected_total and expected_total > 0:
+        upper_bound = max(600, configured_base_timeout)
+        timeout_seconds = max(
+            configured_base_timeout,
+            min(upper_bound, 120 + int(expected_total * 0.12)),
+        )
+    else:
+        timeout_seconds = max(configured_base_timeout, 300)
+    print(
+        "Spotify browser limits: "
+        f"timeout={timeout_seconds}s, stall={configured_stall_seconds}s "
+        f"(expected_total={expected_total or 'unknown'})"
+    )
 
     try:
         result = subprocess.run(
             ["python3", str(_BROWSER_SCRIPT)],
             capture_output=True,
             text=True,
-            timeout=TIMEOUT_SPOTIFY_BROWSER,
+            timeout=timeout_seconds,
             env=env,
         )
         print(f"Script return code: {result.returncode}")

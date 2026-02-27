@@ -94,6 +94,8 @@ class SettingsUpdate(BaseModel):
     apprise_url: Optional[str] = None
     # YouTube
     youtube_cookies: Optional[str] = None
+    spotify_browser_timeout_seconds: Optional[int] = None
+    spotify_browser_stall_seconds: Optional[int] = None
     # Security
     api_key: Optional[str] = None
 

@@ -7,7 +7,11 @@ Environment variable > DB value > default hierarchy.
 import os
 from pathlib import Path
 
-from constants import BOT_BACKOFF_MIN_SECONDS, BOT_BACKOFF_MAX_SECONDS, MUSIC_DIR
+from constants import (
+    BOT_BACKOFF_MIN_SECONDS, BOT_BACKOFF_MAX_SECONDS,
+    TIMEOUT_SPOTIFY_BROWSER, SPOTIFY_BROWSER_STALL_SECONDS,
+    MUSIC_DIR,
+)
 from db import db_conn
 
 
@@ -114,6 +118,16 @@ SETTINGS_SCHEMA = {
     "youtube_cookies": {"type": "str", "default": "", "env": "YOUTUBE_COOKIES", "sensitive": True},
     "youtube_bot_backoff_min": {"type": "int", "default": BOT_BACKOFF_MIN_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MIN"},
     "youtube_bot_backoff_max": {"type": "int", "default": BOT_BACKOFF_MAX_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MAX"},
+    "spotify_browser_timeout_seconds": {
+        "type": "int",
+        "default": TIMEOUT_SPOTIFY_BROWSER,
+        "env": "SPOTIFY_BROWSER_TIMEOUT_SECONDS",
+    },
+    "spotify_browser_stall_seconds": {
+        "type": "int",
+        "default": SPOTIFY_BROWSER_STALL_SECONDS,
+        "env": "SPOTIFY_BROWSER_STALL_SECONDS",
+    },
     # Webhooks
     "webhook_url": {"type": "str", "default": "", "env": "WEBHOOK_URL"},
     # Security

@@ -30,7 +30,9 @@ RUN pip install --no-cache-dir \
     playwright~=1.58.0 \
     apprise~=1.9.3
 
-# Install Playwright browsers (Chromium only to save space)
+# Install Playwright browsers into a fixed path so non-root users (PUID/PGID) can find them.
+# Without this, Playwright falls back to ~/.cache/ms-playwright which resolves differently per user.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN playwright install chromium --with-deps
 
 # Create app directory

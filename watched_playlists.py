@@ -26,6 +26,7 @@ from downloads import rebuild_watched_playlist_m3u
 from settings import get_playlists_dir
 from spotify import fetch_spotify_playlist_via_browser
 from utils import extract_artist_title, hash_track, spawn_daemon_thread, sanitize_filename, check_duplicate
+from downloads import check_navidrome_duplicate
 from youtube import _ytdlp_base_args
 
 import httpx
@@ -74,7 +75,12 @@ def _playlist_file_exists(playlist_name: str, artist: str, title: str) -> bool:
 
 
 def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: str, title: str, job_artist: str = "", job_title: str = "") -> bool:
-    """Return True if we can resolve a local file for this watched track."""
+    """Return True if we can resolve a local file for this watched track.
+
+    Checks MusicGrabber's own library first, then falls back to Navidrome (real
+    absolute paths only  -  synthetic paths mean real-path mode is off, which is
+    a config problem, not a reason to re-download).
+    """
     pairs = []
     for a, t in ((job_artist, job_title), (artist, title)):
         a = (a or "").strip()
@@ -87,6 +93,15 @@ def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: s
             return True
         if use_playlists_dir and _playlist_file_exists(playlist_name, a, t):
             return True
+
+    # Last resort: check Navidrome. Accepts absolute paths only  -  synthetic
+    # relative paths ("Artist/Album/Track.mp3") are not a reliable signal that
+    # the file actually exists on MusicGrabber's filesystem.
+    for a, t in pairs:
+        nav_path = check_navidrome_duplicate(a, t)
+        if nav_path and nav_path.is_absolute():
+            return True
+
     return False
 
 
@@ -177,6 +192,13 @@ def _fetch_spotify_playlist_embed(url: str) -> dict:
         raise HTTPException(status_code=502, detail=f"Failed to connect to Spotify: {e}")
 
     html_content = response.text
+    expected_total = None
+    total_match = re.search(r'"totalCount":\s*(\d+)', html_content)
+    if total_match:
+        try:
+            expected_total = int(total_match.group(1))
+        except ValueError:
+            expected_total = None
 
     # Extract name
     playlist_name = f"Spotify {spotify_type.title()}"
@@ -215,9 +237,17 @@ def _fetch_spotify_playlist_embed(url: str) -> dict:
         print(f"Spotify embed returned {len(tracks)} tracks (near limit), trying headless browser...")
         browser_error = None
         try:
-            browser_result = fetch_spotify_playlist_via_browser(spotify_id, spotify_type)
+            browser_result = fetch_spotify_playlist_via_browser(
+                spotify_id, spotify_type, expected_total=expected_total
+            )
             if browser_result["count"] > len(tracks):
                 print(f"Headless browser returned {browser_result['count']} tracks (embed had {len(tracks)})")
+                if expected_total and browser_result["count"] < expected_total:
+                    browser_result = dict(browser_result)
+                    browser_result["warning"] = (
+                        f"Spotify reports {expected_total} items, browser extracted {browser_result['count']}. "
+                        "Some tracks may still be missing."
+                    )
                 return browser_result
         except HTTPException as e:
             browser_error = e.detail
@@ -226,8 +256,9 @@ def _fetch_spotify_playlist_embed(url: str) -> dict:
             browser_error = str(e)
             print(f"Headless browser error: {e}, using embed results")
 
+        expected_note = f" (Spotify reports {expected_total})" if expected_total else ""
         warning = (
-            f"Playlist truncated at {len(tracks)} tracks  -  headless browser failed"
+            f"Playlist truncated at {len(tracks)} tracks{expected_note} - headless browser failed"
             + (f": {browser_error}" if browser_error else "")
             + ". Check that shm_size: '2gb' is set in docker-compose.yml."
         )
