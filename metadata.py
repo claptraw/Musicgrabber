@@ -352,6 +352,18 @@ def lookup_metadata(artist: str, title: str, file_path: Path = None) -> Optional
     return lookup_musicbrainz(artist, title)
 
 
+def fetch_mb_expected_duration(artist: str, title: str) -> Optional[float]:
+    """Quick MusicBrainz lookup to get the canonical duration for a track.
+
+    Used at search time to score results by how close their duration is to
+    what MusicBrainz considers the real thing. Returns seconds as a float,
+    or None if MB is disabled, the track is unknown, or the lookup fails.
+    No file required  -  text search only.
+    """
+    result = lookup_musicbrainz(artist, title)
+    return result.get("expected_duration_secs") if result else None
+
+
 def fetch_lyrics(artist: str, title: str) -> Optional[str]:
     """Fetch synced lyrics from LRClib API"""
     if not get_setting_bool("enable_lyrics", True):

@@ -244,9 +244,16 @@ def process_bulk_import_worker(import_id: str):
                     )
                     conn.commit()
 
-                # Submit download to bounded pool (max 3 concurrent)
-                _download_pool.submit(process_download, job_id, video_id, convert_to_flac, source_url,
-                                      playlist_name if use_playlists_dir else None, use_playlists_dir)
+                # mp3phoenix is a fast HTTP stream — skip the pool entirely so it
+                # doesn't queue behind slow yt-dlp jobs.  Everything else goes through
+                # the bounded pool (max 3 concurrent) to avoid hammering YouTube.
+                _pname = playlist_name if use_playlists_dir else None
+                if source == "mp3phoenix":
+                    spawn_daemon_thread(process_download, job_id, video_id, convert_to_flac,
+                                        source_url, _pname, use_playlists_dir)
+                else:
+                    _download_pool.submit(process_download, job_id, video_id, convert_to_flac,
+                                          source_url, _pname, use_playlists_dir)
 
             except Exception as e:
                 with db_conn() as conn:

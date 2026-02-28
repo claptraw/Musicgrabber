@@ -23,7 +23,9 @@ from constants import (
     MONOCHROME_API_URL, MONOCHROME_COVER_BASE, TIMEOUT_MONOCHROME_API,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
-from youtube import search_youtube, score_search_result, parse_duration, _normalise_search_text, _parse_query_artist_title
+from metadata import fetch_mb_expected_duration
+from mp3phoenix import search_mp3phoenix
+from youtube import search_youtube, score_search_result, parse_duration, _normalise_search_text, _parse_query_artist_title, _query_has_variation
 
 # Penalty large enough to push blacklisted uploaders to the bottom of results
 # without hiding them entirely  -  the user might still want to see them
@@ -361,6 +363,13 @@ SOURCE_REGISTRY = {
         "search_fn": search_youtube,
         "has_preview": True,
     },
+    "mp3phoenix": {
+        "label": "MP3Phoenix",
+        "badge": "PX",
+        "colour": "#e05c00",
+        "search_fn": search_mp3phoenix,
+        "has_preview": True,
+    },
     "soundcloud": {
         "label": "SoundCloud",
         "badge": "SC",
@@ -376,6 +385,55 @@ SOURCE_REGISTRY = {
         "has_preview": True,
     },
 }
+
+
+def _mb_duration_lookup(query: str) -> float | None:
+    """Return the MusicBrainz canonical duration for an artist/title query, or None.
+
+    Only fires when the query contains a ' - ' separator AND doesn't request a
+    specific variation (remix, live, etc.). Silent on any failure.
+    """
+    if _query_has_variation(query):
+        return None
+    artist, title = _parse_query_artist_title(query)
+    if not artist or not title:
+        return None
+    return fetch_mb_expected_duration(artist, title)
+
+
+def _apply_mb_duration_scores(results: list[dict], expected_duration_secs: float) -> None:
+    """Mutate quality_score on each result based on delta from MB expected duration.
+
+    Operates in-place  -  call after blacklist filtering, before final sort.
+    """
+    for r in results:
+        dur_str = r.get("duration", "")
+        if not dur_str:
+            continue
+        # duration field is stored as "M:SS" or "H:MM:SS" string
+        parts = dur_str.split(":")
+        try:
+            if len(parts) == 2:
+                secs = int(parts[0]) * 60 + int(parts[1])
+            elif len(parts) == 3:
+                secs = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            else:
+                continue
+        except (ValueError, IndexError):
+            continue
+        if secs <= 0:
+            continue
+        delta_ratio = abs(secs - expected_duration_secs) / expected_duration_secs
+        if delta_ratio <= 0.05:
+            r["quality_score"] += 40
+        elif delta_ratio <= 0.12:
+            r["quality_score"] += 20
+        elif delta_ratio <= 0.25:
+            pass
+        elif delta_ratio <= 0.50:
+            r["quality_score"] -= 30
+        else:
+            r["quality_score"] -= 60
 
 
 def _apply_blacklist_filter(results: list[dict], source: str | None = None) -> list[dict]:
@@ -407,8 +465,18 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
     """Search a single registered source."""
     if source not in SOURCE_REGISTRY:
         raise ValueError(f"Unknown search source: {source}")
-    results = SOURCE_REGISTRY[source]["search_fn"](query, limit)
+
+    # Fire MB duration lookup in parallel with the source search so it doesn't
+    # add any latency  -  both finish before we sort and return.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        search_future = pool.submit(SOURCE_REGISTRY[source]["search_fn"], query, limit)
+        mb_future = pool.submit(_mb_duration_lookup, query)
+        results = search_future.result()
+        expected_dur = mb_future.result()
+
     results = _apply_blacklist_filter(results, source=source)
+    if expected_dur:
+        _apply_mb_duration_scores(results, expected_dur)
     results.sort(key=lambda x: x["quality_score"], reverse=True)
     return results[:limit]
 
@@ -416,9 +484,11 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
 def search_all(query: str, limit: int) -> list[dict]:
     """Search every registered source in parallel, merge by quality score."""
     futures = {}
-    with ThreadPoolExecutor(max_workers=len(SOURCE_REGISTRY)) as pool:
+    with ThreadPoolExecutor(max_workers=len(SOURCE_REGISTRY) + 1) as pool:
         for name, cfg in SOURCE_REGISTRY.items():
             futures[pool.submit(cfg["search_fn"], query, limit)] = name
+        # MB lookup runs alongside the source searches at no extra cost
+        mb_future = pool.submit(_mb_duration_lookup, query)
 
     all_results = []
     for future in as_completed(futures):
@@ -428,7 +498,14 @@ def search_all(query: str, limit: int) -> list[dict]:
         except Exception as e:
             print(f"search_all: {source_name} failed: {e}")
 
+    try:
+        expected_dur = mb_future.result(timeout=1)
+    except Exception:
+        expected_dur = None
+
     all_results = _apply_blacklist_filter(all_results)
+    if expected_dur:
+        _apply_mb_duration_scores(all_results, expected_dur)
     all_results.sort(key=lambda x: x["quality_score"], reverse=True)
     return all_results[:limit]
 

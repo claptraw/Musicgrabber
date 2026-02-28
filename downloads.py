@@ -48,6 +48,7 @@ from utils import (
     set_file_permissions,
     subsonic_auth_params,
 )
+from mp3phoenix import download_mp3phoenix_track
 from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, _strip_cookies_args,
     _should_retry_without_cookies, _sleep_if_botted, _note_bot_block, _note_cookie_failure,
@@ -66,6 +67,8 @@ def _default_metadata_source(source: str) -> str:
         return "soundcloud_guessed"
     if source_name == "monochrome":
         return "monochrome_guessed"
+    if source_name == "mp3phoenix":
+        return "mp3phoenix_guessed"
     if source_name == "soulseek":
         return "soulseek_guessed"
     return "youtube_guessed"
@@ -702,8 +705,13 @@ def _watched_track_matches_expected(expected_artist: str, expected_title: str, a
     return got_words.issubset(exp_words) or exp_words.issubset(got_words)
 
 
-def _mark_watched_track_downloaded(job_id: str) -> bool:
+def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = None) -> bool:
     """Mark a watched playlist track as downloaded and rebuild the M3U if enabled.
+
+    resolved_path, when provided, is stored on the track record so M3U rebuilds can
+    use the actual on-disk path instead of reconstructing it from artist/title metadata.
+    This matters when Spotify sends non-ASCII names (e.g. '山下達郎') but the file
+    lands on disk with a romanised name ('Tatsuro Yamashita').
 
     Returns False when the final downloaded metadata does not match the expected
     watched track for this job.
@@ -743,9 +751,10 @@ def _mark_watched_track_downloaded(job_id: str) -> bool:
             conn.commit()
             return False
 
+        resolved_path_str = str(resolved_path) if resolved_path else None
         conn.execute(
-            "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now') WHERE job_id = ?",
-            (job_id,)
+            "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now'), resolved_path = ? WHERE job_id = ?",
+            (resolved_path_str, job_id)
         )
         conn.commit()
 
@@ -832,6 +841,43 @@ def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artis
 def _is_permission_error(stderr: str) -> bool:
     """Check if yt-dlp failed due to a permission denied error on rename."""
     return "Permission denied" in stderr and ".temp." in stderr
+
+
+def _is_postprocess_conversion_failure(stderr: str) -> bool:
+    """Return True when yt-dlp failed in postprocessing conversion."""
+    s = (stderr or "").lower()
+    return "postprocessing" in s and "conversion failed" in s
+
+
+def _recover_from_ytdlp_postprocess_failure(artist_dir: Path, sanitized_title: str, stderr: str) -> Path | None:
+    """Recover when yt-dlp reports conversion failure but a usable output exists.
+
+    In some environments yt-dlp/ffmpeg can report a postprocess failure while a
+    valid final file is already present (often with a leftover zero-byte temp file).
+    If the resolved output passes integrity checks, continue and clean temp files.
+    """
+    if not _is_postprocess_conversion_failure(stderr):
+        return None
+
+    try:
+        audio_file = _find_downloaded_audio_or_raise(artist_dir, sanitized_title)
+    except Exception:
+        return None
+
+    valid_audio, integrity_reason, _duration = _validate_audio_integrity(audio_file)
+    if not valid_audio:
+        print(
+            "yt-dlp reported conversion failure and output exists, "
+            f"but integrity check failed: {integrity_reason}"
+        )
+        return None
+
+    cleaned = _cleanup_temp_files(artist_dir, sanitized_title)
+    if cleaned:
+        print(f"Recovered from yt-dlp postprocess failure; removed {cleaned} temp file(s)")
+    else:
+        print("Recovered from yt-dlp postprocess failure using existing valid output file")
+    return audio_file
 
 
 def _summarise_ytdlp_stderr(stderr: str) -> str:
@@ -1169,6 +1215,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         if sync_mode == "mirror":
             rows = conn.execute(
                 """SELECT wpt.artist AS wpt_artist, wpt.title AS wpt_title,
+                          wpt.resolved_path AS resolved_path,
                           j.artist AS job_artist, j.title AS job_title
                    FROM watched_playlist_tracks wpt
                    LEFT JOIN jobs j ON j.id = wpt.job_id
@@ -1179,6 +1226,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         else:
             rows = conn.execute(
                 """SELECT wpt.artist AS wpt_artist, wpt.title AS wpt_title,
+                          wpt.resolved_path AS resolved_path,
                           j.artist AS job_artist, j.title AS job_title
                    FROM watched_playlist_tracks wpt
                    LEFT JOIN jobs j ON j.id = wpt.job_id
@@ -1210,6 +1258,36 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         return p is not None and not _is_real_path(p)
 
     for row in rows:
+        # Fast path: if we stored the actual on-disk path at download time, use it directly.
+        # This bypasses the artist/title lookup entirely, which is exactly what we need for
+        # non-ASCII names where Spotify sends '山下達郎' but the file is 'Tatsuro Yamashita'.
+        stored_path_str = row["resolved_path"] if row["resolved_path"] else None
+        if stored_path_str:
+            stored_path = Path(stored_path_str)
+            if stored_path.exists():
+                if playlists_dir:
+                    # In playlist-folder mode the file is either inside the playlist folder
+                    # or borrowed from the Singles library. Use the same formatting as the
+                    # slow path: "PlaylistName/filename" for playlist-folder files, absolute
+                    # path for library files (Navidrome trusts absolute paths in M3U).
+                    try:
+                        rel = stored_path.relative_to(playlists_dir / safe_playlist)
+                        entry = f"{safe_playlist}/{rel}"
+                    except ValueError:
+                        entry = stored_path_str  # outside playlist folder, use as-is (library/Navidrome path)
+                else:
+                    # Singles-layout mode: use path relative to Singles dir
+                    try:
+                        entry = str(stored_path.relative_to(get_singles_dir()))
+                    except ValueError:
+                        entry = stored_path_str  # absolute fallback (Navidrome absolute path)
+                if entry not in seen_paths:
+                    seen_paths.add(entry)
+                    playlist_files.append(entry)
+                continue
+            # Stored path exists in DB but file is gone (manually deleted etc.)  -
+            # fall through to normal lookup so at least the unresolved warning fires.
+
         pairs = _candidate_pairs(row)
         if not pairs:
             continue
@@ -1466,6 +1544,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     has_cookies
                 )
 
+                audio_file = None
                 if download_timed_out or not download_result or download_result.returncode != 0:
                     # Permission denied on temp file rename  -  clean up and retry once
                     stderr = download_result.stderr if download_result else ""
@@ -1476,16 +1555,26 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                             download_result, download_timed_out = _run_ytdlp_with_retries(
                                 download_cmd, TIMEOUT_YTDLP_DOWNLOAD, has_cookies
                             )
+                            if not download_timed_out and download_result:
+                                stderr = download_result.stderr
+
                     if download_timed_out or not download_result or download_result.returncode != 0:
+                        stderr = download_result.stderr if download_result else ""
+                        if not download_timed_out and download_result:
+                            audio_file = _recover_from_ytdlp_postprocess_failure(
+                                artist_dir, safe_title, stderr
+                            )
+                    if download_timed_out or not download_result or (download_result.returncode != 0 and not audio_file):
                         failed_tracks += 1
                         continue
 
-                try:
-                    audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
-                except Exception as e:
-                    print(f"Playlist track output lookup failed: {e}")
-                    failed_tracks += 1
-                    continue
+                if not audio_file:
+                    try:
+                        audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
+                    except Exception as e:
+                        print(f"Playlist track output lookup failed: {e}")
+                        failed_tracks += 1
+                        continue
 
                 valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(audio_file)
                 if not valid_audio:
@@ -1668,7 +1757,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=f"Already exists: {_display_path(existing_file)}"
             )
-            _mark_watched_track_downloaded(job_id)
+            _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
             return
 
         # Create download directory (with or without artist subfolder)
@@ -1844,7 +1933,13 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             metadata_source=metadata_source,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
-        _mark_watched_track_downloaded(job_id)
+        marked = _mark_watched_track_downloaded(job_id, resolved_path=final_file)
+        if not marked:
+            # Metadata came back as someone else entirely. Delete and fail so retry can try again.
+            final_file.unlink(missing_ok=True)
+            final_file.with_suffix(".lrc").unlink(missing_ok=True)
+            _update_job(job_id, status="failed", completed_at=datetime.now(timezone.utc).isoformat())
+            return
 
         print(f"slskd: Successfully downloaded {artist} - {title}")
 
@@ -2090,7 +2185,8 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=error_label
             )
-            marked = _mark_watched_track_downloaded(job_id)
+            real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
+            marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
             if marked and (existing_file.is_absolute() or existing_file.exists()):
                 _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
             return
@@ -2101,7 +2197,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=f"Already exists: {_display_path(existing_file)}"
             )
-            _mark_watched_track_downloaded(job_id)
+            _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
             return
 
         # Create download directory  -  respect playlist routing if requested
@@ -2189,9 +2285,15 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             metadata_source=metadata_source,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
-        marked = _mark_watched_track_downloaded(job_id)
+        marked = _mark_watched_track_downloaded(job_id, resolved_path=output_path)
         if marked:
             _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
+        else:
+            # Tidal served the wrong track (AcoustID disagreed). Clean up and let retry sort it.
+            output_path.unlink(missing_ok=True)
+            output_path.with_suffix(".lrc").unlink(missing_ok=True)
+            _update_job(job_id, status="failed", completed_at=datetime.now(timezone.utc).isoformat())
+            return
 
         print(f"Monochrome: Downloaded {artist} - {title} (lossless FLAC)")
 
@@ -2252,6 +2354,230 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         )
 
 
+def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: str, title_hint: str,
+                                  convert_to_flac: bool = True,
+                                  playlist_name: str = None, use_playlists_dir: bool = False,
+                                  video_id: str = "", attempted_ids: set[str] | None = None):
+    """Download a track from mp3phoenix.net directly, no yt-dlp required.
+
+    The download_url is the full https://mp3phoenix.net/getmp3/... URL captured
+    at search time. artist_hint and title_hint come from the search result and
+    are good enough for duplicate detection and filename generation; MusicBrainz
+    will tidy up anything dubious afterwards.
+    """
+    source_label = "mp3phoenix"
+    artist = artist_hint or "Unknown"
+    title = title_hint or "Unknown"
+    attempted_ids = set(attempted_ids or [])
+    if video_id:
+        attempted_ids.add(video_id)
+
+    def _try_alternate_candidate(reason: str) -> bool:
+        """Search for an untried candidate and continue the same job with it."""
+        if len(attempted_ids) >= _AUDIO_RESEARCH_MAX_ALTERNATES + 1:
+            return False
+
+        query = f"{artist} - {title}".strip(" -")
+        alternate = _find_alternate_search_candidate(query, attempted_ids)
+        if not alternate:
+            return False
+
+        alt_id = (alternate.get("video_id") or "").strip()
+        if not alt_id:
+            return False
+
+        alt_source = alternate.get("source", "youtube")
+        alt_source_url = alternate.get("source_url")
+        print(
+            f"mp3phoenix fallback: {reason}; trying alternate source "
+            f"{alt_source} {alt_id}"
+        )
+        _update_job(
+            job_id,
+            source=alt_source,
+            video_id=alt_id,
+            source_url=alt_source_url,
+            error=f"{reason} Trying alternate source: {alt_source} {alt_id}",
+        )
+        process_download(
+            job_id,
+            alt_id,
+            convert_to_flac,
+            source_url=alt_source_url,
+            playlist_name=playlist_name,
+            use_playlists_dir=use_playlists_dir,
+            attempted_ids=attempted_ids,
+            integrity_attempt=1,
+        )
+        return True
+
+    try:
+        _update_job(job_id, status="downloading", title=title, artist=artist, uploader=artist)
+
+        # Duplicate check before touching the network
+        existing_file = check_duplicate(artist, title)
+        if not existing_file:
+            existing_file = check_navidrome_duplicate(artist, title)
+        if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
+            existing_file = None
+        if existing_file and playlist_name:
+            src = "library" if existing_file.exists() else "Navidrome"
+            _update_job(
+                job_id,
+                status="completed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error=f"Already exists in {src}: {_display_path(existing_file)} (added to playlist)"
+            )
+            real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
+            marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
+            if marked and (existing_file.is_absolute() or existing_file.exists()):
+                _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+            return
+        elif existing_file:
+            _update_job(
+                job_id,
+                status="completed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error=f"Already exists: {_display_path(existing_file)}"
+            )
+            _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
+            return
+
+        # Resolve output path
+        playlists_dir = get_playlists_dir() if (use_playlists_dir and playlist_name) else None
+        if playlists_dir:
+            artist_dir = playlists_dir / sanitize_filename(playlist_name)
+            safe_title = _playlist_stem(artist, title, job_id)
+        else:
+            artist_dir = get_download_dir(artist)
+            safe_title = _output_stem(artist, title, job_id)
+        artist_dir.mkdir(parents=True, exist_ok=True)
+
+        # Download as MP3 first  -  we'll convert to FLAC below if requested
+        mp3_path = artist_dir / f"{safe_title}.mp3"
+
+        integrity_reason = ""
+        actual_duration_secs = 0.0
+        for attempt in range(1, _AUDIO_RECHECK_MAX_ATTEMPTS + 1):
+            download_mp3phoenix_track(download_url, mp3_path)
+            valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(mp3_path)
+            if valid_audio:
+                break
+            mp3_path.unlink(missing_ok=True)
+            print(
+                f"mp3phoenix integrity check failed for '{artist} - {title}' "
+                f"(attempt {attempt}/{_AUDIO_RECHECK_MAX_ATTEMPTS}): {integrity_reason}"
+            )
+        else:
+            _note_blacklist_entry(
+                source=source_label,
+                reason="corrupt_audio",
+                note=f"mp3phoenix integrity failure: {integrity_reason}",
+                job_id=job_id,
+                video_id=video_id or None,
+                uploader=artist,
+            )
+            if _try_alternate_candidate(f"mp3phoenix integrity failure: {integrity_reason}"):
+                return
+            raise Exception(f"mp3phoenix download failed integrity checks: {integrity_reason}")
+
+        # Convert to FLAC if requested  -  320k MP3 transcoded to FLAC is technically lossy-to-lossless
+        # but at least it's a consistent container and plays nicely with the rest of the library.
+        if convert_to_flac:
+            output_path = mp3_path.with_suffix(".flac")
+            convert_cmd = [
+                "ffmpeg", "-y", "-v", "error",
+                "-i", str(mp3_path),
+                "-c:a", "flac",
+                str(output_path),
+            ]
+            result = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=TIMEOUT_FFMPEG_CONVERT)
+            if result.returncode != 0 or not output_path.exists():
+                raise Exception(f"FLAC conversion failed: {(result.stderr or '').strip()}")
+            mp3_path.unlink(missing_ok=True)
+        else:
+            output_path = mp3_path
+
+        set_file_permissions(output_path)
+
+        # Probe quality for the job record
+        audio_quality, bitrate_kbps = probe_audio_quality(output_path)
+        min_bitrate = get_setting_int("min_audio_bitrate", 0)
+        if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
+            output_path.unlink(missing_ok=True)
+            raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
+
+        # Metadata  -  mp3phoenix gives us artist/title from the search result HTML, which is
+        # usually reasonable. MusicBrainz fills in year/album and keeps us honest.
+        mb_metadata = lookup_metadata(artist, title, output_path)
+        metadata_source = _default_metadata_source(source_label)
+        if mb_metadata:
+            metadata_source = mb_metadata.get("source", metadata_source)
+
+        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title)
+        if not dur_ok:
+            output_path.unlink(missing_ok=True)
+            _note_blacklist_entry(
+                source=source_label,
+                reason="wrong_duration",
+                note=dur_reason,
+                job_id=job_id,
+                video_id=video_id or None,
+                uploader=artist,
+            )
+            if _try_alternate_candidate(dur_reason):
+                return
+            raise Exception(dur_reason)
+
+        year = mb_metadata.get("year") if mb_metadata else None
+        album = mb_metadata.get("album") if mb_metadata else None
+        apply_metadata_to_file(output_path, artist, title, album or "Singles", year)
+
+        lyrics = fetch_lyrics(artist, title)
+        if lyrics:
+            save_lyrics_file(output_path, lyrics)
+            print(f"Saved lyrics for {artist} - {title}")
+        else:
+            print(f"No lyrics found for {artist} - {title}")
+
+        trigger_navidrome_scan()
+        trigger_jellyfin_scan()
+
+        _update_job(
+            job_id,
+            status="completed",
+            error=None,
+            audio_quality=audio_quality,
+            metadata_source=metadata_source,
+            completed_at=datetime.now(timezone.utc).isoformat()
+        )
+        marked = _mark_watched_track_downloaded(job_id, resolved_path=output_path)
+        if marked:
+            _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
+
+        print(f"mp3phoenix: Downloaded {artist} - {title}")
+
+        send_notification(
+            notification_type="single",
+            title=title,
+            artist=artist,
+            source=source_label,
+            status="completed"
+        )
+
+    except Exception as e:
+        print(f"mp3phoenix download failed: {e}")
+        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
+        send_notification(
+            notification_type="error",
+            title=title,
+            artist=artist,
+            source=source_label,
+            status="failed",
+            error=str(e)
+        )
+
+
 def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_dir: bool) -> None:
     """Append a downloaded track's path to a physical .m3u file.
 
@@ -2298,11 +2624,12 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
     source_url overrides the default YouTube URL construction  -  used for
     SoundCloud and any future yt-dlp-supported source.
-    Monochrome tracks bypass yt-dlp entirely and download via the API.
+    Monochrome and mp3phoenix tracks bypass yt-dlp entirely and download directly.
     playlist_name + use_playlists_dir route bulk import tracks into the Playlists folder.
     """
     is_soundcloud = source_url and "soundcloud.com" in source_url
     is_monochrome = source_url and "monochrome.tf" in source_url
+    is_mp3phoenix = source_url and "mp3phoenix.net" in source_url
     is_url_source = bool(source_url)
 
     attempted_ids = set(attempted_ids or [])
@@ -2311,6 +2638,23 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
     # Monochrome gets its own dedicated download path  -  no yt-dlp needed
     if is_monochrome:
         _process_monochrome_download(job_id, video_id, convert_to_flac, playlist_name, use_playlists_dir)
+        return
+
+    # mp3phoenix: direct HTTP stream, no yt-dlp needed.
+    # artist/title come from the job row (set at queue time from search results).
+    if is_mp3phoenix:
+        with db_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT title, artist FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        artist_hint = (row["artist"] or "") if row else ""
+        title_hint  = (row["title"]  or "") if row else ""
+        _process_mp3phoenix_download(
+            job_id, source_url, artist_hint, title_hint,
+            convert_to_flac, playlist_name, use_playlists_dir,
+            video_id=video_id, attempted_ids=attempted_ids
+        )
         return
 
     if is_soundcloud:
@@ -2384,7 +2728,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=error_label
             )
-            marked = _mark_watched_track_downloaded(job_id)
+            real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
+            marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
             if marked and (existing_file.is_absolute() or existing_file.exists()):
                 _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
             return
@@ -2395,7 +2740,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=f"Already exists: {_display_path(existing_file)}"
             )
-            _mark_watched_track_downloaded(job_id)
+            _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
             return
 
         # Create download directory  -  either Playlists/Name/ or the standard Singles layout
@@ -2425,6 +2770,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             has_cookies
         )
 
+        audio_file = None
         if download_timed_out:
             raise Exception("Download timed out (no progress)")
 
@@ -2443,6 +2789,11 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         stderr = None  # Clear error  -  retry succeeded
 
             if stderr:
+                audio_file = _recover_from_ytdlp_postprocess_failure(
+                    artist_dir, safe_title, stderr
+                )
+
+            if stderr and not audio_file:
                 error_msg = f"Download failed: {stderr}"
                 if not is_url_source and download_result and _is_ytdlp_403(stderr):
                     if has_cookies:
@@ -2451,7 +2802,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         error_msg = "YouTube blocked this download (403). Add browser cookies in Settings to authenticate."
                 raise Exception(error_msg)
 
-        audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
+        if not audio_file:
+            audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
 
         # Integrity gate: if the file is corrupted/truncated, retry once then pivot.
         valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(audio_file)
@@ -2589,9 +2941,17 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             metadata_source=metadata_source,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
-        marked = _mark_watched_track_downloaded(job_id)
+        marked = _mark_watched_track_downloaded(job_id, resolved_path=audio_file)
         if marked:
             _append_to_physical_m3u(audio_file, playlist_name, use_playlists_dir)
+        else:
+            # Wrong track downloaded (AcoustID/MusicBrainz identified it as something else).
+            # Delete the file (and any lyrics) so the library isn't polluted, and flip the
+            # job to failed so the watched playlist retry can have another go.
+            audio_file.unlink(missing_ok=True)
+            audio_file.with_suffix(".lrc").unlink(missing_ok=True)
+            _update_job(job_id, status="failed", completed_at=datetime.now(timezone.utc).isoformat())
+            return
 
         # Send notification for single track
         send_notification(

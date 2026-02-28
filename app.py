@@ -65,7 +65,7 @@ from watched_playlists import (
 )
 from utils import hash_track, is_valid_youtube_id, spawn_daemon_thread, subsonic_auth_params
 
-URL_BASED_SOURCES = {"soundcloud", "monochrome"}
+URL_BASED_SOURCES = {"soundcloud", "monochrome", "mp3phoenix"}
 
 # =============================================================================
 # Application Setup
@@ -878,6 +878,13 @@ def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
             if not urls:
                 raise HTTPException(status_code=404, detail="No audio stream found")
             return {"url": urls[0], "video_id": video_id}
+
+        # mp3phoenix: the source_url is already a direct MP3 stream  -  hand it
+        # straight to the browser, no yt-dlp round-trip needed.
+        if source == "mp3phoenix":
+            if not url:
+                raise HTTPException(status_code=400, detail="mp3phoenix preview requires url parameter")
+            return {"url": url, "video_id": video_id}
 
         if source == "youtube":
             if not is_valid_youtube_id(video_id):

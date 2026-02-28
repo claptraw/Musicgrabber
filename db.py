@@ -9,7 +9,14 @@ from contextlib import contextmanager
 import queue
 import threading
 import time
-from constants import DB_PATH, STALE_JOB_TIMEOUT, STALE_JOB_CHECK_INTERVAL, SEARCH_LOG_RETENTION_DAYS
+from constants import (
+    DB_PATH,
+    STALE_JOB_TIMEOUT,
+    STALE_JOB_CHECK_INTERVAL,
+    LIBRARY_RECONCILE_INTERVAL,
+    SEARCH_LOG_RETENTION_DAYS,
+    WATCHED_REFRESH_STALE_SECONDS,
+)
 
 
 def get_db() -> sqlite3.Connection:
@@ -196,6 +203,12 @@ def init_db():
             last_track_count INTEGER DEFAULT 0,
             enabled INTEGER DEFAULT 1,
             convert_to_flac INTEGER DEFAULT 1,
+            refresh_state TEXT DEFAULT 'idle',
+            refresh_stage TEXT,
+            refresh_started_at TIMESTAMP,
+            refresh_completed_at TIMESTAMP,
+            refresh_error TEXT,
+            refresh_import_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -309,6 +322,38 @@ def init_db():
             conn.execute("ALTER TABLE watched_playlists ADD COLUMN stale_navidrome_paths INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN refresh_state TEXT DEFAULT 'idle'")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN refresh_stage TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN refresh_started_at TIMESTAMP")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN refresh_completed_at TIMESTAMP")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN refresh_error TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN refresh_import_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # Migration: resolved_path - actual on-disk path saved at download time.
+        # Sidesteps artist/title lookup mismatches caused by romanisation or
+        # metadata normalisation (e.g. Spotify sends '山下達郎', file lands as 'Tatsuro Yamashita').
+        try:
+            conn.execute("ALTER TABLE watched_playlist_tracks ADD COLUMN resolved_path TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         conn.commit()
 
@@ -341,12 +386,99 @@ def cleanup_stale_jobs():
         conn.commit()
 
 
+def cleanup_stale_watched_refreshes():
+    """Mark stuck watched playlist refresh states as failed."""
+    with db_conn() as conn:
+        cursor = conn.execute(
+            """UPDATE watched_playlists
+               SET refresh_state = 'error',
+                   refresh_stage = 'failed',
+                   refresh_error = 'Refresh timed out (process interrupted)',
+                   refresh_completed_at = datetime('now')
+               WHERE refresh_state = 'running'
+               AND refresh_started_at IS NOT NULL
+               AND refresh_started_at < datetime('now', '-' || ? || ' seconds')""",
+            (str(WATCHED_REFRESH_STALE_SECONDS),)
+        )
+        if cursor.rowcount > 0:
+            print(f"Cleared {cursor.rowcount} stale watched refresh state(s)")
+        conn.commit()
+
+
+def reconcile_deleted_library_files(batch_size: int = 500) -> tuple[int, int]:
+    """Mark completed jobs as deleted when their files no longer exist.
+
+    This keeps `file_deleted` and watched playlist track state in sync even when
+    files are removed or renamed directly on disk (outside MusicGrabber APIs).
+
+    Returns (jobs_marked_deleted, watched_rows_unlinked).
+    """
+    # Local import avoids circular import: utils -> settings -> db
+    from utils import check_duplicate
+
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT id, artist, title
+               FROM jobs
+               WHERE status IN ('completed', 'completed_with_errors')
+                 AND COALESCE(file_deleted, 0) = 0
+                 AND artist IS NOT NULL AND artist != ''
+                 AND title IS NOT NULL AND title != ''
+               ORDER BY completed_at DESC, created_at DESC
+               LIMIT ?""",
+            (int(batch_size),)
+        ).fetchall()
+
+    if not rows:
+        return 0, 0
+
+    stale_ids: list[str] = []
+    for row in rows:
+        if not check_duplicate(row["artist"], row["title"]):
+            stale_ids.append(row["id"])
+
+    if not stale_ids:
+        return 0, 0
+
+    with db_conn() as conn:
+        conn.executemany(
+            "UPDATE jobs SET file_deleted = 1 WHERE id = ?",
+            [(jid,) for jid in stale_ids],
+        )
+        watched_rows = 0
+        for jid in stale_ids:
+            cursor = conn.execute(
+                """UPDATE watched_playlist_tracks
+                   SET downloaded_at = NULL,
+                       resolved_path = NULL
+                   WHERE job_id = ?
+                     AND downloaded_at IS NOT NULL""",
+                (jid,),
+            )
+            watched_rows += cursor.rowcount
+        conn.commit()
+
+    print(
+        f"Library reconcile: marked {len(stale_ids)} job(s) as deleted, "
+        f"unlinked {watched_rows} watched track row(s)"
+    )
+    return len(stale_ids), watched_rows
+
+
 def _stale_job_monitor():
     """Background thread that periodically checks for stale jobs."""
+    last_reconcile = 0.0
     while True:
         time.sleep(STALE_JOB_CHECK_INTERVAL)
         try:
             cleanup_stale_jobs()
+            cleanup_stale_watched_refreshes()
+            if LIBRARY_RECONCILE_INTERVAL > 0:
+                now = time.time()
+                if now - last_reconcile >= LIBRARY_RECONCILE_INTERVAL:
+                    reconcile_deleted_library_files()
+                    last_reconcile = now
             cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
             # While we're here, evict any expired YouTube cookies so they don't
             # silently rot in settings causing mysterious 403s
@@ -359,6 +491,8 @@ def _stale_job_monitor():
 def start_stale_job_monitor():
     """Run stale job cleanup at startup and start periodic monitor."""
     cleanup_stale_jobs()
+    cleanup_stale_watched_refreshes()
+    reconcile_deleted_library_files()
     _stale_monitor_thread = threading.Thread(target=_stale_job_monitor, daemon=True)
     _stale_monitor_thread.start()
 

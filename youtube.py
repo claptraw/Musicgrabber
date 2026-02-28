@@ -246,6 +246,23 @@ def _normalise_search_text(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+_VARIATION_RE = re.compile(
+    r'\b(remix|extended|live|acoustic|instrumental|cover|edit|mix|version|'
+    r'unplugged|reprise|demo|radio\s+edit|club\s+mix)\b',
+    re.IGNORECASE,
+)
+
+def _query_has_variation(query: str) -> bool:
+    """Return True if the query explicitly asks for a non-standard version.
+
+    When the user types "abba - mamma mia remix" they want a remix, so we
+    shouldn't penalise results that don't match the studio duration. When
+    they just type "abba - mamma mia" we can use MusicBrainz to filter out
+    the 1:41 DJ medley nonsense.
+    """
+    return bool(_VARIATION_RE.search(query or ""))
+
+
 def _parse_query_artist_title(query: str) -> tuple[str | None, str | None]:
     if not query:
         return None, None
@@ -263,6 +280,7 @@ def score_search_result(
     duration_seconds: float | None = None,
     view_count: int | None = None,
     album: str | None = None,
+    expected_duration_secs: float | None = None,
 ) -> int:
     """Score a search result to prioritise official content over live versions
 
@@ -385,6 +403,13 @@ def score_search_result(
     if re.search(r'\b(reaction|react|compilation|vs)\b', title_lower):
         score -= 60
 
+    # Penalty for compilation/anthology albums  -  checked on both title and album field.
+    # A compilation is still the right song, just not the preferred release context,
+    # so the penalty is moderate rather than disqualifying.
+    _compilation_album_re = r'\b(anthology|greatest hits|best of|collection|essential|platinum|gold series)\b'
+    if re.search(_compilation_album_re, album_lower):
+        score -= 25
+
     # Penalty for extended versions (often DJ mixes)
     if re.search(r'\b(extended|extended mix|extended version)\b', title_lower):
         score -= 15
@@ -420,6 +445,23 @@ def score_search_result(
             score += 5    # Decent signal of legitimacy
             if view_count >= 10_000_000:
                 score += 5  # Very likely official (+10 total)
+
+    # MusicBrainz expected duration scoring  -  the canonical yardstick.
+    # If we know how long the studio version should be, results that match
+    # get a bonus and results that are wildly off get penalised. This is what
+    # stops a 1:41 DJ medley from outranking the actual 3:31 studio track.
+    if expected_duration_secs and expected_duration_secs > 0 and duration_seconds and duration_seconds > 0:
+        delta_ratio = abs(duration_seconds - expected_duration_secs) / expected_duration_secs
+        if delta_ratio <= 0.05:
+            score += 40   # Spot on  -  almost certainly the right version
+        elif delta_ratio <= 0.12:
+            score += 20   # Close enough, minor variation or rounding
+        elif delta_ratio <= 0.25:
+            pass          # Neutral  -  might be a legit alternate version
+        elif delta_ratio <= 0.50:
+            score -= 30   # Noticeably different length
+        else:
+            score -= 60   # That's a completely different track, mate
 
     return score
 

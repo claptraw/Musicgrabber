@@ -15,7 +15,7 @@ from fastapi import HTTPException
 
 from constants import (
     TIMEOUT_YTDLP_PLAYLIST, TIMEOUT_HTTP_SPOTIFY, TIMEOUT_MONOCHROME_API,
-    MONOCHROME_API_URL, WATCHED_PLAYLIST_CHECK_HOURS,
+    MONOCHROME_API_URL, WATCHED_PLAYLIST_CHECK_HOURS, WATCHED_REFRESH_STALE_SECONDS,
     LISTENBRAINZ_API_URL, TIMEOUT_LISTENBRAINZ, TIMEOUT_LISTENBRAINZ_PLAYLIST,
     AUDIO_EXTENSIONS,
 )
@@ -566,16 +566,91 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             return {"error": "Playlist not found", "playlist_id": playlist_id}
 
         playlist = dict(playlist)
+        sync_mode = playlist.get("sync_mode", "append")
+
+        # Acquire an atomic per-playlist refresh lock.
+        # If a stale "running" state is older than WATCHED_REFRESH_STALE_SECONDS,
+        # this update will take over and start a fresh run.
+        lock_cursor = conn.execute(
+            """UPDATE watched_playlists
+               SET refresh_state = 'running',
+                   refresh_stage = 'starting',
+                   refresh_started_at = datetime('now'),
+                   refresh_completed_at = NULL,
+                   refresh_error = NULL,
+                   refresh_import_id = NULL
+               WHERE id = ?
+               AND (
+                   refresh_state IS NULL
+                   OR refresh_state != 'running'
+                   OR refresh_started_at IS NULL
+                   OR refresh_started_at < datetime('now', '-' || ? || ' seconds')
+               )""",
+            (playlist_id, str(WATCHED_REFRESH_STALE_SECONDS))
+        )
+        conn.commit()
+
+        if lock_cursor.rowcount == 0:
+            running_state = conn.execute(
+                "SELECT refresh_stage, refresh_started_at FROM watched_playlists WHERE id = ?",
+                (playlist_id,)
+            ).fetchone()
+            return {
+                "playlist_id": playlist_id,
+                "name": playlist["name"],
+                "already_running": True,
+                "message": "Refresh already in progress",
+                "refresh_stage": running_state["refresh_stage"] if running_state else None,
+                "refresh_started_at": running_state["refresh_started_at"] if running_state else None,
+            }
+
+        def set_refresh_stage(stage: str) -> None:
+            conn.execute(
+                """UPDATE watched_playlists
+                   SET refresh_state = 'running',
+                       refresh_stage = ?,
+                       refresh_error = NULL
+                   WHERE id = ?""",
+                (stage, playlist_id)
+            )
+            conn.commit()
+
+        def finish_refresh_success(import_id: str | None) -> None:
+            conn.execute(
+                """UPDATE watched_playlists
+                   SET refresh_state = 'idle',
+                       refresh_stage = 'done',
+                       refresh_error = NULL,
+                       refresh_import_id = ?,
+                       refresh_completed_at = datetime('now')
+                   WHERE id = ?""",
+                (import_id, playlist_id)
+            )
+            conn.commit()
+
+        def finish_refresh_error(error_msg: str) -> None:
+            conn.execute(
+                """UPDATE watched_playlists
+                   SET refresh_state = 'error',
+                       refresh_stage = 'failed',
+                       refresh_error = ?,
+                       refresh_import_id = NULL,
+                       refresh_completed_at = datetime('now')
+                   WHERE id = ?""",
+                ((error_msg or "Refresh failed")[:800], playlist_id)
+            )
+            conn.commit()
 
         try:
             # Fetch current tracks
+            set_refresh_stage("fetching")
             tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
-            sync_mode = playlist.get("sync_mode", "append")
 
             # Build a set of hashes for what the upstream playlist currently contains
             current_hashes = {hash_track(artist, title) for artist, title in tracks}
 
             # Load existing track state (including job status and removal flag)
+            set_refresh_stage("diffing")
             track_rows = conn.execute(
                 """SELECT wpt.track_hash, wpt.downloaded_at, wpt.job_id, wpt.removed_at,
                           wpt.artist, wpt.title, j.status as job_status,
@@ -665,6 +740,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             use_playlists_dir = bool(playlist.get("use_playlists_dir", False))
             import_id = None
             if tracks_to_import:
+                set_refresh_stage("queueing")
                 import_id = start_bulk_import_for_tracks(
                     tracks_to_import,
                     bool(playlist["convert_to_flac"]),
@@ -673,6 +749,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                 )
 
             # Update playlist metadata
+            set_refresh_stage("finalizing")
             conn.execute("""
                 UPDATE watched_playlists
                 SET last_checked = datetime('now'), last_track_count = ?
@@ -684,6 +761,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             # Rebuild M3U from all tracks downloaded so far (new ones are still queued,
             # so they'll appear next refresh once marked downloaded)
             if playlist.get("make_m3u"):
+                set_refresh_stage("rebuilding_m3u")
                 rebuild_watched_playlist_m3u(
                     playlist_id, playlist["name"],
                     use_playlists_dir=use_playlists_dir,
@@ -697,6 +775,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     f"{len(missing_tracks)} missing tracks, {queued_count} queued"
                 )
 
+            finish_refresh_success(import_id)
             return {
                 "playlist_id": playlist_id,
                 "name": playlist["name"],
@@ -706,30 +785,40 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                 "removed_tracks": removed_count,
                 "queued": queued_count,
                 "import_id": import_id,
+                "refresh_state": "idle",
+                "refresh_stage": "done",
                 "jobs": []
             }
 
         except HTTPException as e:
+            err_msg = str(e.detail)
             conn.execute(
                 "UPDATE watched_playlists SET last_checked = datetime('now') WHERE id = ?",
                 (playlist_id,)
             )
             conn.commit()
+            finish_refresh_error(err_msg)
             return {
                 "playlist_id": playlist_id,
                 "name": playlist["name"],
-                "error": e.detail
+                "error": e.detail,
+                "refresh_state": "error",
+                "refresh_stage": "failed",
             }
         except Exception as e:
+            err_msg = str(e)
             conn.execute(
                 "UPDATE watched_playlists SET last_checked = datetime('now') WHERE id = ?",
                 (playlist_id,)
             )
             conn.commit()
+            finish_refresh_error(err_msg)
             return {
                 "playlist_id": playlist_id,
                 "name": playlist["name"],
-                "error": str(e)
+                "error": err_msg,
+                "refresh_state": "error",
+                "refresh_stage": "failed",
             }
 
 

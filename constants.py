@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.2.4"
+VERSION = "2.2.5"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -26,8 +26,11 @@ SPOTIFY_BROWSER_STALL_SECONDS = 30  # No-progress cutoff while scrolling long Sp
 TIMEOUT_AMAZON_BROWSER = 180     # Amazon Music playlist scraping (3 minutes)
 TIMEOUT_FPCALC = 30              # Audio fingerprinting via fpcalc
 TIMEOUT_MONOCHROME_API = 15      # Monochrome/Tidal API calls (search + manifest)
+TIMEOUT_MP3PHOENIX_SEARCH = 15   # mp3phoenix AJAX search
+TIMEOUT_MP3PHOENIX_DOWNLOAD = 120  # mp3phoenix direct MP3 stream
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
+LIBRARY_RECONCILE_INTERVAL = int(os.getenv("LIBRARY_RECONCILE_INTERVAL", "1800"))  # Reconcile deleted/renamed files every 30 minutes
 
 # Bulk import settings
 BULK_IMPORT_SEARCH_DELAY = 1.0           # Seconds between searches (be courteous to all sources)
@@ -76,6 +79,7 @@ DB_PATH = Path(os.getenv("DB_PATH", "/data/music_grabber.db"))
 SLSKD_REQUIRE_FREE_SLOT = os.getenv("SLSKD_REQUIRE_FREE_SLOT", "true").lower() == "true"
 SLSKD_MAX_RETRIES = int(os.getenv("SLSKD_MAX_RETRIES", "5"))
 WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24"))
+WATCHED_REFRESH_STALE_SECONDS = int(os.getenv("WATCHED_REFRESH_STALE_SECONDS", "1800"))
 
 # AcoustID audio fingerprinting  -  because guessing metadata from titles
 # is about as reliable as asking YouTube commenters for facts.

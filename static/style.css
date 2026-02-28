@@ -791,6 +791,11 @@ h1 {
     color: white;
 }
 
+.source-badge.mp3phoenix {
+    background: #e05c00;
+    color: white;
+}
+
 .source-badge.soulseek {
     background: #4a9eff;
     color: white;
@@ -1154,6 +1159,27 @@ h1 {
     border-radius: 4px;
 }
 
+.watched-card-refreshing {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    padding: 2px 7px;
+    border-radius: 999px;
+}
+
+.watched-refresh-spinner {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+}
+
 .badge-alpha {
     font-size: 10px;
     font-weight: 600;
@@ -1169,6 +1195,25 @@ h1 {
 .watched-card-meta {
     font-size: 13px;
     color: var(--text-secondary);
+}
+
+.watched-card-refresh-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);
+    background: color-mix(in srgb, var(--error) 10%, transparent);
+    color: var(--text-primary);
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.watched-card-refresh-error i {
+    color: var(--error);
+    margin-top: 1px;
+    flex-shrink: 0;
 }
 
 .watched-card-settings {
@@ -1242,6 +1287,11 @@ h1 {
 .watched-action-btn:hover {
     background: var(--border);
     color: var(--text-primary);
+}
+
+.watched-action-btn:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
 }
 
 .watched-action-pause {

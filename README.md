@@ -1,6 +1,6 @@
 # Music Grabber
 
-**v2.2.4**
+**v2.2.5**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -26,17 +26,17 @@ If your use case is "I heard a song, I want that song in my library fast," this 
 
 ## Features
 
-- **Multi-source search:** YouTube, SoundCloud, and Monochrome (Tidal lossless) searched in parallel; quality-ranked results with "Lossless" and "Hi-Res" badges. Lossless Monochrome results float to the top; YouTube and SoundCloud fill in the gaps
+- **Multi-source search:** YouTube, SoundCloud, MP3Phoenix, and Monochrome (Tidal lossless) searched in parallel; quality-ranked results with "Lossless" and "Hi-Res" badges. Lossless Monochrome results float to the top; YouTube, SoundCloud, and MP3Phoenix fill in the gaps
 - **Direct FLAC downloads from Monochrome:** bypasses yt-dlp entirely; FLAC streams from the Tidal CDN with embedded cover art and accurate catalogue metadata
 - **Automatic Monochrome fallback:** if Monochrome returns 403 on all quality tiers, MusicGrabber automatically retries on YouTube under the same job ID
-- **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Tidal, and ListenBrainz playlists; auto-downloads new tracks and grabs the best quality available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
+- **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Tidal, and ListenBrainz playlists; auto-downloads new tracks and grabs the best quality available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
 - **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches all sources in parallel and grabs the best result for each
 - **Similar artist discovery:** hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
 - **Apprise notifications:** one URL covers Gotify, ntfy, Discord, Pushover, Slack, and about 50 others. Also supports Telegram webhook and SMTP email
 - **Navidrome pre-download duplicate check:** queries the Subsonic API before downloading; if the track is already in your library, the existing path is used for playlist routing without re-downloading
 - **Best quality audio:** output format is configurable (FLAC, Opus, or MP3 ~192 kbps VBR)
-- **Enhanced metadata:** AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source tags
+- **Enhanced metadata:** AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source tags. For "Artist - Title" queries, MusicBrainz expected duration is used as a scoring signal at search time, so a 1:41 DJ edit won't outrank the 3:31 original
 - **Synced lyrics:** automatic lyrics fetching from LRClib, saved as `.lrc` files
 - **Auto-organise:** `Singles/Artist/Title.flac` (or flat `Singles/Artist - Title.flac` with "Organise by Artist" off)
 - **Duplicate detection:** local filesystem check plus optional Navidrome Subsonic API check
@@ -167,7 +167,7 @@ The easiest way to configure MusicGrabber is via the **Settings tab** in the UI.
 - **Soulseek (slskd)**: URL, credentials, downloads path
 - **Navidrome**: URL and credentials for library refresh
 - **Jellyfin**: URL and API key for library refresh
-- **Notifications**: Telegram webhook, generic webhook URL, and SMTP settings
+- **Notifications**: Apprise URL, Telegram webhook, generic webhook URL, and SMTP settings
 - **YouTube**: Upload browser cookies for authenticated downloads
 - **Blacklist**: View and manage reported tracks and blocked uploaders
 - **Security**: API key for authentication
@@ -207,7 +207,10 @@ Settings are stored in the database and persist across container restarts.
 | `SLSKD_REQUIRE_FREE_SLOT` | `true` | Only show Soulseek results from users with free upload slots |
 | `SLSKD_MAX_RETRIES` | `5` | Max retry attempts for failed Soulseek downloads |
 | `WATCHED_PLAYLIST_CHECK_HOURS` | `24` | How often to check watched playlists (in hours): 24=daily, 168=weekly, 720=monthly, 0=disabled |
+| `WATCHED_REFRESH_STALE_SECONDS` | `1800` | How long before a stuck `running` refresh is auto-failed (seconds) |
+| `LIBRARY_RECONCILE_INTERVAL` | `1800` | How often MusicGrabber reconciles deleted/renamed files against the job database (seconds) |
 | `NOTIFY_ON` | `playlists,bulk,errors` | Notification triggers (applies to all channels): `singles`, `playlists`, `bulk`, `errors` |
+| `APPRISE_URL` | - | Apprise notification URL (covers Gotify, ntfy, Discord, Pushover, Slack, and ~50 others) |
 | `TELEGRAM_WEBHOOK_URL` | - | Full Telegram webhook URL (see Notifications section below) |
 | `SMTP_HOST` | - | SMTP server hostname |
 | `SMTP_PORT` | `587` | SMTP server port |
@@ -543,12 +546,23 @@ music.yourdomain.com {
 | `GET` | `/api/config` | Get server config (version, defaults, auth_required) |
 | `GET` | `/api/settings` | Get all settings (requires auth if API key set) |
 | `PUT` | `/api/settings` | Update settings |
-| `POST` | `/api/settings/test/{service}` | Test connection (slskd, navidrome, jellyfin) |
+| `POST` | `/api/settings/test/slskd` | Test slskd connection |
+| `POST` | `/api/settings/test/navidrome` | Test Navidrome connection |
+| `POST` | `/api/settings/test/jellyfin` | Test Jellyfin connection |
+| `POST` | `/api/settings/test/youtube-cookies` | Test YouTube cookie validity |
+| `POST` | `/api/settings/test/apprise` | Test Apprise notification URL |
+| `GET` | `/api/settings/youtube-cookies/status` | Get cookie upload status |
+| `GET` | `/api/sources` | List available search sources (for source selector UI) |
 | `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "youtube/soundcloud/monochrome/all"}`) |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
-| `GET` | `/api/sources` | List available search sources (for source selector UI) |
 | `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for URL-based sources like SoundCloud/Monochrome) |
-| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/monochrome", "download_type": "single/playlist"}`) |
+| `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
+| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/monochrome/mp3phoenix", "download_type": "single/playlist"}`) |
+| `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` for provenance) |
+| `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |
+| `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
+| `DELETE` | `/api/jobs/{id}/file` | Delete downloaded file and lyrics from library |
+| `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`) |
 | `POST` | `/api/bulk-import-async` | Bulk import songs (async, returns immediately) |
 | `GET` | `/api/bulk-import/{id}/status` | Get async bulk import progress |
 | `GET` | `/api/bulk-imports` | List recent bulk imports |
@@ -556,25 +570,22 @@ music.yourdomain.com {
 | `POST` | `/api/spotify-playlist` | Backwards-compat alias for Spotify playlist/album fetch |
 | `GET` | `/api/stats` | Get statistics (download counts, daily chart, top artists, search analytics) |
 | `DELETE` | `/api/stats?confirm=true` | Reset stats history (deletes completed/failed job history and search logs; confirmation required) |
-| `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` for provenance) |
-| `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |
-| `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
-| `DELETE` | `/api/jobs/{id}/file` | Delete downloaded file and lyrics from library |
-| `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`) |
 | `POST` | `/api/blacklist` | Report a bad track / block an uploader |
 | `GET` | `/api/blacklist` | List all blacklist entries |
 | `DELETE` | `/api/blacklist/{id}` | Remove a blacklist entry |
+| `GET` | `/api/music-dirs` | List subdirectories of `MUSIC_DIR` (for download path picker) |
+| `GET` | `/api/playlists` | List watched playlists and `.m3u` files (for playlist routing selector) |
 | `GET` | `/api/watched-playlists` | List all watched playlists |
 | `POST` | `/api/watched-playlists` | Add a playlist to watch |
+| `GET` | `/api/watched-playlists/schedule` | Get next scheduled check time |
 | `GET` | `/api/watched-playlists/{id}` | Get watched playlist details |
 | `PUT` | `/api/watched-playlists/{id}` | Update watched playlist settings |
 | `DELETE` | `/api/watched-playlists/{id}` | Remove a watched playlist |
 | `POST` | `/api/watched-playlists/{id}/refresh` | Check playlist for new tracks |
+| `GET` | `/api/watched-playlists/{id}/missing` | List tracks with no successful download |
+| `GET` | `/api/watched-playlists/{id}/tracks` | List all tracks with per-track status |
+| `POST` | `/api/watched-playlists/{id}/retry-track` | Retry a specific missing track |
 | `POST` | `/api/watched-playlists/check-all` | Check all watched playlists |
-| `GET` | `/api/watched-playlists/schedule` | Get next scheduled check time |
-| `POST` | `/api/settings/test/youtube-cookies` | Test YouTube cookie validity |
-| `GET` | `/api/settings/youtube-cookies/status` | Get cookie upload status |
-| `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
 
 ## Updating yt-dlp
 

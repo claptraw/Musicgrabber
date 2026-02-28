@@ -410,6 +410,7 @@
         let currentSearchLogToken = null;
         let currentSource = 'all'; // Always search all sources
         const expandedJobIds = new Set();
+        const watchedRefreshPending = new Map();
 
         // Source selector - restore saved preference and wire up clicks
         (function initSourceSelector() {
@@ -432,6 +433,8 @@
         let currentBulkImportId = null;
         let bulkImportPollInterval = null;
         let queuePollInterval = null;
+        let watchedRefreshPollInterval = null;
+        let watchedLoadInFlight = false;
 
         // Preview state
         const previewAudio = document.getElementById('previewAudio');
@@ -472,7 +475,7 @@
                     // Build preview URL with source params
                     const previewSource = (result && result.source) || 'youtube';
                     const params = new URLSearchParams({ source: previewSource });
-                    if (previewSource === 'soundcloud' && result.source_url) {
+                    if ((previewSource === 'soundcloud' || previewSource === 'mp3phoenix') && result.source_url) {
                         params.set('url', result.source_url);
                     }
                     const response = await apiFetch(`/api/preview/${encodeURIComponent(videoId)}?${params}`);
@@ -606,6 +609,9 @@
 
                 if (currentTab === 'watched') {
                     loadWatchedPlaylists();
+                } else if (watchedRefreshPollInterval) {
+                    clearInterval(watchedRefreshPollInterval);
+                    watchedRefreshPollInterval = null;
                 }
 
                 if (currentTab === 'stats') {
@@ -1004,12 +1010,12 @@
         }
 
         function getSourceBadge(source) {
-            const badges = { youtube: 'YT', soundcloud: 'SC', monochrome: 'MO', soulseek: 'SLK' };
+            const badges = { youtube: 'YT', mp3phoenix: 'PX', soundcloud: 'SC', monochrome: 'MO', soulseek: 'SLK' };
             return badges[source] || source.toUpperCase().slice(0, 3);
         }
 
         function getSourceLabel(source) {
-            const labels = { youtube: 'YouTube', soundcloud: 'SoundCloud', monochrome: 'Monochrome', soulseek: 'Soulseek' };
+            const labels = { youtube: 'YouTube', mp3phoenix: 'MP3Phoenix', soundcloud: 'SoundCloud', monochrome: 'Monochrome', soulseek: 'Soulseek' };
             return labels[source] || source;
         }
 
@@ -1166,7 +1172,7 @@
                 };
 
                 // URL-based sources need the full URL for downloading
-                if ((result.source === 'soundcloud' || result.source === 'monochrome') && result.source_url) {
+                if ((result.source === 'soundcloud' || result.source === 'monochrome' || result.source === 'mp3phoenix') && result.source_url) {
                     payload.source_url = result.source_url;
                 }
 
@@ -1333,6 +1339,7 @@
                 'musicbrainz_text': 'MusicBrainz text match',
                 'youtube_guessed': 'YouTube embedded/guessed',
                 'soundcloud_guessed': 'SoundCloud embedded/guessed',
+                'mp3phoenix_guessed': 'MP3Phoenix embedded/guessed',
                 'monochrome_guessed': 'Monochrome embedded/guessed',
                 'monochrome_api': 'Monochrome/Tidal API',
                 'soulseek_guessed': 'Soulseek embedded/guessed',
@@ -2079,8 +2086,12 @@
         // Watched Playlists
         // =============================================================================
 
-        async function loadWatchedPlaylists() {
-            watchedList.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+        async function loadWatchedPlaylists(showLoading = true) {
+            if (watchedLoadInFlight) return;
+            watchedLoadInFlight = true;
+            if (showLoading) {
+                watchedList.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            }
 
             try {
                 // Fetch schedule info and playlists in parallel
@@ -2109,16 +2120,24 @@
                 const data = await playlistsRes.json();
                 renderWatchedPlaylists(data.playlists);
             } catch (error) {
-                watchedList.innerHTML = `
-                    <div class="empty-state">
-                        <p style="color: var(--error);">Failed to load watched playlists</p>
-                    </div>
-                `;
+                if (showLoading) {
+                    watchedList.innerHTML = `
+                        <div class="empty-state">
+                            <p style="color: var(--error);">Failed to load watched playlists</p>
+                        </div>
+                    `;
+                }
+            } finally {
+                watchedLoadInFlight = false;
             }
         }
 
         function renderWatchedPlaylists(playlists) {
             if (!playlists || playlists.length === 0) {
+                if (watchedRefreshPollInterval) {
+                    clearInterval(watchedRefreshPollInterval);
+                    watchedRefreshPollInterval = null;
+                }
                 watchedList.innerHTML = `
                     <div class="empty-state">
                         <div class="empty-state-icon"><i class="fa-solid fa-eye"></i></div>
@@ -2130,6 +2149,12 @@
             }
 
             watchedList.innerHTML = playlists.map(p => {
+                const refreshState = p.refresh_state || 'idle';
+                const localRefresh = watchedRefreshPending.get(p.id);
+                const isRefreshing = refreshState === 'running' || !!localRefresh;
+                const refreshStage = (refreshState === 'running' ? p.refresh_stage : null) || (localRefresh ? localRefresh.stage : null);
+                const refreshStartedAt = (refreshState === 'running' ? p.refresh_started_at : null)
+                    || (localRefresh ? localRefresh.startedAt : null);
                 const platformIcons = {
                     spotify: '<i class="fa-brands fa-spotify" title="Spotify"></i>',
                     youtube: '<i class="fa-brands fa-youtube" title="YouTube"></i>',
@@ -2144,17 +2169,26 @@
                                      p.refresh_interval_hours === 168 ? 'weekly' :
                                      p.refresh_interval_hours >= 720 ? 'monthly' :
                                      `every ${p.refresh_interval_hours}h`;
+                const refreshLabel = isRefreshing
+                    ? formatRefreshStage(refreshStage, refreshStartedAt, p.platform)
+                    : '';
 
                 return `
                     <div class="watched-card">
                         <div class="watched-card-header">
                             <span>${platformIcon}</span>
                             <span class="watched-card-name">${escapeHtml(p.name)}</span>
+                            ${isRefreshing ? `<span class="watched-card-refreshing"><span class="watched-refresh-spinner"></span>${escapeHtml(refreshLabel)}</span>` : ''}
                             ${!p.enabled ? '<span class="watched-card-paused">Paused</span>' : ''}
                         </div>
                         <div class="watched-card-meta">
                             ${p.tracked_count} tracks · ${p.downloaded_count || 0} downloaded · ${intervalText} · Last checked: ${lastChecked}
                         </div>
+                        ${refreshState === 'error' && p.refresh_error && !isRefreshing ? `
+                        <div class="watched-card-refresh-error">
+                            <i class="fa-solid fa-circle-exclamation"></i>
+                            <span>${escapeHtml(p.refresh_error)}</span>
+                        </div>` : ''}
                         <div class="watched-card-settings">
                             <label class="watched-card-toggle" title="Convert new tracks to the selected audio format">
                                 Convert
@@ -2192,7 +2226,7 @@
                             <span><strong>${p.stale_navidrome_paths} track${p.stale_navidrome_paths === 1 ? '' : 's'}</strong> in the M3U point to files that no longer exist on disk but are still in Navidrome's database. To fix: open Navidrome, go to <strong>Settings &gt; Missing Files</strong>, select all, and click <strong>Remove from Database</strong>. Then trigger a library scan and refresh this playlist.</span>
                         </div>` : ''}
                         <div class="watched-card-actions">
-                            <button onclick="refreshWatchedPlaylist('${p.id}')" class="watched-action-btn" title="Check for new tracks now">Refresh</button>
+                            <button onclick="refreshWatchedPlaylist('${p.id}')" class="watched-action-btn" title="${isRefreshing ? `Refresh in progress: ${escapeAttr(refreshLabel)}` : 'Check for new tracks now'}" ${isRefreshing ? 'disabled' : ''}>${isRefreshing ? 'Checking...' : 'Refresh'}</button>
                             <button onclick="toggleMissingTracks('${p.id}')" class="watched-action-btn" title="Show tracks that failed to download">Missing</button>
                             <button onclick="toggleTrackList('${p.id}', '${escapeAttr(p.name)}')" class="watched-action-btn" title="Show all tracks and their download status">Tracks</button>
                             <button onclick="copyWatchedPlaylistUrl('${escapeAttr(p.url)}')" class="watched-action-btn" title="Copy playlist URL">Copy URL</button>
@@ -2204,6 +2238,44 @@
                     </div>
                 `;
             }).join('');
+
+            const anyRunning = playlists.some(p => p.refresh_state === 'running') || watchedRefreshPending.size > 0;
+            if (currentTab === 'watched' && anyRunning && !watchedRefreshPollInterval) {
+                watchedRefreshPollInterval = setInterval(() => {
+                    loadWatchedPlaylists(false);
+                }, 2000);
+            } else if ((!anyRunning || currentTab !== 'watched') && watchedRefreshPollInterval) {
+                clearInterval(watchedRefreshPollInterval);
+                watchedRefreshPollInterval = null;
+            }
+        }
+
+        function formatRefreshStage(stage, startedAt = null, platform = null) {
+            const labels = {
+                starting: 'Starting...',
+                fetching: 'Fetching playlist...',
+                diffing: 'Comparing tracks...',
+                queueing: 'Queueing downloads...',
+                finalizing: 'Finalizing...',
+                rebuilding_m3u: 'Rebuilding M3U...',
+                done: 'Done',
+                failed: 'Failed'
+            };
+            const base = !stage ? 'Checking...' : (labels[stage] || stage.replace(/_/g, ' '));
+
+            if (!startedAt) return base;
+            const normalized = /Z$|[+-]\d{2}:\d{2}$/.test(startedAt) ? startedAt : `${String(startedAt).replace(' ', 'T')}Z`;
+            const startedMs = new Date(normalized).getTime();
+            if (Number.isNaN(startedMs)) return base;
+            const elapsedSec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+            const mins = Math.floor(elapsedSec / 60);
+            const secs = elapsedSec % 60;
+            const elapsedText = mins > 0 ? `${mins}m ${String(secs).padStart(2, '0')}s` : `${secs}s`;
+
+            if (stage === 'fetching' && platform === 'spotify' && elapsedSec >= 90) {
+                return `${base} ${elapsedText} (large playlists can take a few minutes)`;
+            }
+            return `${base} ${elapsedText}`;
         }
 
         function formatTimeAgo(isoString) {
@@ -2310,6 +2382,9 @@
         }
 
         async function refreshWatchedPlaylist(playlistId) {
+            if (watchedRefreshPending.has(playlistId)) return;
+            watchedRefreshPending.set(playlistId, { stage: 'starting', startedAt: new Date().toISOString() });
+            loadWatchedPlaylists(false);
             try {
                 showToast('Checking for new tracks...');
                 const response = await apiFetch(`/api/watched-playlists/${playlistId}/refresh`, {
@@ -2319,7 +2394,9 @@
                 if (!response.ok) throw new Error('Refresh failed');
 
                 const data = await response.json();
-                if (data.error) {
+                if (data.already_running) {
+                    showToast('Refresh already in progress');
+                } else if (data.error) {
                     showToast(`Error: ${data.error}`, true);
                 } else {
                     const newCount = data.new_tracks || 0;
@@ -2333,9 +2410,11 @@
                         showToast('No new tracks found');
                     }
                 }
-                loadWatchedPlaylists();
             } catch (error) {
                 showToast('Failed to refresh playlist', true);
+            } finally {
+                watchedRefreshPending.delete(playlistId);
+                loadWatchedPlaylists();
             }
         }
 
@@ -2771,10 +2850,11 @@
 
             // Source breakdown
             const ytCount = data.sources.youtube || 0;
+            const pxCount = data.sources.mp3phoenix || 0;
             const scCount = data.sources.soundcloud || 0;
             const moCount = data.sources.monochrome || 0;
             const slkCount = data.sources.soulseek || 0;
-            const sourceTotal = ytCount + scCount + moCount + slkCount || 1;
+            const sourceTotal = ytCount + pxCount + scCount + moCount + slkCount || 1;
 
             let html = `
                 <!-- Summary cards -->
@@ -2828,12 +2908,14 @@
                     <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px;">Sources</div>
                     <div style="display: flex; gap: 8px; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
                         ${ytCount > 0 ? `<div style="flex: ${ytCount}; background: #ff0000; border-radius: 4px;"></div>` : ''}
+                        ${pxCount > 0 ? `<div style="flex: ${pxCount}; background: #e05c00; border-radius: 4px;"></div>` : ''}
                         ${scCount > 0 ? `<div style="flex: ${scCount}; background: #ff5500; border-radius: 4px;"></div>` : ''}
                         ${moCount > 0 ? `<div style="flex: ${moCount}; background: #111111; border-radius: 4px;"></div>` : ''}
                         ${slkCount > 0 ? `<div style="flex: ${slkCount}; background: #4a9eff; border-radius: 4px;"></div>` : ''}
                     </div>
                     <div style="display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap;">
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff0000; border-radius: 2px; margin-right: 4px;"></span>YouTube: ${ytCount}</span>
+                        ${pxCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #e05c00; border-radius: 2px; margin-right: 4px;"></span>MP3Phoenix: ${pxCount}</span>` : ''}
                         ${scCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff5500; border-radius: 2px; margin-right: 4px;"></span>SoundCloud: ${scCount}</span>` : ''}
                         ${moCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #111111; border-radius: 2px; margin-right: 4px;"></span>Monochrome: ${moCount}</span>` : ''}
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #4a9eff; border-radius: 2px; margin-right: 4px;"></span>Soulseek: ${slkCount}</span>

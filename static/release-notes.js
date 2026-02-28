@@ -7,6 +7,23 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.2.5": {
+        title: "What's New in v2.2.5",
+        sections: [
+            {
+                heading: "What is Music Grabber?",
+                body: "Music Grabber is a self-hosted tool for grabbing individual tracks. You heard something on the radio, in a film, at a party - you want that song. It searches YouTube, SoundCloud, and Monochrome (Tidal lossless) in parallel, downloads the best quality version, and drops it neatly into your library. It is not Lidarr. It does not manage your collection. It just gets the track. This is a personal pet project, actively developed but rough around the edges. If something breaks, please check the issue tracker before raising a duplicate."
+            },
+            {
+                heading: "Short and sweet",
+                items: [
+                    "MP3Phoenix is now fully wired in, with much more reliable queueing and fallback behavior",
+                    "Watched playlist refresh status is clearer and the timer now starts fresh when you click Refresh",
+                    "Manual file deletes/renames now reconcile automatically in the background so queue and watched states stay in sync"
+                ]
+            }
+        ]
+    },
     "2.2.4": {
         title: "What's New in v2.2.4",
         sections: [
