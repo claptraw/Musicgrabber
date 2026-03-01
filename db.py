@@ -190,6 +190,10 @@ def init_db():
             conn.execute("ALTER TABLE bulk_imports ADD COLUMN watch_playlist_id TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE bulk_imports ADD COLUMN watch_artist_id TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         # Watched playlists - playlists to monitor for new tracks
         conn.execute("""
@@ -347,6 +351,47 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+        # Watched artists - artists to monitor for new singles via MusicBrainz
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS watched_artists (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            mbid TEXT NOT NULL UNIQUE,
+            from_date TEXT NOT NULL,
+            refresh_interval_hours INTEGER DEFAULT 24,
+            last_checked TIMESTAMP,
+            last_track_count INTEGER DEFAULT 0,
+            enabled INTEGER DEFAULT 1,
+            convert_to_flac INTEGER DEFAULT 1,
+            refresh_state TEXT DEFAULT 'idle',
+            refresh_stage TEXT,
+            refresh_started_at TIMESTAMP,
+            refresh_completed_at TIMESTAMP,
+            refresh_error TEXT,
+            refresh_import_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS watched_artist_tracks (
+            artist_id TEXT NOT NULL,
+            track_hash TEXT NOT NULL,
+            artist TEXT,
+            title TEXT,
+            release_date TEXT,
+            release_mbid TEXT,
+            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            downloaded_at TIMESTAMP,
+            job_id TEXT,
+            resolved_path TEXT,
+            PRIMARY KEY (artist_id, track_hash),
+            FOREIGN KEY (artist_id) REFERENCES watched_artists(id) ON DELETE CASCADE
+        )
+    """)
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_watched_artist_tracks_artist ON watched_artist_tracks(artist_id)")
+
         # Migration: resolved_path - actual on-disk path saved at download time.
         # Sidesteps artist/title lookup mismatches caused by romanisation or
         # metadata normalisation (e.g. Spotify sends '山下達郎', file lands as 'Tatsuro Yamashita').
@@ -387,21 +432,22 @@ def cleanup_stale_jobs():
 
 
 def cleanup_stale_watched_refreshes():
-    """Mark stuck watched playlist refresh states as failed."""
+    """Mark stuck watched playlist/artist refresh states as failed."""
+    stale_arg = (str(WATCHED_REFRESH_STALE_SECONDS),)
+    stale_sql = (
+        "SET refresh_state = 'error', refresh_stage = 'failed',"
+        " refresh_error = 'Refresh timed out (process interrupted)',"
+        " refresh_completed_at = datetime('now')"
+        " WHERE refresh_state = 'running'"
+        " AND refresh_started_at IS NOT NULL"
+        " AND refresh_started_at < datetime('now', '-' || ? || ' seconds')"
+    )
     with db_conn() as conn:
-        cursor = conn.execute(
-            """UPDATE watched_playlists
-               SET refresh_state = 'error',
-                   refresh_stage = 'failed',
-                   refresh_error = 'Refresh timed out (process interrupted)',
-                   refresh_completed_at = datetime('now')
-               WHERE refresh_state = 'running'
-               AND refresh_started_at IS NOT NULL
-               AND refresh_started_at < datetime('now', '-' || ? || ' seconds')""",
-            (str(WATCHED_REFRESH_STALE_SECONDS),)
-        )
-        if cursor.rowcount > 0:
-            print(f"Cleared {cursor.rowcount} stale watched refresh state(s)")
+        p = conn.execute(f"UPDATE watched_playlists {stale_sql}", stale_arg)
+        a = conn.execute(f"UPDATE watched_artists {stale_sql}", stale_arg)
+        total = p.rowcount + a.rowcount
+        if total > 0:
+            print(f"Cleared {total} stale watched refresh state(s)")
         conn.commit()
 
 
@@ -433,10 +479,30 @@ def reconcile_deleted_library_files(batch_size: int = 500) -> tuple[int, int]:
     if not rows:
         return 0, 0
 
+    # Grab any stored resolved_paths in one shot so we can check those first.
+    # check_duplicate only walks Singles; playlist-folder tracks live elsewhere.
+    job_ids = [r["id"] for r in rows]
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        placeholders = ",".join("?" * len(job_ids))
+        rp_rows = conn.execute(
+            f"SELECT job_id, resolved_path FROM watched_playlist_tracks WHERE job_id IN ({placeholders}) AND resolved_path IS NOT NULL",
+            job_ids,
+        ).fetchall()
+    resolved_paths: dict[str, str] = {r["job_id"]: r["resolved_path"] for r in rp_rows}
+
     stale_ids: list[str] = []
     for row in rows:
+        job_id = row["id"]
+        # Prefer the stored resolved_path (covers playlist folders).
+        rp = resolved_paths.get(job_id)
+        if rp:
+            from pathlib import Path as _Path
+            if _Path(rp).is_absolute() and _Path(rp).exists():
+                continue  # File is right where we left it
+        # Fall back to walking Singles layout.
         if not check_duplicate(row["artist"], row["title"]):
-            stale_ids.append(row["id"])
+            stale_ids.append(job_id)
 
     if not stale_ids:
         return 0, 0
@@ -450,6 +516,15 @@ def reconcile_deleted_library_files(batch_size: int = 500) -> tuple[int, int]:
         for jid in stale_ids:
             cursor = conn.execute(
                 """UPDATE watched_playlist_tracks
+                   SET downloaded_at = NULL,
+                       resolved_path = NULL
+                   WHERE job_id = ?
+                     AND downloaded_at IS NOT NULL""",
+                (jid,),
+            )
+            watched_rows += cursor.rowcount
+            cursor = conn.execute(
+                """UPDATE watched_artist_tracks
                    SET downloaded_at = NULL,
                        resolved_path = NULL
                    WHERE job_id = ?

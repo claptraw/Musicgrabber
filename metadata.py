@@ -16,6 +16,7 @@ from mutagen.flac import FLAC
 from constants import (
     VERSION, TIMEOUT_HTTP_REQUEST, TIMEOUT_FPCALC,
     ACOUSTID_MIN_SCORE, MIN_SONG_DURATION_SECS,
+    MB_ARTIST_SEARCH_LIMIT, TIMEOUT_MUSICBRAINZ_ARTIST,
 )
 from settings import get_setting, get_setting_bool
 from utils import set_file_permissions
@@ -523,3 +524,128 @@ def apply_metadata_to_file(file_path: Path, artist: str, title: str, album: str 
     except Exception:
         # If metadata application fails, continue anyway
         pass
+
+
+def search_artist_mbid(name: str) -> list[dict]:
+    """Search MusicBrainz for an artist by name.
+
+    Returns up to MB_ARTIST_SEARCH_LIMIT candidates ordered by match score,
+    each as {mbid, name, disambiguation, score}. Empty list on failure.
+    The first result is an exact case-insensitive match if one exists,
+    otherwise results are ordered by MusicBrainz relevance score.
+    """
+    try:
+        headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+        params = {
+            "query": name,
+            "limit": MB_ARTIST_SEARCH_LIMIT,
+            "fmt": "json",
+        }
+        with httpx.Client(timeout=TIMEOUT_MUSICBRAINZ_ARTIST) as client:
+            response = client.get("https://musicbrainz.org/ws/2/artist", params=params, headers=headers)
+        if response.status_code != 200:
+            return []
+        artists = response.json().get("artists", [])
+        results = []
+        for a in artists:
+            results.append({
+                "mbid": a.get("id", ""),
+                "name": a.get("name", ""),
+                "disambiguation": a.get("disambiguation", ""),
+                "score": int(a.get("score", 0)),
+            })
+        # Exact match floats to the top
+        name_lower = name.lower()
+        results.sort(key=lambda r: (0 if r["name"].lower() == name_lower else 1, -r["score"]))
+        return results
+    except Exception as e:
+        print(f"MusicBrainz artist search failed for '{name}': {e}")
+        return []
+
+
+def fetch_artist_singles(mbid: str) -> list[dict]:
+    """Fetch all singles for an artist from MusicBrainz.
+
+    Returns a flat list of track dicts: {title, artist, release_date, release_mbid}.
+    Singles with multiple tracks (A-side + B-side) are each returned as separate rows.
+    Release date may be an empty string if MusicBrainz doesn't know it yet.
+    Paginates automatically; sleeps 1 second between pages to respect rate limits.
+    """
+    import time as _time
+    headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+    tracks: list[dict] = []
+    offset = 0
+    limit = 100
+    total = None
+
+    # Secondary types that disqualify a release from being a plain single.
+    # MusicBrainz uses these on the release-group to tag remixes, live cuts,
+    # compilations, soundtracks and the like.
+    _EXCLUDED_SECONDARY_TYPES = {
+        "Remix", "Live", "Compilation", "Soundtrack", "Interview",
+        "Spokenword", "Audiobook", "Audio drama", "DJ-mix", "Mixtape/Street",
+    }
+
+    try:
+        while True:
+            params = {
+                "artist": mbid,
+                "type": "single",
+                "limit": limit,
+                "offset": offset,
+                "inc": "recordings artist-credits release-groups",
+                "fmt": "json",
+            }
+            with httpx.Client(timeout=TIMEOUT_MUSICBRAINZ_ARTIST) as client:
+                response = client.get("https://musicbrainz.org/ws/2/release", params=params, headers=headers)
+            if response.status_code != 200:
+                print(f"MusicBrainz singles fetch failed for {mbid}: HTTP {response.status_code}")
+                break
+            data = response.json()
+            if total is None:
+                total = data.get("release-count", 0)
+            releases = data.get("releases", [])
+            if not releases:
+                break
+
+            for release in releases:
+                # Skip anything with a disqualifying secondary type
+                rg = release.get("release-group") or {}
+                secondary_types = rg.get("secondary-types") or []
+                if any(t in _EXCLUDED_SECONDARY_TYPES for t in secondary_types):
+                    continue
+
+                release_mbid = release.get("id", "")
+                release_date = release.get("date") or release.get("first-release-date") or ""
+                # Flatten all recordings on the release to individual track rows
+                for medium in release.get("media", []):
+                    for track in medium.get("tracks", []):
+                        recording = track.get("recording", {})
+                        rec_title = recording.get("title") or track.get("title") or release.get("title", "")
+                        # Prefer the credited artist on the recording; fall back to release artist
+                        artist_credits = (
+                            recording.get("artist-credit")
+                            or release.get("artist-credit")
+                            or []
+                        )
+                        artist_name = " ".join(
+                            (ac.get("name") or ac.get("artist", {}).get("name", ""))
+                            + (ac.get("joinphrase") or "")
+                            for ac in artist_credits
+                            if isinstance(ac, dict)
+                        ).strip() or ""
+                        if rec_title:
+                            tracks.append({
+                                "title": rec_title,
+                                "artist": artist_name,
+                                "release_date": release_date,
+                                "release_mbid": release_mbid,
+                            })
+            offset += len(releases)
+            if offset >= total:
+                break
+            _time.sleep(1)  # MusicBrainz rate limit: 1 req/sec
+    except Exception as e:
+        print(f"MusicBrainz singles fetch error for {mbid}: {e}")
+
+    return tracks

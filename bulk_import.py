@@ -83,6 +83,7 @@ def start_bulk_import_for_tracks(
     convert_to_flac: bool,
     watch_playlist_id: Optional[str] = None,
     use_playlists_dir: bool = False,
+    watch_artist_id: Optional[str] = None,
 ) -> str:
     """Create a bulk import job from a list of (artist, title) tuples."""
     import_id = str(uuid.uuid4())[:8]
@@ -90,9 +91,11 @@ def start_bulk_import_for_tracks(
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO bulk_imports
-               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, watch_playlist_id, use_playlists_dir)
-               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?)""",
-            (import_id, len(tracks), int(convert_to_flac), watch_playlist_id, int(use_playlists_dir))
+               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac,
+                watch_playlist_id, use_playlists_dir, watch_artist_id)
+               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?)""",
+            (import_id, len(tracks), int(convert_to_flac), watch_playlist_id,
+             int(use_playlists_dir), watch_artist_id)
         )
 
         for line_num, (artist, song) in enumerate(tracks, 1):
@@ -126,6 +129,7 @@ def process_bulk_import_worker(import_id: str):
         create_playlist = bool(import_row["create_playlist"])
         playlist_name = import_row["playlist_name"]
         watch_playlist_id = import_row["watch_playlist_id"]
+        watch_artist_id = import_row["watch_artist_id"]
         use_playlists_dir = bool(import_row["use_playlists_dir"])
 
         # For watched playlist imports, playlist_name is stored as NULL in bulk_imports.
@@ -191,23 +195,25 @@ def process_bulk_import_worker(import_id: str):
                 # This stops an identically-titled upload by a different artist from sneaking
                 # in ahead of the correct one just because it scored slightly higher overall.
                 best_match = search_results[0]
-                if watch_playlist_id and artist:
+                if (watch_playlist_id or watch_artist_id) and artist:
                     for candidate in search_results:
                         if _candidate_mentions_expected_artist(candidate, artist):
                             best_match = candidate
                             break
                     else:
+                        wid = watch_playlist_id or watch_artist_id
                         print(
-                            f"Watched import {watch_playlist_id}: no candidate matched "
+                            f"Watched import {wid}: no candidate matched "
                             f"expected artist '{artist}', using top result"
                         )
 
                 video_id = best_match["video_id"]
                 source = best_match.get("source", "youtube")
                 source_url = best_match.get("source_url")
-                if watch_playlist_id:
+                if watch_playlist_id or watch_artist_id:
+                    wid = watch_playlist_id or watch_artist_id
                     print(
-                        f"Watched import {watch_playlist_id}: selected {source} for "
+                        f"Watched import {wid}: selected {source} for "
                         f"'{artist} - {song}' ({video_id})"
                     )
 
@@ -237,6 +243,12 @@ def process_bulk_import_worker(import_id: str):
                         conn.execute(
                             "UPDATE watched_playlist_tracks SET job_id = ? WHERE playlist_id = ? AND track_hash = ?",
                             (job_id, watch_playlist_id, track_hash)
+                        )
+                    if watch_artist_id:
+                        track_hash = hash_track(artist, song)
+                        conn.execute(
+                            "UPDATE watched_artist_tracks SET job_id = ? WHERE artist_id = ? AND track_hash = ?",
+                            (job_id, watch_artist_id, track_hash)
                         )
                     conn.execute(
                         "UPDATE bulk_imports SET searched = searched + 1, queued = queued + 1 WHERE id = ?",

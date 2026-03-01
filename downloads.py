@@ -575,7 +575,10 @@ def _build_ytdlp_download_cmd(
     return [
         "yt-dlp",
         *base_args,
-        "-f", "bestaudio/best",
+        # Prefer standard WebM/Opus or M4A/AAC audio-only streams. Avoids Premium-only
+        # manifest entries that YouTube serves to logged-in users, which look great in
+        # the format list but 403 on actual download because the session isn't Premium.
+        "-f", "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
         "-x",
         *format_args,
         "--audio-quality", audio_quality,
@@ -607,7 +610,22 @@ def _normalise_watched_match_text(text: str) -> str:
     """Normalise artist/title text for strict watched-track match checks."""
     t = (text or "").lower()
     t = t.replace("\u2019", "’").replace("\u2018", "’").replace("`", "’")
-    # Strip bracketed clauses: (feat. X), [feat. X], etc.
+    # Strip Spotify-style dash suffixes before bracket stripping, e.g.
+    # "Better Now - Acoustic", "Fly - Acoustic", "Forever Young - From NBC’s Parenthood"
+    # These are version/context qualifiers Spotify encodes as ‘ - Suffix’ but YouTube
+    # puts in brackets or omits entirely. Strip them so both sides normalise to the
+    # bare title. Guard: only strip if the suffix contains a known qualifier word or
+    # looks like a "From <Show>" clause; bare words like artist names must not be eaten.
+    t = re.sub(
+        r"\s+-\s+(?:acoustic|live|demo|instrumental|a\s+cappella|unplugged|remix|"
+        r"radio edit|extended|acoustic version|live version|"
+        r"from\s+.+|anniversary edition|deluxe edition|special edition)\s*$",
+        "",
+        t,
+    )
+    # Strip pipe-separated session/channel suffixes: "Track | OurVinyl Sessions", "Track | Live on KEXP"
+    t = re.sub(r"\s*\|.*$", "", t)
+    # Strip bracketed clauses: (feat. X), [feat. X], (Acoustic), (From NBC’s Parenthood), etc.
     t = re.sub(r"\s*[\(\[].*?[\)\]]", "", t)
     # Strip inline feat./ft./featuring clauses not in brackets, e.g. "Track feat. Artist"
     t = re.sub(r"\s+(?:feat|ft|featuring)\.?\s+.*$", "", t)
@@ -777,6 +795,23 @@ def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = 
             sync_mode=row["sync_mode"] or "append",
         )
     return True
+
+
+def _mark_watched_artist_track_downloaded(job_id: str, resolved_path: Optional[Path] = None) -> None:
+    """Mark a watched artist track as downloaded.
+
+    Called alongside _mark_watched_track_downloaded at every successful download
+    completion point. No-ops silently if no watched_artist_tracks row links this job.
+    """
+    resolved_path_str = str(resolved_path) if resolved_path else None
+    with db_conn() as conn:
+        conn.execute(
+            """UPDATE watched_artist_tracks
+               SET downloaded_at = datetime('now'), resolved_path = ?
+               WHERE job_id = ?""",
+            (resolved_path_str, job_id),
+        )
+        conn.commit()
 
 
 def _cleanup_temp_files(artist_dir: Path, sanitized_title: str) -> int:
@@ -1008,7 +1043,9 @@ def _run_ytdlp_with_retries(
 
     cookies_may_be_at_fault = has_cookies and download_result and _should_retry_without_cookies(download_result.stderr)
 
-    if download_timed_out or (download_result and _should_retry_without_cookies(download_result.stderr)):
+    # Only flag a bot block for actual 403/rate-limit errors  -  format-not-available
+    # is a cookie/manifest issue, not a bot block, and shouldn't trigger the backoff sleep.
+    if download_timed_out or (download_result and _is_ytdlp_403(download_result.stderr)):
         _note_bot_block()
 
     if (download_timed_out or (download_result and download_result.returncode != 0)) and has_cookies:
@@ -1934,6 +1971,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             completed_at=datetime.now(timezone.utc).isoformat()
         )
         marked = _mark_watched_track_downloaded(job_id, resolved_path=final_file)
+        _mark_watched_artist_track_downloaded(job_id, resolved_path=final_file)
         if not marked:
             # Metadata came back as someone else entirely. Delete and fail so retry can try again.
             final_file.unlink(missing_ok=True)
@@ -2286,6 +2324,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             completed_at=datetime.now(timezone.utc).isoformat()
         )
         marked = _mark_watched_track_downloaded(job_id, resolved_path=output_path)
+        _mark_watched_artist_track_downloaded(job_id, resolved_path=output_path)
         if marked:
             _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
         else:
@@ -2552,6 +2591,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             completed_at=datetime.now(timezone.utc).isoformat()
         )
         marked = _mark_watched_track_downloaded(job_id, resolved_path=output_path)
+        _mark_watched_artist_track_downloaded(job_id, resolved_path=output_path)
         if marked:
             _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
 
@@ -2942,6 +2982,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             completed_at=datetime.now(timezone.utc).isoformat()
         )
         marked = _mark_watched_track_downloaded(job_id, resolved_path=audio_file)
+        _mark_watched_artist_track_downloaded(job_id, resolved_path=audio_file)
         if marked:
             _append_to_physical_m3u(audio_file, playlist_name, use_playlists_dir)
         else:

@@ -550,7 +550,8 @@ def search_youtube(query: str, limit: int) -> list[dict]:
                 return "provider rejected the request"
 
             reason = _reason(lower)
-            if _should_retry_without_cookies(stderr):
+            # Format errors are a cookie/manifest mismatch, not a bot block.
+            if _is_ytdlp_403(stderr):
                 _note_bot_block()
 
             used_cookies = "--cookies" in cmd
@@ -578,7 +579,7 @@ def search_youtube(query: str, limit: int) -> list[dict]:
                     return []
 
                 reason2 = _reason((result_no_cookies.stderr or "").lower())
-                if _should_retry_without_cookies(result_no_cookies.stderr):
+                if _is_ytdlp_403(result_no_cookies.stderr):
                     _note_bot_block()
                 print(f"YouTube search failed for '{query}': {reason}. Cookieless retry failed: {reason2}")
                 return []

@@ -1,6 +1,6 @@
 # Music Grabber
 
-**v2.2.5**
+**v2.2.6**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -17,7 +17,7 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
 MusicGrabber is intentionally narrow. It is **not**:
 
 - **A full music manager** (not Lidarr, not a replacement for Navidrome/Jellyfin)
-- **An album-discography automation tool** (no "grab everything by this artist" workflow)
+- **An album-discography automation tool** (Watched Artists monitors for new singles only; it does not grab back-catalogues or albums)
 - **A streaming server/player** (it acquires files; it does not serve or stream your library)
 - **A DJ/pro-audio workflow tool** (no Atmos/spatial-audio specialist pipeline)
 - **A custom library templating engine** (no advanced token-based naming/structure rules)
@@ -30,6 +30,7 @@ If your use case is "I heard a song, I want that song in my library fast," this 
 - **Direct FLAC downloads from Monochrome:** bypasses yt-dlp entirely; FLAC streams from the Tidal CDN with embedded cover art and accurate catalogue metadata
 - **Automatic Monochrome fallback:** if Monochrome returns 403 on all quality tiers, MusicGrabber automatically retries on YouTube under the same job ID
 - **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Tidal, and ListenBrainz playlists; auto-downloads new tracks and grabs the best quality available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
+- **Watched Artists:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles only: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Tracks already on disk are recognised immediately. Per-artist check interval, convert-to-FLAC toggle, pause/resume, missing and track list panels
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
 - **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches all sources in parallel and grabs the best result for each
 - **Similar artist discovery:** hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
@@ -559,7 +560,9 @@ music.yourdomain.com {
 | `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
 | `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/monochrome/mp3phoenix", "download_type": "single/playlist"}`) |
 | `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` for provenance) |
+| `GET` | `/api/jobs/downloadable` | Paginated list of all completed jobs available to save to device (`?page=1&per_page=50`) |
 | `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |
+| `GET` | `/api/jobs/{id}/download` | Download the audio file to the browser (completed jobs only; accepts `?api_key=` for browser-native downloads) |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
 | `DELETE` | `/api/jobs/{id}/file` | Delete downloaded file and lyrics from library |
 | `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`) |
@@ -586,6 +589,16 @@ music.yourdomain.com {
 | `GET` | `/api/watched-playlists/{id}/tracks` | List all tracks with per-track status |
 | `POST` | `/api/watched-playlists/{id}/retry-track` | Retry a specific missing track |
 | `POST` | `/api/watched-playlists/check-all` | Check all watched playlists |
+| `GET` | `/api/watched-artists/search` | Search MusicBrainz for an artist (`?q=Artist+Name`); returns up to 5 candidates |
+| `GET` | `/api/watched-artists` | List all watched artists with track counts |
+| `POST` | `/api/watched-artists` | Add an artist to watch (`{mbid, name, from_date, refresh_interval_hours, convert_to_flac}`) |
+| `PUT` | `/api/watched-artists/{id}` | Update artist settings (`enabled`, `refresh_interval_hours`, `convert_to_flac`, `from_date`) |
+| `DELETE` | `/api/watched-artists/{id}` | Stop watching an artist (downloaded tracks kept) |
+| `POST` | `/api/watched-artists/{id}/refresh` | Manually trigger a singles check for one artist |
+| `GET` | `/api/watched-artists/{id}/tracks` | List all tracked singles with per-track status |
+| `GET` | `/api/watched-artists/{id}/missing` | List singles with no successful download |
+| `POST` | `/api/watched-artists/{id}/retry-track` | Retry a specific missing single (`{artist, title}`) |
+| `POST` | `/api/watched-artists/check-all` | Check all watched artists |
 
 ## Updating yt-dlp
 

@@ -81,7 +81,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if api_key:
             # Config endpoint is always accessible (needed for frontend to know auth is required)
             if path != "/api/config":
-                request_key = request.headers.get("x-api-key", "")
+                request_key = (request.headers.get("x-api-key")
+                               or request.query_params.get("api_key", ""))
                 if not hmac.compare_digest(request_key, api_key):
                     return JSONResponse(
                         status_code=401,

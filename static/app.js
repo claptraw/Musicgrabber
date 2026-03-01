@@ -69,6 +69,11 @@
             }
         }
 
+        function jobDownloadUrl(jobId) {
+            const key = getApiKey();
+            return `/api/jobs/${jobId}/download${key ? '?api_key=' + encodeURIComponent(key) : ''}`;
+        }
+
         function promptForApiKey(message = 'This server requires an API key to access.') {
             const key = prompt(message + '\n\nEnter your API key:');
             if (key) {
@@ -302,6 +307,8 @@
 
             const watchedLabel = document.getElementById('watchedFormatLabel');
             if (watchedLabel) watchedLabel.textContent = `Convert to ${label}`;
+            const artistFlacLabel = document.getElementById('artistFlacLabel');
+            if (artistFlacLabel) artistFlacLabel.textContent = `Convert to ${label}`;
 
             const mp3Note = document.getElementById('mp3FormatNote');
             if (mp3Note) mp3Note.style.display = audioFormat === 'mp3' ? 'block' : 'none';
@@ -598,6 +605,7 @@
 
                 if (currentTab === 'queue') {
                     loadJobs();
+                    loadDownloadable();
                     if (queuePollInterval) clearInterval(queuePollInterval);
                     queuePollInterval = setInterval(() => loadJobs(false), 3000);
                 } else {
@@ -609,6 +617,7 @@
 
                 if (currentTab === 'watched') {
                     loadWatchedPlaylists();
+                    loadWatchedArtists();
                 } else if (watchedRefreshPollInterval) {
                     clearInterval(watchedRefreshPollInterval);
                     watchedRefreshPollInterval = null;
@@ -1295,7 +1304,8 @@
                                 <button class="report-btn" data-job-id="${escapeHtml(job.id || '')}" data-video-id="${escapeHtml(job.video_id || '')}" data-uploader="${escapeHtml(job.uploader || '')}" data-source="${escapeHtml(job.source || 'youtube')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--warning); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Report</button>
                                 ${job.status !== 'failed' ? (fileDeleted
                                     ? `<button disabled style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; cursor: not-allowed; opacity: 0.8;">File Deleted</button>`
-                                    : `<button class="delete-file-btn" data-job-id="${escapeHtml(job.id || '')}" data-track-name="${escapeHtml(job.artist ? job.artist + ' - ' + job.title : job.title)}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Delete File</button>`) : ''}
+                                    : `<button class="delete-file-btn" data-job-id="${escapeHtml(job.id || '')}" data-track-name="${escapeHtml(job.artist ? job.artist + ' - ' + job.title : job.title)}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Delete File</button>
+                                      <a href="${jobDownloadUrl(job.id)}" download onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; text-decoration: none; display: inline-block;"><i class="fa-solid fa-download"></i> Save to device</a>`) : ''}
                             </div>
                         </div>` : ''}
                     </div>
@@ -1836,6 +1846,49 @@
             }, 2000);
         }
 
+        let downloadablePage = 1;
+
+        async function loadDownloadable(delta = 0) {
+            downloadablePage = Math.max(1, downloadablePage + delta);
+            const listEl = document.getElementById('downloadableList');
+            const pagerEl = document.getElementById('downloadablePager');
+            const infoEl = document.getElementById('downloadablePagerInfo');
+            const prevBtn = document.getElementById('downloadablePrevBtn');
+            const nextBtn = document.getElementById('downloadableNextBtn');
+            if (!listEl) return;
+            listEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            try {
+                const res = await apiFetch(`/api/jobs/downloadable?page=${downloadablePage}&per_page=50`);
+                const data = await res.json();
+                if (!data.jobs || data.jobs.length === 0) {
+                    listEl.innerHTML = '<div class="empty-state"><p>No completed downloads yet.</p></div>';
+                    pagerEl.style.display = 'none';
+                    return;
+                }
+                listEl.innerHTML = data.jobs.map(job => {
+                    const label = job.artist ? `${escapeHtml(job.artist)} \u2013 ${escapeHtml(job.title)}` : escapeHtml(job.title);
+                    const date = job.completed_at ? formatTimeAgo(job.completed_at) : '';
+                    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+                        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(job.artist||'')} - ${escapeHtml(job.title)}">${label}</span>
+                        ${date ? `<span style="font-size:11px;color:var(--text-secondary);white-space:nowrap;flex-shrink:0;">${date}</span>` : ''}
+                        <a href="${jobDownloadUrl(job.id)}" download style="flex-shrink:0;padding:4px 10px;font-size:11px;font-family:inherit;font-weight:600;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;cursor:pointer;text-decoration:none;white-space:nowrap;">
+                            <i class="fa-solid fa-download"></i> Save
+                        </a>
+                    </div>`;
+                }).join('');
+                if (data.pages > 1) {
+                    pagerEl.style.display = 'flex';
+                    infoEl.textContent = `Page ${data.page} of ${data.pages} (${data.total} tracks)`;
+                    prevBtn.disabled = data.page <= 1;
+                    nextBtn.disabled = data.page >= data.pages;
+                } else {
+                    pagerEl.style.display = 'none';
+                }
+            } catch (e) {
+                listEl.innerHTML = '<div class="empty-state"><p>Failed to load downloads.</p></div>';
+            }
+        }
+
         async function clearQueue() {
             if (!confirm('Clear all completed, failed, and stale downloads from the queue?')) {
                 return;
@@ -2290,9 +2343,29 @@
                 return;
             }
 
+            // Detect platform so we can show helpful hints (e.g. Spotify large playlist warning)
+            let platform = null;
+            if (url.includes('spotify.com')) platform = 'spotify';
+            else if (url.includes('youtube.com') || url.includes('youtu.be')) platform = 'youtube';
+            else if (url.includes('amazon.') || url.includes('music.amazon')) platform = 'amazon';
+            else if (url.includes('tidal.com')) platform = 'tidal';
+
             watchedError.style.display = 'none';
             addWatchedBtn.disabled = true;
-            addWatchedBtn.textContent = 'Adding...';
+            addWatchedBtn.textContent = 'Watch';
+
+            const statusEl = document.getElementById('watchedAddStatus');
+            const startedAt = new Date().toISOString();
+            let timerInterval = null;
+
+            function updateStatus(stage) {
+                statusEl.innerHTML = `<span class="watched-card-refreshing"><span class="watched-refresh-spinner"></span>${escapeHtml(formatRefreshStage(stage, startedAt, platform))}</span>`;
+                statusEl.style.display = 'block';
+            }
+
+            // Tick the elapsed timer every second while in-flight
+            updateStatus('fetching');
+            timerInterval = setInterval(() => updateStatus('fetching'), 1000);
 
             try {
                 const response = await apiFetch('/api/watched-playlists', {
@@ -2321,6 +2394,8 @@
                 watchedError.textContent = error.message;
                 watchedError.style.display = 'block';
             } finally {
+                clearInterval(timerInterval);
+                statusEl.style.display = 'none';
                 addWatchedBtn.disabled = false;
                 addWatchedBtn.textContent = 'Watch';
             }
@@ -2346,7 +2421,19 @@
             watchedError.style.display = 'none';
             const btn = document.getElementById('addLbBtn');
             btn.disabled = true;
-            btn.textContent = 'Adding...';
+            btn.textContent = 'Add';
+
+            const statusEl = document.getElementById('watchedAddStatus');
+            const startedAt = new Date().toISOString();
+            let timerInterval = null;
+
+            function updateStatus(stage) {
+                statusEl.innerHTML = `<span class="watched-card-refreshing"><span class="watched-refresh-spinner"></span>${escapeHtml(formatRefreshStage(stage, startedAt, 'listenbrainz'))}</span>`;
+                statusEl.style.display = 'block';
+            }
+
+            updateStatus('fetching');
+            timerInterval = setInterval(() => updateStatus('fetching'), 1000);
 
             try {
                 const response = await apiFetch('/api/watched-playlists', {
@@ -2376,6 +2463,8 @@
                 watchedError.textContent = error.message;
                 watchedError.style.display = 'block';
             } finally {
+                clearInterval(timerInterval);
+                statusEl.style.display = 'none';
                 btn.disabled = false;
                 btn.textContent = 'Add';
             }
@@ -2644,6 +2733,8 @@
                     html += `<div class="track-list-section-header">Downloaded (${sections.downloaded.length})</div>`;
                     html += sections.downloaded.map((t, i) => trackRow(t, `d${i}`, (t, rowId) =>
                         `<span class="track-status-chip track-status-ok">&#10003;</span>
+                         ${t.job_id ? `<a href="${jobDownloadUrl(t.job_id)}" download title="Save this track to your device" class="track-action-btn" style="text-decoration: none;">
+                             <i class="fa-solid fa-download"></i></a>` : ''}
                          <button onclick="replaceTrack('${playlistId}', '${escapeAttr(data.playlist_name)}', '${escapeAttr(t.artist)}', '${escapeAttr(t.title)}', '${t.job_id}', '${rowId}')"
                              class="track-replace-btn" title="Delete this file and search for the correct version">Replace</button>`
                     )).join('');
@@ -2790,6 +2881,390 @@
             if (e.key === 'Enter') addListenBrainzPlaylists();
         });
         refreshAllWatchedBtn.addEventListener('click', refreshAllWatched);
+
+        // =============================================================================
+        // Watched Artists
+        // =============================================================================
+
+        let selectedArtistMbid = null;
+        let selectedArtistName = null;
+        let artistRefreshPending = new Map(); // artist_id -> {stage, startedAt}
+        let artistRefreshPollInterval = null;
+
+        function startArtistRefreshPolling() {
+            if (artistRefreshPollInterval) return;
+            artistRefreshPollInterval = setInterval(() => loadWatchedArtists(false), 2000);
+        }
+
+        function stopArtistRefreshPolling() {
+            if (artistRefreshPollInterval) {
+                clearInterval(artistRefreshPollInterval);
+                artistRefreshPollInterval = null;
+            }
+        }
+
+        async function searchArtist() {
+            const q = document.getElementById('artistSearchInput').value.trim();
+            if (!q) return;
+            const resultsEl = document.getElementById('artistSearchResults');
+            const addForm = document.getElementById('artistAddForm');
+            resultsEl.style.display = 'block';
+            resultsEl.innerHTML = '<div style="font-size:12px;color:var(--text-secondary);">Searching MusicBrainz...</div>';
+            addForm.style.display = 'none';
+            selectedArtistMbid = null;
+            selectedArtistName = null;
+            try {
+                const res = await apiFetch(`/api/watched-artists/search?q=${encodeURIComponent(q)}`);
+                const data = await res.json();
+                if (!data.results || data.results.length === 0) {
+                    resultsEl.innerHTML = '<div style="font-size:12px;color:var(--text-secondary);">No artists found on MusicBrainz.</div>';
+                    return;
+                }
+                // Exact match or top 3
+                const candidates = data.results[0].name.toLowerCase() === q.toLowerCase()
+                    ? [data.results[0]]
+                    : data.results.slice(0, 3);
+                resultsEl.innerHTML = candidates.map(a => `
+                    <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;margin-bottom:4px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;">
+                        <div style="flex:1;">
+                            <span style="font-size:13px;font-weight:600;color:var(--text-primary);">${escapeHtml(a.name)}</span>
+                            ${a.disambiguation ? `<span style="font-size:11px;color:var(--text-secondary);margin-left:6px;">${escapeHtml(a.disambiguation)}</span>` : ''}
+                        </div>
+                        <button class="action-btn" style="padding:4px 10px;font-size:12px;" onclick="selectArtist('${escapeHtml(a.mbid)}','${escapeHtml(a.name).replace(/'/g,"\\'")}')">Select</button>
+                    </div>
+                `).join('');
+            } catch (e) {
+                resultsEl.innerHTML = '<div style="font-size:12px;color:var(--error);">Search failed. Check server logs.</div>';
+            }
+        }
+
+        function selectArtist(mbid, name) {
+            selectedArtistMbid = mbid;
+            selectedArtistName = name;
+            document.getElementById('selectedArtistName').textContent = name;
+            // Default from_date to today in YYYY-MM-DD
+            const today = new Date().toISOString().slice(0, 10);
+            document.getElementById('artistFromDate').value = today;
+            document.getElementById('artistSearchResults').style.display = 'none';
+            document.getElementById('artistAddForm').style.display = 'block';
+        }
+
+        async function addWatchedArtist() {
+            if (!selectedArtistMbid) return;
+            const fromDate = document.getElementById('artistFromDate').value;
+            const intervalHours = parseInt(document.getElementById('artistIntervalSelect').value);
+            const convertToFlac = document.getElementById('artistConvertToFlac').checked;
+            const statusEl = document.getElementById('artistAddStatus');
+            const addBtn = document.getElementById('addArtistBtn');
+
+            addBtn.disabled = true;
+            statusEl.style.display = 'block';
+            statusEl.textContent = 'Adding artist and fetching singles from MusicBrainz...';
+
+            try {
+                const res = await apiFetch('/api/watched-artists', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        mbid: selectedArtistMbid,
+                        name: selectedArtistName,
+                        from_date: fromDate,
+                        refresh_interval_hours: intervalHours,
+                        convert_to_flac: convertToFlac,
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed to add artist');
+                statusEl.style.display = 'none';
+                document.getElementById('artistAddForm').style.display = 'none';
+                document.getElementById('artistSearchInput').value = '';
+                selectedArtistMbid = null;
+                selectedArtistName = null;
+                const msg = data.queued > 0
+                    ? `Now watching ${data.name}. Queued ${data.queued} single(s) for download.`
+                    : `Now watching ${data.name}. No new singles since ${fromDate}.`;
+                showToast(msg);
+                loadWatchedArtists();
+            } catch (e) {
+                statusEl.textContent = `Error: ${e.message}`;
+                addBtn.disabled = false;
+            }
+        }
+
+        async function loadWatchedArtists(showLoading = true) {
+            const listEl = document.getElementById('watchedArtistList');
+            if (showLoading) listEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            try {
+                const res = await apiFetch('/api/watched-artists');
+                const data = await res.json();
+                renderWatchedArtists(data.artists || []);
+            } catch (e) {
+                listEl.innerHTML = '<div class="empty-state"><p>Failed to load watched artists</p></div>';
+            }
+        }
+
+        function renderWatchedArtists(artists) {
+            const listEl = document.getElementById('watchedArtistList');
+            if (!artists || artists.length === 0) {
+                stopArtistRefreshPolling();
+                listEl.innerHTML = '<div class="empty-state" style="padding: 1.5rem 0;"><div class="empty-state-icon"><i class="fa-solid fa-user-music"></i></div><p>No artists followed yet</p></div>';
+                return;
+            }
+            let anyRunning = false;
+            listEl.innerHTML = artists.map(artist => {
+                const isRunning = artist.refresh_state === 'running' || artistRefreshPending.has(artist.id);
+                if (isRunning) anyRunning = true;
+                const isError = artist.refresh_state === 'error';
+                const isPaused = !artist.enabled;
+                const intervalLabel = artist.refresh_interval_hours >= 720 ? 'monthly'
+                    : artist.refresh_interval_hours >= 168 ? 'weekly' : 'daily';
+                const lastChecked = artist.last_checked
+                    ? `Last checked: ${formatTimeAgo(artist.last_checked)}`
+                    : 'Never checked';
+                let stageHtml = '';
+                if (isRunning) {
+                    const pending = artistRefreshPending.get(artist.id);
+                    const startedAt = pending?.startedAt || artist.refresh_started_at;
+                    const elapsed = startedAt ? Math.floor((Date.now() - new Date(startedAt + 'Z').getTime()) / 1000) : 0;
+                    const stageLabel = {
+                        starting: 'Starting', fetching: 'Fetching from MusicBrainz',
+                        diffing: 'Comparing tracks', queueing: 'Queueing downloads', done: 'Done',
+                    }[artist.refresh_stage] || 'Refreshing';
+                    stageHtml = `<span class="watched-card-refreshing"><span class="watched-refresh-spinner"></span>${escapeHtml(stageLabel)}${elapsed > 0 ? ` (${elapsed}s)` : ''}</span>`;
+                }
+                return `
+                <div class="watched-card" id="artist-card-${artist.id}">
+                    <div class="watched-card-header">
+                        <span><i class="fa-brands fa-creative-commons-sampling"></i></span>
+                        <span class="watched-card-name">${escapeHtml(artist.name)}</span>
+                        ${stageHtml}
+                        ${isPaused ? '<span class="watched-card-paused">Paused</span>' : ''}
+                    </div>
+                    <div class="watched-card-meta">
+                        ${artist.tracked_count || 0} singles tracked &middot; ${artist.downloaded_count || 0} downloaded &middot; ${intervalLabel} &middot; ${lastChecked} &middot; From: ${artist.from_date}
+                    </div>
+                    ${isError ? `<div class="watched-card-refresh-error"><i class="fa-solid fa-circle-exclamation"></i><span>${escapeHtml(artist.refresh_error || 'Refresh failed')}</span></div>` : ''}
+                    <div class="watched-card-settings">
+                        <label class="watched-card-toggle" title="Convert singles to the selected audio format">
+                            Convert
+                            <div class="toggle-switch">
+                                <input type="checkbox" ${artist.convert_to_flac ? 'checked' : ''}
+                                    onchange="updateArtistFlac('${artist.id}', this.checked)">
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+                        <label class="watched-card-toggle">
+                            Check:
+                            <select class="watched-card-select" onchange="updateArtistInterval('${artist.id}', this.value)">
+                                <option value="24" ${artist.refresh_interval_hours == 24 ? 'selected' : ''}>Daily</option>
+                                <option value="168" ${artist.refresh_interval_hours == 168 ? 'selected' : ''}>Weekly</option>
+                                <option value="720" ${artist.refresh_interval_hours == 720 ? 'selected' : ''}>Monthly</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="watched-card-actions">
+                        <button class="watched-action-btn" onclick="refreshWatchedArtist('${artist.id}')" ${isRunning ? 'disabled' : ''}>Refresh</button>
+                        <button class="watched-action-btn" onclick="toggleArtistMissingTracks('${artist.id}')">Missing</button>
+                        <button class="watched-action-btn" onclick="toggleArtistTrackList('${artist.id}', '${escapeAttr(artist.name)}')">Tracks</button>
+                        <button class="watched-action-btn watched-action-pause" onclick="toggleWatchedArtist('${artist.id}', ${!artist.enabled})">${isPaused ? 'Resume' : 'Pause'}</button>
+                        <button class="watched-action-btn watched-action-delete" onclick="deleteWatchedArtist('${artist.id}', '${escapeAttr(artist.name)}')">Delete</button>
+                    </div>
+                    <div id="artist-missing-${artist.id}" class="watched-card-expanded" style="display:none;"></div>
+                    <div id="artist-tracks-${artist.id}" class="watched-card-expanded" style="display:none;"></div>
+                </div>`;
+            }).join('');
+
+            if (anyRunning) {
+                startArtistRefreshPolling();
+            } else {
+                stopArtistRefreshPolling();
+                artistRefreshPending.clear();
+            }
+        }
+
+        async function refreshWatchedArtist(artistId) {
+            artistRefreshPending.set(artistId, { stage: 'starting', startedAt: new Date().toISOString() });
+            loadWatchedArtists(false);
+            try {
+                const res = await apiFetch(`/api/watched-artists/${artistId}/refresh`, { method: 'POST' });
+                const data = await res.json();
+                if (data.already_running) {
+                    showToast('Refresh already in progress');
+                } else if (data.new_tracks > 0) {
+                    showToast(`Found ${data.new_tracks} new single(s) for download`);
+                } else {
+                    showToast('No new singles found');
+                }
+            } catch (e) {
+                showToast('Refresh failed', true);
+            } finally {
+                artistRefreshPending.delete(artistId);
+                loadWatchedArtists();
+            }
+        }
+
+        async function toggleWatchedArtist(artistId, enabled) {
+            try {
+                await apiFetch(`/api/watched-artists/${artistId}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ enabled })
+                });
+                loadWatchedArtists();
+                showToast(enabled ? 'Artist watching resumed' : 'Artist watching paused');
+            } catch (e) {
+                showToast('Failed to update artist', true);
+            }
+        }
+
+        async function updateArtistFlac(artistId, convertToFlac) {
+            try {
+                await apiFetch(`/api/watched-artists/${artistId}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ convert_to_flac: convertToFlac })
+                });
+            } catch (e) {
+                showToast('Failed to update format setting', true);
+                loadWatchedArtists();
+            }
+        }
+
+        async function updateArtistInterval(artistId, hours) {
+            try {
+                await apiFetch(`/api/watched-artists/${artistId}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ refresh_interval_hours: parseInt(hours) })
+                });
+            } catch (e) {
+                showToast('Failed to update interval', true);
+                loadWatchedArtists();
+            }
+        }
+
+        async function deleteWatchedArtist(artistId, name) {
+            if (!confirm(`Stop watching "${name}"? Downloaded tracks will not be deleted.`)) return;
+            try {
+                await apiFetch(`/api/watched-artists/${artistId}`, { method: 'DELETE' });
+                showToast(`Stopped watching "${name}"`);
+                loadWatchedArtists();
+            } catch (e) {
+                showToast('Failed to delete artist', true);
+            }
+        }
+
+        async function toggleArtistMissingTracks(artistId) {
+            const panel = document.getElementById(`artist-missing-${artistId}`);
+            if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+            panel.style.display = 'block';
+            panel.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            try {
+                const res = await apiFetch(`/api/watched-artists/${artistId}/missing`);
+                const data = await res.json();
+                if (!data.tracks || data.tracks.length === 0) {
+                    panel.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);padding:8px 0;">No missing singles.</p>';
+                    return;
+                }
+                panel.innerHTML = `<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">${data.tracks.length} missing single(s):</div>` +
+                    data.tracks.map(t => `
+                        <div style="padding:4px 0;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+                            <span style="flex:1;min-width:0;font-size:12px;">${escapeHtml(t.artist || '')} &ndash; ${escapeHtml(t.title)}</span>
+                            <div style="display:flex;gap:4px;align-items:center;flex-shrink:0;">
+                                ${t.release_date ? `<span style="font-size:11px;color:var(--text-secondary);white-space:nowrap;">${t.release_date}</span>` : ''}
+                                <button onclick="retryArtistTrack('${artistId}','${escapeAttr(t.artist||'')}','${escapeAttr(t.title)}',this)"
+                                    style="padding:3px 8px;font-size:11px;font-family:inherit;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;cursor:pointer;white-space:nowrap;"
+                                    title="Auto-search and re-queue this track">Retry</button>
+                            </div>
+                        </div>`).join('');
+            } catch (e) {
+                panel.innerHTML = '<p style="font-size:12px;color:var(--error);">Failed to load missing tracks.</p>';
+            }
+        }
+
+        async function toggleArtistTrackList(artistId, artistName) {
+            const panel = document.getElementById(`artist-tracks-${artistId}`);
+            if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+            panel.style.display = 'block';
+            panel.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            try {
+                const res = await apiFetch(`/api/watched-artists/${artistId}/tracks`);
+                const data = await res.json();
+                if (!data.tracks || data.tracks.length === 0) {
+                    panel.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);padding:8px 0;">No tracks tracked yet.</p>';
+                    return;
+                }
+                panel.innerHTML = `<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">${data.tracks.length} single(s) tracked:</div>` +
+                    data.tracks.map(t => {
+                        const statusIcon = t.downloaded_at
+                            ? '<i class="fa-solid fa-check" style="color:var(--success);"></i>'
+                            : t.job_status === 'queued' || t.job_status === 'downloading'
+                                ? '<i class="fa-solid fa-clock" style="color:var(--text-secondary);"></i>'
+                                : '<i class="fa-solid fa-xmark" style="color:var(--error);"></i>';
+                        const dlBtn = t.downloaded_at && t.job_id
+                            ? `<a href="${jobDownloadUrl(t.job_id)}" download style="padding:2px 8px;font-size:11px;font-family:inherit;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;text-decoration:none;white-space:nowrap;"><i class="fa-solid fa-download"></i></a>`
+                            : '';
+                        return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;">
+                            ${statusIcon}
+                            <span style="flex:1;">${escapeHtml(t.artist || '')} &ndash; ${escapeHtml(t.title)}</span>
+                            ${t.release_date ? `<span style="color:var(--text-secondary);font-size:11px;">${t.release_date}</span>` : ''}
+                            ${dlBtn}
+                        </div>`;
+                    }).join('');
+            } catch (e) {
+                panel.innerHTML = '<p style="font-size:12px;color:var(--error);">Failed to load tracks.</p>';
+            }
+        }
+
+        async function retryArtistTrack(artistId, artist, title, btn) {
+            btn.disabled = true;
+            btn.textContent = 'Queued';
+            try {
+                await apiFetch(`/api/watched-artists/${artistId}/retry-track`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ artist, title })
+                });
+                showToast(`Queued: ${artist} - ${title}`);
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = 'Retry';
+                showToast('Retry failed', true);
+            }
+        }
+
+        async function refreshAllArtists() {
+            const btn = document.getElementById('refreshAllArtistsBtn');
+            btn.disabled = true;
+            try {
+                const res = await apiFetch('/api/watched-artists/check-all', { method: 'POST' });
+                const data = await res.json();
+                if (data.checked === 0) {
+                    showToast('No artists due for refresh');
+                } else {
+                    showToast(`Checked ${data.checked} artist(s), ${data.total_new_tracks} new single(s) found`);
+                }
+                loadWatchedArtists();
+            } catch (e) {
+                showToast('Check failed', true);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        // Event listeners for watched artists
+        document.getElementById('searchArtistBtn').addEventListener('click', searchArtist);
+        document.getElementById('artistSearchInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') searchArtist();
+        });
+        document.getElementById('addArtistBtn').addEventListener('click', addWatchedArtist);
+        document.getElementById('cancelArtistBtn').addEventListener('click', () => {
+            document.getElementById('artistAddForm').style.display = 'none';
+            document.getElementById('artistSearchResults').style.display = 'none';
+            selectedArtistMbid = null;
+            selectedArtistName = null;
+        });
+        document.getElementById('refreshAllArtistsBtn').addEventListener('click', refreshAllArtists);
 
         // =============================================================================
         // Statistics Dashboard

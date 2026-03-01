@@ -7,6 +7,41 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.2.6": {
+        title: "What's New in v2.2.6",
+        sections: [
+            {
+                heading: "What is Music Grabber?",
+                body: "Music Grabber is a self-hosted tool for grabbing individual tracks. You heard something on the radio, in a film, at a party - you want that song. It searches YouTube, SoundCloud, and Monochrome (Tidal lossless) in parallel, downloads the best quality version, and drops it neatly into your library. It is not Lidarr. It does not manage your collection. It just gets the track. This is a personal pet project, actively developed but rough around the edges. If something breaks, please check the issue tracker before raising a duplicate."
+            },
+            {
+                heading: "Watched Artists - new feature",
+                items: [
+                    "Follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put), and MusicGrabber does the rest",
+                    "Singles only - remixes, live versions, soundtracks, DJ mixes, and compilations are filtered out at the MusicBrainz level so you don't get flooded with every variant ever released",
+                    "Tracks already on disk are recognised immediately on first refresh - no duplicate downloads",
+                    "Same controls as watched playlists: check interval, convert-to-FLAC, pause/resume, missing panel, track list with download buttons"
+                ]
+            },
+            {
+                heading: "Other new bits",
+                items: [
+                    "Downloadable to Device: new section at the bottom of the Queue tab lists every completed download newest-first with a Save button to pull it straight to your browser - handy for grabbing tracks to a phone or laptop",
+                    "Save to device buttons on watched playlist and artist track lists",
+                    "Adding a watched playlist now shows a spinner and elapsed timer instead of sitting silently with a greyed-out button",
+                    "YouTube cookies no longer cause 'Requested format is not available' - the format selector now skips Premium-only streams that your account can't actually download"
+                ]
+            },
+            {
+                heading: "Bug fixes",
+                items: [
+                    "Watched track matching is smarter: Spotify dash-suffixes, bracketed equivalents, and pipe-separated session tags (Tugboats | OurVinyl Sessions) all resolve to the same track instead of triggering a mismatch delete and re-download",
+                    "Tracks in playlist folders are no longer falsely marked as deleted by the file reconciler",
+                    "Format errors no longer trigger the bot-block backoff sleep - that sleep is for genuine 403s, not manifest mismatches"
+                ]
+            }
+        ]
+    },
     "2.2.5": {
         title: "What's New in v2.2.5",
         sections: [

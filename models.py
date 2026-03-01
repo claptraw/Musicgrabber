@@ -148,6 +148,19 @@ class TestAppriseRequest(BaseModel):
 class TestYouTubeCookiesRequest(BaseModel):
     cookies: Optional[str] = None
 
+class WatchedArtistRequest(BaseModel):
+    mbid: str
+    name: str
+    from_date: str  # YYYY-MM-DD
+    refresh_interval_hours: int = 24
+    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+
+class WatchedArtistUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    refresh_interval_hours: Optional[int] = None
+    convert_to_flac: Optional[bool] = None
+    from_date: Optional[str] = None
+
 class RetryMissingTrackRequest(BaseModel):
     artist: str
     title: str

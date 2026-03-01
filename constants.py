@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.2.5"
+VERSION = "2.2.6"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -88,6 +88,10 @@ ACOUSTID_MIN_SCORE = 0.8         # Below this, the match is too dodgy to trust
 MIN_SONG_DURATION_SECS = 30      # Files shorter than this are too brief to fingerprint reliably
 MAX_AUDIO_START_OFFSET_SECS = 1.0  # Start offsets above this indicate a preview segment, not a full track
 MB_DURATION_TOLERANCE = 0.10     # 10% either side of MusicBrainz expected duration; outside = wrong track
+
+# Watched artists  -  MusicBrainz artist search and singles polling
+MB_ARTIST_SEARCH_LIMIT = 5       # Candidate results returned when searching by name
+TIMEOUT_MUSICBRAINZ_ARTIST = 10  # Artist search + singles listing HTTP timeout
 
 # ListenBrainz API  -  used for similar artist exploration and "Created for You" playlists
 # (public API, no auth required for either)

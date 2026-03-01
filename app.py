@@ -41,6 +41,7 @@ from settings import (
 from models import (
     SearchRequest, DownloadRequest, PlaylistFetchRequest,
     AsyncBulkImportRequest, WatchedPlaylistRequest, WatchedPlaylistUpdate,
+    WatchedArtistRequest, WatchedArtistUpdate,
     SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestYouTubeCookiesRequest,
     TestAppriseRequest, RetryMissingTrackRequest,
@@ -63,6 +64,8 @@ from watched_playlists import (
     detect_playlist_platform, fetch_playlist_tracks, refresh_watched_playlist,
     fetch_listenbrainz_createdfor, start_scheduler,
 )
+from watched_artists import refresh_watched_artist, start_artist_scheduler
+from metadata import search_artist_mbid
 from utils import hash_track, is_valid_youtube_id, spawn_daemon_thread, subsonic_auth_params
 
 URL_BASED_SOURCES = {"soundcloud", "monochrome", "mp3phoenix"}
@@ -83,6 +86,7 @@ init_db()
 cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
 start_stale_job_monitor()
 start_scheduler()
+start_artist_scheduler()
 
 # Sync cookies file from settings at startup
 _sync_cookies_file()
@@ -541,55 +545,39 @@ def test_youtube_cookies(request: TestYouTubeCookiesRequest = None):
             f.write(cookies_text)
             tmp_path = f.name
 
-        # Age-restricted video  -  this is the real test. Without valid cookies,
-        # yt-dlp returns a 403 or "Sign in to confirm your age" error.
-        # Using a public video would tell us nothing useful about cookie auth.
-        AGE_RESTRICTED_VIDEO = "https://www.youtube.com/watch?v=6_b7RDuLwcI"
+        # Use the YouTube Music Charts page as the test target. It's public, globally
+        # available, and yt-dlp extracts it as a flat playlist  -  so we get real output
+        # to confirm yt-dlp + cookies are working together without needing age-restricted
+        # content or account-specific URLs. If cookies are broken they'll cause a 403 here
+        # too; if they're fine, we get tracks back and can report success confidently.
+        # A plain public video would also work but gives no way to distinguish "cookies
+        # loaded fine" from "cookies were silently ignored".
+        TEST_URL = "https://music.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI"
 
         test_cmd = [
             "yt-dlp",
             "--cookies", tmp_path,
+            "--flat-playlist",
             "--dump-json",
             "--no-warnings",
-            "--skip-download",
-            AGE_RESTRICTED_VIDEO,
+            "--playlist-items", "1",
+            TEST_URL,
         ]
 
         result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
+        stderr = result.stderr.lower()
 
-        if result.returncode == 0:
-            try:
-                info = json.loads(result.stdout)
-                title = info.get("title", "Unknown")
-                return {"success": True, "message": f"Cookies valid  -  age-restricted test passed: \"{title}\""}
-            except json.JSONDecodeError:
-                return {"success": True, "message": "Cookies appear valid (age-restricted test passed)"}
-        else:
-            stderr = result.stderr
-            if "sign in to confirm" in stderr.lower() or "age" in stderr.lower():
-                return {"success": False, "message": "Cookies rejected  -  YouTube asked for age confirmation. Re-export cookies while logged in."}
-            if _is_ytdlp_403(stderr):
-                return {"success": False, "message": "Cookies rejected by YouTube (403). They may be expired  -  try re-exporting."}
-            # Might be geo-blocked rather than a cookie problem  -  try without cookies to check
-            test_cmd_nocookies = [
-                "yt-dlp",
-                "--dump-json",
-                "--no-warnings",
-                "--skip-download",
-                AGE_RESTRICTED_VIDEO,
-            ]
-            result2 = subprocess.run(test_cmd_nocookies, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
-            if result2.returncode == 0:
-                # Cookieless worked  -  that means the video isn't actually age-restricted here,
-                # but the cookies themselves are probably fine (or at least not breaking things)
-                return {"success": True, "message": "Cookies loaded successfully (test video not restricted in your region  -  real-world auth untested)"}
-            # Both with and without cookies failed  -  likely the test video is unavailable
-            # in this region, not a cookie problem. Don't dump raw yt-dlp errors at the user.
-            stderr2 = result2.stderr.lower()
-            print(f"Cookie test: both with-cookies and cookieless failed. stderr={result2.stderr[:200]!r}")
-            if "not available" in stderr2 or "unavailable" in stderr2 or "format" in stderr2 or "private" in stderr2:
-                return {"success": True, "message": "Cookies loaded (test video unavailable in your region  -  real-world auth untested)"}
-            return {"success": False, "message": "Cookie test inconclusive  -  could not reach test video. Check server logs for detail."}
+        if result.returncode == 0 and result.stdout.strip():
+            return {"success": True, "message": "Cookies loaded and working"}
+
+        if _is_ytdlp_403(result.stderr):
+            return {"success": False, "message": "Cookies rejected by YouTube (403). They may be expired  -  try re-exporting."}
+        if "sign in" in stderr or "login" in stderr or "not logged in" in stderr:
+            return {"success": False, "message": "Cookies rejected  -  YouTube says you're not logged in. Re-export cookies while logged in."}
+
+        # Test playlist unavailable or yt-dlp returned nothing  -  not necessarily a cookie problem
+        print(f"Cookie test: test URL failed or returned no output. stderr={result.stderr[:300]!r}")
+        return {"success": True, "message": "Cookies loaded (test inconclusive  -  real-world auth untested)"}
 
     except subprocess.TimeoutExpired:
         return {"success": False, "message": "Test timed out"}
@@ -1193,15 +1181,31 @@ def _ensure_utc_suffix(timestamp: str | None) -> str | None:
 def get_jobs(limit: int = 20):
     """Get recent jobs"""
     from utils import check_duplicate
+    from pathlib import Path as _Path
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute(
+        rows = conn.execute(
             "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
             (limit,)
-        )
+        ).fetchall()
+
+        # Pre-fetch resolved_paths for all jobs in one query.
+        # check_duplicate only walks Singles; playlist-folder tracks would be
+        # falsely marked deleted without this.
+        if rows:
+            job_ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" * len(job_ids))
+            rp_rows = conn.execute(
+                f"SELECT job_id, resolved_path FROM watched_playlist_tracks WHERE job_id IN ({placeholders}) AND resolved_path IS NOT NULL",
+                job_ids,
+            ).fetchall()
+            resolved_paths: dict = {r["job_id"]: r["resolved_path"] for r in rp_rows}
+        else:
+            resolved_paths = {}
+
         jobs = []
         stale_ids = []  # Jobs that claim file exists but it doesn't
-        for row in cursor.fetchall():
+        for row in rows:
             job = dict(row)
             job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
             job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
@@ -1210,7 +1214,11 @@ def get_jobs(limit: int = 20):
             if (job.get('status') in ('completed', 'completed_with_errors')
                     and not job.get('file_deleted')
                     and job.get('artist') and job.get('title')):
-                if not check_duplicate(job['artist'], job['title']):
+                rp = resolved_paths.get(job['id'])
+                file_exists = (
+                    rp and _Path(rp).is_absolute() and _Path(rp).exists()
+                ) or bool(check_duplicate(job['artist'], job['title']))
+                if not file_exists:
                     job['file_deleted'] = 1
                     stale_ids.append(job['id'])
 
@@ -1225,6 +1233,32 @@ def get_jobs(limit: int = 20):
             conn.commit()
 
     return {"jobs": jobs}
+
+
+@app.get("/api/jobs/downloadable")
+def get_downloadable_jobs(page: int = 1, per_page: int = 50):
+    """Return completed jobs with files available to save to device, newest first."""
+    offset = (page - 1) * per_page
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        total = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE status = 'completed' AND (file_deleted IS NULL OR file_deleted = 0)"
+        ).fetchone()[0]
+        rows = conn.execute(
+            """SELECT id, title, artist, status, created_at, completed_at
+               FROM jobs
+               WHERE status = 'completed' AND (file_deleted IS NULL OR file_deleted = 0)
+               ORDER BY completed_at DESC
+               LIMIT ? OFFSET ?""",
+            (per_page, offset)
+        ).fetchall()
+    return {
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": max(1, (total + per_page - 1) // per_page),
+        "jobs": [dict(r) for r in rows],
+    }
 
 
 @app.get("/api/jobs/{job_id}")
@@ -1242,6 +1276,64 @@ def get_job(job_id: str):
     job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
     job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
     return job
+
+
+@app.get("/api/jobs/{job_id}/download")
+def download_job_file(job_id: str):
+    """Serve the downloaded audio file for a job directly to the browser."""
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        row = cursor.fetchone()
+        # Also fish out the resolved_path from watched_playlist_tracks if it exists.
+        # This is more reliable than reconstructing the path, especially for playlist folders.
+        rp_cursor = conn.execute(
+            "SELECT resolved_path FROM watched_playlist_tracks WHERE job_id = ? AND resolved_path IS NOT NULL LIMIT 1",
+            (job_id,)
+        )
+        rp_row = rp_cursor.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = dict(row)
+
+    if job.get("file_deleted"):
+        raise HTTPException(status_code=404, detail="File has been deleted")
+
+    if job.get("status") not in ("completed", "completed_with_errors"):
+        raise HTTPException(status_code=404, detail="Job not yet complete")
+
+    artist = job.get("artist", "")
+    title = job.get("title", "")
+    if not title:
+        raise HTTPException(status_code=404, detail="Job has no title")
+
+    from utils import check_duplicate, sanitize_filename
+
+    file_path = None
+
+    # Prefer the stored resolved_path (set at download time, works for playlist folders too).
+    if rp_row and rp_row["resolved_path"]:
+        candidate = Path(rp_row["resolved_path"])
+        if candidate.is_absolute() and candidate.exists():
+            file_path = candidate
+
+    # Fall back to walking the Singles layout (covers non-watched single downloads).
+    if file_path is None:
+        file_path = check_duplicate(artist, title)
+
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    # Use "Artist - Title.ext" as the download filename regardless of where it lives.
+    download_name = f"{sanitize_filename(artist)} - {sanitize_filename(title)}{file_path.suffix}" if artist else f"{sanitize_filename(title)}{file_path.suffix}"
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="application/octet-stream",
+        filename=download_name,
+    )
 
 
 @app.post("/api/jobs/{job_id}/retry")
@@ -2083,6 +2175,202 @@ def check_all_watched_playlists():
         "total_new_tracks": total_new,
         "total_queued": total_queued,
         "results": results
+    }
+
+
+# ---------------------------------------------------------------------------
+# Watched Artists
+# ---------------------------------------------------------------------------
+
+@app.get("/api/watched-artists/search")
+def search_watched_artist(q: str):
+    """Search MusicBrainz for an artist by name. Returns up to 5 candidates."""
+    if not q or not q.strip():
+        return {"results": []}
+    results = search_artist_mbid(q.strip())
+    return {"results": results}
+
+
+@app.post("/api/watched-artists")
+def add_watched_artist(request: WatchedArtistRequest):
+    """Add an artist to watch. Seeds all known singles then queues any after from_date."""
+    with db_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM watched_artists WHERE mbid = ?", (request.mbid,)
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Already watching this artist (id: {existing[0]})")
+
+    artist_id = str(uuid.uuid4())[:8]
+
+    with db_conn() as conn:
+        conn.execute(
+            """INSERT INTO watched_artists
+               (id, name, mbid, from_date, refresh_interval_hours, convert_to_flac)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (artist_id, request.name, request.mbid, request.from_date,
+             request.refresh_interval_hours, int(request.convert_to_flac))
+        )
+        conn.commit()
+
+    # First refresh seeds the back-catalogue and queues tracks >= from_date
+    result = refresh_watched_artist(artist_id)
+    return {
+        "id": artist_id,
+        "name": request.name,
+        "mbid": request.mbid,
+        "from_date": request.from_date,
+        **result,
+    }
+
+
+@app.get("/api/watched-artists")
+def list_watched_artists():
+    """List all watched artists with track counts."""
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT wa.*,
+                (SELECT COUNT(*) FROM watched_artist_tracks wat WHERE wat.artist_id = wa.id) as tracked_count,
+                (SELECT COUNT(*) FROM watched_artist_tracks wat WHERE wat.artist_id = wa.id AND wat.downloaded_at IS NOT NULL) as downloaded_count
+               FROM watched_artists wa
+               ORDER BY wa.name COLLATE NOCASE"""
+        ).fetchall()
+    return {"artists": [dict(r) for r in rows]}
+
+
+@app.put("/api/watched-artists/{artist_id}")
+def update_watched_artist(artist_id: str, request: WatchedArtistUpdate):
+    """Update a watched artist's settings."""
+    updates: list[str] = []
+    params: list = []
+    if request.enabled is not None:
+        updates.append("enabled = ?"); params.append(int(request.enabled))
+    if request.refresh_interval_hours is not None:
+        updates.append("refresh_interval_hours = ?"); params.append(request.refresh_interval_hours)
+    if request.convert_to_flac is not None:
+        updates.append("convert_to_flac = ?"); params.append(int(request.convert_to_flac))
+    if request.from_date is not None:
+        updates.append("from_date = ?"); params.append(request.from_date)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    params.append(artist_id)
+    with db_conn() as conn:
+        conn.execute(f"UPDATE watched_artists SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        updated = conn.execute("SELECT * FROM watched_artists WHERE id = ?", (artist_id,)).fetchone()
+    if not updated:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    return dict(updated)
+
+
+@app.delete("/api/watched-artists/{artist_id}")
+def delete_watched_artist(artist_id: str):
+    """Remove a watched artist and all its tracked tracks."""
+    with db_conn() as conn:
+        artist = conn.execute("SELECT name FROM watched_artists WHERE id = ?", (artist_id,)).fetchone()
+        if not artist:
+            raise HTTPException(status_code=404, detail="Artist not found")
+        conn.execute("DELETE FROM watched_artist_tracks WHERE artist_id = ?", (artist_id,))
+        conn.execute("DELETE FROM watched_artists WHERE id = ?", (artist_id,))
+        conn.commit()
+    return {"success": True, "message": f"Stopped watching {artist[0]}"}
+
+
+@app.post("/api/watched-artists/{artist_id}/refresh")
+def refresh_single_artist(artist_id: str):
+    """Manually trigger a refresh for one watched artist."""
+    with db_conn() as conn:
+        row = conn.execute("SELECT id FROM watched_artists WHERE id = ?", (artist_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Artist not found")
+    return refresh_watched_artist(artist_id)
+
+
+@app.get("/api/watched-artists/{artist_id}/tracks")
+def get_watched_artist_tracks(artist_id: str):
+    """Return all tracked singles for a watched artist with job status."""
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        artist = conn.execute("SELECT name FROM watched_artists WHERE id = ?", (artist_id,)).fetchone()
+        if not artist:
+            raise HTTPException(status_code=404, detail="Artist not found")
+        tracks = conn.execute(
+            """SELECT wat.artist, wat.title, wat.release_date, wat.downloaded_at,
+                      wat.resolved_path, wat.job_id, j.status as job_status, j.error as job_error
+               FROM watched_artist_tracks wat
+               LEFT JOIN jobs j ON wat.job_id = j.id
+               WHERE wat.artist_id = ?
+               ORDER BY wat.release_date DESC NULLS LAST, wat.title""",
+            (artist_id,)
+        ).fetchall()
+    return {"artist": artist[0], "tracks": [dict(t) for t in tracks]}
+
+
+@app.get("/api/watched-artists/{artist_id}/missing")
+def get_missing_artist_tracks(artist_id: str):
+    """Return singles that haven't been downloaded and have no active job."""
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        artist = conn.execute("SELECT name FROM watched_artists WHERE id = ?", (artist_id,)).fetchone()
+        if not artist:
+            raise HTTPException(status_code=404, detail="Artist not found")
+        tracks = conn.execute(
+            """SELECT wat.artist, wat.title, wat.release_date, j.status as job_status, j.error as job_error
+               FROM watched_artist_tracks wat
+               LEFT JOIN jobs j ON wat.job_id = j.id
+               WHERE wat.artist_id = ?
+                 AND wat.downloaded_at IS NULL
+                 AND (j.status IS NULL OR j.status NOT IN ('queued', 'downloading', 'completed'))
+               ORDER BY wat.release_date DESC NULLS LAST, wat.title""",
+            (artist_id,)
+        ).fetchall()
+    return {"artist": artist[0], "tracks": [dict(t) for t in tracks]}
+
+
+@app.post("/api/watched-artists/{artist_id}/retry-track")
+def retry_missing_artist_track(artist_id: str, request: RetryMissingTrackRequest):
+    """Retry downloading a specific missing single."""
+    with db_conn() as conn:
+        artist = conn.execute(
+            "SELECT name, convert_to_flac FROM watched_artists WHERE id = ?", (artist_id,)
+        ).fetchone()
+        if not artist:
+            raise HTTPException(status_code=404, detail="Artist not found")
+    import_id = start_bulk_import_for_tracks(
+        [(request.artist, request.title)],
+        convert_to_flac=bool(artist[1]),
+        watch_artist_id=artist_id,
+    )
+    return {"success": True, "import_id": import_id}
+
+
+@app.post("/api/watched-artists/check-all")
+def check_all_watched_artists():
+    """Trigger a refresh for all watched artists that are due."""
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        artists = conn.execute("""
+            SELECT id, name FROM watched_artists
+            WHERE enabled = 1
+            AND (last_checked IS NULL
+                 OR datetime(last_checked, '+' || refresh_interval_hours || ' hours') < datetime('now'))
+        """).fetchall()
+
+    if not artists:
+        return {"checked": 0, "message": "No artists due for refresh", "results": []}
+
+    results = []
+    for a in artists:
+        result = refresh_watched_artist(a["id"])
+        results.append(result)
+
+    total_new = sum(r.get("new_tracks", 0) for r in results)
+    return {
+        "checked": len(results),
+        "total_new_tracks": total_new,
+        "results": results,
     }
 
 
