@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.2.7 (2026-03-02)
+
+### Fixed
+- **ListenBrainz "Created for You" playlists added empty**: The `/playlists/createdfor` listing endpoint always returns `"track": []` for each entry, just an index, not a full data dump. Tracks only exist on the per-playlist JSPF endpoint. The code was parsing tracks from the listing response and getting nothing. Each playlist is now fetched individually during the fan-out; any that fail (e.g. a rotated UUID) are skipped with a log line rather than aborting the whole import
+- **Watched track mismatch on visually identical titles**: YouTube channel owners frequently use fullwidth Unicode punctuation, `｜` (U+FF5C) instead of `|`, `－` (U+FF0D) instead of `-`, in video titles. The normalisation function's pipe-strip regex only matched the ASCII form, so titles that looked identical in the log were producing different normalised strings and triggering spurious mismatch deletes. Both characters are now mapped to their ASCII equivalents early in normalisation, before any regex runs
+
 ## v2.2.6 (2026-03-01)
 
 ### Fixed

@@ -643,7 +643,11 @@
                 <button onclick="closeReleaseNotes()" style="background:none; border:none; font-size:18px; color:var(--text-secondary); cursor:pointer; padding:0 4px; line-height:1;" title="Close">&#x2715;</button>
             </div>
             <div id="releaseNotesBody" style="overflow-y:auto; font-size:13px; line-height:1.6; color:var(--text-secondary); flex:1;"></div>
-            <div style="display:flex; justify-content:flex-end;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+                <div class="release-notes-nav">
+                    <button type="button" id="releaseNotesOlderBtn" class="release-notes-nav-btn" onclick="showOlderReleaseNotes()" title="Older release notes" aria-label="Older release notes">&#x2039;</button>
+                    <button type="button" id="releaseNotesNewerBtn" class="release-notes-nav-btn" onclick="showNewerReleaseNotes()" title="Newer release notes" aria-label="Newer release notes">&#x203A;</button>
+                </div>
                 <button onclick="closeReleaseNotes()" style="padding:8px 20px; font-size:12px; font-family:inherit; font-weight:600; background:var(--accent); color:#000; border:none; border-radius:6px; cursor:pointer;">Got it</button>
             </div>
         </div>

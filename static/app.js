@@ -4,12 +4,39 @@
         // RELEASE_NOTES is defined in release-notes.js, loaded before this file.
         // To update release notes for a new version, edit static/release-notes.js only.
 
-        function showReleaseNotes(version) {
-            // Strip pre-release suffixes (-dev, -beta, -rc1, etc.) so dev builds
-            // show the same notes as the release they're building toward.
-            const baseVersion = (version || '').replace(/[-+].+$/, '');
-            const notes = RELEASE_NOTES[baseVersion];
+        const releaseNotesVersions = Object.keys(RELEASE_NOTES).sort((a, b) => {
+            const aParts = a.split('.').map(n => parseInt(n, 10) || 0);
+            const bParts = b.split('.').map(n => parseInt(n, 10) || 0);
+            const maxLen = Math.max(aParts.length, bParts.length);
+            for (let i = 0; i < maxLen; i++) {
+                const av = aParts[i] || 0;
+                const bv = bParts[i] || 0;
+                if (av !== bv) return bv - av;
+            }
+            return 0;
+        });
+        let currentReleaseNotesIndex = -1;
+
+        function updateReleaseNotesPager() {
+            const olderBtn = document.getElementById('releaseNotesOlderBtn');
+            const newerBtn = document.getElementById('releaseNotesNewerBtn');
+            if (!olderBtn || !newerBtn) return;
+
+            const atNewest = currentReleaseNotesIndex <= 0;
+            const atOldest = currentReleaseNotesIndex >= releaseNotesVersions.length - 1;
+
+            olderBtn.disabled = atOldest;
+            newerBtn.disabled = atNewest;
+        }
+
+        function renderReleaseNotes(index) {
+            if (index < 0 || index >= releaseNotesVersions.length) return;
+
+            const version = releaseNotesVersions[index];
+            const notes = RELEASE_NOTES[version];
             if (!notes) return;
+
+            currentReleaseNotesIndex = index;
 
             const overlay = document.getElementById('releaseNotesOverlay');
             const titleEl = document.getElementById('releaseNotesTitle');
@@ -32,7 +59,29 @@
                 return html;
             }).join('');
 
+            updateReleaseNotesPager();
             overlay.style.display = 'flex';
+        }
+
+        function showReleaseNotes(version) {
+            // Strip pre-release suffixes (-dev, -beta, -rc1, etc.) so dev builds
+            // show the same notes as the release they're building toward.
+            const baseVersion = (version || '').replace(/[-+].+$/, '');
+            const targetIndex = releaseNotesVersions.indexOf(baseVersion);
+            if (targetIndex === -1) return;
+            renderReleaseNotes(targetIndex);
+        }
+
+        function showOlderReleaseNotes() {
+            if (currentReleaseNotesIndex < releaseNotesVersions.length - 1) {
+                renderReleaseNotes(currentReleaseNotesIndex + 1);
+            }
+        }
+
+        function showNewerReleaseNotes() {
+            if (currentReleaseNotesIndex > 0) {
+                renderReleaseNotes(currentReleaseNotesIndex - 1);
+            }
         }
 
         function closeReleaseNotes() {

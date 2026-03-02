@@ -385,7 +385,13 @@ def fetch_listenbrainz_createdfor(username: str) -> list[dict]:
         playlist_uuid = uuid_match.group(1)
         # Store the canonical per-playlist URL (without trailing slash for consistency)
         playlist_url = f"https://listenbrainz.org/playlist/{playlist_uuid}"
-        tracks = _parse_listenbrainz_jspf_tracks(playlist)
+        # The listing endpoint always returns track:[] — tracks only exist on the
+        # per-playlist JSPF endpoint, so we have to fetch each one individually.
+        try:
+            tracks, _ = _fetch_listenbrainz_playlist(playlist_uuid)
+        except HTTPException as e:
+            print(f"ListenBrainz: skipping playlist '{name}' ({playlist_uuid}): {e.detail}")
+            continue
         results.append({
             "playlist_url": playlist_url,
             "playlist_uuid": playlist_uuid,

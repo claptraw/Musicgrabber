@@ -7,6 +7,22 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.2.7": {
+        title: "What's New in v2.2.7",
+        sections: [
+            {
+                heading: "What is Music Grabber?",
+                body: "Music Grabber is a self-hosted tool for grabbing individual tracks. You heard something on the radio, in a film, at a party - you want that song. It searches YouTube, SoundCloud, and Monochrome (Tidal lossless) in parallel, downloads the best quality version, and drops it neatly into your library. It is not Lidarr. It does not manage your collection. It just gets the track. This is a personal pet project, actively developed but rough around the edges. If something breaks, please check the issue tracker before raising a duplicate."
+            },
+            {
+                heading: "Bug fixes in this version",
+                items: [
+                    "Watched track matching no longer falls over when YouTube uses fullwidth Unicode punctuation (｜ instead of |, － instead of -) in video titles. Titles that looked identical in the logs but weren't are now correctly matched",
+                    "ListenBrainz 'Created for You' playlists now actually populate with tracks when added as a watched playlist. The listing API returns empty track arrays - each playlist has to be fetched individually to get its contents, which we weren't doing"
+                ]
+            }
+        ]
+    },
     "2.2.6": {
         title: "What's New in v2.2.6",
         sections: [
