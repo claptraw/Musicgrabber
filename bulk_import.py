@@ -84,6 +84,7 @@ def start_bulk_import_for_tracks(
     watch_playlist_id: Optional[str] = None,
     use_playlists_dir: bool = False,
     watch_artist_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> str:
     """Create a bulk import job from a list of (artist, title) tuples."""
     import_id = str(uuid.uuid4())[:8]
@@ -92,10 +93,10 @@ def start_bulk_import_for_tracks(
         conn.execute(
             """INSERT INTO bulk_imports
                (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac,
-                watch_playlist_id, use_playlists_dir, watch_artist_id)
-               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?)""",
+                watch_playlist_id, use_playlists_dir, watch_artist_id, user_id)
+               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?)""",
             (import_id, len(tracks), int(convert_to_flac), watch_playlist_id,
-             int(use_playlists_dir), watch_artist_id)
+             int(use_playlists_dir), watch_artist_id, user_id)
         )
 
         for line_num, (artist, song) in enumerate(tracks, 1):
@@ -131,6 +132,7 @@ def process_bulk_import_worker(import_id: str):
         watch_playlist_id = import_row["watch_playlist_id"]
         watch_artist_id = import_row["watch_artist_id"]
         use_playlists_dir = bool(import_row["use_playlists_dir"])
+        user_id = import_row["user_id"]
 
         # For watched playlist imports, playlist_name is stored as NULL in bulk_imports.
         # Fetch the actual name from watched_playlists so folder routing works correctly.
@@ -223,15 +225,15 @@ def process_bulk_import_worker(import_id: str):
                 with db_conn() as conn:
                     if create_playlist:
                         conn.execute(
-                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name, source, source_url, convert_to_flac) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (job_id, video_id, song, artist, "queued", "single", import_id, source, source_url, int(convert_to_flac))
+                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name, source, source_url, convert_to_flac, user_id) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (job_id, video_id, song, artist, "queued", "single", import_id, source, source_url, int(convert_to_flac), user_id)
                         )
                     else:
                         conn.execute(
-                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, source_url, convert_to_flac) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (job_id, video_id, song, artist, "queued", "single", source, source_url, int(convert_to_flac))
+                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, source_url, convert_to_flac, user_id) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (job_id, video_id, song, artist, "queued", "single", source, source_url, int(convert_to_flac), user_id)
                         )
 
                     conn.execute(
@@ -262,10 +264,12 @@ def process_bulk_import_worker(import_id: str):
                 _pname = playlist_name if use_playlists_dir else None
                 if source == "mp3phoenix":
                     spawn_daemon_thread(process_download, job_id, video_id, convert_to_flac,
-                                        source_url, _pname, use_playlists_dir)
+                                        source_url, _pname, use_playlists_dir,
+                                        user_id=user_id)
                 else:
                     _download_pool.submit(process_download, job_id, video_id, convert_to_flac,
-                                          source_url, _pname, use_playlists_dir)
+                                          source_url, _pname, use_playlists_dir,
+                                          user_id=user_id)
 
             except Exception as e:
                 with db_conn() as conn:
@@ -310,7 +314,8 @@ def process_bulk_import_worker(import_id: str):
             status=bulk_status,
             track_count=final_total,
             failed_count=final_failed,
-            skipped_count=final_skipped
+            skipped_count=final_skipped,
+            user_id=user_id,
         )
 
         # Create playlist if requested
@@ -336,5 +341,6 @@ def process_bulk_import_worker(import_id: str):
             notification_type="error",
             title=playlist_name or f"Bulk import {import_id}",
             status="failed",
-            error=str(e)
+            error=str(e),
+            user_id=user_id,
         )

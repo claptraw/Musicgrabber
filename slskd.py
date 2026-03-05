@@ -22,33 +22,32 @@ from settings import get_setting
 from youtube import score_search_result
 
 
-# slskd auth token cache
-_slskd_token = None
-_slskd_token_expires = 0
+# slskd auth token cache, keyed by (url, user) so different users
+# with different slskd instances get their own tokens
+_slskd_token_cache: dict[tuple[str, str], tuple[str, float]] = {}
 
 
-def slskd_enabled() -> bool:
+def slskd_enabled(user_id: str | None = None) -> bool:
     """Check if slskd integration is configured"""
-    url = get_setting("slskd_url")
-    user = get_setting("slskd_user")
-    password = get_setting("slskd_pass")
+    url = get_setting("slskd_url", user_id=user_id)
+    user = get_setting("slskd_user", user_id=user_id)
+    password = get_setting("slskd_pass", user_id=user_id)
     return bool(url and user and password)
 
 
-def get_slskd_token() -> Optional[str]:
+def get_slskd_token(user_id: str | None = None) -> Optional[str]:
     """Get a valid slskd auth token, refreshing if needed"""
-    global _slskd_token, _slskd_token_expires
+    url = get_setting("slskd_url", user_id=user_id)
+    user = get_setting("slskd_user", user_id=user_id)
+    password = get_setting("slskd_pass", user_id=user_id)
 
-    if not slskd_enabled():
+    if not (url and user and password):
         return None
 
-    # Return cached token if still valid (with 60s buffer)
-    if _slskd_token and time.time() < _slskd_token_expires - 60:
-        return _slskd_token
-
-    url = get_setting("slskd_url")
-    user = get_setting("slskd_user")
-    password = get_setting("slskd_pass")
+    cache_key = (url, user)
+    cached = _slskd_token_cache.get(cache_key)
+    if cached and time.time() < cached[1] - 60:
+        return cached[0]
 
     try:
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
@@ -58,9 +57,10 @@ def get_slskd_token() -> Optional[str]:
             )
             if response.status_code == 200:
                 data = response.json()
-                _slskd_token = data["token"]
-                _slskd_token_expires = data["expires"]
-                return _slskd_token
+                token = data["token"]
+                expires = data["expires"]
+                _slskd_token_cache[cache_key] = (token, expires)
+                return token
     except Exception as e:
         print(f"slskd auth failed: {e}")
 

@@ -28,7 +28,8 @@ RUN pip install --no-cache-dir \
     pydantic~=2.12.5 \
     mutagen~=1.47.0 \
     playwright~=1.58.0 \
-    apprise~=1.9.3
+    apprise~=1.9.3 \
+    bcrypt~=4.2.0
 
 # Install Playwright browsers into a fixed path so non-root users (PUID/PGID) can find them.
 # Without this, Playwright falls back to ~/.cache/ms-playwright which resolves differently per user.
@@ -49,12 +50,12 @@ RUN mkdir -p /data
 # Make entrypoint executable
 RUN chmod +x /app/entrypoint.sh
 
-# Expose port
+# Expose port (default; override with LISTEN_PORT env var)
 EXPOSE 8080
 
-# Health check
+# Health check - uses LISTEN_PORT if set, falls back to 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/ || exit 1
+    CMD curl -f http://localhost:${LISTEN_PORT:-8080}/ || exit 1
 
 # Run the application
 CMD ["/app/entrypoint.sh"]

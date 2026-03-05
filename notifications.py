@@ -74,9 +74,9 @@ def _build_notification_message(
     return "\n".join(lines), subject
 
 
-def _should_notify(notification_type: str, status: str, error: str = None) -> bool:
+def _should_notify(notification_type: str, status: str, error: str = None, user_id: str | None = None) -> bool:
     """Check if notifications should be sent for this type."""
-    notify_on = get_setting("notify_on", "playlists,bulk,errors")
+    notify_on = get_setting("notify_on", "playlists,bulk,errors", user_id=user_id)
     enabled_types = [t.strip().lower() for t in notify_on.split(",")]
 
     type_map = {
@@ -92,9 +92,9 @@ def _should_notify(notification_type: str, status: str, error: str = None) -> bo
     return config_type in enabled_types or (is_error and "errors" in enabled_types)
 
 
-def _send_telegram(message: str):
+def _send_telegram(message: str, user_id: str | None = None):
     """Send notification via Telegram webhook."""
-    telegram_url = get_setting("telegram_webhook_url")
+    telegram_url = get_setting("telegram_webhook_url", user_id=user_id)
     if not telegram_url:
         return
 
@@ -105,19 +105,19 @@ def _send_telegram(message: str):
         pass
 
 
-def _send_email(subject: str, message: str):
+def _send_email(subject: str, message: str, user_id: str | None = None):
     """Send notification via SMTP email."""
-    smtp_host = get_setting("smtp_host")
-    smtp_to = get_setting("smtp_to")
+    smtp_host = get_setting("smtp_host", user_id=user_id)
+    smtp_to = get_setting("smtp_to", user_id=user_id)
 
     if not smtp_host or not smtp_to:
         return
 
-    smtp_port = get_setting_int("smtp_port", 587)
-    smtp_user = get_setting("smtp_user")
-    smtp_pass = get_setting("smtp_pass")
-    smtp_from = get_setting("smtp_from")
-    smtp_tls = get_setting_bool("smtp_tls", True)
+    smtp_port = get_setting_int("smtp_port", 587, user_id=user_id)
+    smtp_user = get_setting("smtp_user", user_id=user_id)
+    smtp_pass = get_setting("smtp_pass", user_id=user_id)
+    smtp_from = get_setting("smtp_from", user_id=user_id)
+    smtp_tls = get_setting_bool("smtp_tls", True, user_id=user_id)
 
     try:
         msg = MIMEText(message)
@@ -150,10 +150,11 @@ def _send_webhook(
     track_count: int = None,
     failed_count: int = None,
     skipped_count: int = None,
-    playlist_name: str = None
+    playlist_name: str = None,
+    user_id: str | None = None,
 ):
     """Send notification via generic webhook POST."""
-    webhook_url = get_setting("webhook_url")
+    webhook_url = get_setting("webhook_url", user_id=user_id)
     if not webhook_url:
         return
 
@@ -185,9 +186,9 @@ def _send_webhook(
         pass
 
 
-def _send_apprise(title: str, message: str):
+def _send_apprise(title: str, message: str, user_id: str | None = None):
     """Send notification via Apprise (supports Gotify, ntfy, Discord, Pushover, and 50+ more)."""
-    url = get_setting("apprise_url")
+    url = get_setting("apprise_url", user_id=user_id)
     if not url:
         return
 
@@ -210,9 +211,10 @@ def send_notification(
     track_count: int = None,
     failed_count: int = None,
     skipped_count: int = None,
-    playlist_name: str = None
+    playlist_name: str = None,
+    user_id: str | None = None,
 ):
-    """Send notifications to all configured channels (Telegram, Email).
+    """Send notifications to all configured channels (Telegram, Email, Apprise, webhook).
 
     Args:
         notification_type: One of 'single', 'playlist', 'bulk', 'error'
@@ -225,8 +227,9 @@ def send_notification(
         failed_count: Number of failed tracks
         skipped_count: Number of skipped tracks
         playlist_name: Name of playlist (for playlist downloads)
+        user_id: User whose notification settings to use (None = global)
     """
-    if not _should_notify(notification_type, status, error):
+    if not _should_notify(notification_type, status, error, user_id=user_id):
         return
 
     message, subject = _build_notification_message(
@@ -234,11 +237,12 @@ def send_notification(
         error, track_count, failed_count, skipped_count, playlist_name
     )
 
-    _send_telegram(message)
-    _send_email(subject, message)
-    _send_apprise(subject, message)
+    _send_telegram(message, user_id=user_id)
+    _send_email(subject, message, user_id=user_id)
+    _send_apprise(subject, message, user_id=user_id)
     _send_webhook(
         notification_type, title, artist, source, status,
-        error, track_count, failed_count, skipped_count, playlist_name
+        error, track_count, failed_count, skipped_count, playlist_name,
+        user_id=user_id,
     )
 

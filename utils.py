@@ -146,7 +146,7 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
     return artist.strip() or "Unknown Artist", fallback_title
 
 
-def check_duplicate(artist: str, title: str) -> Optional[Path]:
+def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Optional[Path]:
     """Check if a track already exists in the library (any audio format).
 
     Checks the current download directory (artist subfolder or flat) and also
@@ -161,9 +161,9 @@ def check_duplicate(artist: str, title: str) -> Optional[Path]:
         # Check both possible locations so mode switches don't cause re-downloads.
         # Each entry is (directory, stems_to_check).
         checks = [
-            (get_download_dir(artist), [sanitized_title, artist_title_stem]),  # current mode
-            (get_singles_dir() / sanitize_filename(artist), [sanitized_title, artist_title_stem]),  # artist subfolder
-            (get_singles_dir(), [sanitized_title, artist_title_stem]),          # flat
+            (get_download_dir(artist, user_id=user_id), [sanitized_title, artist_title_stem]),  # current mode
+            (get_singles_dir(user_id=user_id) / sanitize_filename(artist), [sanitized_title, artist_title_stem]),  # artist subfolder
+            (get_singles_dir(user_id=user_id), [sanitized_title, artist_title_stem]),          # flat
         ]
         seen = set()
         for d, stems in checks:

@@ -45,6 +45,13 @@
             titleEl.textContent = notes.title;
 
             bodyEl.innerHTML = notes.sections.map(section => {
+                if (section.warning) {
+                    return `<div style="margin-bottom:16px; padding:12px 14px; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.4); border-radius:6px;">` +
+                        `<div style="font-size:12px; font-weight:700; color:#f59e0b; margin-bottom:6px; text-transform:uppercase; letter-spacing:0.05em;">&#9888; ${escapeHtml(section.heading)}</div>` +
+                        `<p style="margin:0; color:var(--text-secondary);">${escapeHtml(section.warning)}</p>` +
+                        (section.items ? `<ul style="margin:8px 0 0; padding-left:18px; color:var(--text-secondary);">${section.items.map(item => `<li style="margin-bottom:4px;">${escapeHtml(item)}</li>`).join('')}</ul>` : '') +
+                        `</div>`;
+                }
                 let html = `<div style="margin-bottom:16px;">`;
                 html += `<div style="font-size:12px; font-weight:600; color:var(--text-primary); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.05em;">${escapeHtml(section.heading)}</div>`;
                 if (section.body) {
@@ -100,72 +107,240 @@
         });
 
         // =============================================================================
-        // API Authentication
+        // Session Authentication
         // =============================================================================
 
-        let authRequired = false;
         let serverConfig = {}; // Populated from /api/config at startup
 
-        function getApiKey() {
-            return localStorage.getItem('apiKey') || '';
+        function getSessionToken() {
+            return localStorage.getItem('sessionToken') || '';
         }
 
-        function setApiKey(key) {
-            if (key) {
-                localStorage.setItem('apiKey', key);
-            } else {
-                localStorage.removeItem('apiKey');
+        function setSessionToken(token) {
+            if (token) localStorage.setItem('sessionToken', token);
+            else localStorage.removeItem('sessionToken');
+        }
+
+        function getCurrentUser() {
+            try {
+                return JSON.parse(localStorage.getItem('currentUser') || 'null');
+            } catch { return null; }
+        }
+
+        function setCurrentUser(user) {
+            if (user) localStorage.setItem('currentUser', JSON.stringify(user));
+            else localStorage.removeItem('currentUser');
+        }
+
+        function isAdmin() {
+            const user = getCurrentUser();
+            // In single-user mode (no users_exist), user is null but we treat as admin.
+            // In session mode, check the role.
+            return !user || user.role === 'admin';
+        }
+
+        // Namespaced localStorage key — keeps per-user preferences separate on shared browsers.
+        // Session-global keys (theme, seen_version, sessionToken, etc.) are NOT namespaced.
+        function userStorageKey(key) {
+            const user = getCurrentUser();
+            return user && user.id ? `mg_${user.id}_${key}` : `mg_${key}`;
+        }
+
+        function buildJobDownloadPath(jobId) {
+            return `/api/jobs/${encodeURIComponent(String(jobId || ''))}/download`;
+        }
+
+        async function getJobDownloadUrl(jobId) {
+            if (!serverConfig?.users_exist) return buildJobDownloadPath(jobId);
+            const resp = await apiFetch('/api/auth/download-token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ job_id: String(jobId || '') }),
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                throw new Error(data.detail || 'Unable to issue download token');
             }
+            const data = await resp.json();
+            return data.url || buildJobDownloadPath(jobId);
         }
 
-        function jobDownloadUrl(jobId) {
-            const key = getApiKey();
-            return `/api/jobs/${jobId}/download${key ? '?api_key=' + encodeURIComponent(key) : ''}`;
-        }
-
-        function promptForApiKey(message = 'This server requires an API key to access.') {
-            const key = prompt(message + '\n\nEnter your API key:');
-            if (key) {
-                setApiKey(key);
-                return true;
+        async function saveJobToDevice(jobId) {
+            try {
+                const url = await getJobDownloadUrl(jobId);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = '';
+                a.rel = 'noopener';
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            } catch (error) {
+                showToast('Failed to start download', true);
             }
-            return false;
         }
 
         async function apiFetch(url, options = {}) {
-            const apiKey = getApiKey();
-
-            // Merge headers with API key
-            const headers = {
-                ...options.headers
-            };
-
-            if (apiKey) {
-                headers['X-API-Key'] = apiKey;
+            const token = getSessionToken();
+            const headers = { ...options.headers };
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
             }
+            const response = await fetch(url, { ...options, headers });
 
-            const response = await fetch(url, {
-                ...options,
-                headers
-            });
-
-            // Handle auth failures
             if (response.status === 401) {
-                if (promptForApiKey('Authentication failed. Please check your API key.')) {
-                    // Retry with new key
-                    return apiFetch(url, options);
+                // Session expired or invalid — clear local state and show login screen
+                if (serverConfig && serverConfig.users_exist) {
+                    setSessionToken(null);
+                    setCurrentUser(null);
+                    showLoginScreen();
                 }
                 throw new Error('Authentication required');
             }
 
-            // Handle rate limiting
             if (response.status === 429) {
-                const retryAfter = response.headers.get('Retry-After') || 60;
-                showToast(`Rate limited. Try again in ${retryAfter} seconds.`, true);
-                throw new Error('Rate limited');
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data.detail || 'Rate limit exceeded');
             }
 
             return response;
+        }
+
+        // =============================================================================
+        // Login / Logout / Password Change
+        // =============================================================================
+
+        function showLoginScreen() {
+            document.getElementById('loginScreen').style.display = 'flex';
+            document.getElementById('app').style.display = 'none';
+            document.getElementById('loginError').style.display = 'none';
+            document.getElementById('loginPassword').value = '';
+            setTimeout(() => document.getElementById('loginUsername').focus(), 50);
+        }
+
+        function hideLoginScreen() {
+            document.getElementById('loginScreen').style.display = 'none';
+            document.getElementById('app').style.display = '';
+        }
+
+        async function doLogin() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            const errorDiv = document.getElementById('loginError');
+            const btn = document.getElementById('loginBtn');
+
+            if (!username || !password) {
+                errorDiv.textContent = 'Please enter username and password.';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            btn.disabled = true;
+            errorDiv.style.display = 'none';
+
+            try {
+                const resp = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password }),
+                });
+
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    errorDiv.textContent = data.detail || 'Invalid username or password.';
+                    errorDiv.style.display = 'block';
+                    return;
+                }
+
+                const data = await resp.json();
+                setSessionToken(data.token);
+                setCurrentUser(data.user);
+                hideLoginScreen();
+
+                if (data.user.force_password_change) {
+                    showChangePasswordScreen(true);
+                    return;
+                }
+
+                // Reinitialise the app now that we're logged in
+                location.reload();
+            } catch (e) {
+                errorDiv.textContent = 'Login failed. Please try again.';
+                errorDiv.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function doLogout() {
+            try {
+                const token = getSessionToken();
+                if (token) {
+                    await fetch('/api/auth/logout', {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}` },
+                    });
+                }
+            } catch {}
+            setSessionToken(null);
+            setCurrentUser(null);
+            location.reload();
+        }
+
+        function showChangePasswordScreen(forced = false) {
+            document.getElementById('changePasswordScreen').style.display = 'flex';
+            document.getElementById('app').style.display = 'none';
+            document.getElementById('changePasswordForced').style.display = forced ? 'block' : 'none';
+            document.getElementById('changePasswordError').style.display = 'none';
+        }
+
+        function hideChangePasswordScreen() {
+            document.getElementById('changePasswordScreen').style.display = 'none';
+            document.getElementById('app').style.display = '';
+        }
+
+        async function doChangePassword() {
+            const currentPw = document.getElementById('changePasswordCurrent').value;
+            const newPw = document.getElementById('changePasswordNew').value;
+            const confirmPw = document.getElementById('changePasswordConfirm').value;
+            const errorDiv = document.getElementById('changePasswordError');
+
+            if (newPw !== confirmPw) {
+                errorDiv.textContent = 'Passwords do not match.';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            if (newPw.length < 8) {
+                errorDiv.textContent = 'Password must be at least 8 characters.';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            try {
+                const resp = await apiFetch('/api/auth/password', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ current_password: currentPw, new_password: newPw }),
+                });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    errorDiv.textContent = data.detail || 'Failed to change password.';
+                    errorDiv.style.display = 'block';
+                    return;
+                }
+                // Update stored user to clear force_password_change
+                const user = getCurrentUser();
+                if (user) {
+                    user.force_password_change = false;
+                    setCurrentUser(user);
+                }
+                hideChangePasswordScreen();
+                location.reload();
+            } catch (e) {
+                errorDiv.textContent = 'Error changing password.';
+                errorDiv.style.display = 'block';
+            }
         }
 
         // =============================================================================
@@ -272,8 +447,13 @@
                 opt.dataset.isWatched = pl.is_watched ? '1' : '0';
                 sel.appendChild(opt);
             }
-            // Restore previous selection if still valid
-            if (current && [...sel.options].some(o => o.value === current)) {
+            // Always keep "New playlist..." as the last option
+            const newOpt = document.createElement('option');
+            newOpt.value = '__new__';
+            newOpt.textContent = '+ New playlist...';
+            sel.appendChild(newOpt);
+            // Restore previous selection if still valid (but not __new__ - that's transient)
+            if (current && current !== '__new__' && [...sel.options].some(o => o.value === current)) {
                 sel.value = current;
             }
         }
@@ -281,8 +461,8 @@
         function getSelectedPlaylist() {
             const panel = document.getElementById('playlistSelector');
             const sel = document.getElementById('playlistSelectorInput');
-            // Return null if the panel is collapsed or no playlist is selected
-            if (!sel || !sel.value || !panel || panel.style.display === 'none') return null;
+            // Return null if the panel is collapsed, no playlist selected, or mid-creation
+            if (!sel || !sel.value || sel.value === '__new__' || !panel || panel.style.display === 'none') return null;
             const opt = sel.options[sel.selectedIndex];
             return { name: sel.value, is_watched: opt && opt.dataset.isWatched === '1' };
         }
@@ -299,6 +479,8 @@
             const panel = document.getElementById('playlistSelector');
             const sel = document.getElementById('playlistSelectorInput');
             const clearBtn = document.getElementById('playlistSelectorClear');
+            const newNameInput = document.getElementById('playlistNewNameInput');
+            const newNameConfirm = document.getElementById('playlistNewNameConfirm');
             if (!row || !toggle || !panel || !sel) return;
 
             // Pre-load playlists in the background but keep the row hidden until results appear
@@ -311,6 +493,7 @@
                     // Collapse and clear selection
                     panel.style.display = 'none';
                     sel.value = '';
+                    _hideNewPlaylistInput();
                     _updatePlaylistSelectorWarning();
                     toggle.textContent = '+ Add to playlist';
                     toggle.classList.remove('active');
@@ -322,13 +505,74 @@
                 }
             });
 
-            sel.addEventListener('change', _updatePlaylistSelectorWarning);
+            sel.addEventListener('change', () => {
+                if (sel.value === '__new__') {
+                    _showNewPlaylistInput();
+                } else {
+                    _hideNewPlaylistInput();
+                    _updatePlaylistSelectorWarning();
+                }
+            });
+
+            function _showNewPlaylistInput() {
+                if (newNameInput) {
+                    newNameInput.style.display = '';
+                    newNameInput.value = '';
+                    newNameInput.focus();
+                }
+                if (newNameConfirm) newNameConfirm.style.display = '';
+            }
+
+            function _hideNewPlaylistInput() {
+                if (newNameInput) newNameInput.style.display = 'none';
+                if (newNameConfirm) newNameConfirm.style.display = 'none';
+            }
+
+            function _confirmNewPlaylist() {
+                const name = (newNameInput ? newNameInput.value : '').trim();
+                if (!name) { newNameInput && newNameInput.focus(); return; }
+
+                // Check it's not a duplicate of an existing option
+                const existing = [...sel.options].find(o => o.value.toLowerCase() === name.toLowerCase() && o.value !== '__new__');
+                if (existing) {
+                    sel.value = existing.value;
+                    _hideNewPlaylistInput();
+                    _updatePlaylistSelectorWarning();
+                    return;
+                }
+
+                // Insert the new option before the __new__ sentinel
+                const newOpt = document.createElement('option');
+                newOpt.value = name;
+                newOpt.textContent = name;
+                newOpt.dataset.isWatched = '0';
+                const newSentinel = [...sel.options].find(o => o.value === '__new__');
+                sel.insertBefore(newOpt, newSentinel || null);
+                sel.value = name;
+                _hideNewPlaylistInput();
+                _updatePlaylistSelectorWarning();
+            }
+
+            if (newNameConfirm) {
+                newNameConfirm.addEventListener('click', _confirmNewPlaylist);
+            }
+            if (newNameInput) {
+                newNameInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); _confirmNewPlaylist(); }
+                    if (e.key === 'Escape') {
+                        sel.value = '';
+                        _hideNewPlaylistInput();
+                        _updatePlaylistSelectorWarning();
+                    }
+                });
+            }
 
             // X button collapses and clears
             if (clearBtn) {
                 clearBtn.addEventListener('click', () => {
                     panel.style.display = 'none';
                     sel.value = '';
+                    _hideNewPlaylistInput();
                     _updatePlaylistSelectorWarning();
                     toggle.textContent = '+ Add to playlist';
                     toggle.classList.remove('active');
@@ -366,7 +610,7 @@
             const hiddenInput = document.getElementById('settingAudioFormat');
             if (hiddenInput) hiddenInput.value = audioFormat;
 
-            localStorage.setItem('audioFormat', audioFormat);
+            localStorage.setItem(userStorageKey('audioFormat'), audioFormat);
         }
 
         const versionLabel = document.getElementById('versionLabel');
@@ -384,62 +628,96 @@
 
         renderPlaylistServicesText();
 
-        // Load config from server (version, FLAC preference, auth status)
-        fetch('/api/config')
-            .then((response) => response.ok ? response.json() : null)
-            .then((config) => {
-                if (config) {
-                    serverConfig = config;
-                    // Set version label
-                    if (config.version) {
-                        versionLabel.textContent = `v${config.version}`;
-                        // Show release notes once when the version changes (new install or update).
-                        // Compare base versions (strip -dev etc.) so dev builds trigger correctly.
-                        const baseVersion = config.version.replace(/[-+].+$/, '');
-                        const seenVersion = localStorage.getItem('seen_version');
-                        if (seenVersion !== baseVersion && RELEASE_NOTES[baseVersion]) {
-                            showReleaseNotes(config.version);
-                        }
-                    }
-                    // Set convert on/off from server if not saved locally
-                    if (localStorage.getItem('convertToFlac') === null && typeof config.default_convert_to_flac === 'boolean') {
-                        convertToFlacCheckbox.checked = config.default_convert_to_flac;
-                        if (watchedConvertToFlac && !watchedFlacTouched) {
-                            watchedConvertToFlac.checked = config.default_convert_to_flac;
-                        }
-                    }
-                    // Set audio format picker from server if not saved locally
-                    if (localStorage.getItem('audioFormat') === null && config.audio_format) {
-                        setAudioFormat(config.audio_format);
-                    }
-                    // Check if auth is required
-                    authRequired = config.auth_required === true;
-                    if (authRequired && !getApiKey()) {
-                        promptForApiKey();
-                    }
-                    // Show warning if music directory isn't mounted
-                    if (config.volume_mounted === false) {
-                        showVolumeMountWarning();
-                    }
-                    // Show Playlists folder toggle in watched playlist add form if configured
-                    if (config.playlists_subdir) {
-                        const toggle = document.getElementById('watchedPlaylistsDirToggle');
-                        if (toggle) toggle.style.display = 'flex';
-                        const watchedUsePlaylistsDir = document.getElementById('watchedUsePlaylistsDir');
-                        if (watchedUsePlaylistsDir) watchedUsePlaylistsDir.checked = true;
+        // Load config from server then handle auth and app initialisation
+        (async function initApp() {
+            let config = null;
+            try {
+                const resp = await fetch('/api/config');
+                if (resp.ok) config = await resp.json();
+            } catch {}
+
+            if (config) {
+                serverConfig = config;
+
+                // Set version label
+                if (config.version) {
+                    versionLabel.textContent = `v${config.version}`;
+                    // Show release notes once when the version changes (new install or update).
+                    // Compare base versions (strip -dev etc.) so dev builds trigger correctly.
+                    const baseVersion = config.version.replace(/[-+].+$/, '');
+                    const seenVersion = localStorage.getItem('seen_version');
+                    if (seenVersion !== baseVersion && RELEASE_NOTES[baseVersion]) {
+                        showReleaseNotes(config.version);
                     }
                 }
-            })
-            .catch(() => {});
 
-        // Restore convert on/off from localStorage
-        const savedFlacPref = localStorage.getItem('convertToFlac');
+                // Set convert on/off from server if not saved locally
+                if (localStorage.getItem(userStorageKey('convertToFlac')) === null && typeof config.default_convert_to_flac === 'boolean') {
+                    convertToFlacCheckbox.checked = config.default_convert_to_flac;
+                    if (watchedConvertToFlac && !watchedFlacTouched) {
+                        watchedConvertToFlac.checked = config.default_convert_to_flac;
+                    }
+                }
+
+                // Set audio format picker from server if not saved locally
+                if (localStorage.getItem(userStorageKey('audioFormat')) === null && config.audio_format) {
+                    setAudioFormat(config.audio_format);
+                }
+
+                // Multi-user: check if we need a login screen
+                if (config.users_exist) {
+                    const token = getSessionToken();
+                    if (!token) {
+                        showLoginScreen();
+                        return;
+                    }
+                    // Validate existing session
+                    try {
+                        const meResp = await apiFetch('/api/auth/me');
+                        if (!meResp.ok) {
+                            setSessionToken(null);
+                            setCurrentUser(null);
+                            showLoginScreen();
+                            return;
+                        }
+                        const user = await meResp.json();
+                        setCurrentUser(user);
+                        if (user.force_password_change) {
+                            showChangePasswordScreen(true); // forced
+                            return;
+                        }
+                    } catch {
+                        showLoginScreen();
+                        return;
+                    }
+                }
+
+                // Show warning if music directory isn't mounted
+                if (config.volume_mounted === false) {
+                    showVolumeMountWarning();
+                }
+
+                // Show Playlists folder toggle in watched playlist add form if configured
+                if (config.playlists_subdir) {
+                    const toggle = document.getElementById('watchedPlaylistsDirToggle');
+                    if (toggle) toggle.style.display = 'flex';
+                    const watchedUsePlaylistsDir = document.getElementById('watchedUsePlaylistsDir');
+                    if (watchedUsePlaylistsDir) watchedUsePlaylistsDir.checked = true;
+                }
+            }
+
+            // Single-user mode OR successful session — apply role-based UI
+            applyUserRoleToUI();
+        })();
+
+        // Restore convert on/off from localStorage (namespaced per user)
+        const savedFlacPref = localStorage.getItem(userStorageKey('convertToFlac'));
         if (savedFlacPref !== null) {
             convertToFlacCheckbox.checked = savedFlacPref === 'true';
         }
 
-        // Restore audio format picker from localStorage
-        const savedAudioFormat = localStorage.getItem('audioFormat');
+        // Restore audio format picker from localStorage (namespaced per user)
+        const savedAudioFormat = localStorage.getItem(userStorageKey('audioFormat'));
         if (savedAudioFormat) {
             setAudioFormat(savedAudioFormat);
         }
@@ -452,7 +730,7 @@
 
         // Save convert preference when header toggle is flipped
         convertToFlacCheckbox.addEventListener('change', () => {
-            localStorage.setItem('convertToFlac', convertToFlacCheckbox.checked);
+            localStorage.setItem(userStorageKey('convertToFlac'), convertToFlacCheckbox.checked);
             if (watchedConvertToFlac && !watchedFlacTouched) {
                 watchedConvertToFlac.checked = convertToFlacCheckbox.checked;
             }
@@ -481,7 +759,7 @@
                     buttons.forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
                     currentSource = btn.dataset.source;
-                    localStorage.setItem('searchSource', currentSource);
+                    localStorage.setItem(userStorageKey('searchSource'), currentSource);
                 });
             });
         })();
@@ -580,7 +858,7 @@
 
         // Search history management
         function getSearchHistory() {
-            const history = localStorage.getItem('searchHistory');
+            const history = localStorage.getItem(userStorageKey('searchHistory'));
             return history ? JSON.parse(history) : [];
         }
 
@@ -592,7 +870,7 @@
             history.unshift(query);
             // Keep last 10
             history = history.slice(0, 10);
-            localStorage.setItem('searchHistory', JSON.stringify(history));
+            localStorage.setItem(userStorageKey('searchHistory'), JSON.stringify(history));
         }
 
         function showSearchHistory() {
@@ -679,6 +957,7 @@
                 if (currentTab === 'settings') {
                     loadSettings();
                     loadBlacklist();
+                    if (isAdmin()) loadUsers();
                 }
             });
         });
@@ -1012,24 +1291,26 @@
 
         // Render a single result card as an HTML string (mirrors the main renderResults template)
         function _renderOneResult(r, index) {
+            const safeSource = escapeHtml(r.source || '');
+            const safeVideoId = escapeHtml(r.video_id || '');
             return `
                 <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''} ${r.source === 'soulseek' ? 'soulseek' : ''}"
-                     data-video-id="${r.video_id}"
+                     data-video-id="${safeVideoId}"
                      data-index="${index}"
                      data-title="${escapeHtml(r.title)}"
                      data-tooltip="${r.source !== 'soulseek' ? 'Hover to preview, click to download' : 'Click to download'}">
                     ${r.source !== 'soulseek' ? '<div class="preview-indicator">▶</div>' : ''}
-                    ${r.thumbnail ? `<img class="result-thumb" src="${r.thumbnail}" alt="" loading="lazy">` : '<div class="result-thumb"></div>'}
+                    ${r.thumbnail ? `<img class="result-thumb" src="${escapeHtml(r.thumbnail)}" alt="" loading="lazy">` : '<div class="result-thumb"></div>'}
                     <div class="result-info">
                         <div class="result-title">${escapeHtml(r.title)}</div>
                         <div class="result-meta">${formatResultMeta(r)}</div>
                         <div class="result-badges">
-                            <span class="source-badge ${r.source}">${getSourceBadge(r.source)}</span>
+                            <span class="source-badge ${safeSource}">${getSourceBadge(r.source)}</span>
                             ${r.quality ? `<span class="quality-badge ${getQualityBadgeClass(r.quality)}">${formatQualityLabel(r.quality)}</span>` : ''}
                             ${r.duration ? `<span class="result-duration">${r.duration}</span>` : ''}
                         </div>
                     </div>
-                    ${r.source !== 'soulseek' ? `<div class="mobile-actions"><button class="preview-btn" data-video-id="${r.video_id}" data-index="${index}" title="Preview">Preview &#9654;</button></div>` : ''}
+                    ${r.source !== 'soulseek' ? `<div class="mobile-actions"><button class="preview-btn" data-video-id="${safeVideoId}" data-index="${index}" title="Preview">Preview &#9654;</button></div>` : ''}
                 </div>
             `;
         }
@@ -1129,33 +1410,35 @@
             }
 
             // Show the playlist selector row now that there are results to act on
-            if (_playlists.length > 0) {
-                document.getElementById('playlistSelectorRow').style.display = '';
-            }
+            document.getElementById('playlistSelectorRow').style.display = '';
 
-            resultsTab.innerHTML = results.map((r, index) => `
+            resultsTab.innerHTML = results.map((r, index) => {
+                const safeSource = escapeHtml(r.source || '');
+                const safeVideoId = escapeHtml(r.video_id || '');
+                return `
                 <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''} ${r.source === 'soulseek' ? 'soulseek' : ''}"
-                     data-video-id="${r.video_id}"
+                     data-video-id="${safeVideoId}"
                      data-index="${index}"
                      data-title="${escapeHtml(r.title)}"
                      data-tooltip="${r.source !== 'soulseek' ? 'Hover to preview, click to download' : 'Click to download'}">
                     ${r.source !== 'soulseek' ? '<div class="preview-indicator">▶</div>' : ''}
-                    ${r.thumbnail ? `<img class="result-thumb" src="${r.thumbnail}" alt="" loading="lazy">` : '<div class="result-thumb"></div>'}
+                    ${r.thumbnail ? `<img class="result-thumb" src="${escapeHtml(r.thumbnail)}" alt="" loading="lazy">` : '<div class="result-thumb"></div>'}
                     <div class="result-info">
                         <div class="result-title">${escapeHtml(r.title)}</div>
                         <div class="result-meta">${formatResultMeta(r)}</div>
                         <div class="result-badges">
-                            <span class="source-badge ${r.source}">${getSourceBadge(r.source)}</span>
+                            <span class="source-badge ${safeSource}">${getSourceBadge(r.source)}</span>
                             ${r.quality ? `<span class="quality-badge ${getQualityBadgeClass(r.quality)}">${formatQualityLabel(r.quality)}</span>` : ''}
                             ${r.duration ? `<span class="result-duration">${r.duration}</span>` : ''}
                         </div>
                     </div>
                     <div class="mobile-actions">
-                        ${r.source !== 'soulseek' ? `<button class="preview-btn" data-video-id="${r.video_id}" data-index="${index}" title="Preview">Preview &#9654;</button>` : ''}
+                        ${r.source !== 'soulseek' ? `<button class="preview-btn" data-video-id="${safeVideoId}" data-index="${index}" title="Preview">Preview &#9654;</button>` : ''}
                         <button class="explore-btn" data-artist="${escapeAttr(r.artist || r.channel)}" title="Find similar artists via ListenBrainz">~ Similar</button>
                     </div>
                 </div>
-            `).join('');
+                `;
+            }).join('');
 
             // Add click and hover handlers
             resultsTab.querySelectorAll('.result-item').forEach(item => {
@@ -1333,7 +1616,7 @@
                 const isClickableUrl = sourceUrl.startsWith('https://');
                 const fileDeleted = Number(job.file_deleted || 0) === 1;
                 return `
-                <div class="job-item ${hasDetails ? 'has-details' : ''} ${isExpanded ? 'expanded' : ''}" data-job-id="${job.id}" ${hasDetails ? 'onclick="toggleJobDetails(this)"' : ''}>
+                <div class="job-item ${hasDetails ? 'has-details' : ''} ${isExpanded ? 'expanded' : ''}" data-job-id="${escapeHtml(job.id || '')}" ${hasDetails ? 'onclick="toggleJobDetails(this)"' : ''}>
                     <div class="job-status ${job.status}"></div>
                     <div class="job-info">
                         <div class="job-title">${escapeHtml(job.artist ? `${job.artist} - ${job.title}` : job.title)}${job.status === 'completed_with_errors' ? '<span class="job-warning-badge">ISSUES</span>' : ''}</div>
@@ -1349,12 +1632,12 @@
                             ${job.completed_at ? `<div class="job-details-row"><span class="job-details-label">Completed:</span> ${formatTimeFull(job.completed_at)}</div>` : ''}
                             ${job.completed_at && job.created_at ? `<div class="job-details-row"><span class="job-details-label">Duration:</span> ${formatDuration(job.created_at, job.completed_at)}</div>` : ''}
                             <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
-                                <button onclick="event.stopPropagation(); redownloadJob('${job.id}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Re-download</button>
+                                <button onclick="event.stopPropagation(); redownloadJob('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Re-download</button>
                                 <button class="report-btn" data-job-id="${escapeHtml(job.id || '')}" data-video-id="${escapeHtml(job.video_id || '')}" data-uploader="${escapeHtml(job.uploader || '')}" data-source="${escapeHtml(job.source || 'youtube')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--warning); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Report</button>
                                 ${job.status !== 'failed' ? (fileDeleted
                                     ? `<button disabled style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; cursor: not-allowed; opacity: 0.8;">File Deleted</button>`
                                     : `<button class="delete-file-btn" data-job-id="${escapeHtml(job.id || '')}" data-track-name="${escapeHtml(job.artist ? job.artist + ' - ' + job.title : job.title)}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Delete File</button>
-                                      <a href="${jobDownloadUrl(job.id)}" download onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; text-decoration: none; display: inline-block;"><i class="fa-solid fa-download"></i> Save to device</a>`) : ''}
+                                      <button onclick="event.stopPropagation(); saveJobToDevice('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;"><i class="fa-solid fa-download"></i> Save to device</button>`) : ''}
                             </div>
                         </div>` : ''}
                     </div>
@@ -1920,9 +2203,9 @@
                     return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
                         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(job.artist||'')} - ${escapeHtml(job.title)}">${label}</span>
                         ${date ? `<span style="font-size:11px;color:var(--text-secondary);white-space:nowrap;flex-shrink:0;">${date}</span>` : ''}
-                        <a href="${jobDownloadUrl(job.id)}" download style="flex-shrink:0;padding:4px 10px;font-size:11px;font-family:inherit;font-weight:600;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;cursor:pointer;text-decoration:none;white-space:nowrap;">
+                        <button onclick="saveJobToDevice('${escapeAttr(job.id || '')}')" style="flex-shrink:0;padding:4px 10px;font-size:11px;font-family:inherit;font-weight:600;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;cursor:pointer;white-space:nowrap;">
                             <i class="fa-solid fa-download"></i> Save
-                        </a>
+                        </button>
                     </div>`;
                 }).join('');
                 if (data.pages > 1) {
@@ -2106,6 +2389,9 @@
                 const data = await response.json();
 
                 if (!response.ok) {
+                    if (data.detail === 'spotify_cookies_expired') {
+                        throw new Error('Spotify cookies have expired. Go to Settings to update them.');
+                    }
                     throw new Error(data.detail || 'Failed to fetch playlist');
                 }
 
@@ -2432,6 +2718,9 @@
 
                 if (!response.ok) {
                     const error = await response.json();
+                    if (error.detail === 'spotify_cookies_expired') {
+                        throw new Error('Spotify cookies have expired. Go to Settings to update them.');
+                    }
                     throw new Error(error.detail || 'Failed to add playlist');
                 }
 
@@ -2782,8 +3071,8 @@
                     html += `<div class="track-list-section-header">Downloaded (${sections.downloaded.length})</div>`;
                     html += sections.downloaded.map((t, i) => trackRow(t, `d${i}`, (t, rowId) =>
                         `<span class="track-status-chip track-status-ok">&#10003;</span>
-                         ${t.job_id ? `<a href="${jobDownloadUrl(t.job_id)}" download title="Save this track to your device" class="track-action-btn" style="text-decoration: none;">
-                             <i class="fa-solid fa-download"></i></a>` : ''}
+                         ${t.job_id ? `<button onclick="saveJobToDevice('${escapeAttr(t.job_id)}')" title="Save this track to your device" class="track-action-btn">
+                             <i class="fa-solid fa-download"></i></button>` : ''}
                          <button onclick="replaceTrack('${playlistId}', '${escapeAttr(data.playlist_name)}', '${escapeAttr(t.artist)}', '${escapeAttr(t.title)}', '${t.job_id}', '${rowId}')"
                              class="track-replace-btn" title="Delete this file and search for the correct version">Replace</button>`
                     )).join('');
@@ -2979,7 +3268,7 @@
                             <span style="font-size:13px;font-weight:600;color:var(--text-primary);">${escapeHtml(a.name)}</span>
                             ${a.disambiguation ? `<span style="font-size:11px;color:var(--text-secondary);margin-left:6px;">${escapeHtml(a.disambiguation)}</span>` : ''}
                         </div>
-                        <button class="action-btn" style="padding:4px 10px;font-size:12px;" onclick="selectArtist('${escapeHtml(a.mbid)}','${escapeHtml(a.name).replace(/'/g,"\\'")}')">Select</button>
+                        <button class="action-btn" style="padding:4px 10px;font-size:12px;" onclick="selectArtist('${escapeAttr(a.mbid)}','${escapeAttr(a.name)}')">Select</button>
                     </div>
                 `).join('');
             } catch (e) {
@@ -3056,7 +3345,7 @@
             const listEl = document.getElementById('watchedArtistList');
             if (!artists || artists.length === 0) {
                 stopArtistRefreshPolling();
-                listEl.innerHTML = '<div class="empty-state" style="padding: 1.5rem 0;"><div class="empty-state-icon"><i class="fa-solid fa-user-music"></i></div><p>No artists followed yet</p></div>';
+                listEl.innerHTML = '<div class="empty-state" style="padding: 1.5rem 0;"><div class="empty-state-icon"><i class="fa-solid fa-heart-circle-plus"></i></div><p>No artists followed yet</p></div>';
                 return;
             }
             let anyRunning = false;
@@ -3251,7 +3540,7 @@
                                 ? '<i class="fa-solid fa-clock" style="color:var(--text-secondary);"></i>'
                                 : '<i class="fa-solid fa-xmark" style="color:var(--error);"></i>';
                         const dlBtn = t.downloaded_at && t.job_id
-                            ? `<a href="${jobDownloadUrl(t.job_id)}" download style="padding:2px 8px;font-size:11px;font-family:inherit;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;text-decoration:none;white-space:nowrap;"><i class="fa-solid fa-download"></i></a>`
+                            ? `<button onclick="saveJobToDevice('${escapeAttr(t.job_id)}')" style="padding:2px 8px;font-size:11px;font-family:inherit;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;cursor:pointer;white-space:nowrap;"><i class="fa-solid fa-download"></i></button>`
                             : '';
                         return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;">
                             ${statusIcon}
@@ -3502,7 +3791,7 @@
                         <div style="font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px;">Recent Downloads</div>
                         ${data.recent.map(r => `
                             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px;">
-                                <span class="source-badge ${r.source || 'youtube'}" style="flex-shrink: 0;">${getSourceBadge(r.source || 'youtube')}</span>
+                                <span class="source-badge ${escapeHtml(r.source || 'youtube')}" style="flex-shrink: 0;">${getSourceBadge(r.source || 'youtube')}</span>
                                 <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(r.artist ? `${r.artist} - ${r.title}` : r.title)}</span>
                                 <span style="margin-left: auto; color: var(--text-secondary); white-space: nowrap; flex-shrink: 0;">${r.completed_at ? formatTime(r.completed_at) : ''}</span>
                             </div>
@@ -3529,6 +3818,10 @@
             'singles_subdir': 'settingSinglesSubdir',
             'playlists_subdir': 'settingPlaylistsSubdir',
             'organise_by_artist': 'settingOrganiseByArtist',
+            'source_youtube_enabled': 'settingSourceYoutube',
+            'source_mp3phoenix_enabled': 'settingSourceMp3phoenix',
+            'source_soundcloud_enabled': 'settingSourceSoundcloud',
+            'source_monochrome_enabled': 'settingSourceMonochrome',
             'slskd_url': 'settingSlskdUrl',
             'slskd_user': 'settingSlskdUser',
             'slskd_pass': 'settingSlskdPass',
@@ -3550,6 +3843,7 @@
             'smtp_to': 'settingSmtpTo',
             'smtp_tls': 'settingSmtpTls',
             'youtube_cookies': 'settingYoutubeCookies',
+            'spotify_cookies': 'settingSpotifyCookies',
             'spotify_browser_timeout_seconds': 'settingSpotifyBrowserTimeout',
             'spotify_browser_stall_seconds': 'settingSpotifyBrowserStall',
             'api_key': 'settingApiKey'
@@ -3643,6 +3937,7 @@
 
                 // Show cookie expiry status if cookies are configured
                 _updateCookieExpiryHint();
+                _updateSpotifyCookieHint(settings);
             } catch (error) {
                 console.error('Failed to load settings:', error);
                 showToast('Failed to load settings', true);
@@ -3878,6 +4173,57 @@
             }
         }
 
+        function _updateSpotifyCookieHint(settings) {
+            const banner = document.getElementById('spotifyCookiesExpiredBanner');
+            const hint = document.getElementById('spotifyCookieExpiryHint');
+
+            // Show expired banner when the flag is set and cookies are still present
+            if (banner) {
+                const expired = settings && settings['spotify_cookies_expired'] === true;
+                const hasCookies = settings && settings['spotify_cookies'];
+                banner.style.display = (expired && hasCookies) ? 'block' : 'none';
+            }
+
+            // Expiry hint: parse sp_dc expiry from the Netscape cookie text
+            if (!hint) return;
+            const cookiesText = settings && settings['spotify_cookies'];
+            if (!cookiesText) {
+                hint.style.display = 'none';
+                return;
+            }
+            // Find sp_dc expiry from cookie lines
+            let spDcExpiry = null;
+            for (const line of cookiesText.split('\n')) {
+                const l = line.trim();
+                if (!l || l.startsWith('#')) continue;
+                const parts = l.split('\t');
+                if (parts.length >= 7 && parts[5] === 'sp_dc') {
+                    const exp = parseInt(parts[4], 10);
+                    if (exp > 0) spDcExpiry = exp;
+                    break;
+                }
+            }
+            if (!spDcExpiry) {
+                hint.style.display = 'none';
+                return;
+            }
+            const now = Date.now();
+            const expiryMs = spDcExpiry * 1000;
+            const daysLeft = Math.floor((expiryMs - now) / 86400000);
+            const expiryDate = new Date(expiryMs).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+            hint.style.display = 'block';
+            if (now > expiryMs) {
+                hint.style.color = 'var(--error-color, #e53e3e)';
+                hint.textContent = `sp_dc expired on ${expiryDate} - re-export cookies`;
+            } else if (daysLeft <= 30) {
+                hint.style.color = 'var(--warning-color, #d97706)';
+                hint.textContent = `sp_dc expires in ${daysLeft} day${daysLeft !== 1 ? 's' : ''} (${expiryDate})`;
+            } else {
+                hint.style.color = 'var(--text-secondary)';
+                hint.textContent = `sp_dc valid until ${expiryDate}`;
+            }
+        }
+
         function _updatePathPreviews() {
             const singlesEl = document.getElementById('singlesPathPreview');
             const playlistsEl = document.getElementById('playlistsPathPreview');
@@ -3923,7 +4269,7 @@
         function _injectSettingsClearButtons() {
             // Skip these - they already have dedicated clear mechanisms
             const skipIds = new Set([
-                'settingYoutubeCookies', 'settingSmtpPort', 'settingMinBitrate',
+                'settingYoutubeCookies', 'settingSpotifyCookies', 'settingSmtpPort', 'settingMinBitrate',
                 'settingSpotifyBrowserTimeout', 'settingSpotifyBrowserStall',
                 'customSubdirInput', 'customPlaylistsSubdirInput'
             ]);
@@ -3963,32 +4309,37 @@
         }
 
         function updateBrowserApiKeyStatus() {
+            // In session mode the browser API key row isn't really relevant, but we keep
+            // the element around for backward compatibility. Show a polite "N/A" message.
             const statusEl = document.getElementById('browserApiKeyStatus');
             const clearBtn = document.getElementById('clearApiKeyBtn');
-            const storedKey = getApiKey();
+            if (!statusEl) return;
 
-            if (storedKey) {
-                statusEl.textContent = `Key stored (${storedKey.length} chars)`;
-                statusEl.style.color = 'var(--success)';
-                clearBtn.style.display = 'inline-block';
-            } else {
-                statusEl.textContent = 'No key stored';
+            if (serverConfig && serverConfig.users_exist) {
+                const user = getCurrentUser();
+                statusEl.textContent = user ? `Signed in as ${user.username}` : 'Session mode';
                 statusEl.style.color = 'var(--text-secondary)';
-                clearBtn.style.display = authRequired ? 'inline-block' : 'none';
+                if (clearBtn) clearBtn.style.display = 'none';
+            } else {
+                // Legacy single-user API key mode
+                const storedKey = localStorage.getItem('apiKey') || '';
+                if (storedKey) {
+                    statusEl.textContent = `Key stored (${storedKey.length} chars)`;
+                    statusEl.style.color = 'var(--success)';
+                    if (clearBtn) clearBtn.style.display = 'inline-block';
+                } else {
+                    statusEl.textContent = 'No key stored';
+                    statusEl.style.color = 'var(--text-secondary)';
+                    if (clearBtn) clearBtn.style.display = 'none';
+                }
             }
         }
 
-        // Clear stored API key button
+        // Clear stored (legacy) API key button
         document.getElementById('clearApiKeyBtn')?.addEventListener('click', () => {
-            setApiKey('');
+            localStorage.removeItem('apiKey');
             updateBrowserApiKeyStatus();
             showToast('Stored API key cleared');
-
-            // If auth is required, prompt for new key
-            if (authRequired) {
-                promptForApiKey('API key cleared. Enter a new key to continue using the app.');
-                updateBrowserApiKeyStatus();
-            }
         });
 
         function _syncNotifyOnCheckboxes() {
@@ -4103,6 +4454,9 @@
                 resultDiv.textContent = `Saved ${data.updated.length} setting(s)`;
                 showToast('Settings saved');
 
+                // Refresh Spotify cookie status (expired banner + expiry hint)
+                if (data.settings) _updateSpotifyCookieHint(data.settings);
+
                 // Update original values and clear sensitive fields after save
                 for (const [key, value] of Object.entries(updates)) {
                     if (sensitiveFields.includes(key)) {
@@ -4130,7 +4484,7 @@
                         // Sync header toggle when default_convert_to_flac is saved
                         if (key === 'default_convert_to_flac') {
                             convertToFlacCheckbox.checked = value;
-                            localStorage.setItem('convertToFlac', value);
+                            localStorage.setItem(userStorageKey('convertToFlac'), value);
                             if (watchedConvertToFlac && !watchedFlacTouched) {
                                 watchedConvertToFlac.checked = value;
                             }
@@ -4165,6 +4519,7 @@
         async function testConnection(service) {
             const idMap = {
                 'youtube-cookies': { btn: 'testYoutubeCookiesBtn', result: 'youtubeCookiesTestResult', label: 'Test Cookies' },
+                'spotify-cookies': { btn: 'testSpotifyCookiesBtn', result: 'spotifyCookiesTestResult', label: 'Test Cookies' },
                 'apprise': { btn: 'testAppriseBtn', result: 'appriseTestResult', label: 'Test Apprise' },
             };
             const ids = idMap[service] || { btn: `test${service.charAt(0).toUpperCase() + service.slice(1)}Btn`, result: `${service}TestResult`, label: 'Test Connection' };
@@ -4205,6 +4560,10 @@
                 body = {
                     cookies: document.getElementById('settingYoutubeCookies').value
                 };
+            } else if (service === 'spotify-cookies') {
+                body = {
+                    cookies: document.getElementById('settingSpotifyCookies').value
+                };
             } else if (service === 'apprise') {
                 body = {
                     url: document.getElementById('settingAppriseUrl').value.trim()
@@ -4231,7 +4590,7 @@
                                 rpDiv.textContent = 'Real file paths enabled — M3U playlist entries will use accurate paths';
                                 rpDiv.className = 'test-result success';
                             } else {
-                                rpDiv.innerHTML = data.real_path_hint || '';
+                                rpDiv.textContent = data.real_path_hint || '';
                                 rpDiv.className = 'test-result warning';
                             }
                             rpDiv.style.display = 'block';
@@ -4275,6 +4634,7 @@
         document.getElementById('testNavidromeBtn').addEventListener('click', () => testConnection('navidrome'));
         document.getElementById('testJellyfinBtn').addEventListener('click', () => testConnection('jellyfin'));
         document.getElementById('testYoutubeCookiesBtn').addEventListener('click', () => testConnection('youtube-cookies'));
+        document.getElementById('testSpotifyCookiesBtn').addEventListener('click', () => testConnection('spotify-cookies'));
         document.getElementById('testAppriseBtn').addEventListener('click', () => testConnection('apprise'));
         const uploadYoutubeCookiesBtn = document.getElementById('uploadYoutubeCookiesBtn');
         const youtubeCookiesFile = document.getElementById('youtubeCookiesFile');
@@ -4322,8 +4682,182 @@
             _updateCookieExpiryHint();
         });
 
+        const uploadSpotifyCookiesBtn = document.getElementById('uploadSpotifyCookiesBtn');
+        const spotifyCookiesFile = document.getElementById('spotifyCookiesFile');
+        const spotifyCookiesTextarea = document.getElementById('settingSpotifyCookies');
+        const clearSpotifyCookiesBtn = document.getElementById('clearSpotifyCookiesBtn');
+
+        uploadSpotifyCookiesBtn?.addEventListener('click', () => {
+            spotifyCookiesFile?.click();
+        });
+
+        spotifyCookiesFile?.addEventListener('change', async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            try {
+                const text = await file.text();
+                if (spotifyCookiesTextarea) {
+                    spotifyCookiesTextarea.value = text;
+                }
+                showToast('Cookies loaded, saving...');
+                await saveSettings();
+                showToast('Spotify cookies updated');
+            } catch (error) {
+                console.error('Failed to read Spotify cookies file:', error);
+                showToast('Failed to read cookies file', true);
+            } finally {
+                event.target.value = '';
+            }
+        });
+
+        clearSpotifyCookiesBtn?.addEventListener('click', async () => {
+            if (!spotifyCookiesTextarea) return;
+            spotifyCookiesTextarea.value = '';
+            spotifyCookiesTextarea.dataset.forceClear = 'true';
+            showToast('Clearing Spotify cookies...');
+            await saveSettings();
+            _updateSpotifyCookieHint(null);
+        });
+
         // Audio format segmented buttons (FLAC/Opus) and header toggle are wired
         // through setAudioFormat() - no direct sync needed here.
+
+        // =============================================================================
+        // Multi-User UI
+        // =============================================================================
+
+        function applyUserRoleToUI() {
+            const admin = isAdmin();
+
+            // Toggle visibility of admin-only sections (set inline — no CSS class needed)
+            document.querySelectorAll('.admin-only').forEach(el => {
+                el.style.display = admin ? '' : 'none';
+            });
+
+            // Show logout button only in session mode
+            const logoutBtn = document.getElementById('logoutBtn');
+            if (logoutBtn) {
+                logoutBtn.style.display = serverConfig && serverConfig.users_exist ? '' : 'none';
+            }
+
+            // Show current username in header if in session mode
+            const userDisplay = document.getElementById('currentUserDisplay');
+            if (userDisplay) {
+                const user = getCurrentUser();
+                if (user && serverConfig && serverConfig.users_exist) {
+                    userDisplay.textContent = user.username;
+                    userDisplay.style.display = '';
+                } else {
+                    userDisplay.style.display = 'none';
+                }
+            }
+
+            // Show the "Change my password" button only when in session mode
+            const changePwSection = document.getElementById('changePasswordSection');
+            if (changePwSection) {
+                changePwSection.style.display = (serverConfig && serverConfig.users_exist) ? '' : 'none';
+            }
+        }
+
+        async function loadUsers() {
+            if (!isAdmin()) return;
+            try {
+                const resp = await apiFetch('/api/users');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const listEl = document.getElementById('userList');
+                const warningEl = document.getElementById('firstUserWarning');
+                const roleEl = document.getElementById('newUserRole');
+                if (!listEl) return;
+                const currentUser = getCurrentUser();
+                const noUsers = !data.users || data.users.length === 0;
+
+                // Show the "point of no return" warning and lock role to Admin when
+                // no users exist yet — the first account must always be admin.
+                if (warningEl) warningEl.style.display = noUsers ? 'block' : 'none';
+                if (roleEl) {
+                    if (noUsers) roleEl.value = 'admin';
+                    Array.from(roleEl.options).forEach(o => {
+                        o.disabled = noUsers && o.value !== 'admin';
+                    });
+                }
+
+                listEl.innerHTML = data.users.map(u => `
+                    <div style="display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--border);">
+                        <span style="flex:1; font-weight:${u.id === currentUser?.id ? '600' : '400'};">${escapeHtml(u.username)}</span>
+                        <span style="color:var(--text-secondary); font-size:13px;">${u.role}</span>
+                        ${u.id !== currentUser?.id
+                            ? `<button class="btn-sm" style="background:var(--warning,#b45309);color:#fff;" onclick="forcePasswordReset('${escapeAttr(u.id)}', '${escapeAttr(u.username)}')">Force reset</button>
+                               <button class="btn-sm btn-danger" onclick="deleteUser('${escapeAttr(u.id)}', '${escapeAttr(u.username)}')">Remove</button>`
+                            : `<span style="color:var(--text-secondary); font-size:13px;">(you)</span>`}
+                    </div>
+                `).join('') || '<p style="color:var(--text-secondary); font-size:13px;">No users yet.</p>';
+            } catch {}
+        }
+
+        async function createUser() {
+            const username = document.getElementById('newUserUsername').value.trim();
+            const password = document.getElementById('newUserPassword').value;
+            const role = document.getElementById('newUserRole').value;
+            const errorEl = document.getElementById('createUserError');
+
+            if (!username || !password) {
+                errorEl.textContent = 'Username and password are required.';
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            try {
+                const resp = await apiFetch('/api/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password, role }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    errorEl.textContent = data.detail || 'Failed to create user.';
+                    errorEl.style.display = 'block';
+                    return;
+                }
+                errorEl.style.display = 'none';
+                document.getElementById('newUserUsername').value = '';
+                document.getElementById('newUserPassword').value = '';
+                await loadUsers();
+            } catch {
+                errorEl.textContent = 'Error creating user.';
+                errorEl.style.display = 'block';
+            }
+        }
+
+        async function deleteUser(userId, username) {
+            if (!confirm(`Remove user "${username}"? This cannot be undone.`)) return;
+            try {
+                const resp = await apiFetch(`/api/users/${userId}`, { method: 'DELETE' });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    alert(data.detail || 'Failed to remove user.');
+                    return;
+                }
+                await loadUsers();
+            } catch {
+                alert('Error removing user.');
+            }
+        }
+
+        async function forcePasswordReset(userId, username) {
+            if (!confirm(`Force "${username}" to set a new password on next login?\n\nTheir current sessions will be terminated immediately.`)) return;
+            try {
+                const resp = await apiFetch(`/api/users/${userId}/force-password-change`, { method: 'PUT' });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    alert(data.detail || 'Failed to flag user for password reset.');
+                    return;
+                }
+                await loadUsers();
+            } catch {
+                alert('Error flagging user for password reset.');
+            }
+        }
 
         // Playlist selector - initialise on page load so it's ready before the first search
         initPlaylistSelector();

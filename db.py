@@ -400,6 +400,193 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+        # Multi-user support tables
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            is_active INTEGER DEFAULT 1,
+            force_password_change INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS download_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            used_at TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, key),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """)
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_download_tokens_expires ON download_tokens(expires_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_download_tokens_user ON download_tokens(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_download_tokens_job ON download_tokens(job_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_user_settings_user ON user_settings(user_id)")
+
+        # Multi-user: add user_id to all domain tables
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN user_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_imports ADD COLUMN user_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN user_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE watched_artists ADD COLUMN user_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE blacklist ADD COLUMN user_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE search_logs ADD COLUMN user_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # --- DB version tracking ---
+        # Version is stored in settings as 'db_version' (integer string).
+        # Increment when table recreations or other irreversible migrations run.
+        db_version_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'db_version'"
+        ).fetchone()
+        db_version = int(db_version_row[0]) if db_version_row else 0
+
+        # v1: Relax unique constraints on watched_playlists and watched_artists so
+        # multiple users can independently watch the same URL / artist.
+        # Also scope the search_logs unique index to (user_id, search_token).
+        # SQLite can't drop constraints, so we recreate the affected tables.
+        if db_version < 1:
+            # watched_playlists: url UNIQUE → (user_id, url) UNIQUE
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS watched_playlists_new (
+                id TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                name TEXT,
+                platform TEXT NOT NULL,
+                refresh_interval_hours INTEGER DEFAULT 24,
+                last_checked TIMESTAMP,
+                last_track_count INTEGER DEFAULT 0,
+                enabled INTEGER DEFAULT 1,
+                convert_to_flac INTEGER DEFAULT 1,
+                make_m3u INTEGER DEFAULT 0,
+                use_playlists_dir INTEGER DEFAULT 0,
+                sync_mode TEXT DEFAULT 'append',
+                stale_navidrome_paths INTEGER DEFAULT 0,
+                refresh_state TEXT DEFAULT 'idle',
+                refresh_stage TEXT,
+                refresh_started_at TIMESTAMP,
+                refresh_completed_at TIMESTAMP,
+                refresh_error TEXT,
+                refresh_import_id TEXT,
+                user_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, url)
+            )
+            """)
+            conn.execute("""
+            INSERT OR IGNORE INTO watched_playlists_new
+            SELECT id, url, name, platform, refresh_interval_hours, last_checked,
+                   last_track_count, enabled, convert_to_flac,
+                   COALESCE(make_m3u, 0),
+                   COALESCE(use_playlists_dir, 0),
+                   COALESCE(sync_mode, 'append'),
+                   COALESCE(stale_navidrome_paths, 0),
+                   COALESCE(refresh_state, 'idle'),
+                   refresh_stage, refresh_started_at, refresh_completed_at,
+                   refresh_error, refresh_import_id,
+                   user_id, created_at
+            FROM watched_playlists
+            """)
+            conn.execute("DROP TABLE watched_playlists")
+            conn.execute("ALTER TABLE watched_playlists_new RENAME TO watched_playlists")
+
+            # watched_artists: mbid UNIQUE → (user_id, mbid) UNIQUE
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS watched_artists_new (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                mbid TEXT NOT NULL,
+                from_date TEXT NOT NULL,
+                refresh_interval_hours INTEGER DEFAULT 24,
+                last_checked TIMESTAMP,
+                last_track_count INTEGER DEFAULT 0,
+                enabled INTEGER DEFAULT 1,
+                convert_to_flac INTEGER DEFAULT 1,
+                refresh_state TEXT DEFAULT 'idle',
+                refresh_stage TEXT,
+                refresh_started_at TIMESTAMP,
+                refresh_completed_at TIMESTAMP,
+                refresh_error TEXT,
+                refresh_import_id TEXT,
+                user_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, mbid)
+            )
+            """)
+            conn.execute("""
+            INSERT OR IGNORE INTO watched_artists_new
+            SELECT id, name, mbid, from_date, refresh_interval_hours, last_checked,
+                   last_track_count, enabled, convert_to_flac,
+                   COALESCE(refresh_state, 'idle'),
+                   refresh_stage, refresh_started_at, refresh_completed_at,
+                   refresh_error, refresh_import_id,
+                   user_id, created_at
+            FROM watched_artists
+            """)
+            conn.execute("DROP TABLE watched_artists")
+            conn.execute("ALTER TABLE watched_artists_new RENAME TO watched_artists")
+
+            # search_logs: drop the global unique index on search_token;
+            # uniqueness is now enforced per (user_id, search_token).
+            conn.execute("DROP INDEX IF EXISTS idx_search_logs_search_token")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_search_logs_user_token "
+                "ON search_logs(user_id, search_token) WHERE search_token IS NOT NULL"
+            )
+
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '1')"
+            )
+            print("DB migrated to version 1: multi-user unique constraints applied")
+
         conn.commit()
 
 
@@ -555,6 +742,10 @@ def _stale_job_monitor():
                     reconcile_deleted_library_files()
                     last_reconcile = now
             cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
+            # Bin any sessions that have outstayed their welcome
+            from auth import cleanup_expired_download_tokens, cleanup_expired_sessions
+            cleanup_expired_sessions()
+            cleanup_expired_download_tokens()
             # While we're here, evict any expired YouTube cookies so they don't
             # silently rot in settings causing mysterious 403s
             from youtube import clear_expired_cookies
@@ -568,6 +759,9 @@ def start_stale_job_monitor():
     cleanup_stale_jobs()
     cleanup_stale_watched_refreshes()
     reconcile_deleted_library_files()
+    from auth import cleanup_expired_download_tokens, cleanup_expired_sessions
+    cleanup_expired_sessions()
+    cleanup_expired_download_tokens()
     _stale_monitor_thread = threading.Thread(target=_stale_job_monitor, daemon=True)
     _stale_monitor_thread.start()
 

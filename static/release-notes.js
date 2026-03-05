@@ -7,6 +7,69 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.3.0": {
+        title: "What's New in v2.3.0 - g33kphr33k's Birthday Edition",
+        sections: [
+            {
+                heading: "Important - database migration",
+                warning: "This update modifies the database schema. MusicGrabber will run the migration automatically on first start and it is safe to run on an existing install - no data is lost. That said, take a backup of your /data/music_grabber.db before upgrading, just in case. Downgrading to v2.2.x after running the migration is not supported."
+            },
+            {
+                heading: "Multi-user support",
+                items: [
+                    "Multiple people can now share a MusicGrabber instance without stepping on each other. Each user has their own download history, watched playlists, watched artists, and bulk imports",
+                    "Per-user settings: each user configures their own music directory, Navidrome and Jellyfin credentials, and notification endpoints independently",
+                    "Out of the box, everything works exactly as before - no login required until you create an account. Multi-user mode kicks in the moment you create your first user in Settings",
+                    "Login is username and password, sessions last 30 days, and the old API key still works for scripts and integrations",
+                    "Admin role manages global settings (audio format, slskd, YouTube cookies, Spotify settings) and can create, remove, and reset user accounts",
+                    "YouTube cookies are now per-user, so one user's authenticated downloads don't collide with another's"
+                ]
+            },
+            {
+                heading: "Spotify private playlists",
+                items: [
+                    "Paste your Netscape-format cookies.txt from open.spotify.com into Settings to unlock private playlists, saved albums, and personal library playlists - anything that requires a Spotify login",
+                    "Works per-user, same pattern as YouTube cookies. If the cookies expire mid-use, an amber banner appears in Settings and a clear message is shown when you try to fetch a playlist",
+                    "See the README for step-by-step instructions on exporting cookies from your browser"
+                ]
+            },
+            {
+                heading: "Search source toggles",
+                items: [
+                    "Each search source (YouTube, MP3Phoenix, SoundCloud, Monochrome) can now be individually enabled or disabled in Settings",
+                    "Applies everywhere: search results, watched playlist matching, and bulk imports all skip disabled sources",
+                    "Useful if a source is slow, unreliable, or just not relevant to what you're grabbing",
+                    "Bug fix included: the toggle was silently broken on first release - disabled sources were still appearing in results. Now fixed"
+                ]
+            },
+            {
+                heading: "Search quality improvements",
+                items: [
+                    "Monochrome lossless results now reliably beat 320 kbps MP3 results on equal relevance. The scoring gap between lossless and lossy was too narrow and could be flipped by a small duration scoring nudge",
+                    "A single source can no longer flood the results. Previously, MP3Phoenix could contribute ten near-identical tracks and push a Monochrome lossless result off the page entirely. Each source is now capped at four results in the merged pool before quality scoring decides the final order",
+                    "Tidal variant tracks (e.g. 'Hey Man Nice Shot (½ oz)') no longer float to the top just because they're lossless. Unknown parenthetical suffixes are now treated as a variant signal and penalised accordingly. Standard suffixes like Remastered and Deluxe Edition are unaffected",
+                    "MusicBrainz duration matching is tighter. The old tolerances were calibrated for long tracks; most songs are around 3 minutes, where the previous 25% band was 45 seconds of slop. Bands are now much stricter"
+                ]
+            },
+            {
+                heading: "Security improvements",
+                items: [
+                    "Login brute-force protection: accounts lock after repeated failed attempts",
+                    "File download links are now short-lived single-use tokens - the session token no longer appears in any URL",
+                    "HTTPS-only mode available via HTTPS_ONLY=true environment variable",
+                    "API key in query params is now opt-in (ALLOW_API_KEY_QUERY_PARAM=true) to prevent credentials leaking into proxy logs",
+                    "XSS audit complete - all API data rendered into the page now goes through escapeHtml()"
+                ]
+            },
+            {
+                heading: "Bug fixes",
+                items: [
+                    "Monochrome tracks now respect the audio format setting - if you asked for MP3 or Opus, you'll actually get it instead of quietly keeping FLAC",
+                    "Docker healthcheck now respects the LISTEN_PORT environment variable instead of always probing port 8080"
+                ]
+            }
+        ]
+    },
     "2.2.7": {
         title: "What's New in v2.2.7",
         sections: [

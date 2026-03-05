@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
@@ -31,12 +31,13 @@ from constants import (
     WATCHED_PLAYLIST_CHECK_HOURS,
     SEARCH_LOG_RETENTION_DAYS,
     STALE_JOB_TIMEOUT,
+    DOWNLOAD_TOKEN_TTL_SECONDS,
     AUDIO_EXTENSIONS,
 )
 from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs, cleanup_old_search_logs
 from settings import (
-    get_setting, get_setting_bool, set_setting, get_singles_dir, get_playlists_dir,
-    SETTINGS_SCHEMA, SENSITIVE_SETTINGS, _get_typed_setting, _is_env_override,
+    get_setting, get_setting_bool, set_setting, set_user_setting, get_singles_dir, get_playlists_dir,
+    SETTINGS_SCHEMA, SENSITIVE_SETTINGS, USER_SETTINGS_KEYS, _get_typed_setting, _is_env_override,
 )
 from models import (
     SearchRequest, DownloadRequest, PlaylistFetchRequest,
@@ -44,10 +45,19 @@ from models import (
     WatchedArtistRequest, WatchedArtistUpdate,
     SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestYouTubeCookiesRequest,
-    TestAppriseRequest, RetryMissingTrackRequest,
+    TestAppriseRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest,
     ExploreRequest,
+    LoginRequest, ChangePasswordRequest, CreateUserRequest,
+    SetUserPasswordRequest, SetUserRoleRequest,
+    DownloadTokenRequest,
 )
-from middleware import AuthMiddleware
+from middleware import AuthMiddleware, invalidate_users_cache
+from auth import (
+    verify_password, create_session, delete_session, get_user_by_username,
+    get_user_by_id, list_users, create_user, update_password, delete_user,
+    clear_failed_login, create_download_token, is_login_allowed,
+    password_hash_for_timing, record_failed_login,
+)
 from youtube import (
     _has_valid_cookie_entries, _cookie_lines_for_domain_check, _sync_cookies_file,
     _ytdlp_base_args, _is_ytdlp_403, parse_duration,
@@ -69,6 +79,23 @@ from metadata import search_artist_mbid
 from utils import hash_track, is_valid_youtube_id, spawn_daemon_thread, subsonic_auth_params
 
 URL_BASED_SOURCES = {"soundcloud", "monochrome", "mp3phoenix"}
+
+
+def _user_scope(user_id: str | None, is_admin: bool) -> tuple[str, tuple]:
+    """Return a SQL WHERE fragment and params for scoping rows to the current user.
+
+    Admins see their own rows plus legacy rows (user_id IS NULL) left over from
+    single-user mode. Regular users see only their own rows — legacy rows are
+    the admin's history, not theirs.
+
+    Usage:
+        frag, params = _user_scope(user_id, is_admin)
+        conn.execute(f"SELECT ... FROM jobs WHERE {frag}", params)
+    """
+    if is_admin:
+        return "(user_id = ? OR user_id IS NULL)", (user_id,)
+    return "user_id = ?", (user_id,)
+
 
 # =============================================================================
 # Application Setup
@@ -147,6 +174,9 @@ def get_config():
             pl_rel = str(playlists_dir)
         playlists_example = f"{pl_rel}/Playlist Name/Artist - Title.flac"
 
+    with db_conn() as conn:
+        users_exist = conn.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
+
     return {
         "version": VERSION,
         "default_convert_to_flac": get_setting_bool("default_convert_to_flac", True),
@@ -156,6 +186,8 @@ def get_config():
         "singles_path_example": singles_example,
         "playlists_path_example": playlists_example,
         "auth_required": bool(api_key),
+        "auth_mode": "session",
+        "users_exist": users_exist,
         "volume_mounted": _is_volume_mounted()
     }
 
@@ -275,20 +307,229 @@ def list_playlists():
 
 
 # =============================================================================
+# Auth & User Management Routes
+# =============================================================================
+
+@app.post("/api/auth/login")
+def login(body: LoginRequest):
+    allowed, _retry_after = is_login_allowed(body.username)
+    if not allowed:
+        # Keep the same generic response to avoid leaking account state.
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    user = get_user_by_username(body.username)
+    password_ok = verify_password(body.password, password_hash_for_timing(user))
+    if not user or not user.get("is_active") or not password_ok:
+        record_failed_login(body.username)
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    clear_failed_login(body.username)
+    token = create_session(user["id"])
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "force_password_change": bool(user["force_password_change"]),
+        },
+    }
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request):
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            delete_session(token)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def get_me(request: Request):
+    if request.state.user_id is None:
+        return {"id": None, "username": "admin", "role": "admin", "force_password_change": False}
+    return request.state.user
+
+
+@app.post("/api/auth/download-token")
+def issue_download_token(request: Request, body: DownloadTokenRequest):
+    """Issue a short-lived single-use token for downloading one specific job."""
+    job_id = (body.job_id or "").strip()
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id is required")
+
+    # Single-user mode has no session token in play; direct links are fine.
+    if request.state.user_id is None:
+        return {"url": f"/api/jobs/{job_id}/download", "expires_in": 0}
+
+    user_id = request.state.user_id
+    is_admin = request.state.is_admin
+    with db_conn() as conn:
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        row = conn.execute(
+            f"""SELECT 1 FROM jobs
+                WHERE id = ?
+                  AND status IN ('completed', 'completed_with_errors')
+                  AND COALESCE(file_deleted, 0) = 0
+                  AND {_scope_frag}
+                LIMIT 1""",
+            (job_id, *_scope_params),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    token = create_download_token(user_id, job_id)
+    return {
+        "url": f"/api/jobs/{job_id}/download?download_token={token}",
+        "expires_in": DOWNLOAD_TOKEN_TTL_SECONDS,
+    }
+
+
+@app.put("/api/auth/password")
+def change_own_password(request: Request, body: ChangePasswordRequest):
+    if request.state.user_id is None:
+        raise HTTPException(status_code=400, detail="Password change not available in single-user mode")
+    user = get_user_by_id(request.state.user_id)
+    if not user or not verify_password(body.current_password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Current password incorrect")
+    if not body.new_password or len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    current_token = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        current_token = auth_header[7:].strip() or None
+    update_password(request.state.user_id, body.new_password, keep_session_token=current_token)
+    return {"ok": True}
+
+
+@app.get("/api/users")
+def get_users(request: Request):
+    if not request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return {"users": list_users()}
+
+
+@app.post("/api/users")
+def create_new_user(request: Request, body: CreateUserRequest):
+    if not request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if body.role not in ("admin", "user"):
+        raise HTTPException(status_code=400, detail="Role must be 'admin' or 'user'")
+    if not body.username:
+        raise HTTPException(status_code=400, detail="Username cannot be empty")
+    if not body.password or len(body.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    # First user must be admin — they inherit the single-user instance
+    with db_conn() as conn:
+        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    if user_count == 0 and body.role != "admin":
+        raise HTTPException(status_code=400, detail="The first account must be an admin")
+    try:
+        new_id = create_user(body.username, body.password, body.role)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Username already exists")
+    invalidate_users_cache()
+    return {"ok": True, "user_id": new_id}
+
+
+@app.delete("/api/users/{user_id}")
+def remove_user(request: Request, user_id: str):
+    if not request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if user_id == request.state.user_id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    if not get_user_by_id(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    delete_user(user_id)
+    invalidate_users_cache()
+    return {"ok": True}
+
+
+@app.put("/api/users/{user_id}/password")
+def admin_set_password(request: Request, user_id: str, body: SetUserPasswordRequest):
+    if not request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not get_user_by_id(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    if not body.new_password or len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    update_password(user_id, body.new_password)
+    return {"ok": True}
+
+
+@app.put("/api/users/{user_id}/role")
+def set_user_role(request: Request, user_id: str, body: SetUserRoleRequest):
+    if not request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if body.role not in ("admin", "user"):
+        raise HTTPException(status_code=400, detail="Role must be 'admin' or 'user'")
+    if not get_user_by_id(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    if user_id == request.state.user_id:
+        raise HTTPException(status_code=400, detail="Cannot change your own role")
+    with db_conn() as conn:
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (body.role, user_id))
+        conn.commit()
+    return {"ok": True}
+
+
+@app.put("/api/users/{user_id}/force-password-change")
+def flag_password_reset(request: Request, user_id: str):
+    """Flag a user's account so they must set a new password on next login."""
+    if not request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if user_id == request.state.user_id:
+        raise HTTPException(status_code=400, detail="Cannot force-reset your own password")
+    if not get_user_by_id(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    with db_conn() as conn:
+        conn.execute("UPDATE users SET force_password_change = 1 WHERE id = ?", (user_id,))
+        # Also kill all their active sessions — they'll need to log in fresh and change immediately
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.commit()
+    return {"ok": True}
+
+
+# =============================================================================
 # Settings API
 # =============================================================================
 
+def _clear_spotify_cookies_expired(user_id: str | None) -> None:
+    """Reset the expired flag after fresh Spotify cookies are saved."""
+    if user_id:
+        set_user_setting(user_id, "spotify_cookies_expired", "false")
+    else:
+        set_setting("spotify_cookies_expired", "false")
+
+
 @app.get("/api/settings")
-def get_settings():
-    """Get all settings. Sensitive values are masked unless empty."""
+def get_settings(request: Request):
+    """Get settings for the current user.
+
+    Admins get the full schema (global settings with their user_settings merged on top).
+    Regular users get only their user-scoped keys, falling back to the global value.
+    """
     settings = {}
     env_overrides = []
 
-    for key, schema in SETTINGS_SCHEMA.items():
-        value = _get_typed_setting(key)
+    # Determine which keys to expose for this request.
+    # Admins see everything; regular users see only their own slice.
+    if request.state.is_admin:
+        keys_to_return = SETTINGS_SCHEMA.keys()
+    else:
+        keys_to_return = USER_SETTINGS_KEYS
+
+    user_id = request.state.user_id
+
+    for key in keys_to_return:
+        schema = SETTINGS_SCHEMA.get(key, {"type": "str", "default": "", "sensitive": False})
+        # Use user_id so per-user overrides are applied where relevant
+        value = _get_typed_setting(key, user_id=user_id)
         is_sensitive = schema.get("sensitive", False)
 
-        # Track which settings are locked by env vars
+        # Only expose env-override information for keys the caller can see
         if _is_env_override(key):
             env_overrides.append(key)
 
@@ -306,15 +547,20 @@ def get_settings():
 
 
 @app.put("/api/settings")
-def update_settings(updates: SettingsUpdate):
-    """Update settings. Only non-None values are updated. Returns updated settings."""
+def update_settings(updates: SettingsUpdate, request: Request):
+    """Update settings. Only non-None values are updated. Returns updated settings.
+
+    Per-user keys are written to user_settings (or global when in single-user mode).
+    Global keys can only be written by admins.
+    """
     updated_keys = []
+    user_id = request.state.user_id
 
     for key, value in updates.model_dump(exclude_none=True).items():
         if key not in SETTINGS_SCHEMA:
             continue
 
-        # Don't allow updating settings that are locked by env vars
+        # Env-var overrides are immutable; skip silently
         if _is_env_override(key):
             continue
 
@@ -349,17 +595,50 @@ def update_settings(updates: SettingsUpdate):
                 status_code=400,
                 detail="Invalid cookies format. Paste Netscape-format cookies.txt content."
             )
+        if key == "spotify_cookies" and value.strip():
+            if not _has_valid_cookie_entries(value):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid cookies format. Paste Netscape-format cookies.txt content."
+                )
+            lines = _cookie_lines_for_domain_check(value)
+            has_sp_dc = any(
+                len(l.split("\t")) >= 7 and l.split("\t")[5] == "sp_dc"
+                for l in lines if not l.startswith("#")
+            )
+            if not has_sp_dc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No sp_dc cookie found. Export cookies from open.spotify.com while logged in."
+                )
 
-        set_setting(key, value)
+        # Route the write: user-scoped keys go to user_settings (or global in single-user mode);
+        # global keys require admin privileges.
+        if key in USER_SETTINGS_KEYS:
+            if user_id is None:
+                # Single-user mode: no user table row, fall back to global store
+                set_setting(key, value)
+            else:
+                set_user_setting(user_id, key, value)
+        else:
+            # Global setting: only admins may touch these
+            if not request.state.is_admin:
+                continue
+            set_setting(key, value)
+
         updated_keys.append(key)
 
     # Sync cookies file if YouTube cookies were updated
     if "youtube_cookies" in updated_keys:
         _sync_cookies_file()
 
+    # Clear the expired flag when fresh Spotify cookies are saved
+    if "spotify_cookies" in updated_keys:
+        _clear_spotify_cookies_expired(user_id)
+
     return {
         "updated": updated_keys,
-        "settings": get_settings()["settings"]
+        "settings": get_settings(request)["settings"]
     }
 
 
@@ -368,11 +647,13 @@ def update_settings(updates: SettingsUpdate):
 # =============================================================================
 
 @app.post("/api/settings/test/slskd")
-def test_slskd_connection(request: TestSlskdRequest = None):
+def test_slskd_connection(http_request: Request, body: TestSlskdRequest = None):
     """Test connection to slskd server. Uses form values if provided, otherwise saved settings."""
-    url = (request.url if request and request.url else None) or _get_typed_setting("slskd_url")
-    user = (request.username if request and request.username else None) or _get_typed_setting("slskd_user")
-    password = (request.password if request and request.password else None) or _get_typed_setting("slskd_pass")
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    url = (body.url if body and body.url else None) or _get_typed_setting("slskd_url")
+    user = (body.username if body and body.username else None) or _get_typed_setting("slskd_user")
+    password = (body.password if body and body.password else None) or _get_typed_setting("slskd_pass")
 
     if not url:
         return {"success": False, "message": "slskd URL not configured"}
@@ -395,11 +676,13 @@ def test_slskd_connection(request: TestSlskdRequest = None):
 
 
 @app.post("/api/settings/test/navidrome")
-def test_navidrome_connection(request: TestNavidromeRequest = None):
+def test_navidrome_connection(http_request: Request, body: TestNavidromeRequest = None):
     """Test connection to Navidrome server. Uses form values if provided, otherwise saved settings."""
-    url = (request.url if request and request.url else None) or _get_typed_setting("navidrome_url")
-    user = (request.username if request and request.username else None) or _get_typed_setting("navidrome_user")
-    password = (request.password if request and request.password else None) or _get_typed_setting("navidrome_pass")
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    url = (body.url if body and body.url else None) or _get_typed_setting("navidrome_url")
+    user = (body.username if body and body.username else None) or _get_typed_setting("navidrome_user")
+    password = (body.password if body and body.password else None) or _get_typed_setting("navidrome_pass")
 
     if not url:
         return {"success": False, "message": "Navidrome URL not configured"}
@@ -474,9 +757,9 @@ def test_navidrome_connection(request: TestNavidromeRequest = None):
                     "Real file paths could not be enabled automatically. Without them, Navidrome "
                     "duplicate detection still works but M3U playlist entries cannot be populated "
                     "for Navidrome-only tracks. To fix this manually, add "
-                    "<code>ND_SUBSONIC_DEFAULTREPORTREALPATH=true</code> to your Navidrome "
-                    "docker-compose environment, or enable &ldquo;Report real path&rdquo; "
-                    "for MusicGrabber in Navidrome admin &rsaquo; Players."
+                    "ND_SUBSONIC_DEFAULTREPORTREALPATH=true to your Navidrome docker-compose "
+                    "environment, or enable \"Report real path\" for MusicGrabber in "
+                    "Navidrome admin > Players."
                 )
             }
     except httpx.TimeoutException:
@@ -487,10 +770,12 @@ def test_navidrome_connection(request: TestNavidromeRequest = None):
 
 
 @app.post("/api/settings/test/jellyfin")
-def test_jellyfin_connection(request: TestJellyfinRequest = None):
+def test_jellyfin_connection(http_request: Request, body: TestJellyfinRequest = None):
     """Test connection to Jellyfin server. Uses form values if provided, otherwise saved settings."""
-    url = (request.url if request and request.url else None) or _get_typed_setting("jellyfin_url")
-    api_key = (request.api_key if request and request.api_key else None) or _get_typed_setting("jellyfin_api_key")
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    url = (body.url if body and body.url else None) or _get_typed_setting("jellyfin_url")
+    api_key = (body.api_key if body and body.api_key else None) or _get_typed_setting("jellyfin_api_key")
 
     if not url:
         return {"success": False, "message": "Jellyfin URL not configured"}
@@ -519,10 +804,12 @@ def test_jellyfin_connection(request: TestJellyfinRequest = None):
 
 
 @app.post("/api/settings/test/youtube-cookies")
-def test_youtube_cookies(request: TestYouTubeCookiesRequest = None):
+def test_youtube_cookies(http_request: Request, body: TestYouTubeCookiesRequest = None):
     """Test YouTube cookies by fetching info for a known public video.
     Uses form value if provided, otherwise the saved cookies."""
-    cookies_text = (request.cookies if request and request.cookies else None)
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    cookies_text = (body.cookies if body and body.cookies else None)
     if cookies_text is None:
         cookies_text = get_setting("youtube_cookies", "")
 
@@ -589,10 +876,73 @@ def test_youtube_cookies(request: TestYouTubeCookiesRequest = None):
             Path(tmp_path).unlink(missing_ok=True)
 
 
+@app.post("/api/settings/test/spotify-cookies")
+def test_spotify_cookies(http_request: Request, body: TestSpotifyCookiesRequest = None):
+    """Test Spotify cookies by hitting a known private-friendly endpoint.
+    Uses the form value if provided, otherwise the saved cookies.
+    """
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    user_id = http_request.state.user_id
+    cookies_text = (body.cookies if body and body.cookies else None)
+    if cookies_text is None:
+        cookies_text = get_setting("spotify_cookies", "", user_id=user_id)
+
+    if not cookies_text.strip():
+        return {"success": False, "message": "No cookies provided"}
+
+    if not _has_valid_cookie_entries(cookies_text):
+        return {"success": False, "message": "No cookie entries found (only comments or blank lines)"}
+
+    lines = _cookie_lines_for_domain_check(cookies_text)
+    sp_dc = next(
+        (l.split("\t")[6].strip() for l in lines
+         if not l.startswith("#") and len(l.split("\t")) >= 7 and l.split("\t")[5] == "sp_dc"),
+        None
+    )
+    if not sp_dc:
+        return {"success": False, "message": "No sp_dc cookie found. Export cookies from open.spotify.com while logged in."}
+
+    # Test by fetching a small known public playlist embed with the cookie.
+    # The embed endpoint is the same one used for real fetches, so if it works
+    # here it'll work everywhere. Spotify's Varnish CDN blocks the internal
+    # token exchange endpoint from non-browser origins, so the embed is the
+    # reliable way to confirm the session is alive from a server context.
+    # "Top 50 - Global" is stable, public, and always has tracks in the JSON blob.
+    TEST_PLAYLIST_ID = "37i9dQZEVXbMDoHDwVN2tF"
+    try:
+        with httpx.Client(timeout=15, follow_redirects=True) as client:
+            resp = client.get(
+                f"https://open.spotify.com/embed/playlist/{TEST_PLAYLIST_ID}",
+                cookies={"sp_dc": sp_dc},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                }
+            )
+        if resp.status_code in (401, 403):
+            return {"success": False, "message": "Cookies rejected by Spotify — they may have expired. Re-export from open.spotify.com."}
+        if resp.status_code != 200:
+            return {"success": False, "message": f"Spotify returned {resp.status_code} — cookies may be invalid"}
+
+        # If the embed returned track data, the session is working
+        import re as _re
+        titles = _re.findall(r'"title":"([^"]+)"', resp.text)
+        if len(titles) > 1:
+            return {"success": True, "message": "Spotify cookies are valid and authenticated"}
+
+        return {"success": False, "message": "Cookies loaded but Spotify returned no track data — they may be expired"}
+
+    except Exception as e:
+        print(f"Spotify cookie test error: {type(e).__name__}: {e}")
+        return {"success": False, "message": "Cookie test failed — check server logs for details"}
+
+
 @app.post("/api/settings/test/apprise")
-def test_apprise_notification(request: TestAppriseRequest = None):
+def test_apprise_notification(http_request: Request, body: TestAppriseRequest = None):
     """Send a test notification via Apprise. Uses form URL if provided, otherwise saved setting."""
-    url = (request.url if request and request.url else None) or get_setting("apprise_url")
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    url = (body.url if body and body.url else None) or get_setting("apprise_url")
 
     if not url:
         return {"success": False, "message": "Apprise URL not configured"}
@@ -614,8 +964,10 @@ def test_apprise_notification(request: TestAppriseRequest = None):
 
 
 @app.get("/api/settings/youtube-cookies/status")
-def youtube_cookies_status():
+def youtube_cookies_status(http_request: Request):
     """Return non-sensitive status for the cookies file."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     cookies_text = get_setting("youtube_cookies", "")
     has_setting = bool(cookies_text.strip())
     file_exists = COOKIES_FILE.exists()
@@ -654,36 +1006,44 @@ def _extract_search_artist(query: str) -> str | None:
     return " ".join(words[:3])[:120]
 
 
-def _log_search(query: str, result_count: int, source: str = "youtube") -> str:
+def _log_search(query: str, result_count: int, source: str = "youtube", user_id: str | None = None) -> str:
     """Log search requests for dashboard analytics and return tracking token."""
     artist = _extract_search_artist(query)
     search_token = uuid.uuid4().hex
     with db_conn() as conn:
         conn.execute(
-            "INSERT INTO search_logs (query, artist, result_count, source, search_token) VALUES (?, ?, ?, ?, ?)",
-            (query.strip(), artist, int(result_count), source, search_token)
+            "INSERT INTO search_logs (query, artist, result_count, source, search_token, user_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (query.strip(), artist, int(result_count), source, search_token, user_id)
         )
         conn.commit()
     return search_token
 
 
-def _validated_search_token(search_token: str | None) -> str | None:
-    """Only accept server-issued search tokens that exist in search_logs."""
+def _validated_search_token(search_token: str | None, user_id: str | None = None) -> str | None:
+    """Only accept server-issued search tokens that exist in search_logs, scoped to the user."""
     token = (search_token or "").strip().lower()
     if not token or not re.fullmatch(r"[0-9a-f]{32}", token):
         return None
 
     with db_conn() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM search_logs WHERE search_token = ? LIMIT 1",
-            (token,)
-        ).fetchone()
+        if user_id is not None:
+            row = conn.execute(
+                "SELECT 1 FROM search_logs WHERE search_token = ? AND user_id = ? LIMIT 1",
+                (token, user_id)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM search_logs WHERE search_token = ? LIMIT 1",
+                (token,)
+            ).fetchone()
     return token if row else None
 
 
 @app.get("/api/stats")
-def get_stats():
+def get_stats(http_request: Request):
     """Return download statistics for the dashboard."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
@@ -823,8 +1183,10 @@ def get_stats():
 
 
 @app.delete("/api/stats")
-def reset_stats(confirm: bool = False):
+def reset_stats(http_request: Request, confirm: bool = False):
     """Reset dashboard stats without touching active queue items."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     if not confirm:
         raise HTTPException(status_code=400, detail="Confirmation required (use ?confirm=true)")
 
@@ -933,7 +1295,7 @@ def list_sources():
 
 
 @app.post("/api/search")
-def search(request: SearchRequest):
+def search(request: SearchRequest, http_request: Request):
     """Search for music across configured sources."""
     try:
         source = request.source
@@ -966,7 +1328,7 @@ def search(request: SearchRequest):
 
         search_token = None
         try:
-            search_token = _log_search(request.query, len(final_results), source=source)
+            search_token = _log_search(request.query, len(final_results), source=source, user_id=http_request.state.user_id)
         except Exception as log_error:
             print(f"search log error: {log_error}")
 
@@ -1077,81 +1439,86 @@ def explore_similar(request: ExploreRequest):
 # =============================================================================
 
 @app.post("/api/download")
-def download(request: DownloadRequest):
+def download(body: DownloadRequest, http_request: Request):
     """Queue a download job"""
     job_id = str(uuid.uuid4())[:8]
+    user_id = http_request.state.user_id
 
     # Extract artist/title if not provided
-    artist = request.artist
-    title = request.title
+    artist = body.artist
+    title = body.title
 
     # Create job record
     with db_conn() as conn:
         # Determine source type
-        source = request.source or "youtube"
-        if source == "soulseek" and not (request.slskd_username and request.slskd_filename):
+        source = body.source or "youtube"
+        if source == "soulseek" and not (body.slskd_username and body.slskd_filename):
             source = "youtube"  # Fallback if slskd fields missing
 
         # Validate based on source
         if source == "youtube":
-            if not request.video_id or not is_valid_youtube_id(request.video_id):
+            if not body.video_id or not is_valid_youtube_id(body.video_id):
                 raise HTTPException(status_code=400, detail="Invalid YouTube video ID")
         elif source in URL_BASED_SOURCES:
-            if not request.source_url:
+            if not body.source_url:
                 raise HTTPException(status_code=400, detail=f"{source.capitalize()} download requires source_url")
 
         # Build source URL for tracking
         if source == "soulseek":
-            source_url = f"soulseek://{request.slskd_username}/{request.slskd_filename}" if request.slskd_username else None
+            source_url = f"soulseek://{body.slskd_username}/{body.slskd_filename}" if body.slskd_username else None
         elif source in URL_BASED_SOURCES:
-            source_url = request.source_url
-        elif request.download_type == "playlist":
-            source_url = f"https://www.youtube.com/playlist?list={request.video_id}" if request.video_id else None
+            source_url = body.source_url
+        elif body.download_type == "playlist":
+            source_url = f"https://www.youtube.com/playlist?list={body.video_id}" if body.video_id else None
         else:
-            source_url = f"https://www.youtube.com/watch?v={request.video_id}" if request.video_id else None
+            source_url = f"https://www.youtube.com/watch?v={body.video_id}" if body.video_id else None
 
-        valid_search_token = _validated_search_token(request.search_token)
+        valid_search_token = _validated_search_token(body.search_token, user_id=user_id)
 
-        if request.download_type == "playlist":
+        if body.download_type == "playlist":
             conn.execute(
-                """INSERT INTO jobs (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac, source_url, search_token)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (job_id, request.video_id, title, "queued", "playlist", title, "youtube", int(request.convert_to_flac), source_url, valid_search_token)
+                """INSERT INTO jobs (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac, source_url, search_token, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (job_id, body.video_id, title, "queued", "playlist", title, "youtube", int(body.convert_to_flac), source_url, valid_search_token, user_id)
             )
         else:
             conn.execute(
-                """INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, convert_to_flac, source_url, search_token)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (job_id, request.video_id, title, artist or "", "queued", "single", source,
-                 request.slskd_username, request.slskd_filename, int(request.convert_to_flac), source_url, valid_search_token)
+                """INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, convert_to_flac, source_url, search_token, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (job_id, body.video_id, title, artist or "", "queued", "single", source,
+                 body.slskd_username, body.slskd_filename, int(body.convert_to_flac), source_url, valid_search_token, user_id)
             )
         conn.commit()
 
     # Queue the download based on source
-    if request.download_type == "playlist":
-        spawn_daemon_thread(process_playlist_download, job_id, request.video_id, title, request.convert_to_flac, True)
+    if body.download_type == "playlist":
+        spawn_daemon_thread(process_playlist_download, job_id, body.video_id, title, body.convert_to_flac, True,
+                            user_id=user_id)
     elif source == "soulseek":
         spawn_daemon_thread(
             process_slskd_download,
             job_id,
-            request.slskd_username,
-            request.slskd_filename,
+            body.slskd_username,
+            body.slskd_filename,
             artist or "",
             title,
-            request.convert_to_flac
+            body.convert_to_flac,
+            user_id=user_id,
         )
     elif source in URL_BASED_SOURCES:
         spawn_daemon_thread(
-            process_download, job_id, request.video_id, request.convert_to_flac,
+            process_download, job_id, body.video_id, body.convert_to_flac,
             source_url=source_url,
-            playlist_name=request.playlist_name,
-            use_playlists_dir=request.use_playlists_dir,
+            playlist_name=body.playlist_name,
+            use_playlists_dir=body.use_playlists_dir,
+            user_id=user_id,
         )
     else:
         spawn_daemon_thread(
-            process_download, job_id, request.video_id, request.convert_to_flac,
-            playlist_name=request.playlist_name,
-            use_playlists_dir=request.use_playlists_dir,
+            process_download, job_id, body.video_id, body.convert_to_flac,
+            playlist_name=body.playlist_name,
+            use_playlists_dir=body.use_playlists_dir,
+            user_id=user_id,
         )
 
     return {"job_id": job_id, "status": "queued"}
@@ -1178,15 +1545,18 @@ def _ensure_utc_suffix(timestamp: str | None) -> str | None:
 
 
 @app.get("/api/jobs")
-def get_jobs(limit: int = 20):
+def get_jobs(limit: int = 20, http_request: Request = None):
     """Get recent jobs"""
     from utils import check_duplicate
     from pathlib import Path as _Path
+    user_id = http_request.state.user_id if http_request else None
+    is_admin = http_request.state.is_admin if http_request else True
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         rows = conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
-            (limit,)
+            f"SELECT * FROM jobs WHERE {_scope_frag} ORDER BY created_at DESC LIMIT ?",
+            (*_scope_params, limit)
         ).fetchall()
 
         # Pre-fetch resolved_paths for all jobs in one query.
@@ -1236,21 +1606,26 @@ def get_jobs(limit: int = 20):
 
 
 @app.get("/api/jobs/downloadable")
-def get_downloadable_jobs(page: int = 1, per_page: int = 50):
+def get_downloadable_jobs(page: int = 1, per_page: int = 50, http_request: Request = None):
     """Return completed jobs with files available to save to device, newest first."""
     offset = (page - 1) * per_page
+    user_id = http_request.state.user_id if http_request else None
+    is_admin = http_request.state.is_admin if http_request else True
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         total = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE status = 'completed' AND (file_deleted IS NULL OR file_deleted = 0)"
+            f"SELECT COUNT(*) FROM jobs WHERE status = 'completed' AND (file_deleted IS NULL OR file_deleted = 0) AND {_scope_frag}",
+            _scope_params
         ).fetchone()[0]
         rows = conn.execute(
-            """SELECT id, title, artist, status, created_at, completed_at
+            f"""SELECT id, title, artist, status, created_at, completed_at
                FROM jobs
                WHERE status = 'completed' AND (file_deleted IS NULL OR file_deleted = 0)
+                 AND {_scope_frag}
                ORDER BY completed_at DESC
                LIMIT ? OFFSET ?""",
-            (per_page, offset)
+            (*_scope_params, per_page, offset)
         ).fetchall()
     return {
         "total": total,
@@ -1262,11 +1637,17 @@ def get_downloadable_jobs(page: int = 1, per_page: int = 50):
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: str):
+def get_job(job_id: str, http_request: Request):
     """Get a specific job"""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        cursor = conn.execute(
+            f"SELECT * FROM jobs WHERE id = ? AND {_scope_frag}",
+            (job_id, *_scope_params)
+        )
         row = cursor.fetchone()
 
     if not row:
@@ -1279,11 +1660,17 @@ def get_job(job_id: str):
 
 
 @app.get("/api/jobs/{job_id}/download")
-def download_job_file(job_id: str):
+def download_job_file(job_id: str, http_request: Request):
     """Serve the downloaded audio file for a job directly to the browser."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        cursor = conn.execute(
+            f"SELECT * FROM jobs WHERE id = ? AND {_scope_frag}",
+            (job_id, *_scope_params)
+        )
         row = cursor.fetchone()
         # Also fish out the resolved_path from watched_playlist_tracks if it exists.
         # This is more reliable than reconstructing the path, especially for playlist folders.
@@ -1321,7 +1708,7 @@ def download_job_file(job_id: str):
 
     # Fall back to walking the Singles layout (covers non-watched single downloads).
     if file_path is None:
-        file_path = check_duplicate(artist, title)
+        file_path = check_duplicate(artist, title, user_id=user_id)
 
     if not file_path or not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
@@ -1337,11 +1724,17 @@ def download_job_file(job_id: str):
 
 
 @app.post("/api/jobs/{job_id}/retry")
-def retry_job(job_id: str):
+def retry_job(job_id: str, http_request: Request):
     """Retry a failed job"""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        cursor = conn.execute(
+            f"SELECT * FROM jobs WHERE id = ? AND {_scope_frag}",
+            (job_id, *_scope_params)
+        )
         row = cursor.fetchone()
 
         if not row:
@@ -1364,7 +1757,8 @@ def retry_job(job_id: str):
     convert_to_flac = bool(job.get("convert_to_flac", 1))
 
     if job["download_type"] == "playlist":
-        spawn_daemon_thread(process_playlist_download, job_id, job["video_id"], job["playlist_name"], convert_to_flac, True)
+        spawn_daemon_thread(process_playlist_download, job_id, job["video_id"], job["playlist_name"], convert_to_flac, True,
+                            user_id=user_id)
     elif job.get("source") == "soulseek" and job.get("slskd_username") and job.get("slskd_filename"):
         spawn_daemon_thread(
             process_slskd_download,
@@ -1373,22 +1767,30 @@ def retry_job(job_id: str):
             job["slskd_filename"],
             job.get("artist", ""),
             job.get("title", ""),
-            convert_to_flac
+            convert_to_flac,
+            user_id=user_id,
         )
     elif job.get("source") in URL_BASED_SOURCES and job.get("source_url"):
-        spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac, source_url=job["source_url"])
+        spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac, source_url=job["source_url"],
+                            user_id=user_id)
     else:
-        spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac)
+        spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac, user_id=user_id)
 
     return {"job_id": job_id, "status": "queued"}
 
 
 @app.delete("/api/jobs/{job_id}/file")
-def delete_job_file(job_id: str):
+def delete_job_file(job_id: str, http_request: Request):
     """Delete the downloaded audio file (and lyrics) for a completed job."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        cursor = conn.execute(
+            f"SELECT * FROM jobs WHERE id = ? AND {_scope_frag}",
+            (job_id, *_scope_params)
+        )
         row = cursor.fetchone()
 
     if not row:
@@ -1405,7 +1807,7 @@ def delete_job_file(job_id: str):
 
     from utils import check_duplicate
     from settings import get_playlists_dir
-    existing = check_duplicate(artist, title)
+    existing = check_duplicate(artist, title, user_id=user_id)
     if not existing:
         # File already gone  -  just mark it as deleted and move on
         with db_conn() as conn:
@@ -1481,8 +1883,10 @@ def delete_job_file(job_id: str):
 
 
 @app.delete("/api/jobs/cleanup")
-def cleanup_jobs(status: Optional[str] = None):
+def cleanup_jobs(http_request: Request, status: Optional[str] = None):
     """Delete completed, failed, or stale jobs"""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     # First, mark any stale jobs as failed so they get cleaned up
     cleanup_stale_jobs()
 
@@ -1511,8 +1915,10 @@ def cleanup_jobs(status: Optional[str] = None):
 # =============================================================================
 
 @app.post("/api/blacklist")
-def add_blacklist_entry(request: BlacklistRequest):
+def add_blacklist_entry(request: BlacklistRequest, http_request: Request):
     """Report a bad track and/or block an uploader."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     if not request.video_id and not request.uploader:
         raise HTTPException(status_code=400, detail="Need at least a video_id or uploader to blacklist")
 
@@ -1558,8 +1964,10 @@ def add_blacklist_entry(request: BlacklistRequest):
 
 
 @app.get("/api/blacklist")
-def list_blacklist(limit: int = 100, offset: int = 0):
+def list_blacklist(http_request: Request, limit: int = 100, offset: int = 0):
     """List all blacklist entries for the management UI."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -1575,8 +1983,10 @@ def list_blacklist(limit: int = 100, offset: int = 0):
 
 
 @app.delete("/api/blacklist/{entry_id}")
-def remove_blacklist_entry(entry_id: int):
+def remove_blacklist_entry(entry_id: int, http_request: Request):
     """Remove a blacklist entry by ID."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     with db_conn() as conn:
         cursor = conn.execute("DELETE FROM blacklist WHERE id = ?", (entry_id,))
         if cursor.rowcount == 0:
@@ -1591,10 +2001,11 @@ def remove_blacklist_entry(entry_id: int):
 # =============================================================================
 
 @app.post("/api/bulk-import-async")
-def bulk_import_async(request: AsyncBulkImportRequest):
+def bulk_import_async(body: AsyncBulkImportRequest, http_request: Request):
     """Start an async bulk import job"""
-    lines = request.songs.strip().split('\n')
+    lines = body.songs.strip().split('\n')
     import_id = str(uuid.uuid4())[:8]
+    user_id = http_request.state.user_id
 
     # Parse and validate all lines first
     tracks_to_import = []
@@ -1632,10 +2043,10 @@ def bulk_import_async(request: AsyncBulkImportRequest):
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO bulk_imports
-               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, use_playlists_dir)
-               VALUES (?, 'pending', ?, ?, ?, ?, ?)""",
-            (import_id, len(tracks_to_import), int(request.create_playlist),
-             request.playlist_name, int(request.convert_to_flac), int(request.use_playlists_dir))
+               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, use_playlists_dir, user_id)
+               VALUES (?, 'pending', ?, ?, ?, ?, ?, ?)""",
+            (import_id, len(tracks_to_import), int(body.create_playlist),
+             body.playlist_name, int(body.convert_to_flac), int(body.use_playlists_dir), user_id)
         )
 
         # Insert all tracks
@@ -1648,7 +2059,7 @@ def bulk_import_async(request: AsyncBulkImportRequest):
         conn.commit()
 
     # Start background worker for this import
-    spawn_daemon_thread(process_bulk_import_worker, import_id)
+    spawn_daemon_thread(process_bulk_import_worker, import_id, user_id=user_id)
 
     return {
         "import_id": import_id,
@@ -1658,12 +2069,18 @@ def bulk_import_async(request: AsyncBulkImportRequest):
 
 
 @app.get("/api/bulk-import/{import_id}/status")
-def get_bulk_import_status(import_id: str):
+def get_bulk_import_status(import_id: str, http_request: Request):
     """Get status of a bulk import job"""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
-        cursor = conn.execute("SELECT * FROM bulk_imports WHERE id = ?", (import_id,))
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        cursor = conn.execute(
+            f"SELECT * FROM bulk_imports WHERE id = ? AND {_scope_frag}",
+            (import_id, *_scope_params)
+        )
         import_row = cursor.fetchone()
 
         if not import_row:
@@ -1725,14 +2142,17 @@ def get_bulk_import_status(import_id: str):
 
 
 @app.get("/api/bulk-imports")
-def list_bulk_imports(limit: int = 10):
+def list_bulk_imports(limit: int = 10, http_request: Request = None):
     """List recent bulk imports"""
+    user_id = http_request.state.user_id if http_request else None
+    is_admin = http_request.state.is_admin if http_request else True
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         cursor = conn.execute(
-            "SELECT * FROM bulk_imports ORDER BY created_at DESC LIMIT ?",
-            (limit,)
+            f"SELECT * FROM bulk_imports WHERE {_scope_frag} ORDER BY created_at DESC LIMIT ?",
+            (*_scope_params, limit)
         )
         imports = [dict(row) for row in cursor.fetchall()]
 
@@ -1745,14 +2165,15 @@ def list_bulk_imports(limit: int = 10):
 
 @app.post("/api/fetch-playlist")
 @app.post("/api/spotify-playlist")  # Backwards compat
-def fetch_playlist(request: PlaylistFetchRequest):
+def fetch_playlist(request: Request, body: PlaylistFetchRequest):
     """Fetch track list from a supported public playlist URL (Spotify, Amazon Music, Tidal)."""
-    url = request.url.strip()
+    url = body.url.strip()
     platform, _ = detect_playlist_platform(url)
 
     # fetch_playlist_tracks returns (artist, title) tuples - reformat to the
     # "Artist - Title" strings the bulk import UI expects, plus a playlist name.
-    tracks_tuples, playlist_name = fetch_playlist_tracks(url, platform)
+    user_id = request.state.user_id
+    tracks_tuples, playlist_name = fetch_playlist_tracks(url, platform, user_id=user_id)
     tracks = [f"{artist} - {title}" for artist, title in tracks_tuples]
     return {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks)}
 
@@ -1762,9 +2183,10 @@ def fetch_playlist(request: PlaylistFetchRequest):
 # =============================================================================
 
 @app.post("/api/watched-playlists")
-def add_watched_playlist(request: WatchedPlaylistRequest):
+def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
     """Add a new playlist to watch for new tracks"""
-    platform, platform_id = detect_playlist_platform(request.url)
+    platform, platform_id = detect_playlist_platform(body.url)
+    user_id = http_request.state.user_id
 
     # ListenBrainz username: fan out into one watched playlist per "Created for You" playlist
     if platform == "listenbrainz_user":
@@ -1773,7 +2195,7 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
         # LB playlists are weekly  -  mirror mode is the sensible default
         sync_mode = "mirror"
         # Weekly refresh makes sense since LB regenerates them weekly
-        refresh_hours = max(request.refresh_interval_hours, 168)
+        refresh_hours = max(body.refresh_interval_hours, 168)
 
         created = []
         skipped = 0
@@ -1782,7 +2204,8 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
             conn.row_factory = sqlite3.Row
             for lb in lb_playlists:
                 existing = conn.execute(
-                    "SELECT id FROM watched_playlists WHERE url = ?", (lb["playlist_url"],)
+                    "SELECT id FROM watched_playlists WHERE url = ? AND (user_id = ? OR (user_id IS NULL AND ? IS NULL))",
+                    (lb["playlist_url"], user_id, user_id)
                 ).fetchone()
                 if existing:
                     skipped += 1
@@ -1791,11 +2214,11 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
                 playlist_id = str(uuid.uuid4())[:8]
                 conn.execute("""
                     INSERT INTO watched_playlists
-                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (playlist_id, lb["playlist_url"], lb["name"], "listenbrainz",
-                      refresh_hours, int(request.convert_to_flac),
-                      int(request.make_m3u), int(request.use_playlists_dir), sync_mode, len(lb["tracks"])))
+                      refresh_hours, int(body.convert_to_flac),
+                      int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(lb["tracks"]), user_id))
 
                 for artist, title in lb["tracks"]:
                     track_hash = hash_track(artist, title)
@@ -1818,9 +2241,10 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
             if lb["tracks"]:
                 start_bulk_import_for_tracks(
                     lb["tracks"],
-                    request.convert_to_flac,
+                    body.convert_to_flac,
                     watch_playlist_id=playlist_id,
-                    use_playlists_dir=request.use_playlists_dir,
+                    use_playlists_dir=body.use_playlists_dir,
+                    user_id=user_id,
                 )
 
         return {
@@ -1836,7 +2260,8 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
         conn.row_factory = sqlite3.Row
 
         existing = conn.execute(
-            "SELECT id FROM watched_playlists WHERE url = ?", (request.url,)
+            "SELECT id FROM watched_playlists WHERE url = ? AND (user_id = ? OR (user_id IS NULL AND ? IS NULL))",
+            (body.url, user_id, user_id)
         ).fetchone()
 
         if existing:
@@ -1844,21 +2269,21 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
 
         # Fetch playlist to get name and initial tracks
         try:
-            tracks, playlist_name = fetch_playlist_tracks(request.url, platform)
+            tracks, playlist_name = fetch_playlist_tracks(body.url, platform, user_id=user_id)
         except HTTPException:
             raise
 
         # Create playlist record
         playlist_id = str(uuid.uuid4())[:8]
 
-        sync_mode = request.sync_mode if request.sync_mode in ("append", "mirror") else "append"
+        sync_mode = body.sync_mode if body.sync_mode in ("append", "mirror") else "append"
         conn.execute("""
             INSERT INTO watched_playlists
-            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (playlist_id, request.url, playlist_name, platform,
-              request.refresh_interval_hours, int(request.convert_to_flac),
-              int(request.make_m3u), int(request.use_playlists_dir), sync_mode, len(tracks)))
+            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (playlist_id, body.url, playlist_name, platform,
+              body.refresh_interval_hours, int(body.convert_to_flac),
+              int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(tracks), user_id))
 
         # Insert all current tracks as "seen"
         for artist, title in tracks:
@@ -1875,9 +2300,10 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
     if tracks:
         import_id = start_bulk_import_for_tracks(
             tracks,
-            request.convert_to_flac,
+            body.convert_to_flac,
             watch_playlist_id=playlist_id,
-            use_playlists_dir=request.use_playlists_dir,
+            use_playlists_dir=body.use_playlists_dir,
+            user_id=user_id,
         )
 
     return {
@@ -1885,26 +2311,30 @@ def add_watched_playlist(request: WatchedPlaylistRequest):
         "name": playlist_name,
         "platform": platform,
         "track_count": len(tracks),
-        "refresh_interval_hours": request.refresh_interval_hours,
+        "refresh_interval_hours": body.refresh_interval_hours,
         "import_id": import_id,
         "message": f"Now watching '{playlist_name}' with {len(tracks)} tracks queued for download"
     }
 
 
 @app.get("/api/watched-playlists")
-def list_watched_playlists():
+def list_watched_playlists(http_request: Request):
     """List all watched playlists"""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
-        playlists = conn.execute("""
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        playlists = conn.execute(f"""
             SELECT
                 wp.*,
                 (SELECT COUNT(*) FROM watched_playlist_tracks wpt WHERE wpt.playlist_id = wp.id) as tracked_count,
                 (SELECT COUNT(*) FROM watched_playlist_tracks wpt WHERE wpt.playlist_id = wp.id AND wpt.downloaded_at IS NOT NULL) as downloaded_count
             FROM watched_playlists wp
+            WHERE {_scope_frag}
             ORDER BY wp.created_at DESC
-        """).fetchall()
+        """, _scope_params).fetchall()
 
     return {
         "playlists": [dict(p) for p in playlists]
@@ -1921,13 +2351,17 @@ def get_watched_schedule():
 
 
 @app.get("/api/watched-playlists/{playlist_id}")
-def get_watched_playlist(playlist_id: str):
+def get_watched_playlist(playlist_id: str, http_request: Request):
     """Get details of a watched playlist including track history"""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+            f"SELECT * FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            (playlist_id, *_scope_params)
         ).fetchone()
 
         if not playlist:
@@ -1946,13 +2380,17 @@ def get_watched_playlist(playlist_id: str):
 
 
 @app.put("/api/watched-playlists/{playlist_id}")
-def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate):
+def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, http_request: Request):
     """Update watched playlist settings"""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+            f"SELECT * FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            (playlist_id, *_scope_params)
         ).fetchone()
 
         if not playlist:
@@ -2003,13 +2441,17 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate):
 
 
 @app.delete("/api/watched-playlists/{playlist_id}")
-def delete_watched_playlist(playlist_id: str):
+def delete_watched_playlist(playlist_id: str, http_request: Request):
     """Remove a watched playlist and its track history"""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+            f"SELECT * FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            (playlist_id, *_scope_params)
         ).fetchone()
 
         if not playlist:
@@ -2024,17 +2466,21 @@ def delete_watched_playlist(playlist_id: str):
 
 
 @app.get("/api/watched-playlists/{playlist_id}/missing")
-def get_missing_watched_tracks(playlist_id: str):
+def get_missing_watched_tracks(playlist_id: str, http_request: Request):
     """Return tracks that were never successfully downloaded for a watched playlist.
 
     A track is 'missing' if it has no downloaded_at timestamp and either has no job,
     or its job ended in failure. Tracks still actively queued or downloading are excluded.
     """
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            "SELECT name FROM watched_playlists WHERE id = ?", (playlist_id,)
+            f"SELECT name FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            (playlist_id, *_scope_params)
         ).fetchone()
 
         if not playlist:
@@ -2058,17 +2504,21 @@ def get_missing_watched_tracks(playlist_id: str):
 
 
 @app.get("/api/watched-playlists/{playlist_id}/tracks")
-def get_watched_playlist_tracks(playlist_id: str):
+def get_watched_playlist_tracks(playlist_id: str, http_request: Request):
     """Return all tracks for a watched playlist with their download status.
 
     Each track includes its current job status so the UI can show downloaded,
     failed, pending, and mirror-removed tracks in one place.
     """
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            "SELECT name FROM watched_playlists WHERE id = ?", (playlist_id,)
+            f"SELECT name FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            (playlist_id, *_scope_params)
         ).fetchone()
 
         if not playlist:
@@ -2101,17 +2551,20 @@ def get_watched_playlist_tracks(playlist_id: str):
 
 
 @app.post("/api/watched-playlists/{playlist_id}/retry-track")
-def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest):
+def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, http_request: Request):
     """Manually retry a single missing track for a watched playlist.
 
     Searches all sources for the best match and queues a download, routing the
     result back into the watched playlist's folder and M3U (if enabled).
     """
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            "SELECT id, name, convert_to_flac, use_playlists_dir FROM watched_playlists WHERE id = ?",
-            (playlist_id,)
+            f"SELECT id, name, convert_to_flac, use_playlists_dir FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            (playlist_id, *_scope_params)
         ).fetchone()
 
     if not playlist:
@@ -2124,19 +2577,24 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest):
         convert_to_flac=bool(playlist["convert_to_flac"]),
         watch_playlist_id=playlist_id,
         use_playlists_dir=bool(playlist["use_playlists_dir"]),
+        user_id=user_id,
     )
 
     return {"import_id": import_id, "status": "queued", "message": f"Searching for {request.artist} - {request.title}"}
 
 
 @app.post("/api/watched-playlists/{playlist_id}/refresh")
-def refresh_single_playlist(playlist_id: str):
+def refresh_single_playlist(playlist_id: str, http_request: Request):
     """Force an immediate refresh of a specific watched playlist"""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+            f"SELECT * FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            (playlist_id, *_scope_params)
         ).fetchone()
 
         if not playlist:
@@ -2147,8 +2605,10 @@ def refresh_single_playlist(playlist_id: str):
 
 
 @app.post("/api/watched-playlists/check-all")
-def check_all_watched_playlists():
+def check_all_watched_playlists(http_request: Request):
     """Check all playlists due for refresh (called by cron)"""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
 
@@ -2192,11 +2652,14 @@ def search_watched_artist(q: str):
 
 
 @app.post("/api/watched-artists")
-def add_watched_artist(request: WatchedArtistRequest):
+def add_watched_artist(body: WatchedArtistRequest, http_request: Request):
     """Add an artist to watch. Seeds all known singles then queues any after from_date."""
+    user_id = http_request.state.user_id
+
     with db_conn() as conn:
         existing = conn.execute(
-            "SELECT id FROM watched_artists WHERE mbid = ?", (request.mbid,)
+            "SELECT id FROM watched_artists WHERE mbid = ? AND (user_id = ? OR (user_id IS NULL AND ? IS NULL))",
+            (body.mbid, user_id, user_id)
         ).fetchone()
         if existing:
             raise HTTPException(status_code=400, detail=f"Already watching this artist (id: {existing[0]})")
@@ -2206,10 +2669,10 @@ def add_watched_artist(request: WatchedArtistRequest):
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO watched_artists
-               (id, name, mbid, from_date, refresh_interval_hours, convert_to_flac)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (artist_id, request.name, request.mbid, request.from_date,
-             request.refresh_interval_hours, int(request.convert_to_flac))
+               (id, name, mbid, from_date, refresh_interval_hours, convert_to_flac, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (artist_id, body.name, body.mbid, body.from_date,
+             body.refresh_interval_hours, int(body.convert_to_flac), user_id)
         )
         conn.commit()
 
@@ -2217,31 +2680,38 @@ def add_watched_artist(request: WatchedArtistRequest):
     result = refresh_watched_artist(artist_id)
     return {
         "id": artist_id,
-        "name": request.name,
-        "mbid": request.mbid,
-        "from_date": request.from_date,
+        "name": body.name,
+        "mbid": body.mbid,
+        "from_date": body.from_date,
         **result,
     }
 
 
 @app.get("/api/watched-artists")
-def list_watched_artists():
+def list_watched_artists(http_request: Request):
     """List all watched artists with track counts."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         rows = conn.execute(
-            """SELECT wa.*,
+            f"""SELECT wa.*,
                 (SELECT COUNT(*) FROM watched_artist_tracks wat WHERE wat.artist_id = wa.id) as tracked_count,
                 (SELECT COUNT(*) FROM watched_artist_tracks wat WHERE wat.artist_id = wa.id AND wat.downloaded_at IS NOT NULL) as downloaded_count
                FROM watched_artists wa
-               ORDER BY wa.name COLLATE NOCASE"""
+               WHERE {_scope_frag}
+               ORDER BY wa.name COLLATE NOCASE""",
+            _scope_params
         ).fetchall()
     return {"artists": [dict(r) for r in rows]}
 
 
 @app.put("/api/watched-artists/{artist_id}")
-def update_watched_artist(artist_id: str, request: WatchedArtistUpdate):
+def update_watched_artist(artist_id: str, request: WatchedArtistUpdate, http_request: Request):
     """Update a watched artist's settings."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     updates: list[str] = []
     params: list = []
     if request.enabled is not None:
@@ -2254,22 +2724,34 @@ def update_watched_artist(artist_id: str, request: WatchedArtistUpdate):
         updates.append("from_date = ?"); params.append(request.from_date)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
-    params.append(artist_id)
+    _scope_frag, _scope_params = _user_scope(user_id, is_admin)
     with db_conn() as conn:
-        conn.execute(f"UPDATE watched_artists SET {', '.join(updates)} WHERE id = ?", params)
+        conn.execute(
+            f"UPDATE watched_artists SET {', '.join(updates)} WHERE id = ? AND {_scope_frag}",
+            (*params, artist_id, *_scope_params)
+        )
         conn.commit()
         conn.row_factory = sqlite3.Row
-        updated = conn.execute("SELECT * FROM watched_artists WHERE id = ?", (artist_id,)).fetchone()
+        updated = conn.execute(
+            f"SELECT * FROM watched_artists WHERE id = ? AND {_scope_frag}",
+            (artist_id, *_scope_params)
+        ).fetchone()
     if not updated:
         raise HTTPException(status_code=404, detail="Artist not found")
     return dict(updated)
 
 
 @app.delete("/api/watched-artists/{artist_id}")
-def delete_watched_artist(artist_id: str):
+def delete_watched_artist(artist_id: str, http_request: Request):
     """Remove a watched artist and all its tracked tracks."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
-        artist = conn.execute("SELECT name FROM watched_artists WHERE id = ?", (artist_id,)).fetchone()
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        artist = conn.execute(
+            f"SELECT name FROM watched_artists WHERE id = ? AND {_scope_frag}",
+            (artist_id, *_scope_params)
+        ).fetchone()
         if not artist:
             raise HTTPException(status_code=404, detail="Artist not found")
         conn.execute("DELETE FROM watched_artist_tracks WHERE artist_id = ?", (artist_id,))
@@ -2279,21 +2761,33 @@ def delete_watched_artist(artist_id: str):
 
 
 @app.post("/api/watched-artists/{artist_id}/refresh")
-def refresh_single_artist(artist_id: str):
+def refresh_single_artist(artist_id: str, http_request: Request):
     """Manually trigger a refresh for one watched artist."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
-        row = conn.execute("SELECT id FROM watched_artists WHERE id = ?", (artist_id,)).fetchone()
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        row = conn.execute(
+            f"SELECT id FROM watched_artists WHERE id = ? AND {_scope_frag}",
+            (artist_id, *_scope_params)
+        ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Artist not found")
     return refresh_watched_artist(artist_id)
 
 
 @app.get("/api/watched-artists/{artist_id}/tracks")
-def get_watched_artist_tracks(artist_id: str):
+def get_watched_artist_tracks(artist_id: str, http_request: Request):
     """Return all tracked singles for a watched artist with job status."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
-        artist = conn.execute("SELECT name FROM watched_artists WHERE id = ?", (artist_id,)).fetchone()
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        artist = conn.execute(
+            f"SELECT name FROM watched_artists WHERE id = ? AND {_scope_frag}",
+            (artist_id, *_scope_params)
+        ).fetchone()
         if not artist:
             raise HTTPException(status_code=404, detail="Artist not found")
         tracks = conn.execute(
@@ -2309,11 +2803,17 @@ def get_watched_artist_tracks(artist_id: str):
 
 
 @app.get("/api/watched-artists/{artist_id}/missing")
-def get_missing_artist_tracks(artist_id: str):
+def get_missing_artist_tracks(artist_id: str, http_request: Request):
     """Return singles that haven't been downloaded and have no active job."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
-        artist = conn.execute("SELECT name FROM watched_artists WHERE id = ?", (artist_id,)).fetchone()
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        artist = conn.execute(
+            f"SELECT name FROM watched_artists WHERE id = ? AND {_scope_frag}",
+            (artist_id, *_scope_params)
+        ).fetchone()
         if not artist:
             raise HTTPException(status_code=404, detail="Artist not found")
         tracks = conn.execute(
@@ -2330,11 +2830,15 @@ def get_missing_artist_tracks(artist_id: str):
 
 
 @app.post("/api/watched-artists/{artist_id}/retry-track")
-def retry_missing_artist_track(artist_id: str, request: RetryMissingTrackRequest):
+def retry_missing_artist_track(artist_id: str, request: RetryMissingTrackRequest, http_request: Request):
     """Retry downloading a specific missing single."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
     with db_conn() as conn:
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         artist = conn.execute(
-            "SELECT name, convert_to_flac FROM watched_artists WHERE id = ?", (artist_id,)
+            f"SELECT name, convert_to_flac FROM watched_artists WHERE id = ? AND {_scope_frag}",
+            (artist_id, *_scope_params)
         ).fetchone()
         if not artist:
             raise HTTPException(status_code=404, detail="Artist not found")
@@ -2342,13 +2846,16 @@ def retry_missing_artist_track(artist_id: str, request: RetryMissingTrackRequest
         [(request.artist, request.title)],
         convert_to_flac=bool(artist[1]),
         watch_artist_id=artist_id,
+        user_id=user_id,
     )
     return {"success": True, "import_id": import_id}
 
 
 @app.post("/api/watched-artists/check-all")
-def check_all_watched_artists():
+def check_all_watched_artists(http_request: Request):
     """Trigger a refresh for all watched artists that are due."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         artists = conn.execute("""

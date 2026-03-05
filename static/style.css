@@ -1,3 +1,50 @@
+/* =============================================================================
+   MusicGrabber - style.css
+   Table of contents (approximate line numbers, update when adding sections)
+   =============================================================================
+
+   1.   CSS custom properties (variables)      ~   27
+   2.   Warning banner                         ~   58
+   3.   Reset and base styles                  ~   79
+   4.   Layout - container, header             ~  100
+   5.   Playlist selector chip                 ~  118
+   6.   Tabs                                   ~  165
+   7.   Search box                             ~  233
+   8.   Result cards                           ~  320
+   9.   Mobile action row                      ~  687
+   10.  Source badges                          ~  715
+   11.  Buttons (download, clear, test)        ~  760
+   12.  Queue tab                              ~  870
+   13.  Toast notification                     ~  885
+   14.  Bulk import tab                        ~  920
+   15.  Watched playlist cards                 ~ 1132
+   16.  Settings tab                           ~ 1368
+   17.  Mobile / responsive overrides          ~ 1839
+   18.  Explore similar                        ~ 1928
+
+   --- Added during CSS migration (previously inline styles) ---
+
+   19.  Auth screens (login, change password)  ~ 2049
+   20.  Header controls (right-hand cluster)   ~ 2131
+   21.  Bulk import tab (extended)             ~ 2183
+   22.  Watched playlists / artists tab        ~ 2352
+   23.  Watched artists add form               ~ 2464
+   24.  Queue tab / downloadable section       ~ 2512
+   25.  Settings - Search Sources             ~ 2539
+   26.  Settings - form fields                ~ 2603
+   27.  Settings - Notifications              ~ 2653
+   28.  Settings - Blacklist                  ~ 2688
+   29.  Settings - User Management            ~ 2703
+   30.  Settings - Security / Change Password ~ 2769
+   31.  Settings - Save/actions row           ~ 2805
+   32.  Release Notes modal                   ~ 2813
+   33.  Report / blacklist modal              ~ 2888
+   34.  Spotify cookies expired banner        ~ 2987
+   35.  Cookie expiry hint                    ~ 3001
+   36.  Utility classes (.mb-16 etc.)         ~ 3011
+
+   ============================================================================= */
+
 :root,
 [data-theme="dark"] {
     --bg-primary: #0a0a0b;
@@ -185,6 +232,35 @@ h1 {
 .playlist-selector-clear:hover {
     border-color: var(--error, #ef4444);
     color: var(--error, #ef4444);
+}
+
+.playlist-new-name-input {
+    padding: 5px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: var(--text-primary);
+    outline: none;
+    width: 180px;
+}
+
+.playlist-new-name-confirm {
+    padding: 3px 8px;
+    font-size: 14px;
+    font-family: inherit;
+    background: transparent;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: var(--accent);
+    cursor: pointer;
+    line-height: 1;
+}
+
+.playlist-new-name-confirm:hover {
+    background: var(--accent);
+    color: var(--bg-primary);
 }
 
 /* Track list panel  -  full track view per watched playlist */
@@ -2040,3 +2116,986 @@ h1 {
     accent-color: var(--accent);
     cursor: pointer;
 }
+
+/* --------------------------------------------------------------------------
+   Auth screens (login, forced password change)
+   Full-viewport overlay, centred card layout.
+-------------------------------------------------------------------------- */
+
+.auth-screen {
+    position: fixed;
+    inset: 0;
+    background: var(--bg-primary);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+}
+
+.auth-card {
+    background: var(--bg-secondary);
+    padding: 32px;
+    border-radius: 16px;
+    width: 100%;
+    max-width: 360px;
+    border: 1px solid var(--border);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.auth-title {
+    margin: 0 0 24px;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+/* Slightly less bottom margin for the change-password heading */
+.auth-title-sm {
+    margin: 0 0 8px;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.auth-forced-notice {
+    color: var(--warning, #fb923c);
+    margin-bottom: 16px;
+    font-size: 13px;
+}
+
+/* Shared text/password input used on auth screens */
+.auth-input {
+    width: 100%;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-primary);
+    color: var(--text);
+    font-size: 15px;
+    box-sizing: border-box;
+}
+
+/* Utility: slightly more bottom margin, used on the last input before a submit button */
+.mb-16 {
+    margin-bottom: 16px;
+}
+
+.auth-submit-btn {
+    width: 100%;
+    padding: 11px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.auth-error {
+    color: var(--error, #f87171);
+    margin-top: 10px;
+    font-size: 13px;
+}
+
+/* --------------------------------------------------------------------------
+   Header controls (right-hand cluster)
+-------------------------------------------------------------------------- */
+
+.header-controls {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.header-format-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.theme-toggle-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    color: var(--text-secondary);
+    transition: all 0.2s;
+}
+
+.version-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+/* Current-user display and sign-out button share the same text style */
+.header-user-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.logout-btn {
+    font-size: 13px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+/* --------------------------------------------------------------------------
+   Bulk import tab
+-------------------------------------------------------------------------- */
+
+.bulk-intro {
+    margin-bottom: 12px;
+}
+
+.bulk-intro-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+.bulk-file-row {
+    margin-bottom: 12px;
+}
+
+.bulk-file-name {
+    margin-left: 12px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.bulk-url-row {
+    margin-bottom: 12px;
+}
+
+.bulk-url-flex {
+    display: flex;
+    gap: 8px;
+}
+
+.bulk-url-input {
+    flex: 1;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-family: inherit;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+}
+
+.bulk-fetch-btn {
+    padding: 10px 16px;
+    font-size: 13px;
+    font-family: inherit;
+    font-weight: 600;
+    background: #1DB954;
+    color: #000;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.form-error {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--error);
+}
+
+.bulk-services-row {
+    margin-top: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.bulk-services-hint {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+/* Small circular info badge */
+.info-badge {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    cursor: help;
+}
+
+.bulk-services-note {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.bulk-textarea-wrap {
+    position: relative;
+}
+
+/* Line counter overlay inside the bulk textarea */
+.line-counter {
+    position: absolute;
+    bottom: 8px;
+    right: 12px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+.bulk-playlist-toggle {
+    margin-top: 12px;
+    margin-bottom: 12px;
+}
+
+.bulk-playlist-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.bulk-checkbox {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+/* Playlist name input - JS toggles display, so display:none stays inline;
+   these rules handle the layout when it is visible */
+.bulk-playlist-name-input {
+    width: 100%;
+    margin-top: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-family: inherit;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+}
+
+/* "Save files to Playlists folder" row - also JS-toggled */
+.bulk-playlists-dir-label {
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-primary);
+    cursor: pointer;
+    margin-top: 8px;
+}
+
+.bulk-import-btn {
+    width: 100%;
+    padding: 14px;
+    font-size: 14px;
+    font-family: inherit;
+    font-weight: 600;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+/* --------------------------------------------------------------------------
+   Watched playlists / watched artists tab
+-------------------------------------------------------------------------- */
+
+
+.queue-section-heading {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.queue-section-heading a {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.accent-btn {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.warning-btn {
+    color: var(--warning);
+    border-color: var(--warning);
+}
+
+.watched-add-panel {
+    margin-bottom: 16px;
+    padding: 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+}
+
+.watched-panel-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.watched-schedule-info {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    opacity: 0.8;
+}
+
+.watched-url-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+/* Shared URL/text input used inside watched and artist add panels */
+.panel-text-input {
+    flex: 1;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-family: inherit;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+}
+
+/* Primary action button shared between Watch, Add (LB), Find Artist, Watch Artist */
+.panel-action-btn {
+    padding: 10px 16px;
+    font-size: 13px;
+    font-family: inherit;
+    font-weight: 600;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.lb-toggle-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+/* ListenBrainz row - JS-toggled; layout applied when visible */
+.lb-row {
+    gap: 8px;
+    margin-bottom: 8px;
+    align-items: center;
+}
+
+
+/* Status feedback box (watched add, artist add) */
+.watched-status-box {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* --------------------------------------------------------------------------
+   Watched artists add form (inline panel)
+-------------------------------------------------------------------------- */
+
+.artist-add-panel {
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+
+.artist-selected-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.artist-date-input {
+    padding: 4px 8px;
+    font-size: 12px;
+    font-family: inherit;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+}
+
+.artist-add-btn {
+    margin-top: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-family: inherit;
+    font-weight: 600;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.artist-cancel-btn {
+    margin-top: 8px;
+    margin-left: 8px;
+}
+
+/* --------------------------------------------------------------------------
+   Queue tab / downloadable section
+-------------------------------------------------------------------------- */
+
+.section-with-top-margin {
+    margin-top: 1.5rem;
+}
+
+.downloadable-intro-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+/* Pager controls - JS toggles display:none; layout applied when visible */
+.downloadable-pager {
+    margin-top: 12px;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+}
+
+.pager-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* --------------------------------------------------------------------------
+   Settings tab - Search Sources sub-section
+-------------------------------------------------------------------------- */
+
+.settings-label-top {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    row-gap: 6px;
+}
+
+.settings-label-top > span {
+    padding-top: 2px;
+}
+
+.source-toggle-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Individual source row (label wrapping the toggle) */
+.source-toggle-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    min-width: 180px;
+}
+
+.settings-hint-full {
+    width: 100%;
+}
+
+/* Audio format selector */
+.format-selector-wrap {
+    flex-wrap: wrap;
+    row-gap: 4px;
+}
+
+.format-btn-group {
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+
+/* MP3 quality notice - JS-toggled; layout applied when visible */
+.mp3-format-note {
+    width: 100%;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
+/* Organise-by-artist hint row */
+.settings-label-wrap {
+    flex-wrap: wrap;
+    row-gap: 4px;
+}
+
+/* --------------------------------------------------------------------------
+   Settings tab - various form fields
+-------------------------------------------------------------------------- */
+
+.settings-form-top {
+    margin-top: 8px;
+}
+
+.settings-input-sm {
+    width: 120px;
+}
+
+.settings-input-path {
+    width: 320px;
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.settings-subdir-flex {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+/* Custom subdir input row - JS-toggled; layout applied when visible */
+.custom-subdir-row {
+    margin-top: 6px;
+}
+
+.settings-path-preview {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-family: monospace;
+    margin-top: 2px;
+}
+
+.settings-hint-sm {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+/* AcoustID key input */
+.settings-input-acoustid {
+    width: 240px;
+}
+
+/* --------------------------------------------------------------------------
+   Settings tab - Notifications
+-------------------------------------------------------------------------- */
+
+.notify-on-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.notify-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.notify-checkbox {
+    accent-color: var(--accent);
+}
+
+/* Apprise test row */
+.apprise-test-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* Email settings - shown inside details */
+.email-settings-form {
+    margin-top: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   Settings tab - Blacklist
+-------------------------------------------------------------------------- */
+
+.blacklist-intro {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 0 0 12px;
+}
+
+.blacklist-content {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+/* --------------------------------------------------------------------------
+   Settings tab - User Management
+-------------------------------------------------------------------------- */
+
+.user-list-wrap {
+    margin-bottom: 16px;
+}
+
+.first-user-warning {
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    color: #fbbf24;
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 12px;
+}
+
+.user-create-grid {
+    display: grid;
+    gap: 8px;
+}
+
+.user-create-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* Text/password/select inputs in the create-user form */
+.user-input {
+    flex: 1;
+    min-width: 120px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-primary);
+    color: var(--text);
+    font-size: 14px;
+}
+
+.user-role-select {
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-primary);
+    color: var(--text);
+    font-size: 14px;
+}
+
+.user-create-error {
+    color: var(--error, #f87171);
+    font-size: 13px;
+}
+
+.user-add-btn {
+    padding: 8px 16px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+/* --------------------------------------------------------------------------
+   Settings tab - Security / Change Password
+-------------------------------------------------------------------------- */
+
+.session-auth-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.browser-api-key-status {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.clear-stored-key-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+}
+
+.change-password-heading {
+    margin: 16px 0 8px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.change-password-btn {
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    font-size: 14px;
+    cursor: pointer;
+}
+
+/* --------------------------------------------------------------------------
+   Settings tab - Save/actions row
+-------------------------------------------------------------------------- */
+
+.settings-actions-padded {
+    padding-bottom: 20px;
+}
+
+/* --------------------------------------------------------------------------
+   Release Notes modal
+-------------------------------------------------------------------------- */
+
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    width: min(520px, 92vw);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.modal-title {
+    margin: 0;
+    font-size: 15px;
+    color: var(--text-primary);
+}
+
+.modal-close-btn {
+    background: none;
+    border: none;
+    font-size: 18px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+
+.modal-body {
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    flex: 1;
+}
+
+.modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.modal-confirm-btn {
+    padding: 8px 20px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+/* --------------------------------------------------------------------------
+   Report / blacklist modal
+-------------------------------------------------------------------------- */
+
+/* Report overlay uses the shared .modal-overlay class */
+
+.report-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    width: min(400px, 90vw);
+    max-width: 90vw;
+}
+
+.report-title {
+    margin: 0 0 16px;
+    font-size: 15px;
+    color: var(--text-primary);
+}
+
+.report-field {
+    margin-bottom: 12px;
+}
+
+.report-field-label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.report-select {
+    width: 100%;
+    padding: 8px;
+    font-size: 13px;
+    font-family: inherit;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.report-text-input {
+    width: 100%;
+    padding: 8px;
+    font-size: 13px;
+    font-family: inherit;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-sizing: border-box;
+}
+
+.report-uploader-row {
+    margin-bottom: 16px;
+}
+
+.report-uploader-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.report-uploader-checkbox {
+    accent-color: var(--warning);
+}
+
+.report-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+/* Shared base for report action buttons */
+.report-btn {
+    padding: 8px 16px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.report-cancel-btn {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+
+.report-submit-btn {
+    background: var(--warning);
+    color: #000;
+    border: none;
+}
+
+/* --------------------------------------------------------------------------
+   Spotify cookies expired banner
+-------------------------------------------------------------------------- */
+
+.cookies-expired-banner {
+    background: var(--warning-bg, #fef3c7);
+    border: 1px solid var(--warning-border, #d97706);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--warning-text, #92400e);
+}
+
+/* --------------------------------------------------------------------------
+   Cookie expiry hint (monospace one-liner, JS-toggled display)
+-------------------------------------------------------------------------- */
+
+.cookie-expiry-hint {
+    font-size: 11px;
+    font-family: monospace;
+    margin-top: 2px;
+}
+
+/* Playlist selector row - JS-toggled; bottom margin applied when visible */
+.playlist-selector-row-wrap {
+    margin-bottom: 8px;
+}
+
+/* ListenBrainz toggle row */
+.lb-toggle-row {
+    margin-bottom: 8px;
+}
+
+/* Artist search results list - JS-toggled; bottom margin applied when visible */
+.artist-search-results {
+    margin-bottom: 8px;
+}
+
+/* Custom subdir text input - width matches the select above it */
+.settings-input-path-text {
+    width: 320px;
+}
+

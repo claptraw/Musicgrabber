@@ -21,9 +21,11 @@ from constants import (
     TIMEOUT_YTDLP_SEARCH,
     SOUNDCLOUD_SEARCH_MULTIPLIER, SOUNDCLOUD_SEARCH_MIN_FETCH,
     MONOCHROME_API_URL, MONOCHROME_COVER_BASE, TIMEOUT_MONOCHROME_API,
+    SEARCH_MAX_PER_SOURCE,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration
+from settings import get_setting, get_setting_bool
 from mp3phoenix import search_mp3phoenix
 from youtube import search_youtube, score_search_result, parse_duration, _normalise_search_text, _parse_query_artist_title, _query_has_variation
 
@@ -145,15 +147,28 @@ def _score_monochrome_result(item: dict, query: str | None = None) -> int:
         album=album_title,
     )
 
-    # Quality bonus  -  the whole point of Monochrome.  Needs to be hefty
-    # enough to overcome YouTube's "Official Video" title-stuffing bonuses
-    # (~55 points) so genuine lossless reliably floats above lossy transcodes.
+    # Quality bonus  -  the whole point of Monochrome.  50-point gap over MP3Phoenix
+    # (320 kbps = +30) ensures lossless always wins on equal relevance.  Still loses
+    # to a stacked official YouTube result (Topic + official audio = ~70 pts).
     quality_bonuses = {
-        "HI_RES_LOSSLESS": 120,
-        "LOSSLESS": 100,
+        "HI_RES_LOSSLESS": 100,
+        "LOSSLESS": 80,
         "HIGH": 30,
     }
     score += quality_bonuses.get(audio_quality, 0)
+
+    # Title variant penalty: if the query has no parenthetical suffix but the
+    # Tidal result does (e.g. "Hey Man Nice Shot (½ oz)" vs "hey man nice shot"),
+    # it's a non-standard variant.  Benign remaster/edition tags get a light touch;
+    # opaque suffixes get enough of a penalty to neutralise the quality bonus.
+    if query:
+        _, expected_title = _parse_query_artist_title(query)
+        if expected_title and not re.search(r'[\(\[]', expected_title):
+            if re.search(r'[\(\[]', title):
+                paren_content = " ".join(re.findall(r'[\(\[]([^\)\]]*)[\)\]]', title.lower()))
+                _benign_variant_re = r'\b(remaster(?:ed)?|expanded|deluxe|edition|feat(?:uring)?|ft|bonus|single|stereo|mono|explicit)\b'
+                if not re.search(_benign_variant_re, paren_content):
+                    score -= 110  # Neutralise even HI_RES_LOSSLESS for unknown variants
 
     # Artist mismatch penalty: if the query specifies an artist and the Tidal
     # result is by a completely different artist, the quality bonus must not
@@ -424,13 +439,13 @@ def _apply_mb_duration_scores(results: list[dict], expected_duration_secs: float
         if secs <= 0:
             continue
         delta_ratio = abs(secs - expected_duration_secs) / expected_duration_secs
-        if delta_ratio <= 0.05:
+        if delta_ratio <= 0.02:
             r["quality_score"] += 40
-        elif delta_ratio <= 0.12:
+        elif delta_ratio <= 0.05:
             r["quality_score"] += 20
-        elif delta_ratio <= 0.25:
+        elif delta_ratio <= 0.10:
             pass
-        elif delta_ratio <= 0.50:
+        elif delta_ratio <= 0.25:
             r["quality_score"] -= 30
         else:
             r["quality_score"] -= 60
@@ -461,10 +476,20 @@ def _apply_blacklist_filter(results: list[dict], source: str | None = None) -> l
     return filtered
 
 
+def _enabled_sources() -> dict:
+    """Return the subset of SOURCE_REGISTRY that is currently enabled in settings."""
+    return {
+        name: cfg for name, cfg in SOURCE_REGISTRY.items()
+        if get_setting_bool(f"source_{name}_enabled", True)
+    }
+
+
 def search_source(source: str, query: str, limit: int) -> list[dict]:
     """Search a single registered source."""
     if source not in SOURCE_REGISTRY:
         raise ValueError(f"Unknown search source: {source}")
+    if not get_setting_bool(f"source_{source}_enabled", True):
+        return []
 
     # Fire MB duration lookup in parallel with the source search so it doesn't
     # add any latency  -  both finish before we sort and return.
@@ -482,10 +507,11 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
 
 
 def search_all(query: str, limit: int) -> list[dict]:
-    """Search every registered source in parallel, merge by quality score."""
+    """Search every enabled source in parallel, merge by quality score."""
+    active = _enabled_sources()
     futures = {}
-    with ThreadPoolExecutor(max_workers=len(SOURCE_REGISTRY) + 1) as pool:
-        for name, cfg in SOURCE_REGISTRY.items():
+    with ThreadPoolExecutor(max_workers=len(active) + 1) as pool:
+        for name, cfg in active.items():
             futures[pool.submit(cfg["search_fn"], query, limit)] = name
         # MB lookup runs alongside the source searches at no extra cost
         mb_future = pool.submit(_mb_duration_lookup, query)
@@ -494,7 +520,10 @@ def search_all(query: str, limit: int) -> list[dict]:
     for future in as_completed(futures):
         source_name = futures[future]
         try:
-            all_results.extend(future.result(timeout=TIMEOUT_YTDLP_SEARCH + 5))
+            source_results = future.result(timeout=TIMEOUT_YTDLP_SEARCH + 5)
+            # Cap per-source contribution so one prolific source can't drown out the rest.
+            # Each source gets its best N results; scoring decides the final order.
+            all_results.extend(source_results[:SEARCH_MAX_PER_SOURCE])
         except Exception as e:
             print(f"search_all: {source_name} failed: {e}")
 
@@ -513,6 +542,12 @@ def search_all(query: str, limit: int) -> list[dict]:
 def get_available_sources() -> list[dict]:
     """Return source metadata for the frontend source selector."""
     return [
-        {"id": name, "label": cfg["label"], "badge": cfg["badge"], "colour": cfg["colour"]}
+        {
+            "id": name,
+            "label": cfg["label"],
+            "badge": cfg["badge"],
+            "colour": cfg["colour"],
+            "enabled": bool(get_setting(f"source_{name}_enabled", True)),
+        }
         for name, cfg in SOURCE_REGISTRY.items()
     ]

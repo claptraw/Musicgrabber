@@ -26,6 +26,8 @@ stall_raw = (os.environ.get("SPOTIFY_BROWSER_STALL_SECONDS") or "").strip()
 if stall_raw.isdigit():
     stall_timeout_seconds = max(5, min(300, int(stall_raw)))
 
+sp_dc = (os.environ.get("SPOTIFY_SP_DC") or "").strip() or None
+
 try:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -33,9 +35,24 @@ try:
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 800}
         )
-        page = context.new_page()
 
+        if sp_dc:
+            context.add_cookies([{
+                "name": "sp_dc",
+                "value": sp_dc,
+                "domain": ".spotify.com",
+                "path": "/",
+                "httpOnly": True,
+                "secure": True,
+            }])
+
+        page = context.new_page()
         page.goto(url, timeout=60000)
+
+        # If Spotify redirects to the login page the cookie has expired
+        if "accounts.spotify.com" in page.url or "/login" in page.url:
+            print(json.dumps({"success": False, "error": "spotify_cookies_expired"}))
+            sys.exit(0)
         time.sleep(3)
 
         expected_total = None

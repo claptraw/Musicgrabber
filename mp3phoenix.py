@@ -109,9 +109,9 @@ def search_mp3phoenix(query: str, limit: int) -> list[dict]:
                 duration_seconds=duration_secs or None,
                 view_count=None,
             )
-            # 320 kbps MP3 is meaningfully better than SoundCloud (64-128 kbps)
-            # and should generally beat YouTube rips too. Not lossless, but decent.
-            quality_score += 50
+            # 320 kbps MP3 is better than SoundCloud (64-128 kbps) and bare YouTube
+            # rips, but it's still lossy  -  lossless should always win.
+            quality_score += 30
 
             # The full getmp3 URL is stored in source_url for download and preview.
             # video_id gets a short hash  -  the raw token contains slashes which

@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.2.7"
+VERSION = "2.3.0"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -47,6 +47,7 @@ YOUTUBE_SEARCH_MIN_FETCH = 30    # Minimum results to fetch for scoring
 SOUNDCLOUD_SEARCH_MULTIPLIER = 2 # Less noise on SoundCloud, so fewer extras needed
 SOUNDCLOUD_SEARCH_MIN_FETCH = 15 # Minimum results to fetch for scoring
 SLSKD_MAX_RESULTS = 20           # Max Soulseek results to return
+SEARCH_MAX_PER_SOURCE = 4        # Max results any single source can contribute to an "All" search
 SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 MAX_SEARCH_QUERY_LENGTH = 512    # Max characters allowed in search input
 SEARCH_LOG_RETENTION_DAYS = 90   # Keep search analytics for N days
@@ -70,6 +71,19 @@ YTDLP_PLAYER_CLIENT = os.getenv("YTDLP_PLAYER_CLIENT", "")
 # Rate limiting
 RATE_LIMIT_REQUESTS = 200        # Max requests per IP per window  -  single-user tool, be generous
 RATE_LIMIT_WINDOW = 60           # Window size in seconds
+
+# Login hardening
+LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
+LOGIN_LOCKOUT_SECONDS = int(os.getenv("LOGIN_LOCKOUT_SECONDS", "900"))
+LOGIN_ATTEMPT_WINDOW = int(os.getenv("LOGIN_ATTEMPT_WINDOW", "900"))
+
+# Download token auth (for browser file downloads without exposing session tokens in URLs)
+DOWNLOAD_TOKEN_TTL_SECONDS = int(os.getenv("DOWNLOAD_TOKEN_TTL_SECONDS", "60"))
+
+# Transport security
+HTTPS_ONLY = os.getenv("HTTPS_ONLY", "false").lower() == "true"
+HSTS_MAX_AGE = int(os.getenv("HSTS_MAX_AGE", "31536000"))
+ALLOW_API_KEY_QUERY_PARAM = os.getenv("ALLOW_API_KEY_QUERY_PARAM", "false").lower() == "true"
 
 # Configuration from environment - structural paths
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))

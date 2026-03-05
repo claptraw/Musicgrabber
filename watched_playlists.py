@@ -23,7 +23,7 @@ from db import db_conn
 from bulk_import import start_bulk_import_for_tracks
 from amazon import fetch_amazon_playlist
 from downloads import rebuild_watched_playlist_m3u
-from settings import get_playlists_dir
+from settings import get_playlists_dir, get_setting
 from spotify import fetch_spotify_playlist_via_browser
 from utils import extract_artist_title, hash_track, spawn_daemon_thread, sanitize_filename, check_duplicate
 from downloads import check_navidrome_duplicate
@@ -41,9 +41,9 @@ def _normalise_match_text(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
-def _playlist_file_exists(playlist_name: str, artist: str, title: str) -> bool:
+def _playlist_file_exists(playlist_name: str, artist: str, title: str, user_id: str | None = None) -> bool:
     """Check whether a track exists inside Playlists/<playlist_name>/."""
-    playlists_dir = get_playlists_dir()
+    playlists_dir = get_playlists_dir(user_id=user_id)
     if not playlists_dir:
         return False
     track_dir = playlists_dir / sanitize_filename(playlist_name)
@@ -74,7 +74,7 @@ def _playlist_file_exists(playlist_name: str, artist: str, title: str) -> bool:
     return False
 
 
-def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: str, title: str, job_artist: str = "", job_title: str = "") -> bool:
+def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: str, title: str, job_artist: str = "", job_title: str = "", user_id: str | None = None) -> bool:
     """Return True if we can resolve a local file for this watched track.
 
     Checks MusicGrabber's own library first, then falls back to Navidrome (real
@@ -89,16 +89,16 @@ def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: s
             pairs.append((a, t))
 
     for a, t in pairs:
-        if check_duplicate(a, t):
+        if check_duplicate(a, t, user_id=user_id):
             return True
-        if use_playlists_dir and _playlist_file_exists(playlist_name, a, t):
+        if use_playlists_dir and _playlist_file_exists(playlist_name, a, t, user_id=user_id):
             return True
 
     # Last resort: check Navidrome. Accepts absolute paths only  -  synthetic
     # relative paths ("Artist/Album/Track.mp3") are not a reliable signal that
     # the file actually exists on MusicGrabber's filesystem.
     for a, t in pairs:
-        nav_path = check_navidrome_duplicate(a, t)
+        nav_path = check_navidrome_duplicate(a, t, user_id=user_id)
         if nav_path and nav_path.is_absolute():
             return True
 
@@ -155,9 +155,33 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     )
 
 
-def _fetch_spotify_playlist_embed(url: str) -> dict:
+def _extract_sp_dc(cookies_text: str) -> str | None:
+    """Extract the sp_dc session cookie value from a Netscape-format cookie string."""
+    for raw_line in (cookies_text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7 and parts[5] == "sp_dc":
+            return parts[6].strip()
+    return None
+
+
+def _flag_spotify_cookies_expired(user_id: str | None) -> None:
+    """Mark Spotify cookies as expired in settings so the UI can warn the user."""
+    from settings import set_setting, set_user_setting
+    if user_id:
+        set_user_setting(user_id, "spotify_cookies_expired", "true")
+    else:
+        set_setting("spotify_cookies_expired", "true")
+
+
+def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: str | None = None) -> dict:
     """Fetch Spotify playlist tracks via embed endpoint.
     This is the fast path that works for playlists with <100 tracks.
+
+    sp_dc is the Spotify session cookie. When provided it enables access to
+    private playlists. Without it only public playlists are accessible.
     """
     # Extract ID and type from URL
     playlist_match = re.match(r'https?://open\.spotify\.com/playlist/([a-zA-Z0-9]+)', url)
@@ -172,6 +196,13 @@ def _fetch_spotify_playlist_embed(url: str) -> dict:
     else:
         raise HTTPException(status_code=400, detail="Invalid Spotify URL. Expected playlist or album URL.")
 
+    # Build headers and cookies for the request.
+    # sp_dc is the session credential that unlocks private content.
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    cookies = {"sp_dc": sp_dc} if sp_dc else {}
+
     # Fetch the embed page. Spotify's public playlist API is gone, so we scrape the
     # embed HTML which includes a predictable JSON-in-HTML "title"/"subtitle" pattern.
     # If this breaks, inspect the embed HTML for renamed fields or a new data blob.
@@ -179,11 +210,21 @@ def _fetch_spotify_playlist_embed(url: str) -> dict:
         with httpx.Client(timeout=TIMEOUT_HTTP_SPOTIFY, follow_redirects=True) as client:
             response = client.get(
                 f"https://open.spotify.com/embed/{spotify_type}/{spotify_id}",
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                }
+                headers=headers,
+                cookies=cookies,
             )
+            if response.status_code in (401, 403):
+                # Cookies have gone stale — flag it and tell the caller clearly
+                if sp_dc:
+                    _flag_spotify_cookies_expired(user_id)
+                    raise HTTPException(
+                        status_code=401,
+                        detail="spotify_cookies_expired"
+                    )
+                raise HTTPException(status_code=403, detail=f"{spotify_type.title()} not found or is private")
             response.raise_for_status()
+    except HTTPException:
+        raise
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             raise HTTPException(status_code=404, detail=f"{spotify_type.title()} not found or is private")
@@ -238,7 +279,8 @@ def _fetch_spotify_playlist_embed(url: str) -> dict:
         browser_error = None
         try:
             browser_result = fetch_spotify_playlist_via_browser(
-                spotify_id, spotify_type, expected_total=expected_total
+                spotify_id, spotify_type, expected_total=expected_total, sp_dc=sp_dc,
+                user_id=user_id,
             )
             if browser_result["count"] > len(tracks):
                 print(f"Headless browser returned {browser_result['count']} tracks (embed had {len(tracks)})")
@@ -434,13 +476,15 @@ def _fetch_listenbrainz_playlist(playlist_uuid: str) -> tuple[list[tuple[str, st
     return tracks, name
 
 
-def fetch_playlist_tracks(url: str, platform: str) -> tuple[list[tuple[str, str]], str]:
+def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -> tuple[list[tuple[str, str]], str]:
     """Fetch tracks from a playlist URL
 
     Returns (list of (artist, title) tuples, playlist_name)
     """
     if platform == "spotify":
-        result = _fetch_spotify_playlist_embed(url)
+        spotify_cookies_text = get_setting("spotify_cookies", "", user_id=user_id)
+        sp_dc = _extract_sp_dc(spotify_cookies_text) if spotify_cookies_text.strip() else None
+        result = _fetch_spotify_playlist_embed(url, sp_dc=sp_dc, user_id=user_id)
 
         # Parse "Artist - Title" format back to tuples
         tracks = []
@@ -573,6 +617,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
 
         playlist = dict(playlist)
         sync_mode = playlist.get("sync_mode", "append")
+        user_id = playlist.get("user_id")
 
         # Acquire an atomic per-playlist refresh lock.
         # If a stale "running" state is older than WATCHED_REFRESH_STALE_SECONDS,
@@ -696,6 +741,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                         existing["title"] or title,
                         existing["job_artist"] or "",
                         existing["job_title"] or "",
+                        user_id=user_id,
                     ):
                         conn.execute(
                             "UPDATE watched_playlist_tracks SET downloaded_at = NULL WHERE playlist_id = ? AND track_hash = ?",
@@ -752,6 +798,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     bool(playlist["convert_to_flac"]),
                     watch_playlist_id=playlist_id,
                     use_playlists_dir=use_playlists_dir,
+                    user_id=user_id,
                 )
 
             # Update playlist metadata
@@ -772,6 +819,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     playlist_id, playlist["name"],
                     use_playlists_dir=use_playlists_dir,
                     sync_mode=sync_mode,
+                    user_id=user_id,
                 )
 
             queued_count = len(tracks_to_import)

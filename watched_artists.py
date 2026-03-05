@@ -37,6 +37,7 @@ def refresh_watched_artist(artist_id: str) -> dict:
             return {"error": "Artist not found", "artist_id": artist_id}
 
         artist = dict(artist)
+        user_id = artist.get("user_id")
 
         # Acquire an atomic per-artist refresh lock.
         lock_cursor = conn.execute(
@@ -215,6 +216,7 @@ def refresh_watched_artist(artist_id: str) -> dict:
                     tracks_to_import,
                     convert_to_flac=convert_to_flac,
                     watch_artist_id=artist_id,
+                    user_id=user_id,
                 )
                 conn.execute(
                     "UPDATE watched_artists SET refresh_import_id = ? WHERE id = ?",

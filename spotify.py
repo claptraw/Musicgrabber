@@ -60,6 +60,8 @@ def fetch_spotify_playlist_via_browser(
     spotify_id: str,
     spotify_type: str,
     expected_total: int | None = None,
+    sp_dc: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
     """Fetch playlist/album tracks using a headless browser
 
@@ -90,6 +92,10 @@ def fetch_spotify_playlist_via_browser(
     if expected_total and expected_total > 0:
         env["SPOTIFY_EXPECTED_TOTAL"] = str(expected_total)
     env["SPOTIFY_BROWSER_STALL_SECONDS"] = str(configured_stall_seconds)
+    if sp_dc:
+        env["SPOTIFY_SP_DC"] = sp_dc
+    if user_id:
+        env["SPOTIFY_USER_ID"] = user_id
 
     # Fixed timeout is tight on low-power hosts for very large playlists.
     # Scale timeout by expected track count, while keeping an upper bound.
@@ -141,9 +147,19 @@ def fetch_spotify_playlist_via_browser(
         )
 
     if not data.get("success"):
+        error = data.get("error", "Unknown error")
+        # Browser script signals expired cookies with a specific sentinel
+        if error == "spotify_cookies_expired":
+            if sp_dc and user_id is not None:
+                from settings import set_user_setting
+                set_user_setting(user_id, "spotify_cookies_expired", "true")
+            elif sp_dc:
+                from settings import set_setting
+                set_setting("spotify_cookies_expired", "true")
+            raise HTTPException(status_code=401, detail="spotify_cookies_expired")
         raise HTTPException(
             status_code=502,
-            detail=f"Failed to fetch Spotify {spotify_type} via browser: {data.get('error', 'Unknown error')}"
+            detail=f"Failed to fetch Spotify {spotify_type} via browser: {error}"
         )
 
     tracks = data["tracks"]

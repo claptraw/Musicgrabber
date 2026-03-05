@@ -2,6 +2,7 @@
 MusicGrabber - Settings Management
 
 Environment variable > DB value > default hierarchy.
+Per-user settings layer sits between env vars and global DB values.
 """
 
 import os
@@ -15,15 +16,38 @@ from constants import (
 from db import db_conn
 
 
-def get_setting(key: str, default: str = "") -> str:
-    """Get a setting value. Environment variable takes precedence over DB value."""
+def get_setting(key: str, default: str = "", user_id: str | None = None) -> str:
+    """Get a setting value.
+
+    Lookup order:
+    1. Environment variable (always wins)
+    2. user_settings table (if user_id provided and key is a user-scoped setting)
+    3. Global settings table
+    4. Schema default / provided default
+    """
     # Check environment variable first (uppercase, with underscores)
     env_key = key.upper().replace(".", "_")
     env_value = os.getenv(env_key)
     if env_value is not None:
         return env_value
 
-    # Fall back to database
+    # Per-user setting (only for user-scoped keys when a user_id is given)
+    if user_id and key in USER_SETTINGS_KEYS:
+        try:
+            with db_conn() as conn:
+                row = conn.execute(
+                    "SELECT value FROM user_settings WHERE user_id = ? AND key = ?",
+                    (user_id, key)
+                ).fetchone()
+            if row and row[0] is not None:
+                return row[0]
+        except Exception:
+            pass
+        # Private keys don't inherit from global settings — new users start blank.
+        if key in USER_PRIVATE_KEYS:
+            return default
+
+    # Fall back to global database
     try:
         with db_conn() as conn:
             cursor = conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
@@ -36,15 +60,13 @@ def get_setting(key: str, default: str = "") -> str:
     return default
 
 
-def get_setting_bool(key: str, default: bool = False) -> bool:
-    """Get a boolean setting value."""
-    value = get_setting(key, str(default).lower())
+def get_setting_bool(key: str, default: bool = False, user_id: str | None = None) -> bool:
+    value = get_setting(key, str(default).lower(), user_id=user_id)
     return value.lower() in ("true", "1", "yes", "on")
 
 
-def get_setting_int(key: str, default: int = 0) -> int:
-    """Get an integer setting value."""
-    value = get_setting(key, str(default))
+def get_setting_int(key: str, default: int = 0, user_id: str | None = None) -> int:
+    value = get_setting(key, str(default), user_id=user_id)
     try:
         return int(value)
     except (ValueError, TypeError):
@@ -52,7 +74,7 @@ def get_setting_int(key: str, default: int = 0) -> int:
 
 
 def set_setting(key: str, value: str) -> None:
-    """Set a setting value in the database."""
+    """Set a global setting value in the database."""
     with db_conn() as conn:
         conn.execute("""
             INSERT INTO settings (key, value, updated_at)
@@ -62,17 +84,71 @@ def set_setting(key: str, value: str) -> None:
         conn.commit()
 
 
-def get_all_settings() -> dict:
-    """Get all settings from the database."""
+def set_user_setting(user_id: str, key: str, value: str) -> None:
+    """Set a per-user setting in the user_settings table."""
+    with db_conn() as conn:
+        conn.execute("""
+            INSERT INTO user_settings (user_id, key, value, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
+        """, (user_id, key, value, value))
+        conn.commit()
+
+
+def get_user_settings(user_id: str) -> dict:
+    """Get all settings for a specific user from user_settings table."""
+    with db_conn() as conn:
+        cursor = conn.execute(
+            "SELECT key, value FROM user_settings WHERE user_id = ?", (user_id,)
+        )
+        return {row[0]: row[1] for row in cursor.fetchall()}
+
+
+def get_all_settings(user_id: str | None = None) -> dict:
+    """Get all settings from the database. If user_id given, user_settings override global ones."""
     with db_conn() as conn:
         cursor = conn.execute("SELECT key, value FROM settings")
-        return {row[0]: row[1] for row in cursor.fetchall()}
+        result = {row[0]: row[1] for row in cursor.fetchall()}
+
+    if user_id:
+        with db_conn() as conn:
+            cursor = conn.execute(
+                "SELECT key, value FROM user_settings WHERE user_id = ?", (user_id,)
+            )
+            for row in cursor.fetchall():
+                result[row[0]] = row[1]
+
+    return result
 
 
 # Define which settings are sensitive (should be masked in GET response)
 SENSITIVE_SETTINGS = {
     "slskd_pass", "navidrome_pass", "jellyfin_api_key",
-    "smtp_pass", "telegram_webhook_url", "api_key", "youtube_cookies"
+    "smtp_pass", "telegram_webhook_url", "api_key", "youtube_cookies",
+    "spotify_cookies",
+}
+
+# Settings that belong to each user (stored in user_settings table)
+USER_SETTINGS_KEYS = {
+    "music_dir", "singles_subdir", "playlists_subdir", "organise_by_artist",
+    "navidrome_url", "navidrome_user", "navidrome_pass", "navidrome_dupe_check",
+    "jellyfin_url", "jellyfin_api_key",
+    "notify_on", "telegram_webhook_url", "apprise_url",
+    "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "smtp_to", "smtp_tls",
+    "youtube_cookies",
+    "spotify_cookies", "spotify_cookies_expired",
+    "webhook_url",
+}
+
+# These user-scoped keys are personal credentials — a new user with no explicit value
+# should get a blank default rather than inheriting whatever the global setting says.
+# (Navidrome/Jellyfin/music_dir are NOT in this set: shared server, shared library.)
+USER_PRIVATE_KEYS = {
+    "notify_on", "telegram_webhook_url", "apprise_url",
+    "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "smtp_to", "smtp_tls",
+    "webhook_url",
+    "youtube_cookies",
+    "spotify_cookies", "spotify_cookies_expired",
 }
 
 # Define all configurable settings with their types and defaults
@@ -114,9 +190,17 @@ SETTINGS_SCHEMA = {
     "smtp_tls": {"type": "bool", "default": True, "env": "SMTP_TLS"},
     # AcoustID fingerprinting
     "acoustid_api_key": {"type": "str", "default": "0NILMQojj4", "env": "ACOUSTID_API_KEY"},
+    # Search sources
+    "source_youtube_enabled": {"type": "bool", "default": True, "env": "SOURCE_YOUTUBE_ENABLED"},
+    "source_mp3phoenix_enabled": {"type": "bool", "default": True, "env": "SOURCE_MP3PHOENIX_ENABLED"},
+    "source_soundcloud_enabled": {"type": "bool", "default": True, "env": "SOURCE_SOUNDCLOUD_ENABLED"},
+    "source_monochrome_enabled": {"type": "bool", "default": True, "env": "SOURCE_MONOCHROME_ENABLED"},
     # YouTube
     "youtube_cookies": {"type": "str", "default": "", "env": "YOUTUBE_COOKIES", "sensitive": True},
     "youtube_bot_backoff_min": {"type": "int", "default": BOT_BACKOFF_MIN_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MIN"},
+    # Spotify
+    "spotify_cookies": {"type": "str", "default": "", "sensitive": True},
+    "spotify_cookies_expired": {"type": "bool", "default": False},
     "youtube_bot_backoff_max": {"type": "int", "default": BOT_BACKOFF_MAX_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MAX"},
     "spotify_browser_timeout_seconds": {
         "type": "int",
@@ -135,15 +219,15 @@ SETTINGS_SCHEMA = {
 }
 
 
-def _get_typed_setting(key: str):
+def _get_typed_setting(key: str, user_id: str | None = None):
     """Get a setting with proper type conversion based on schema."""
     schema = SETTINGS_SCHEMA.get(key, {"type": "str", "default": ""})
     default = schema["default"]
     if schema["type"] == "bool":
-        return get_setting_bool(key, default)
+        return get_setting_bool(key, default, user_id=user_id)
     elif schema["type"] == "int":
-        return get_setting_int(key, default)
-    return get_setting(key, default)
+        return get_setting_int(key, default, user_id=user_id)
+    return get_setting(key, default, user_id=user_id)
 
 
 def _is_env_override(key: str) -> bool:
@@ -153,39 +237,37 @@ def _is_env_override(key: str) -> bool:
     return os.getenv(env_key) is not None
 
 
-def get_singles_dir() -> Path:
-    """Get the singles download directory. Reads the setting at runtime so changes take effect immediately.
+def get_singles_dir(user_id: str | None = None) -> Path:
+    """Get the singles download directory for a user (or global default).
 
     A value of "." means the music root itself (no subfolder).
     """
-    subdir = get_setting("singles_subdir", "Singles").strip() or "Singles"
+    music_dir = Path(get_setting("music_dir", str(MUSIC_DIR), user_id=user_id))
+    subdir = get_setting("singles_subdir", "Singles", user_id=user_id).strip() or "Singles"
     if subdir == ".":
-        return MUSIC_DIR
-    return MUSIC_DIR / subdir
+        return music_dir
+    return music_dir / subdir
 
 
-def get_playlists_dir() -> Path | None:
-    """Get the playlists download directory, or None if disabled (empty string).
-
-    When set, playlist downloads go to e.g. /music/Playlists/PlaylistName/
-    rather than being mixed in with singles.
-    """
-    subdir = get_setting("playlists_subdir", "").strip()
+def get_playlists_dir(user_id: str | None = None) -> Path | None:
+    """Get the playlists download directory for a user, or None if disabled."""
+    music_dir = Path(get_setting("music_dir", str(MUSIC_DIR), user_id=user_id))
+    subdir = get_setting("playlists_subdir", "", user_id=user_id).strip()
     if not subdir:
-        return None  # Feature disabled  -  fall back to Singles behaviour
+        return None  # Feature disabled, fall back to Singles behaviour
     if subdir == ".":
-        return MUSIC_DIR
-    return MUSIC_DIR / subdir
+        return music_dir
+    return music_dir / subdir
 
 
-def get_download_dir(artist: str) -> Path:
+def get_download_dir(artist: str, user_id: str | None = None) -> Path:
     """Get the download directory for a track, respecting the organise-by-artist setting.
 
     When organise_by_artist is True (default):  /music/Singles/Artist Name/
     When organise_by_artist is False:            /music/Singles/
     """
     from utils import sanitize_filename
-    base = get_singles_dir()
-    if get_setting_bool("organise_by_artist", True):
+    base = get_singles_dir(user_id=user_id)
+    if get_setting_bool("organise_by_artist", True, user_id=user_id):
         return base / sanitize_filename(artist)
     return base

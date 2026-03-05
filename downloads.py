@@ -83,7 +83,7 @@ def _safe_sanitized_title(title: str, fallback: str) -> str:
     return fallback_cleaned or "Unknown Title"
 
 
-def _output_stem(artist: str, title: str, fallback: str) -> str:
+def _output_stem(artist: str, title: str, fallback: str, user_id: str | None = None) -> str:
     """Return the output filename stem for a track.
 
     In flat (no-artist-subfolder) mode: 'Artist - Title'
@@ -93,7 +93,7 @@ def _output_stem(artist: str, title: str, fallback: str) -> str:
     called 'Track 1.flac' with no idea who they belong to.
     """
     safe_title = _safe_sanitized_title(title, fallback)
-    if not get_setting_bool("organise_by_artist", True):
+    if not get_setting_bool("organise_by_artist", True, user_id=user_id):
         safe_artist = sanitize_filename(artist or "Unknown Artist")
         return f"{safe_artist} - {safe_title}"
     return safe_title
@@ -290,11 +290,11 @@ def _find_alternate_search_candidate(query: str, attempted_ids: set[str]) -> dic
     return None
 
 
-def trigger_navidrome_scan():
+def trigger_navidrome_scan(user_id: str | None = None):
     """Trigger a Navidrome library scan via API"""
-    navidrome_url = get_setting("navidrome_url")
-    navidrome_user = get_setting("navidrome_user")
-    navidrome_pass = get_setting("navidrome_pass")
+    navidrome_url = get_setting("navidrome_url", user_id=user_id)
+    navidrome_user = get_setting("navidrome_user", user_id=user_id)
+    navidrome_pass = get_setting("navidrome_pass", user_id=user_id)
 
     if not (navidrome_url and navidrome_user and navidrome_pass):
         return
@@ -323,7 +323,7 @@ def _display_path(p: Path) -> str:
     return p.name
 
 
-def check_navidrome_duplicate(artist: str, title: str) -> Optional[Path]:
+def check_navidrome_duplicate(artist: str, title: str, user_id: str | None = None) -> Optional[Path]:
     """Check if a track already exists in Navidrome via the Subsonic search2 API.
 
     Only runs when Navidrome is configured and navidrome_dupe_check is enabled.
@@ -332,12 +332,12 @@ def check_navidrome_duplicate(artist: str, title: str) -> Optional[Path]:
     Silently swallows all errors  -  this is a best-effort check, not a blocker.
     """
     from settings import get_setting_bool
-    if not get_setting_bool("navidrome_dupe_check", True):
+    if not get_setting_bool("navidrome_dupe_check", True, user_id=user_id):
         return None
 
-    navidrome_url = get_setting("navidrome_url")
-    navidrome_user = get_setting("navidrome_user")
-    navidrome_pass = get_setting("navidrome_pass")
+    navidrome_url = get_setting("navidrome_url", user_id=user_id)
+    navidrome_user = get_setting("navidrome_user", user_id=user_id)
+    navidrome_pass = get_setting("navidrome_pass", user_id=user_id)
 
     if not (navidrome_url and navidrome_user and navidrome_pass):
         return None
@@ -451,10 +451,10 @@ def check_navidrome_duplicate(artist: str, title: str) -> Optional[Path]:
         return None  # Never let a dupe check failure block a download
 
 
-def trigger_jellyfin_scan():
+def trigger_jellyfin_scan(user_id: str | None = None):
     """Trigger a Jellyfin library scan via API"""
-    jellyfin_url = get_setting("jellyfin_url")
-    jellyfin_api_key = get_setting("jellyfin_api_key")
+    jellyfin_url = get_setting("jellyfin_url", user_id=user_id)
+    jellyfin_api_key = get_setting("jellyfin_api_key", user_id=user_id)
 
     if not (jellyfin_url and jellyfin_api_key):
         return
@@ -561,7 +561,7 @@ def _build_ytdlp_download_cmd(
     use_cookies=False skips cookie/player-client args (not needed for SoundCloud).
     """
     if convert_to_flac:
-        fmt = get_setting("audio_format", "flac")
+        fmt = get_setting("audio_format", "flac")  # Global default; per-user override applied at call site
         fmt = fmt if fmt in ("flac", "opus", "mp3") else "flac"
         format_args = ["--audio-format", fmt]
     else:
@@ -831,17 +831,17 @@ def _cleanup_temp_files(artist_dir: Path, sanitized_title: str) -> int:
     return removed
 
 
-def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artist: str) -> Path:
+def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artist: str, user_id: str | None = None) -> Path:
     """Move a downloaded file to the correct artist directory after MusicBrainz normalisation.
 
     Because MusicBrainz actually knows how to spell, unlike half the uploaders on YouTube.
     Returns the new file path (or the original if no move was needed).
     """
     # Flat directory mode doesn't use artist names  -  nothing to shuffle
-    if not get_setting_bool("organise_by_artist", True):
+    if not get_setting_bool("organise_by_artist", True, user_id=user_id):
         return audio_file
 
-    new_dir = get_download_dir(new_artist)
+    new_dir = get_download_dir(new_artist, user_id=user_id)
     old_dir = audio_file.parent
 
     if new_dir == old_dir:
@@ -1165,7 +1165,7 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
         set_file_permissions(m3u_path)
 
 
-def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playlists_dir: bool = False, sync_mode: str = "append") -> Path | None:
+def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playlists_dir: bool = False, sync_mode: str = "append", user_id: str | None = None) -> Path | None:
     """Rebuild the M3U file for a watched playlist from all tracks marked as downloaded.
 
     Walks every downloaded track in the playlist, resolves the file on disk, and
@@ -1177,6 +1177,16 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
 
     Returns the M3U path on success, None if no files could be resolved.
     """
+    # If no user_id was passed, look it up from the playlist row so we use
+    # the right music directory and settings for the owning user.
+    if user_id is None:
+        with db_conn() as conn:
+            row = conn.execute(
+                "SELECT user_id FROM watched_playlists WHERE id = ?", (playlist_id,)
+            ).fetchone()
+            if row:
+                user_id = row[0]
+
     def _normalise_m3u_match_text(text: str) -> str:
         """Loose normaliser for matching playlist rows to on-disk files.
 
@@ -1276,7 +1286,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                 (playlist_id,)
             ).fetchall()
 
-    playlists_dir = get_playlists_dir() if use_playlists_dir else None
+    playlists_dir = get_playlists_dir(user_id=user_id) if use_playlists_dir else None
     safe_playlist = sanitize_filename(playlist_name)
 
     playlist_files = []
@@ -1319,7 +1329,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                 else:
                     # Singles-layout mode: use path relative to Singles dir
                     try:
-                        entry = str(stored_path.relative_to(get_singles_dir()))
+                        entry = str(stored_path.relative_to(get_singles_dir(user_id=user_id)))
                     except ValueError:
                         entry = stored_path_str  # absolute fallback (Navidrome absolute path)
                 if entry not in seen_paths:
@@ -1346,11 +1356,11 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
             existing = None
             navidrome_sentinel_hit = False
             for artist, title in pairs:
-                local = check_duplicate(artist, title)
+                local = check_duplicate(artist, title, user_id=user_id)
                 if local and _is_real_path(local):
                     existing = local
                     break
-                nav = check_navidrome_duplicate(artist, title)
+                nav = check_navidrome_duplicate(artist, title, user_id=user_id)
                 if nav and _is_real_path(nav):
                     existing = nav
                     break
@@ -1378,11 +1388,11 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
             audio_file = None
             navidrome_sentinel_hit = False
             for artist, title in pairs:
-                local = check_duplicate(artist, title)
+                local = check_duplicate(artist, title, user_id=user_id)
                 if local and _is_real_path(local):
                     audio_file = local
                     break
-                nav = check_navidrome_duplicate(artist, title)
+                nav = check_navidrome_duplicate(artist, title, user_id=user_id)
                 if nav and _is_real_path(nav):
                     audio_file = nav
                     break
@@ -1391,7 +1401,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
 
             if audio_file:
                 try:
-                    rel_path = audio_file.relative_to(get_singles_dir())
+                    rel_path = audio_file.relative_to(get_singles_dir(user_id=user_id))
                     rel_path_str = str(rel_path)
                     if rel_path_str not in seen_paths:
                         seen_paths.add(rel_path_str)
@@ -1421,7 +1431,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         m3u_path = playlists_dir / f"{safe_playlist}.m3u"
         playlists_dir.mkdir(parents=True, exist_ok=True)
     else:
-        m3u_path = get_singles_dir() / f"{safe_playlist}.m3u"
+        m3u_path = get_singles_dir(user_id=user_id) / f"{safe_playlist}.m3u"
 
     with open(m3u_path, 'w', encoding='utf-8') as f:
         f.write("#EXTM3U\n")
@@ -1469,7 +1479,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
     return m3u_path
 
 
-def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str, convert_to_flac: bool = True, use_playlists_dir: bool = True):
+def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str, convert_to_flac: bool = True, use_playlists_dir: bool = True, user_id: str | None = None):
     """Process a playlist download job.
 
     When use_playlists_dir is True and playlists_subdir is configured, tracks are saved to
@@ -1514,7 +1524,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         _update_job(job_id, total_tracks=len(videos))
 
         # Resolve the download directory for this playlist
-        playlists_dir = get_playlists_dir() if use_playlists_dir else None
+        playlists_dir = get_playlists_dir(user_id=user_id) if use_playlists_dir else None
         safe_playlist = sanitize_filename(playlist_name)
         if playlists_dir:
             playlist_track_dir = playlists_dir / safe_playlist
@@ -1557,14 +1567,14 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 artist, title = extract_artist_title(full_title, channel)
 
                 # Check for duplicates  -  still add to M3U even if we're not downloading
-                existing_file = check_duplicate(artist, title)
+                existing_file = check_duplicate(artist, title, user_id=user_id)
                 if existing_file:
                     skipped_tracks += 1
                     if playlists_dir:
                         stem = _playlist_stem(artist, title, video_id)
                         downloaded_files.append(f"{safe_playlist}/{stem}{existing_file.suffix}")
                     else:
-                        downloaded_files.append(str(existing_file.relative_to(get_singles_dir())))
+                        downloaded_files.append(str(existing_file.relative_to(get_singles_dir(user_id=user_id))))
                     continue
 
                 # Create download directory
@@ -1572,9 +1582,9 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     artist_dir = playlist_track_dir
                     safe_title = _playlist_stem(artist, title, video_id)
                 else:
-                    artist_dir = get_download_dir(artist)
+                    artist_dir = get_download_dir(artist, user_id=user_id)
                     artist_dir.mkdir(parents=True, exist_ok=True)
-                    safe_title = _output_stem(artist, title, video_id)
+                    safe_title = _output_stem(artist, title, video_id, user_id=user_id)
                 output_template = str(artist_dir / f"{safe_title}.%(ext)s")
                 download_cmd = _build_ytdlp_download_cmd(video_id, output_template, convert_to_flac)
                 has_cookies = "--cookies" in download_cmd
@@ -1678,7 +1688,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                         # Normalising artist names is fine for metadata, but moving them into
                         # Singles breaks playlist locality and confuses M3U expectations.
                         if not playlists_dir:
-                            audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist)
+                            audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist, user_id=user_id)
                         artist = mb_artist
                     if mb_title != title:
                         title = mb_title
@@ -1693,7 +1703,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 if playlists_dir:
                     downloaded_files.append(f"{safe_playlist}/{safe_title}{audio_file.suffix}")
                 else:
-                    downloaded_files.append(str(audio_file.relative_to(get_singles_dir())))
+                    downloaded_files.append(str(audio_file.relative_to(get_singles_dir(user_id=user_id))))
                 completed_tracks += 1
 
             except Exception as track_error:
@@ -1713,7 +1723,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
             if playlists_dir:
                 m3u_path = playlists_dir / f"{safe_playlist}.m3u"
             else:
-                m3u_path = get_singles_dir() / f"{safe_playlist}.m3u"
+                m3u_path = get_singles_dir(user_id=user_id) / f"{safe_playlist}.m3u"
             with open(m3u_path, 'w', encoding='utf-8') as f:
                 f.write("#EXTM3U\n")
                 for file_path in downloaded_files:
@@ -1723,8 +1733,8 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
             _update_job(job_id, m3u_path=str(m3u_path.relative_to(MUSIC_DIR)))
 
         # Trigger library rescans if configured
-        trigger_navidrome_scan()
-        trigger_jellyfin_scan()
+        trigger_navidrome_scan(user_id=user_id)
+        trigger_jellyfin_scan(user_id=user_id)
 
         # Update job status based on results
         final_status = "completed"
@@ -1756,7 +1766,8 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
             error=error_message,
             track_count=len(videos),
             failed_count=failed_tracks,
-            skipped_count=skipped_tracks
+            skipped_count=skipped_tracks,
+            user_id=user_id,
         )
 
     except Exception as e:
@@ -1770,12 +1781,13 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
             playlist_name=playlist_name,
             source="youtube",
             status="failed",
-            error=str(e)
+            error=str(e),
+            user_id=user_id,
         )
 
 
 
-def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_to_flac: bool = True):
+def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_to_flac: bool = True, user_id: str | None = None):
     """Process a Soulseek download job via slskd"""
     try:
         _update_job(job_id, status="downloading")
@@ -1788,9 +1800,9 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         _update_job(job_id, title=title, artist=artist, uploader=username)
 
         # Check for duplicates (local filesystem, then Navidrome if configured)
-        existing_file = check_duplicate(artist, title)
+        existing_file = check_duplicate(artist, title, user_id=user_id)
         if not existing_file:
-            existing_file = check_navidrome_duplicate(artist, title)
+            existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
         if existing_file:
             _update_job(
                 job_id,
@@ -1802,7 +1814,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             return
 
         # Create download directory (with or without artist subfolder)
-        artist_dir = get_download_dir(artist)
+        artist_dir = get_download_dir(artist, user_id=user_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download from slskd with retries on common queue/abort failures
@@ -1856,7 +1868,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             raise Exception(last_error or "Soulseek download failed")
 
         # Rename to our standard naming
-        sanitized_title = _output_stem(artist, title, Path(filename).stem or job_id)
+        sanitized_title = _output_stem(artist, title, Path(filename).stem or job_id, user_id=user_id)
         source_ext = downloaded_file.suffix.lower()
 
         # Probe the source file BEFORE conversion so we know the real quality
@@ -1868,7 +1880,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 source_format_info = (src_codec, src_bitrate)
 
         # Determine final filename
-        audio_fmt = get_setting("audio_format", "flac") if convert_to_flac else None
+        audio_fmt = get_setting("audio_format", "flac", user_id=user_id) if convert_to_flac else None
         if audio_fmt not in ("flac", "opus", "mp3"):
             audio_fmt = "flac"
 
@@ -1907,7 +1919,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
         # Probe audio quality (with source info so FLAC-from-lossy is reported honestly)
         audio_quality, bitrate_kbps = probe_audio_quality(final_file, source_info=source_format_info)
-        min_bitrate = get_setting_int("min_audio_bitrate", 0)
+        min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             final_file.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
@@ -1945,7 +1957,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             )
             # Use canonical artist/title from MusicBrainz
             if mb_artist != artist:
-                final_file = _relocate_for_normalised_artist(final_file, artist, mb_artist)
+                final_file = _relocate_for_normalised_artist(final_file, artist, mb_artist, user_id=user_id)
                 artist = mb_artist
             if mb_title != title:
                 title = mb_title
@@ -1962,8 +1974,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             print(f"No lyrics found for {artist} - {title}")
 
         # Trigger library rescans if configured
-        trigger_navidrome_scan()
-        trigger_jellyfin_scan()
+        trigger_navidrome_scan(user_id=user_id)
+        trigger_jellyfin_scan(user_id=user_id)
 
         # Update job status
         _update_job(
@@ -1991,7 +2003,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             title=title,
             artist=artist,
             source="soulseek",
-            status="completed"
+            status="completed",
+            user_id=user_id,
         )
 
     except Exception as e:
@@ -2005,7 +2018,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             artist=artist,
             source="soulseek",
             status="failed",
-            error=str(e)
+            error=str(e),
+            user_id=user_id,
         )
 
 
@@ -2177,7 +2191,8 @@ def _get_monochrome_track_info(track_id: str) -> dict | None:
 
 
 def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bool = True,
-                                  playlist_name: str = None, use_playlists_dir: bool = False):
+                                  playlist_name: str = None, use_playlists_dir: bool = False,
+                                  user_id: str | None = None):
     """Download a track directly from Monochrome/Tidal  -  no yt-dlp needed.
 
     The API gives us proper metadata (artist, album, ISRC) so we don't need
@@ -2207,9 +2222,9 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         _update_job(job_id, title=title, artist=artist, uploader=artist)
 
         # Duplicate check  -  local filesystem first, then Navidrome if configured
-        existing_file = check_duplicate(artist, title)
+        existing_file = check_duplicate(artist, title, user_id=user_id)
         if not existing_file:
-            existing_file = check_navidrome_duplicate(artist, title)
+            existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
         # For playlist routing, a synthetic Navidrome sentinel path is unusable.
         # Don't mark as "already exists" if we cannot actually append a path.
         if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
@@ -2243,15 +2258,20 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             return
 
         # Create download directory  -  respect playlist routing if requested
-        playlists_dir = get_playlists_dir() if (use_playlists_dir and playlist_name) else None
+        playlists_dir = get_playlists_dir(user_id=user_id) if (use_playlists_dir and playlist_name) else None
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_filename(playlist_name)
             safe_title = _playlist_stem(artist, title, track_id)
         else:
-            artist_dir = get_download_dir(artist)
-            safe_title = _output_stem(artist, title, track_id)
+            artist_dir = get_download_dir(artist, user_id=user_id)
+            safe_title = _output_stem(artist, title, track_id, user_id=user_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
+        # Monochrome always delivers FLAC from the CDN. If the user wants MP3/Opus,
+        # we download as FLAC first and transcode after integrity checks pass.
+        audio_fmt = get_setting("audio_format", "flac", user_id=user_id) if convert_to_flac else "flac"
+        if audio_fmt not in ("flac", "opus", "mp3"):
+            audio_fmt = "flac"
         output_path = artist_dir / f"{safe_title}.flac"
 
         # Download + integrity recheck loop for occasionally truncated CDN responses.
@@ -2285,7 +2305,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
 
         # Probe audio quality  -  this is genuine lossless, no transcode shenanigans
         audio_quality, bitrate_kbps = probe_audio_quality(output_path)
-        min_bitrate = get_setting_int("min_audio_bitrate", 0)
+        min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             output_path.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
@@ -2306,6 +2326,27 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         year = mb_metadata.get("year") if mb_metadata else None
         apply_metadata_to_file(output_path, artist, title, album_title, year)
 
+        # Convert FLAC to MP3/Opus if the user asked for that. Metadata is already embedded
+        # in the FLAC so it survives the transcode. We do this after integrity checks and
+        # MusicBrainz so the conversion is never wasted on a file we'd reject anyway.
+        if audio_fmt != "flac":
+            if audio_fmt == "opus":
+                ffmpeg_codec = "libopus"
+                extra_args = ["-b:a", "320k"]
+            else:  # mp3
+                ffmpeg_codec = "libmp3lame"
+                extra_args = ["-q:a", "2"]
+            converted_path = output_path.with_suffix(f".{audio_fmt}")
+            convert_cmd = ["ffmpeg", "-y", "-i", str(output_path), "-c:a", ffmpeg_codec, *extra_args, str(converted_path)]
+            conv_result = subprocess.run(convert_cmd, capture_output=True, timeout=TIMEOUT_FFMPEG_CONVERT)
+            if conv_result.returncode == 0:
+                output_path.unlink()
+                output_path = converted_path
+                set_file_permissions(output_path)
+            else:
+                # Conversion failed  -  keep the FLAC, better than nothing
+                print(f"Monochrome: ffmpeg conversion to {audio_fmt} failed, keeping FLAC")
+
         # Lyrics
         lyrics = fetch_lyrics(artist, title)
         if lyrics:
@@ -2315,8 +2356,8 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             print(f"No lyrics found for {artist} - {title}")
 
         # Library scans
-        trigger_navidrome_scan()
-        trigger_jellyfin_scan()
+        trigger_navidrome_scan(user_id=user_id)
+        trigger_jellyfin_scan(user_id=user_id)
 
         # Done!
         _update_job(
@@ -2338,14 +2379,16 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             _update_job(job_id, status="failed", completed_at=datetime.now(timezone.utc).isoformat())
             return
 
-        print(f"Monochrome: Downloaded {artist} - {title} (lossless FLAC)")
+        fmt_label = "lossless FLAC" if audio_fmt == "flac" else audio_fmt.upper()
+        print(f"Monochrome: Downloaded {artist} - {title} ({fmt_label})")
 
         send_notification(
             notification_type="single",
             title=title,
             artist=artist,
             source=source_label,
-            status="completed"
+            status="completed",
+            user_id=user_id,
         )
 
     except _MonochromeAllTiers403:
@@ -2373,7 +2416,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             # Re-use the same job, just route it through the YouTube path
             process_download(job_id, yt_video_id, convert_to_flac,
                              source_url=None, playlist_name=playlist_name,
-                             use_playlists_dir=use_playlists_dir)
+                             use_playlists_dir=use_playlists_dir, user_id=user_id)
         except Exception as fallback_err:
             print(f"Monochrome YouTube fallback failed: {fallback_err}")
             _update_job(job_id, status="failed",
@@ -2381,7 +2424,8 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                         completed_at=datetime.now(timezone.utc).isoformat())
             send_notification(notification_type="error", title=title, artist=artist,
                               source=source_label, status="failed",
-                              error="All Monochrome tiers restricted, YouTube fallback failed")
+                              error="All Monochrome tiers restricted, YouTube fallback failed",
+                              user_id=user_id)
 
     except Exception as e:
         print(f"Monochrome download failed: {e}")
@@ -2393,14 +2437,16 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             artist=artist,
             source=source_label,
             status="failed",
-            error=str(e)
+            error=str(e),
+            user_id=user_id,
         )
 
 
 def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: str, title_hint: str,
                                   convert_to_flac: bool = True,
                                   playlist_name: str = None, use_playlists_dir: bool = False,
-                                  video_id: str = "", attempted_ids: set[str] | None = None):
+                                  video_id: str = "", attempted_ids: set[str] | None = None,
+                                  user_id: str | None = None):
     """Download a track from mp3phoenix.net directly, no yt-dlp required.
 
     The download_url is the full https://mp3phoenix.net/getmp3/... URL captured
@@ -2451,6 +2497,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             use_playlists_dir=use_playlists_dir,
             attempted_ids=attempted_ids,
             integrity_attempt=1,
+            user_id=user_id,
         )
         return True
 
@@ -2458,9 +2505,9 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         _update_job(job_id, status="downloading", title=title, artist=artist, uploader=artist)
 
         # Duplicate check before touching the network
-        existing_file = check_duplicate(artist, title)
+        existing_file = check_duplicate(artist, title, user_id=user_id)
         if not existing_file:
-            existing_file = check_navidrome_duplicate(artist, title)
+            existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
         if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
             existing_file = None
         if existing_file and playlist_name:
@@ -2487,13 +2534,13 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             return
 
         # Resolve output path
-        playlists_dir = get_playlists_dir() if (use_playlists_dir and playlist_name) else None
+        playlists_dir = get_playlists_dir(user_id=user_id) if (use_playlists_dir and playlist_name) else None
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_filename(playlist_name)
             safe_title = _playlist_stem(artist, title, job_id)
         else:
-            artist_dir = get_download_dir(artist)
-            safe_title = _output_stem(artist, title, job_id)
+            artist_dir = get_download_dir(artist, user_id=user_id)
+            safe_title = _output_stem(artist, title, job_id, user_id=user_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download as MP3 first  -  we'll convert to FLAC below if requested
@@ -2545,7 +2592,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
 
         # Probe quality for the job record
         audio_quality, bitrate_kbps = probe_audio_quality(output_path)
-        min_bitrate = get_setting_int("min_audio_bitrate", 0)
+        min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             output_path.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
@@ -2583,8 +2630,8 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         else:
             print(f"No lyrics found for {artist} - {title}")
 
-        trigger_navidrome_scan()
-        trigger_jellyfin_scan()
+        trigger_navidrome_scan(user_id=user_id)
+        trigger_jellyfin_scan(user_id=user_id)
 
         _update_job(
             job_id,
@@ -2606,7 +2653,8 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             title=title,
             artist=artist,
             source=source_label,
-            status="completed"
+            status="completed",
+            user_id=user_id,
         )
 
     except Exception as e:
@@ -2618,7 +2666,8 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             artist=artist,
             source=source_label,
             status="failed",
-            error=str(e)
+            error=str(e),
+            user_id=user_id,
         )
 
 
@@ -2663,7 +2712,8 @@ def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_
 
 def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, source_url: str = None,
                      playlist_name: str = None, use_playlists_dir: bool = False,
-                     attempted_ids: set[str] | None = None, integrity_attempt: int = 1):
+                     attempted_ids: set[str] | None = None, integrity_attempt: int = 1,
+                     user_id: str | None = None):
     """Process a download job.
 
     source_url overrides the default YouTube URL construction  -  used for
@@ -2681,7 +2731,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
     # Monochrome gets its own dedicated download path  -  no yt-dlp needed
     if is_monochrome:
-        _process_monochrome_download(job_id, video_id, convert_to_flac, playlist_name, use_playlists_dir)
+        _process_monochrome_download(job_id, video_id, convert_to_flac, playlist_name, use_playlists_dir, user_id=user_id)
         return
 
     # mp3phoenix: direct HTTP stream, no yt-dlp needed.
@@ -2697,7 +2747,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         _process_mp3phoenix_download(
             job_id, source_url, artist_hint, title_hint,
             convert_to_flac, playlist_name, use_playlists_dir,
-            video_id=video_id, attempted_ids=attempted_ids
+            video_id=video_id, attempted_ids=attempted_ids, user_id=user_id,
         )
         return
 
@@ -2752,9 +2802,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         _update_job(job_id, title=title, artist=artist, uploader=channel)
 
         # Duplicate check  -  local filesystem first, then Navidrome if configured
-        existing_file = check_duplicate(artist, title)
+        existing_file = check_duplicate(artist, title, user_id=user_id)
         if not existing_file:
-            existing_file = check_navidrome_duplicate(artist, title)
+            existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
         # For playlist routing, a synthetic Navidrome sentinel path is unusable.
         # Don't mark as "already exists" if we cannot actually append a path.
         if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
@@ -2788,13 +2838,13 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             return
 
         # Create download directory  -  either Playlists/Name/ or the standard Singles layout
-        playlists_dir = get_playlists_dir() if (use_playlists_dir and playlist_name) else None
+        playlists_dir = get_playlists_dir(user_id=user_id) if (use_playlists_dir and playlist_name) else None
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_filename(playlist_name)
             safe_title = _playlist_stem(artist, title, video_id)
         else:
-            artist_dir = get_download_dir(artist)
-            safe_title = _output_stem(artist, title, video_id)
+            artist_dir = get_download_dir(artist, user_id=user_id)
+            safe_title = _output_stem(artist, title, video_id, user_id=user_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download with best audio quality
@@ -2867,6 +2917,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                     use_playlists_dir=use_playlists_dir,
                     attempted_ids=attempted_ids,
                     integrity_attempt=integrity_attempt + 1,
+                    user_id=user_id,
                 )
 
             _note_blacklist_entry(
@@ -2898,6 +2949,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         use_playlists_dir=use_playlists_dir,
                         attempted_ids=attempted_ids,
                         integrity_attempt=1,
+                        user_id=user_id,
                     )
 
             raise Exception(
@@ -2909,7 +2961,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
         # Probe audio quality (with source info so FLAC-from-lossy is reported honestly)
         audio_quality, bitrate_kbps = probe_audio_quality(audio_file, source_info=source_format_info)
-        min_bitrate = get_setting_int("min_audio_bitrate", 0)
+        min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             audio_file.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
@@ -2940,6 +2992,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         use_playlists_dir=use_playlists_dir,
                         attempted_ids=attempted_ids,
                         integrity_attempt=1,
+                        user_id=user_id,
                     )
             raise Exception(dur_reason)
 
@@ -2956,7 +3009,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             if mb_artist != artist:
                 # Playlist-routed files must stay in the playlist folder.
                 if not playlists_dir:
-                    audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist)
+                    audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist, user_id=user_id)
                 artist = mb_artist
             if mb_title != title:
                 title = mb_title
@@ -2973,8 +3026,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             print(f"No lyrics found for {artist} - {title}")
 
         # Trigger library rescans if configured
-        trigger_navidrome_scan()
-        trigger_jellyfin_scan()
+        trigger_navidrome_scan(user_id=user_id)
+        trigger_jellyfin_scan(user_id=user_id)
 
         # Update job status
         _update_job(
@@ -3004,7 +3057,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             title=title,
             artist=artist,
             source=source_label,
-            status="completed"
+            status="completed",
+            user_id=user_id,
         )
 
     except Exception as e:
@@ -3018,5 +3072,6 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             artist=artist,
             source=source_label,
             status="failed",
-            error=str(e)
+            error=str(e),
+            user_id=user_id,
         )

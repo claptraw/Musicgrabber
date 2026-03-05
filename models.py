@@ -68,6 +68,11 @@ class SettingsUpdate(BaseModel):
     singles_subdir: Optional[str] = None
     playlists_subdir: Optional[str] = None
     organise_by_artist: Optional[bool] = None
+    # Search sources
+    source_youtube_enabled: Optional[bool] = None
+    source_mp3phoenix_enabled: Optional[bool] = None
+    source_soundcloud_enabled: Optional[bool] = None
+    source_monochrome_enabled: Optional[bool] = None
     # Soulseek/slskd
     slskd_url: Optional[str] = None
     slskd_user: Optional[str] = None
@@ -96,6 +101,8 @@ class SettingsUpdate(BaseModel):
     youtube_cookies: Optional[str] = None
     spotify_browser_timeout_seconds: Optional[int] = None
     spotify_browser_stall_seconds: Optional[int] = None
+    # Spotify
+    spotify_cookies: Optional[str] = None
     # Security
     api_key: Optional[str] = None
 
@@ -148,6 +155,9 @@ class TestAppriseRequest(BaseModel):
 class TestYouTubeCookiesRequest(BaseModel):
     cookies: Optional[str] = None
 
+class TestSpotifyCookiesRequest(BaseModel):
+    cookies: Optional[str] = None
+
 class WatchedArtistRequest(BaseModel):
     mbid: str
     name: str
@@ -169,3 +179,29 @@ class ExploreRequest(BaseModel):
     artist: str
     mode: str = "easy"   # easy / medium / hard
     limit: int = 25
+
+
+# Auth and user management models
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+
+class SetUserPasswordRequest(BaseModel):
+    new_password: str
+
+class SetUserRoleRequest(BaseModel):
+    role: str
+
+
+class DownloadTokenRequest(BaseModel):
+    job_id: str

@@ -74,6 +74,17 @@ _AUTH_COOKIE_NAMES = {
 }
 
 
+def get_user_cookies_file(user_id: str | None = None) -> "Path":
+    """Return the cookie file path for a user, or the global default.
+
+    Per-user cookie files live alongside the global one as cookies-{user_id}.txt.
+    Falls back to the global COOKIES_FILE when no user_id is provided.
+    """
+    if user_id:
+        return COOKIES_FILE.parent / f"cookies-{user_id}.txt"
+    return COOKIES_FILE
+
+
 def get_cookies_expiry(cookies_text: str) -> int | None:
     """Return the soonest expiry Unix timestamp among auth cookies, or None if
     no expiry info is found (session cookies with expiry=0 are ignored)."""
@@ -102,11 +113,14 @@ def get_cookies_expiry(cookies_text: str) -> int | None:
     return soonest
 
 
-def clear_expired_cookies() -> bool:
+def clear_expired_cookies(user_id: str | None = None) -> bool:
     """Delete cookies from settings if all auth cookies have expired.
-    Returns True if cookies were cleared, False otherwise."""
+
+    When user_id is provided, checks and clears that user's cookies.
+    Returns True if cookies were cleared, False otherwise.
+    """
     from settings import get_setting, set_setting
-    cookies_text = get_setting("youtube_cookies", "")
+    cookies_text = get_setting("youtube_cookies", "", user_id=user_id)
     if not cookies_text.strip():
         return False
     expiry = get_cookies_expiry(cookies_text)
@@ -117,32 +131,46 @@ def clear_expired_cookies() -> bool:
     # Every auth cookie has expired  -  bin them
     print("YouTube cookies have expired  -  clearing from settings")
     set_setting("youtube_cookies", "")
-    _sync_cookies_file()
+    _sync_cookies_file(user_id=user_id)
     return True
 
 
-def _sync_cookies_file():
-    """Write YouTube cookies from settings to the cookies file on disk.
-    Called when settings are saved and at startup."""
-    cookies = get_setting("youtube_cookies", "")
+def _sync_cookies_file(user_id: str | None = None):
+    """Write YouTube cookies from settings to the cookie file on disk.
+
+    When a user_id is provided, syncs to the per-user cookies file.
+    Without a user_id, syncs the global cookies file.
+    Called when settings are saved and at startup.
+    """
+    cookie_file = get_user_cookies_file(user_id)
+    cookies = get_setting("youtube_cookies", "", user_id=user_id)
     if cookies.strip():
         if not _has_valid_cookie_entries(cookies):
             # Avoid writing invalid cookie data that can break yt-dlp
-            if COOKIES_FILE.exists():
-                COOKIES_FILE.unlink()
+            if cookie_file.exists():
+                cookie_file.unlink()
             return
-        COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
-        COOKIES_FILE.write_text(cookies)
-    elif COOKIES_FILE.exists():
-        COOKIES_FILE.unlink()
+        cookie_file.parent.mkdir(parents=True, exist_ok=True)
+        cookie_file.write_text(cookies)
+    elif cookie_file.exists():
+        cookie_file.unlink()
 
 
-def _ytdlp_base_args():
+def _ytdlp_base_args(user_id: str | None = None):
     """Return common yt-dlp arguments (cookies, optional player-client override).
-    These should be prepended after 'yt-dlp' in every command."""
+    These should be prepended after 'yt-dlp' in every command.
+
+    When user_id is provided, the per-user cookie file is used if it exists
+    and has content; otherwise falls back to the global cookie file.
+    """
     args = []
-    if _cookies_allowed() and COOKIES_FILE.exists() and COOKIES_FILE.stat().st_size > 0:
-        args.extend(["--cookies", str(COOKIES_FILE)])
+    if _cookies_allowed():
+        cookie_file = get_user_cookies_file(user_id)
+        # Fall back to global cookies if no per-user file exists
+        if not (cookie_file.exists() and cookie_file.stat().st_size > 0):
+            cookie_file = COOKIES_FILE
+        if cookie_file.exists() and cookie_file.stat().st_size > 0:
+            args.extend(["--cookies", str(cookie_file)])
     if YTDLP_PLAYER_CLIENT:
         args.extend(["--extractor-args", f"youtube:player_client={YTDLP_PLAYER_CLIENT}"])
     return args
@@ -398,6 +426,7 @@ def score_search_result(
         if expected_artist_norm and expected_title_norm:
             if f"{expected_artist_norm} {expected_title_norm}" in title_norm:
                 score += 20
+
 
     # Penalty for reaction videos, compilations
     if re.search(r'\b(reaction|react|compilation|vs)\b', title_lower):

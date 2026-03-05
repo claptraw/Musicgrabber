@@ -1,8 +1,14 @@
 # Music Grabber
 
-**v2.2.7**
+## Milestone feature release
 
-A self-hosted music acquisition service. Search YouTube, SoundCloud, and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
+I've hit my own personal milestone with this project. It's as feature-complete as I ever intended it to be. There are some outstanding requests such as adding Albums support, but that was never the intention. This project is for music searching, playlist expanding, and artist discovery, while keeping your music locally hosted. That said, although MusicGrabber can pull and store your music locally, if you enjoy an artist, support them and buy their music if you can afford to.
+
+This project is a mash up of humand and AI, I will not hide that. If you're against AI code being used, please walk by this project. However, it is fully reviewed, security peer-checked and regularly pulled apart by humans.
+
+**v2.3.0 - g33kphr33k's Birthday Edition**
+
+A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
 > **Work in progress.** Bugs exist and are being fixed. If something breaks, check the [issue tracker](https://gitlab.com/g33kphr33k/musicgrabber/-/issues) before raising a duplicate.
 
@@ -48,8 +54,10 @@ If your use case is "I heard a song, I want that song in my library fast," this 
 - **Dark/light theme:** toggle in the header; preference saved per browser
 - **Mobile-friendly UI:** designed for quick searches from your phone
 - **Settings tab:** configure all integrations via UI; no docker-compose editing required
+- **Multi-user support:** create user accounts with role-based access. Admins manage global settings; each user gets their own queue, watched playlists/artists, notifications, and credentials. Single-user installs work exactly as before with no configuration changes
 - **Optional API authentication:** protect your instance with an API key
 - **YouTube cookie support:** upload browser cookies in Settings to bypass bot detection
+- **Spotify cookie support:** upload cookies from `open.spotify.com` to access private playlists, saved albums, and personal library playlists
 - **Minimum bitrate enforcement:** optionally reject downloads below a configurable threshold
 - **PUID/PGID support:** run as a specific user for correct file ownership on NAS/SMB shares
 - **Optional Navidrome/Jellyfin integration:** auto-triggers library rescan after downloads
@@ -170,8 +178,10 @@ The easiest way to configure MusicGrabber is via the **Settings tab** in the UI.
 - **Jellyfin**: URL and API key for library refresh
 - **Notifications**: Apprise URL, Telegram webhook, generic webhook URL, and SMTP settings
 - **YouTube**: Upload browser cookies for authenticated downloads
+- **Spotify**: Upload browser cookies to access private playlists
 - **Blacklist**: View and manage reported tracks and blocked uploaders
 - **Security**: API key for authentication
+- **Users** (admin only): create and manage user accounts, reset passwords
 
 Settings are stored in the database and persist across container restarts.
 
@@ -355,6 +365,19 @@ MusicGrabber can import tracks from Spotify, Amazon Music, and Tidal playlists. 
 - **Amazon Music**: Headless browser scraping via Playwright. Slower but reliable for most public playlists
 - **Spotify small playlists (under ~100 tracks)**: Uses Spotify's embed endpoint to quickly fetch track data
 - **Spotify large playlists (100+ tracks)**: Automatically falls back to headless browser scraping
+
+**Spotify private playlists and personal library:**
+
+By default, only public Spotify content is accessible. To unlock private playlists, liked songs playlists, and anything else that requires a login, upload your Spotify browser cookies in **Settings → Spotify**.
+
+1. Install a cookie export extension such as [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) (Chrome) or [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) (Firefox)
+2. Log in to [open.spotify.com](https://open.spotify.com) in your browser
+3. Use the extension to export cookies for `open.spotify.com` as a `cookies.txt` file (Netscape format)
+4. In MusicGrabber, go to **Settings → Spotify**, click **Upload cookies.txt**, and select the file
+5. Click **Test Cookies** to confirm the session is active
+6. Private playlist URLs will now work in Bulk Import and Watched Playlists
+
+The `sp_dc` session cookie is what grants access. It has a long expiry (typically ~1 year) but will be invalidated if you log out of Spotify or change your password. If a private playlist suddenly returns an error, your cookies have expired — re-export and paste them in. MusicGrabber will show an amber warning banner in Settings when it detects the cookies have stopped working.
 
 **Headless browser method:**
 
@@ -551,6 +574,7 @@ music.yourdomain.com {
 | `POST` | `/api/settings/test/navidrome` | Test Navidrome connection |
 | `POST` | `/api/settings/test/jellyfin` | Test Jellyfin connection |
 | `POST` | `/api/settings/test/youtube-cookies` | Test YouTube cookie validity |
+| `POST` | `/api/settings/test/spotify-cookies` | Test Spotify cookie validity |
 | `POST` | `/api/settings/test/apprise` | Test Apprise notification URL |
 | `GET` | `/api/settings/youtube-cookies/status` | Get cookie upload status |
 | `GET` | `/api/sources` | List available search sources (for source selector UI) |
@@ -655,6 +679,11 @@ docker compose up -d
 - Use a cookie export extension like "Get cookies.txt LOCALLY" (Chrome/Firefox)
 - Cookies expire periodically; re-export if downloads start failing again
 
+**Private Spotify playlist returns "not found" or "expired cookies" error?**
+- Private playlists require authentication cookies — see the Spotify private playlists section above
+- If you had working cookies and they've stopped, Spotify invalidated the session (logout, password change, or long inactivity). Re-export from `open.spotify.com` and paste them in Settings → Spotify
+- An amber warning banner appears in Settings when MusicGrabber detects the cookies have expired; it clears automatically when valid cookies are saved
+
 **Downloads failing for other reasons?**
 - Check `docker compose logs music-grabber`
 - YouTube may have changed something; try updating yt-dlp
@@ -682,6 +711,21 @@ docker compose up -d
 - Try more specific search terms
 - Some obscure tracks may not be on YouTube
 - Check the results summary for failed searches
+
+**Want to go back to single-user mode after enabling multi-user?**
+- You don't need to wipe the database. Run this command **on the host** to drop all user accounts from inside the container:
+  ```bash
+  docker exec music-grabber python3 -c "
+  import sqlite3
+  conn = sqlite3.connect('/data/music_grabber.db')
+  conn.execute('DELETE FROM users')
+  conn.execute('DELETE FROM sessions')
+  conn.commit()
+  print('Done')
+  "
+  ```
+- The app detects the change within 30 seconds — no restart needed. All your jobs, watched playlists, and settings are preserved.
+- To go back fully from scratch, stop the container, delete `/data/music_grabber.db`, and start it again.
 
 **Metadata quality issues?**
 - Ensure `ENABLE_MUSICBRAINZ=true` in environment variables (or enable it in the Settings tab)

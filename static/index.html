@@ -12,20 +12,60 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="container">
+    <!-- Login screen (shown when users_exist=true and no valid session) -->
+    <div id="loginScreen" style="display:none;" class="auth-screen">
+        <div class="auth-card">
+            <h2 class="auth-title">MusicGrabber</h2>
+            <input id="loginUsername" type="text" placeholder="Username" autocomplete="username"
+                   class="auth-input"
+                   onkeydown="if(event.key==='Enter') document.getElementById('loginPassword').focus()">
+            <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password"
+                   class="auth-input mb-16"
+                   onkeydown="if(event.key==='Enter') doLogin()">
+            <button id="loginBtn" onclick="doLogin()" class="auth-submit-btn">
+                Sign In
+            </button>
+            <div id="loginError" style="display:none;" class="auth-error"></div>
+        </div>
+    </div>
+
+    <!-- Force password change screen -->
+    <div id="changePasswordScreen" style="display:none;" class="auth-screen">
+        <div class="auth-card">
+            <h2 class="auth-title-sm">Change Password</h2>
+            <div id="changePasswordForced" style="display:none;" class="auth-forced-notice">
+                You must set a new password before continuing.
+            </div>
+            <input id="changePasswordCurrent" type="password" placeholder="Current password"
+                   class="auth-input">
+            <input id="changePasswordNew" type="password" placeholder="New password (8+ characters)"
+                   class="auth-input">
+            <input id="changePasswordConfirm" type="password" placeholder="Confirm new password"
+                   class="auth-input mb-16"
+                   onkeydown="if(event.key==='Enter') doChangePassword()">
+            <button onclick="doChangePassword()" class="auth-submit-btn">
+                Update Password
+            </button>
+            <div id="changePasswordError" style="display:none;" class="auth-error"></div>
+        </div>
+    </div>
+
+    <div id="app" class="container">
         <header>
             <img src="/static/favicon.png" class="logo" alt="Music Grabber">
             <h1>Music Grabber</h1>
-            <div style="margin-left: auto; display: flex; align-items: center; gap: 12px;">
-                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer;" title="When on, converts downloads to the format selected in Settings. When off, keeps the source format.">
+            <div class="header-controls">
+                <label class="header-format-label" title="When on, converts downloads to the format selected in Settings. When off, keeps the source format.">
                     <span id="headerFormatLabel">FLAC</span>
                     <div class="toggle-switch" id="flacToggle">
                         <input type="checkbox" id="convertToFlac" checked>
                         <span class="toggle-slider"></span>
                     </div>
                 </label>
-                <button id="themeToggle" style="background: none; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 14px; line-height: 1; color: var(--text-secondary); transition: all 0.2s;" title="Toggle light/dark theme"><i class="fa-solid fa-moon"></i></button>
-                <span id="versionLabel" style="font-size: 11px; color: var(--text-secondary);"></span>
+                <button id="themeToggle" class="theme-toggle-btn" title="Toggle light/dark theme"><i class="fa-solid fa-moon"></i></button>
+                <span id="versionLabel" class="version-label"></span>
+                <span id="currentUserDisplay" style="display:none;" class="header-user-text"></span>
+                <button id="logoutBtn" style="display:none;" class="logout-btn" onclick="doLogout()">Sign out</button>
             </div>
         </header>
 
@@ -51,12 +91,15 @@
         </div>
 
         <!-- Playlist toggle chip - only visible when playlists are available -->
-        <div id="playlistSelectorRow" style="display: none; margin-bottom: 8px;">
+        <div id="playlistSelectorRow" style="display: none;" class="playlist-selector-row-wrap">
             <button type="button" id="playlistSelectorToggle" class="playlist-selector-toggle">+ Add to playlist</button>
             <div id="playlistSelector" class="playlist-selector" style="display: none;">
                 <select id="playlistSelectorInput" class="playlist-selector-select">
                     <option value="">Singles (default)</option>
+                    <option value="__new__">+ New playlist...</option>
                 </select>
+                <input type="text" id="playlistNewNameInput" class="playlist-new-name-input" placeholder="Playlist name" style="display: none;" maxlength="80">
+                <button type="button" id="playlistNewNameConfirm" class="playlist-new-name-confirm" style="display: none;" title="Create playlist">&#x2713;</button>
                 <span id="playlistSelectorWarn" class="playlist-selector-warn" style="display: none;">
                     Watched playlist - will be overwritten on next sync.
                 </span>
@@ -78,73 +121,74 @@
         <div id="resultsTab" class="tab-panel tab-visible"></div>
 
         <div id="bulkTabContainer" class="tab-panel">
-            <div style="margin-bottom: 12px;">
-                <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 12px;">
+            <div class="bulk-intro">
+                <p class="bulk-intro-text">
                     Upload a text file or paste your song list below (one per line in format: Artist - Song Title).
                 </p>
-                <div style="margin-bottom: 12px;">
+                <div class="bulk-file-row">
                     <label class="file-upload">
                         <input type="file" id="fileUpload" accept=".txt">
                         Choose File
                     </label>
-                    <span id="fileName" style="margin-left: 12px; font-size: 13px; color: var(--text-secondary);"></span>
+                    <span id="fileName" class="bulk-file-name"></span>
                 </div>
-                <div style="margin-bottom: 12px;">
-                    <div style="display: flex; gap: 8px;">
+                <div class="bulk-url-row">
+                    <div class="bulk-url-flex">
                         <input
                             type="text"
                             id="spotifyUrlInput"
                             placeholder="Playlist or album URL"
-                            style="flex: 1; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);"
+                            class="bulk-url-input"
                         >
                         <button
                             id="fetchSpotifyBtn"
-                            style="padding: 10px 16px; font-size: 13px; font-family: inherit; font-weight: 600; background: #1DB954; color: #000; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s; white-space: nowrap;"
+                            class="bulk-fetch-btn"
                         >
                             Fetch Playlist
                         </button>
                     </div>
-                    <div id="spotifyError" style="margin-top: 8px; font-size: 12px; color: var(--error); display: none;"></div>
-                    <div style="margin-top: 6px; display: flex; align-items: center; gap: 6px;">
-                        <span id="playlistServicesHint" style="font-size: 11px; color: var(--text-secondary);">Supported services: Spotify, YouTube, Amazon Music, Tidal</span>
+                    <div id="spotifyError" style="display: none;" class="form-error"></div>
+                    <div class="bulk-services-row">
+                        <span id="playlistServicesHint" class="bulk-services-hint">Supported services: Spotify, YouTube, Amazon Music, Tidal</span>
                         <span
                             id="playlistServicesTooltip"
                             title="Supported services: Spotify, YouTube, Amazon Music, Tidal"
-                            style="width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border); color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; cursor: help;"
+                            class="info-badge"
                         >i</span>
                     </div>
-                    <div style="margin-top: 6px; font-size: 11px; color: var(--text-secondary);">
+                    <div class="bulk-services-note">
                         Large Spotify playlists may take a few seconds to load. YouTube playlists are unlimited. Tidal requires a public playlist URL.
                     </div>
                 </div>
-                <div style="position: relative;">
+                <div class="bulk-textarea-wrap">
                     <textarea
                         id="bulkInput"
                         placeholder="ABBA – Dancing Queen&#10;ABBA – Super Trouper&#10;Backstreet Boys – I Want It That Way"
                         class="bulk-textarea"
                         maxlength="500000"
                     ></textarea>
-                    <div id="lineCounter" style="position: absolute; bottom: 8px; right: 12px; font-size: 11px; color: var(--text-secondary); background: var(--bg-tertiary); padding: 4px 8px; border-radius: 4px;">0 lines</div>
+                    <div id="lineCounter" class="line-counter">0 lines</div>
                 </div>
-                <div style="margin-top: 12px; margin-bottom: 12px;">
-                    <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); cursor: pointer;">
-                        <input type="checkbox" id="createPlaylistCheckbox" style="width: 16px; height: 16px; cursor: pointer;">
+                <div class="bulk-playlist-toggle">
+                    <label class="bulk-playlist-checkbox-label">
+                        <input type="checkbox" id="createPlaylistCheckbox" class="bulk-checkbox">
                         <span>Create M3U playlist from these songs</span>
                     </label>
                     <input
                         type="text"
                         id="playlistNameInput"
                         placeholder="Playlist name (e.g., My Mixtape 2026)"
-                        style="width: 100%; margin-top: 8px; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); display: none;"
+                        style="display: none;"
+                        class="bulk-playlist-name-input"
                     >
-                    <label id="usePlaylistsDirRow" style="display: none; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); cursor: pointer; margin-top: 8px;">
-                        <input type="checkbox" id="usePlaylistsDirCheckbox" style="width: 16px; height: 16px; cursor: pointer;">
+                    <label id="usePlaylistsDirRow" style="display: none;" class="bulk-playlists-dir-label">
+                        <input type="checkbox" id="usePlaylistsDirCheckbox" class="bulk-checkbox">
                         <span>Save files to Playlists folder</span>
                     </label>
                 </div>
                 <button
                     id="bulkImportBtn"
-                    style="width: 100%; padding: 14px; font-size: 14px; font-family: inherit; font-weight: 600; background: var(--accent); color: #000; border: none; border-radius: 12px; cursor: pointer; transition: all 0.2s;"
+                    class="bulk-import-btn"
                 >
                     Import & Download All
                 </button>
@@ -154,42 +198,42 @@
 
         <div id="watchedTabContainer" class="tab-panel">
             <div class="queue-header">
-                <h2 style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Watched Playlists / <a href="#watchedArtists" style="font-size: 14px; font-weight: 600; color: var(--accent); text-decoration: none;" title="Jump to Watched Artists">Watched Artists &#8595;</a></h2>
-                <button class="clear-btn" id="refreshAllWatchedBtn" style="color: var(--accent); border-color: var(--accent);">Check All Now</button>
+                <h2 class="queue-section-heading">Watched Playlists / <a href="#watchedArtists" title="Jump to Watched Artists">Watched Artists &#8595;</a></h2>
+                <button class="clear-btn accent-btn" id="refreshAllWatchedBtn">Check All Now</button>
             </div>
-            <div style="margin-bottom: 16px; padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px;">
-                <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+            <div class="watched-add-panel">
+                <p class="watched-panel-text">
                     Add a Spotify, YouTube, Amazon Music, or Tidal playlist to automatically download new tracks when they're added.
                 </p>
-                <p id="watchedScheduleInfo" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 12px; opacity: 0.8;"></p>
-                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <p id="watchedScheduleInfo" class="watched-schedule-info"></p>
+                <div class="watched-url-row">
                     <input
                         type="text"
                         id="watchedUrlInput"
                         placeholder="Spotify, YouTube, Amazon Music, or Tidal playlist URL"
-                        style="flex: 1; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);"
+                        class="panel-text-input"
                     >
                     <button
                         id="addWatchedBtn"
-                        style="padding: 10px 16px; font-size: 13px; font-family: inherit; font-weight: 600; background: var(--accent); color: #000; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s; white-space: nowrap;"
+                        class="panel-action-btn"
                     >
                         Watch
                     </button>
                 </div>
-                <div style="margin-bottom: 8px;">
-                    <button type="button" id="lbToggleBtn" onclick="toggleLbRow()" style="background: none; border: none; padding: 0; font-size: 11px; color: var(--text-secondary); cursor: pointer; text-decoration: underline; text-underline-offset: 2px;">+ ListenBrainz "Created for You" playlists</button> <span class="badge-alpha">alpha</span>
+                <div class="lb-toggle-row">
+                    <button type="button" id="lbToggleBtn" onclick="toggleLbRow()" class="lb-toggle-btn">+ ListenBrainz "Created for You" playlists</button> <span class="badge-alpha">alpha</span>
                 </div>
-                <div id="lbRow" style="display: none; gap: 8px; margin-bottom: 8px; align-items: center;">
+                <div id="lbRow" style="display: none;" class="lb-row">
                     <input
                         type="text"
                         id="lbUsernameInput"
                         placeholder="Your ListenBrainz username"
-                        style="flex: 1; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);"
+                        class="panel-text-input"
                     >
                     <button
                         id="addLbBtn"
                         onclick="addListenBrainzPlaylists()"
-                        style="padding: 10px 16px; font-size: 13px; font-family: inherit; font-weight: 600; background: var(--accent); color: #000; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s; white-space: nowrap;"
+                        class="panel-action-btn"
                     >
                         Add
                     </button>
@@ -234,39 +278,39 @@
                         </div>
                     </label>
                 </div>
-                <div id="watchedError" style="margin-top: 8px; font-size: 12px; color: var(--error); display: none;"></div>
-                <div id="watchedAddStatus" style="display: none; margin-top: 8px; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--text-secondary);"></div>
+                <div id="watchedError" style="display: none;" class="form-error"></div>
+                <div id="watchedAddStatus" style="display: none;" class="watched-status-box"></div>
             </div>
             <div id="watchedList" class="results"></div>
 
             <!-- Watched Artists section -->
-            <div id="watchedArtists" class="queue-header" style="margin-top: 1.5rem;">
-                <h2 style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Watched Artists</h2>
-                <button class="clear-btn" id="refreshAllArtistsBtn" style="color: var(--accent); border-color: var(--accent);">Check All Now</button>
+            <div id="watchedArtists" class="queue-header section-with-top-margin">
+                <h2 class="queue-section-heading">Watched Artists</h2>
+                <button class="clear-btn accent-btn" id="refreshAllArtistsBtn">Check All Now</button>
             </div>
-            <div style="margin-bottom: 16px; padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px;">
-                <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 12px;">
+            <div class="watched-add-panel">
+                <p class="watched-panel-text">
                     Follow an artist on MusicBrainz and new singles will be downloaded automatically as they're released.
                 </p>
-                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <div class="watched-url-row">
                     <input
                         type="text"
                         id="artistSearchInput"
                         placeholder="Artist name..."
-                        style="flex: 1; padding: 10px 14px; font-size: 13px; font-family: inherit; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary);"
+                        class="panel-text-input"
                     >
                     <button
                         id="searchArtistBtn"
-                        style="padding: 10px 16px; font-size: 13px; font-family: inherit; font-weight: 600; background: var(--accent); color: #000; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s; white-space: nowrap;"
+                        class="panel-action-btn"
                     >Find Artist</button>
                 </div>
-                <div id="artistSearchResults" style="display: none; margin-bottom: 8px;"></div>
-                <div id="artistAddForm" style="display: none; padding: 10px 12px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px;">
-                    <div id="selectedArtistName" style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px;"></div>
+                <div id="artistSearchResults" style="display: none;" class="artist-search-results"></div>
+                <div id="artistAddForm" style="display: none;" class="artist-add-panel">
+                    <div id="selectedArtistName" class="artist-selected-name"></div>
                     <div class="watched-controls-row">
                         <label class="watched-control-label">
                             Download singles from:
-                            <input type="date" id="artistFromDate" style="padding: 4px 8px; font-size: 12px; font-family: inherit; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary);">
+                            <input type="date" id="artistFromDate" class="artist-date-input">
                         </label>
                         <label class="watched-control-label">
                             Check:
@@ -286,31 +330,31 @@
                     </div>
                     <button
                         id="addArtistBtn"
-                        style="margin-top: 8px; padding: 8px 14px; font-size: 13px; font-family: inherit; font-weight: 600; background: var(--accent); color: #000; border: none; border-radius: 8px; cursor: pointer; transition: all 0.2s;"
+                        class="artist-add-btn"
                     >Watch Artist</button>
-                    <button class="clear-btn" id="cancelArtistBtn" style="margin-top: 8px; margin-left: 8px;">Cancel</button>
+                    <button class="clear-btn artist-cancel-btn" id="cancelArtistBtn">Cancel</button>
                 </div>
-                <div id="artistAddStatus" style="display: none; margin-top: 8px; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--text-secondary);"></div>
+                <div id="artistAddStatus" style="display: none;" class="watched-status-box"></div>
             </div>
             <div id="watchedArtistList" class="results"></div>
         </div>
 
         <div id="queueTabContainer" class="tab-panel">
             <div class="queue-header">
-                <h2 style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Download Queue / <a href="#downloadableSection" style="font-size: 14px; font-weight: 600; color: var(--accent); text-decoration: none;" title="Jump to Downloadable to Device">Downloadable to Device &#8595;</a></h2>
+                <h2 class="queue-section-heading">Download Queue / <a href="#downloadableSection" title="Jump to Downloadable to Device">Downloadable to Device &#8595;</a></h2>
                 <button class="clear-btn" id="clearQueueBtn">Clear Queue</button>
             </div>
             <div id="queueTab" class="results"></div>
 
-            <div id="downloadableSection" style="margin-top: 1.5rem;">
+            <div id="downloadableSection" class="section-with-top-margin">
                 <div class="queue-header">
-                    <h2 style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Downloadable to Device</h2>
+                    <h2 class="queue-section-heading">Downloadable to Device</h2>
                 </div>
-                <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 12px;">All completed downloads available to save locally, newest first.</p>
+                <p class="downloadable-intro-text">All completed downloads available to save locally, newest first.</p>
                 <div id="downloadableList" class="results"></div>
-                <div id="downloadablePager" style="display:none; margin-top: 12px; display: flex; gap: 8px; align-items: center; justify-content: center;">
+                <div id="downloadablePager" style="display:none;" class="downloadable-pager">
                     <button class="clear-btn" id="downloadablePrevBtn" onclick="loadDownloadable(-1)" disabled>&#8592; Prev</button>
-                    <span id="downloadablePagerInfo" style="font-size: 12px; color: var(--text-secondary);"></span>
+                    <span id="downloadablePagerInfo" class="pager-info"></span>
                     <button class="clear-btn" id="downloadableNextBtn" onclick="loadDownloadable(1)">Next &#8594;</button>
                 </div>
             </div>
@@ -318,8 +362,8 @@
 
         <div id="statsTabContainer" class="tab-panel">
             <div class="queue-header">
-                <h2 style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Statistics</h2>
-                <button class="clear-btn" id="resetStatsBtn" style="color: var(--warning); border-color: var(--warning);">Reset Stats</button>
+                <h2 class="queue-section-heading">Statistics</h2>
+                <button class="clear-btn warning-btn" id="resetStatsBtn">Reset Stats</button>
             </div>
             <div id="statsContent" class="results"></div>
         </div>
@@ -342,62 +386,96 @@
                             <span class="toggle-slider"></span>
                         </div>
                     </label>
-                    <label class="settings-label" style="flex-wrap:wrap;row-gap:4px;">
+                    <label class="settings-label settings-label-top">
+                        <span>Search Sources</span>
+                        <div class="source-toggle-list">
+                            <label class="source-toggle-item">
+                                YouTube
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="settingSourceYoutube" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
+                            <label class="source-toggle-item">
+                                MP3Phoenix
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="settingSourceMp3phoenix" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
+                            <label class="source-toggle-item">
+                                SoundCloud
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="settingSourceSoundcloud" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
+                            <label class="source-toggle-item">
+                                Monochrome (Tidal lossless)
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="settingSourceMonochrome" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
+                        </div>
+                        <span class="settings-hint settings-hint-full">Controls which sources appear in search results and are used for automatic matching (watched playlists, bulk import). YouTube is the primary fallback so disabling it may leave some tracks unfound.</span>
+                    </label>
+                    <label class="settings-label format-selector-wrap">
                         <span>Audio Format</span>
-                        <div style="display:flex;gap:2px;padding:3px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;">
+                        <div class="format-btn-group">
                             <button type="button" id="formatBtnFlac" class="format-option active" onclick="setAudioFormat('flac'); saveSettings();">FLAC</button>
                             <button type="button" id="formatBtnOpus" class="format-option" onclick="setAudioFormat('opus'); saveSettings();">Opus</button>
                             <button type="button" id="formatBtnMp3"  class="format-option" onclick="setAudioFormat('mp3');  saveSettings();">MP3</button>
                         </div>
-                        <span id="mp3FormatNote" style="display:none;width:100%;font-size:10px;color:var(--text-secondary);">MP3 is encoded at ~192 kbps variable bitrate. May cause quality loss if the source is already lossy (e.g. from YouTube).</span>
+                        <span id="mp3FormatNote" style="display:none;" class="mp3-format-note">MP3 is encoded at ~192 kbps variable bitrate. May cause quality loss if the source is already lossy (e.g. from YouTube).</span>
                         <input type="checkbox" id="settingDefaultFlac" checked style="display:none;">
                         <input type="text" id="settingAudioFormat" value="flac" style="display:none;">
                     </label>
-                    <label class="settings-label" style="flex-wrap: wrap; row-gap: 4px;">
+                    <label class="settings-label settings-label-wrap">
                         <span>Organise by Artist</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingOrganiseByArtist" checked>
                             <span class="toggle-slider"></span>
                         </div>
-                        <span class="settings-hint" style="width: 100%;">On: <code>Singles/Artist Name/Track.flac</code> &nbsp; Off: <code>Singles/Artist Name - Track.flac</code> (flat, all in one folder)</span>
+                        <span class="settings-hint settings-hint-full">On: <code>Singles/Artist Name/Track.flac</code> &nbsp; Off: <code>Singles/Artist Name - Track.flac</code> (flat, all in one folder)</span>
                     </label>
                 </div>
-                <div class="settings-form" style="margin-top: 8px;">
+                <div class="settings-form settings-form-top">
                     <div class="settings-row">
                         <label for="settingAcoustidKey">AcoustID API Key</label>
-                        <input type="text" id="settingAcoustidKey" placeholder="Your AcoustID API key" style="width: 240px;" autocomplete="off">
-                        <span style="font-size: 11px; color: var(--text-secondary);">Used for audio fingerprinting to improve metadata accuracy. A shared fallback key is built in but <strong>may hit rate limits</strong> if many people are using it. Register your own free key at <a href="https://acoustid.org/login" target="_blank" rel="noopener">acoustid.org</a> to avoid this.</span>
+                        <input type="text" id="settingAcoustidKey" placeholder="Your AcoustID API key" class="settings-input-acoustid" autocomplete="off">
+                        <span class="settings-hint-sm">Used for audio fingerprinting to improve metadata accuracy. A shared fallback key is built in but <strong>may hit rate limits</strong> if many people are using it. Register your own free key at <a href="https://acoustid.org/login" target="_blank" rel="noopener">acoustid.org</a> to avoid this.</span>
                     </div>
                     <div class="settings-row">
                         <label for="settingMinBitrate">Minimum Audio Bitrate (kbps)</label>
-                        <input type="number" id="settingMinBitrate" placeholder="0 (disabled)" value="0" min="0" max="320" style="width: 120px;">
-                        <span style="font-size: 11px; color: var(--text-secondary);">Downloads below this bitrate are rejected. 0 = no minimum.</span>
+                        <input type="number" id="settingMinBitrate" placeholder="0 (disabled)" value="0" min="0" max="320" class="settings-input-sm">
+                        <span class="settings-hint-sm">Downloads below this bitrate are rejected. 0 = no minimum.</span>
                     </div>
                     <div class="settings-row">
                         <label for="settingSinglesSubdir">Singles Subfolder</label>
-                        <div style="display: flex; gap: 6px; align-items: center;">
-                            <select id="settingSinglesSubdir" style="width: 320px; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); font-size: 14px;">
+                        <div class="settings-subdir-flex">
+                            <select id="settingSinglesSubdir" class="settings-input-path">
                                 <option value="Singles">/music/Singles</option>
                             </select>
                         </div>
-                        <div id="customSubdirRow" style="display:none; margin-top: 6px;">
-                            <input type="text" id="customSubdirInput" placeholder="Path under /music (e.g. Singles/Rock)" style="width: 320px;">
+                        <div id="customSubdirRow" style="display:none;" class="custom-subdir-row">
+                            <input type="text" id="customSubdirInput" placeholder="Path under /music (e.g. Singles/Rock)" class="settings-input-path-text">
                         </div>
-                        <span style="font-size: 11px; color: var(--text-secondary);">Choose an existing folder, use <code>/music</code> root, or pick <code>Custom path…</code>.</span>
-                        <span id="singlesPathPreview" style="font-size: 11px; color: var(--text-secondary); font-family: monospace; margin-top: 2px;"></span>
+                        <span class="settings-hint-sm">Choose an existing folder, use <code>/music</code> root, or pick <code>Custom path…</code>.</span>
+                        <span id="singlesPathPreview" class="settings-path-preview"></span>
                     </div>
                     <div class="settings-row">
                         <label for="settingPlaylistsSubdir">Playlists Subfolder</label>
-                        <div style="display: flex; gap: 6px; align-items: center;">
-                            <select id="settingPlaylistsSubdir" style="width: 320px; padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary); font-size: 14px;">
+                        <div class="settings-subdir-flex">
+                            <select id="settingPlaylistsSubdir" class="settings-input-path">
                                 <option value="">(disabled)</option>
                             </select>
                         </div>
-                        <div id="customPlaylistsSubdirRow" style="display:none; margin-top: 6px;">
-                            <input type="text" id="customPlaylistsSubdirInput" placeholder="Path under /music (e.g. Playlists)" style="width: 320px;">
+                        <div id="customPlaylistsSubdirRow" style="display:none;" class="custom-subdir-row">
+                            <input type="text" id="customPlaylistsSubdirInput" placeholder="Path under /music (e.g. Playlists)" class="settings-input-path-text">
                         </div>
-                        <span style="font-size: 11px; color: var(--text-secondary);">Separate folder for playlist downloads. Leave disabled to keep playlist tracks in Singles. When set, playlist tracks are saved as <code>Artist - Title.ext</code> inside a named subfolder.</span>
-                        <span id="playlistsPathPreview" style="font-size: 11px; color: var(--text-secondary); font-family: monospace; margin-top: 2px;"></span>
+                        <span class="settings-hint-sm">Separate folder for playlist downloads. Leave disabled to keep playlist tracks in Singles. When set, playlist tracks are saved as <code>Artist - Title.ext</code> inside a named subfolder.</span>
+                        <span id="playlistsPathPreview" class="settings-path-preview"></span>
                     </div>
                 </div>
             </div>
@@ -446,14 +524,14 @@
                 </div>
             </div>
 
-            <div class="settings-section">
+            <div class="settings-section admin-only">
                 <h3 class="settings-section-title">YouTube</h3>
                 <div class="settings-form">
                     <div class="settings-row">
                         <label for="settingYoutubeCookies">Browser Cookies</label>
                         <textarea id="settingYoutubeCookies" rows="6" placeholder="Paste cookies.txt content here..."></textarea>
                         <span class="settings-hint">Export cookies from youtube.com while logged in using a browser extension like "Get cookies.txt LOCALLY". Re-export when you start getting 403 errors.</span>
-                        <span id="cookieExpiryHint" style="font-size:11px; font-family:monospace; margin-top:2px; display:none;"></span>
+                        <span id="cookieExpiryHint" style="display:none;" class="cookie-expiry-hint"></span>
                     </div>
                     <input type="file" id="youtubeCookiesFile" accept=".txt,text/plain" style="display:none">
                     <button type="button" class="test-btn" id="uploadYoutubeCookiesBtn">Upload cookies.txt</button>
@@ -464,16 +542,36 @@
             </div>
 
             <div class="settings-section">
+                <h3 class="settings-section-title">Spotify</h3>
+                <div id="spotifyCookiesExpiredBanner" style="display:none;" class="cookies-expired-banner">
+                    <strong>Spotify cookies have expired.</strong> Your private playlists are no longer accessible. Paste fresh cookies below to restore access.
+                </div>
+                <div class="settings-form">
+                    <div class="settings-row">
+                        <label for="settingSpotifyCookies">Browser Cookies</label>
+                        <textarea id="settingSpotifyCookies" rows="6" placeholder="Paste cookies.txt content here..."></textarea>
+                        <span class="settings-hint">Export cookies from open.spotify.com while logged in using a browser extension like "Get cookies.txt LOCALLY". Enables access to private playlists and your personal library. The <code>sp_dc</code> cookie is required.</span>
+                        <span id="spotifyCookieExpiryHint" style="display:none;" class="cookie-expiry-hint"></span>
+                    </div>
+                    <input type="file" id="spotifyCookiesFile" accept=".txt,text/plain" style="display:none">
+                    <button type="button" class="test-btn" id="uploadSpotifyCookiesBtn">Upload cookies.txt</button>
+                    <button type="button" class="test-btn" id="clearSpotifyCookiesBtn">Clear Cookies</button>
+                    <button type="button" class="test-btn" id="testSpotifyCookiesBtn">Test Cookies</button>
+                    <div id="spotifyCookiesTestResult" class="test-result"></div>
+                </div>
+            </div>
+
+            <div class="settings-section admin-only">
                 <h3 class="settings-section-title">Spotify (Advanced)</h3>
                 <div class="settings-form">
                     <div class="settings-row">
                         <label for="settingSpotifyBrowserTimeout">Browser Timeout (seconds)</label>
-                        <input type="number" id="settingSpotifyBrowserTimeout" placeholder="180" value="180" min="60" max="1800" style="width: 120px;">
+                        <input type="number" id="settingSpotifyBrowserTimeout" placeholder="180" value="180" min="60" max="1800" class="settings-input-sm">
                         <span class="settings-hint">Base timeout for large Spotify playlist extraction. Can also be set via <code>SPOTIFY_BROWSER_TIMEOUT_SECONDS</code>.</span>
                     </div>
                     <div class="settings-row">
                         <label for="settingSpotifyBrowserStall">No-progress Stall Window (seconds)</label>
-                        <input type="number" id="settingSpotifyBrowserStall" placeholder="30" value="30" min="5" max="300" style="width: 120px;">
+                        <input type="number" id="settingSpotifyBrowserStall" placeholder="30" value="30" min="5" max="300" class="settings-input-sm">
                         <span class="settings-hint">Stop scrolling when no new rows appear for this long. Can also be set via <code>SPOTIFY_BROWSER_STALL_SECONDS</code>.</span>
                     </div>
                 </div>
@@ -484,18 +582,18 @@
                 <div class="settings-form">
                     <div class="settings-row">
                         <label>Notify On</label>
-                        <div style="display: flex; flex-wrap: wrap; gap: 12px;">
-                            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
-                                <input type="checkbox" id="settingNotifyOnSingles" style="accent-color: var(--accent);"> Singles
+                        <div class="notify-on-row">
+                            <label class="notify-checkbox-label">
+                                <input type="checkbox" id="settingNotifyOnSingles" class="notify-checkbox"> Singles
                             </label>
-                            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
-                                <input type="checkbox" id="settingNotifyOnPlaylists" style="accent-color: var(--accent);"> Playlists
+                            <label class="notify-checkbox-label">
+                                <input type="checkbox" id="settingNotifyOnPlaylists" class="notify-checkbox"> Playlists
                             </label>
-                            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
-                                <input type="checkbox" id="settingNotifyOnBulk" style="accent-color: var(--accent);"> Bulk imports
+                            <label class="notify-checkbox-label">
+                                <input type="checkbox" id="settingNotifyOnBulk" class="notify-checkbox"> Bulk imports
                             </label>
-                            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
-                                <input type="checkbox" id="settingNotifyOnErrors" style="accent-color: var(--accent);"> Errors only
+                            <label class="notify-checkbox-label">
+                                <input type="checkbox" id="settingNotifyOnErrors" class="notify-checkbox"> Errors only
                             </label>
                         </div>
                         <input type="hidden" id="settingNotifyOn">
@@ -517,14 +615,14 @@
                         <input type="text" id="settingAppriseUrl" placeholder="gotify://hostname/token  or  ntfy://topic  or  discord://...">
                         <span class="settings-hint">Supports 50+ services: Gotify, ntfy, Discord, Pushover, Slack, and more. See <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noopener">Apprise docs</a> for URL formats.</span>
                     </div>
-                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <div class="apprise-test-row">
                         <button type="button" class="test-btn" id="testAppriseBtn">Test Apprise</button>
                         <div id="appriseTestResult" class="test-result"></div>
                     </div>
                 </div>
                 <details class="settings-details">
                     <summary>Email (SMTP)</summary>
-                    <div class="settings-form" style="margin-top: 12px;">
+                    <div class="settings-form email-settings-form">
                         <div class="settings-row">
                             <label for="settingSmtpHost">SMTP Host</label>
                             <input type="text" id="settingSmtpHost" placeholder="smtp.example.com">
@@ -563,13 +661,13 @@
                 </details>
             </div>
 
-            <div class="settings-section">
+            <div class="settings-section admin-only">
                 <h3 class="settings-section-title">Blacklist</h3>
-                <p style="font-size: 12px; color: var(--text-secondary); margin: 0 0 12px;">Reported tracks and blocked uploaders. Blacklisted videos are hidden from search results; blocked uploaders are penalised in ranking.</p>
-                <div id="blacklistContent" style="font-size: 13px; color: var(--text-secondary);">Loading...</div>
+                <p class="blacklist-intro">Reported tracks and blocked uploaders. Blacklisted videos are hidden from search results; blocked uploaders are penalised in ranking.</p>
+                <div id="blacklistContent" class="blacklist-content">Loading...</div>
             </div>
 
-            <div class="settings-section">
+            <div class="settings-section admin-only">
                 <h3 class="settings-section-title">Soulseek (slskd)</h3>
                 <div class="settings-form">
                     <div class="settings-row">
@@ -596,10 +694,33 @@
                 </div>
             </div>
 
+            <!-- User Management (admin only) -->
+            <div class="settings-section admin-only">
+                <h3 class="settings-section-title">User Management</h3>
+                <div id="userList" class="user-list-wrap"></div>
+                <div id="firstUserWarning" style="display:none;" class="first-user-warning">
+                    <strong>Heads up:</strong> Creating the first account enables multi-user mode. A login screen will appear from this point on. This account will be the admin and inherit all current settings. <strong>There is no undo.</strong>
+                </div>
+                <div class="user-create-grid">
+                    <div class="user-create-row">
+                        <input id="newUserUsername" type="text" placeholder="Username" class="user-input">
+                        <input id="newUserPassword" type="password" placeholder="Password (8+)" class="user-input">
+                        <select id="newUserRole" class="user-role-select">
+                            <option value="admin">Admin</option>
+                            <option value="user">User</option>
+                        </select>
+                    </div>
+                    <div id="createUserError" style="display:none;" class="user-create-error"></div>
+                    <button onclick="createUser()" class="user-add-btn">
+                        Add User
+                    </button>
+                </div>
+            </div>
+
             <div class="settings-section">
                 <h3 class="settings-section-title">Security</h3>
                 <div class="settings-form">
-                    <div class="settings-row">
+                    <div class="settings-row admin-only">
                         <label for="settingApiKey">API Key (Server)</label>
                         <div class="password-field">
                             <input type="password" id="settingApiKey" placeholder="Leave empty to disable authentication">
@@ -608,17 +729,23 @@
                         <span class="settings-hint">When set, all API requests require this key. Rate limit: 200 requests/minute per IP.</span>
                     </div>
                     <div class="settings-row">
-                        <label>Browser API Key</label>
-                        <div style="display: flex; gap: 8px; align-items: center;">
-                            <span id="browserApiKeyStatus" style="font-size: 13px; color: var(--text-secondary);"></span>
-                            <button type="button" id="clearApiKeyBtn" class="clear-btn" style="padding: 6px 12px; font-size: 12px;">Clear Stored Key</button>
+                        <label>Session / Auth</label>
+                        <div class="session-auth-row">
+                            <span id="browserApiKeyStatus" class="browser-api-key-status"></span>
+                            <button type="button" id="clearApiKeyBtn" class="clear-btn clear-stored-key-btn" style="display:none;">Clear Stored Key</button>
                         </div>
-                        <span class="settings-hint">The API key stored in this browser for authentication</span>
+                    </div>
+                    <!-- Change My Password (shown in session mode only) -->
+                    <div id="changePasswordSection" style="display:none;">
+                        <h4 class="change-password-heading">Change My Password</h4>
+                        <button onclick="showChangePasswordScreen(false)" class="change-password-btn">
+                            Change Password
+                        </button>
                     </div>
                 </div>
             </div>
 
-            <div class="settings-actions" style="padding-bottom: 20px;">
+            <div class="settings-actions settings-actions-padded">
                 <button type="button" class="save-btn" id="saveSettingsBtn">Save Settings</button>
                 <a
                     class="donation-link"
@@ -636,35 +763,35 @@
     </div>
 
     <!-- Release Notes modal -->
-    <div id="releaseNotesOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
-        <div style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:12px; padding:24px; width:min(520px,92vw); max-height:80vh; display:flex; flex-direction:column; gap:16px;">
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-                <h3 id="releaseNotesTitle" style="margin:0; font-size:15px; color:var(--text-primary);"></h3>
-                <button onclick="closeReleaseNotes()" style="background:none; border:none; font-size:18px; color:var(--text-secondary); cursor:pointer; padding:0 4px; line-height:1;" title="Close">&#x2715;</button>
+    <div id="releaseNotesOverlay" style="display:none;" class="modal-overlay">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3 id="releaseNotesTitle" class="modal-title"></h3>
+                <button onclick="closeReleaseNotes()" class="modal-close-btn" title="Close">&#x2715;</button>
             </div>
-            <div id="releaseNotesBody" style="overflow-y:auto; font-size:13px; line-height:1.6; color:var(--text-secondary); flex:1;"></div>
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+            <div id="releaseNotesBody" class="modal-body"></div>
+            <div class="modal-footer">
                 <div class="release-notes-nav">
                     <button type="button" id="releaseNotesOlderBtn" class="release-notes-nav-btn" onclick="showOlderReleaseNotes()" title="Older release notes" aria-label="Older release notes">&#x2039;</button>
                     <button type="button" id="releaseNotesNewerBtn" class="release-notes-nav-btn" onclick="showNewerReleaseNotes()" title="Newer release notes" aria-label="Newer release notes">&#x203A;</button>
                 </div>
-                <button onclick="closeReleaseNotes()" style="padding:8px 20px; font-size:12px; font-family:inherit; font-weight:600; background:var(--accent); color:#000; border:none; border-radius:6px; cursor:pointer;">Got it</button>
+                <button onclick="closeReleaseNotes()" class="modal-confirm-btn">Got it</button>
             </div>
         </div>
     </div>
 
     <!-- Report / Blacklist modal -->
-    <div id="reportOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
-        <div style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:12px; padding:24px; width:min(400px,90vw); max-width:90vw;">
-            <h3 style="margin:0 0 16px; font-size:15px; color:var(--text-primary);">Report Bad Track</h3>
+    <div id="reportOverlay" style="display:none;" class="modal-overlay">
+        <div class="report-card">
+            <h3 class="report-title">Report Bad Track</h3>
             <input type="hidden" id="reportJobId">
             <input type="hidden" id="reportVideoId">
             <input type="hidden" id="reportSource">
             <input type="hidden" id="reportUploader">
 
-            <div style="margin-bottom:12px;">
-                <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Reason</label>
-                <select id="reportReason" style="width:100%; padding:8px; font-size:13px; font-family:inherit; background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border); border-radius:6px;">
+            <div class="report-field">
+                <label class="report-field-label">Reason</label>
+                <select id="reportReason" class="report-select">
                     <option value="wrong_track">Wrong track</option>
                     <option value="poor_quality">Poor quality</option>
                     <option value="slowed_pitched">Slowed / pitched</option>
@@ -673,21 +800,21 @@
                 </select>
             </div>
 
-            <div style="margin-bottom:12px;">
-                <label style="display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px;">Notes (optional)</label>
-                <input type="text" id="reportNote" placeholder="Any extra detail..." style="width:100%; padding:8px; font-size:13px; font-family:inherit; background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border); border-radius:6px; box-sizing:border-box;">
+            <div class="report-field">
+                <label class="report-field-label">Notes (optional)</label>
+                <input type="text" id="reportNote" placeholder="Any extra detail..." class="report-text-input">
             </div>
 
-            <div id="reportUploaderRow" style="margin-bottom:16px;">
-                <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-primary); cursor:pointer;">
-                    <input type="checkbox" id="reportBlockUploader" style="accent-color:var(--warning);">
+            <div id="reportUploaderRow" class="report-uploader-row">
+                <label class="report-uploader-label">
+                    <input type="checkbox" id="reportBlockUploader" class="report-uploader-checkbox">
                     <span>Also block uploader: <strong id="reportUploaderName"></strong></span>
                 </label>
             </div>
 
-            <div style="display:flex; gap:8px; justify-content:flex-end;">
-                <button onclick="closeReportDialog()" style="padding:8px 16px; font-size:12px; font-family:inherit; font-weight:600; background:var(--bg-tertiary); color:var(--text-secondary); border:1px solid var(--border); border-radius:6px; cursor:pointer;">Cancel</button>
-                <button onclick="submitReport()" id="reportSubmitBtn" style="padding:8px 16px; font-size:12px; font-family:inherit; font-weight:600; background:var(--warning); color:#000; border:none; border-radius:6px; cursor:pointer;">Report</button>
+            <div class="report-actions">
+                <button onclick="closeReportDialog()" class="report-btn report-cancel-btn">Cancel</button>
+                <button onclick="submitReport()" id="reportSubmitBtn" class="report-btn report-submit-btn">Report</button>
             </div>
         </div>
     </div>
