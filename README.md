@@ -134,7 +134,26 @@ For YouTube and SoundCloud, FLAC conversion is primarily for standardisation and
 
 3. **Access the UI** at `http://your-server:38274`
 
-### Option B: Build from Source
+### Option B: Unraid (Community Applications)
+
+If you're running Unraid, the easiest way is via Community Applications. Search for **MusicGrabber** and install directly from Docker Hub.
+
+For manual setup, or if you want a reference for the XML config, here's a working Unraid template:
+
+```xml
+<Config Name="Appdata" Target="/data" Default="" Mode="rw" Description="" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/musicgrabber/</Config>
+<Config Name="Music" Target="/music" Default="" Mode="rw" Description="" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/media/music/</Config>
+<Config Name="MUSIC_DIR" Target="MUSIC_DIR" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">/music</Config>
+<Config Name="DB_PATH" Target="DB_PATH" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">/data/music_grabber.db</Config>
+<Config Name="ENABLE_MUSICBRAINZ" Target="ENABLE_MUSICBRAINZ" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">true</Config>
+<Config Name="DEFAULT_CONVERT_TO_FLAC" Target="DEFAULT_CONVERT_TO_FLAC" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">false</Config>
+<Config Name="PUID" Target="PUID" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">99</Config>
+<Config Name="PGID" Target="PGID" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">100</Config>
+```
+
+PUID `99` and PGID `100` are Unraid's standard `nobody`/`users` — these give the container correct write access to your shares. Adjust if your setup differs.
+
+### Option C: Build from Source
 
 1. **Clone and configure**
    ```bash

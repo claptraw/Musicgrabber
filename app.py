@@ -175,7 +175,10 @@ def get_config():
         playlists_example = f"{pl_rel}/Playlist Name/Artist - Title.flac"
 
     with db_conn() as conn:
-        users_exist = conn.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
+        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    # Multi-user mode kicks in only when there are 2+ accounts. A single-user
+    # install with one account (the owner) stays login-free, same as no-account mode.
+    users_exist = user_count >= 2
 
     return {
         "version": VERSION,

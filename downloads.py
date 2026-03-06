@@ -613,7 +613,7 @@ def _normalise_watched_match_text(text: str) -> str:
     # Normalise fullwidth punctuation that YouTube loves to use instead of ASCII
     # (e.g. ｜ U+FF5C for pipes, － U+FF0D for dashes). The regex comparisons below
     # all use ASCII forms, so map them before anything else.
-    t = t.replace("\uff5c", "|").replace("\uff0d", "-")
+    t = t.replace("\uff5c", "|").replace("\uff0d", "-").replace("\u00d7", "x")
     # Strip Spotify-style dash suffixes before bracket stripping, e.g.
     # "Better Now - Acoustic", "Fly - Acoustic", "Forever Young - From NBC’s Parenthood"
     # These are version/context qualifiers Spotify encodes as ‘ - Suffix’ but YouTube

@@ -221,7 +221,7 @@
                     </button>
                 </div>
                 <div class="lb-toggle-row">
-                    <button type="button" id="lbToggleBtn" onclick="toggleLbRow()" class="lb-toggle-btn">+ ListenBrainz "Created for You" playlists</button> <span class="badge-alpha">alpha</span>
+                    <button type="button" id="lbToggleBtn" onclick="toggleLbRow()" class="lb-toggle-btn">+ ListenBrainz "Created for You" playlists</button>
                 </div>
                 <div id="lbRow" style="display: none;" class="lb-row">
                     <input
@@ -745,20 +745,25 @@
                 </div>
             </div>
 
-            <div class="settings-actions settings-actions-padded">
-                <button type="button" class="save-btn" id="saveSettingsBtn">Save Settings</button>
-                <a
-                    class="donation-link"
-                    href="https://ko-fi.com/geekphreek"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Support Music Grabber on Ko-fi"
-                >
-                    <i class="fa-solid fa-mug-hot"></i> Buy me a coffee
-                </a>
-                <button type="button" class="release-notes-btn" onclick="showReleaseNotes(serverConfig.version)" title="View release notes and what's new">Release Notes</button>
-            </div>
+            <div class="settings-actions-spacer"></div>
             <div id="settingsSaveResult" class="save-result"></div>
+        </div>
+    </div>
+
+    <!-- Floating settings save bar - visible only when settings tab is active -->
+    <div id="settingsFloatingBar" class="settings-floating-bar" style="display:none;">
+        <div class="settings-floating-bar-inner">
+            <button type="button" class="save-btn" id="saveSettingsBtn">Save Settings</button>
+            <a
+                class="donation-link"
+                href="https://ko-fi.com/geekphreek"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Support Music Grabber on Ko-fi"
+            >
+                <i class="fa-solid fa-mug-hot"></i> Buy me a coffee
+            </a>
+            <button type="button" class="release-notes-btn" onclick="showReleaseNotes(serverConfig.version)" title="View release notes and what's new">Release Notes</button>
         </div>
     </div>
 

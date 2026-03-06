@@ -247,25 +247,63 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
     if title_matches:
         playlist_name = title_matches[0]
 
-    # Extract tracks using title/subtitle pattern
+    # Extract tracks from the trackList JSON array embedded in the page.
+    # Each entry is a JSON object with title, subtitle (artist), and entityType fields.
+    # Track objects contain a nested audioPreview object, so we extract title/subtitle
+    # with targeted regexes scoped to the trackList slice rather than the whole page.
     tracks = []
-    titles = re.findall(r'"title":"([^"]+)"', html_content)
-    subtitles = re.findall(r'"subtitle":"([^"]+)"', html_content)
+    tracklist_match = re.search(r'"trackList":\[(.+?)\](?=,"|\})', html_content, re.DOTALL)
+    if tracklist_match:
+        tracklist_content = tracklist_match.group(1)
+        # Extract parallel title/subtitle/entityType arrays scoped to this slice
+        tl_titles = re.findall(r'"title":"([^"]*)"', tracklist_content)
+        tl_subtitles = re.findall(r'"subtitle":"([^"]*)"', tracklist_content)
+        tl_entity_types = re.findall(r'"entityType":"([^"]*)"', tracklist_content)
 
-    if len(titles) > 1 and len(subtitles) > 1:
-        track_titles = titles[1:]  # Skip playlist name
-        track_artists = subtitles[1:]  # Skip "Spotify"
-
-        for title, artist in zip(track_titles, track_artists):
+        for i, (raw_title, raw_artist) in enumerate(zip(tl_titles, tl_subtitles)):
+            entity_type = tl_entity_types[i] if i < len(tl_entity_types) else "track"
             try:
-                title = json.loads(f'"{title}"')
+                raw_title = json.loads(f'"{raw_title}"')
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
             try:
-                artist = json.loads(f'"{artist}"')
+                raw_artist = json.loads(f'"{raw_artist}"')
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
-            tracks.append(f"{artist} - {title}")
+
+            if not raw_title:
+                continue
+
+            # For music video entries Spotify puts "Music Video" as the subtitle
+            # rather than the artist name. Try to salvage the artist from the
+            # title field, which often comes through as "Artist - Title".
+            if raw_artist.lower() == "music video" or entity_type == "music_video":
+                from utils import extract_artist_title
+                artist, title = extract_artist_title(raw_title, channel="")
+                if artist and title and artist.lower() not in ("unknown artist", ""):
+                    tracks.append(f"{artist} - {title}")
+                # If we can't parse an artist out, skip rather than emit garbage
+                continue
+
+            if raw_artist:
+                tracks.append(f"{raw_artist} - {raw_title}")
+
+    # Fall back to whole-page regex if trackList wasn't found (page structure change)
+    if not tracks:
+        titles = re.findall(r'"title":"([^"]+)"', html_content)
+        subtitles = re.findall(r'"subtitle":"([^"]+)"', html_content)
+        if len(titles) > 1 and len(subtitles) > 1:
+            for title, artist in zip(titles[1:], subtitles[1:]):
+                try:
+                    title = json.loads(f'"{title}"')
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+                try:
+                    artist = json.loads(f'"{artist}"')
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+                if artist.strip().lower() != "music video" and artist and title:
+                    tracks.append(f"{artist} - {title}")
 
     if not tracks:
         raise HTTPException(

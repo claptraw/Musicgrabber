@@ -1988,14 +1988,9 @@ h1 {
         max-width: 100%;
     }
 
-    #settingsTabContainer .settings-actions {
-        align-items: stretch;
-        flex-direction: column;
-    }
-
-    #settingsTabContainer .save-btn,
-    #settingsTabContainer .donation-link,
-    #settingsTabContainer .release-notes-btn {
+    #settingsFloatingBar .save-btn,
+    #settingsFloatingBar .donation-link,
+    #settingsFloatingBar .release-notes-btn {
         width: 100%;
         justify-content: center;
     }
@@ -2873,12 +2868,43 @@ h1 {
 }
 
 /* --------------------------------------------------------------------------
-   Settings tab - Save/actions row
+   Settings tab - floating save bar
 -------------------------------------------------------------------------- */
 
-.settings-actions-padded {
-    padding-bottom: 20px;
+/* Spacer so content isn't hidden behind the floating bar */
+.settings-actions-spacer {
+    height: 80px;
 }
+
+.settings-floating-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    display: flex;
+    justify-content: center;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.settings-floating-bar-inner {
+    display: flex;
+    align-items: stretch;
+    gap: 16px;
+    width: 100%;
+    max-width: 640px;
+}
+
+@media (max-width: 600px) {
+    .settings-floating-bar-inner {
+        flex-direction: column;
+        gap: 8px;
+    }
+}
+
 
 /* --------------------------------------------------------------------------
    Release Notes modal

@@ -112,7 +112,11 @@ def _check_rate_limit(ip: str) -> tuple[bool, int]:
 
 
 def _check_users_exist() -> bool:
-    """Check if any users exist in the DB. Cached for 30s."""
+    """Check if multi-user mode is active (2+ accounts). Cached for 30s.
+
+    A single account is treated the same as no accounts: no login required.
+    The owner deleting all guest accounts returns cleanly to single-user mode.
+    """
     global _users_exist_cache, _users_exist_cache_time
     now = time.time()
     if _users_exist_cache is not None and (now - _users_exist_cache_time) < _USERS_EXIST_CACHE_TTL:
@@ -120,8 +124,8 @@ def _check_users_exist() -> bool:
     try:
         from db import db_conn
         with db_conn() as conn:
-            row = conn.execute("SELECT 1 FROM users LIMIT 1").fetchone()
-        _users_exist_cache = row is not None
+            count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        _users_exist_cache = count >= 2
     except Exception:
         _users_exist_cache = False
     _users_exist_cache_time = now

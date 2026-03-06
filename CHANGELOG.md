@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.3.1 (2026-03-06)
+
+### Added
+- **Create playlist from search page**: The playlist selector on the search results page now includes a "+ New playlist..." option. Type a name, press Enter (or click the tick), and the new playlist is available immediately without leaving the page.
+- **Preview fade-in**: Audio fades in over 5 seconds rather than starting at full volume. No more surprise heart attacks.
+- **Floating Save Settings bar**: The Save Settings button, Ko-fi link, and Release Notes button now sit in a fixed bar at the bottom of the viewport on the Settings tab, visible no matter how far down you've scrolled.
+- **Unraid Community Apps template**: Added an Unraid XML config example to the README for easy one-click install via Community Apps.
+
+### Fixed
+- **Security: several admin-only endpoints were accessible to regular users**: Stats, job cleanup, check-all (watched playlists and artists), and all blacklist endpoints were missing admin checks. All now return 403 for non-admin users.
+- **Security: search token validation was not scoped to the requesting user**: A search token issued to one user could be consumed by another. Tokens are now validated against the requesting user's own records.
+- **Security: search logs were missing user attribution**: `_log_search()` was writing rows without a `user_id`, which broke per-user search history and made token scoping impossible. User ID is now threaded through from the route handler.
+- **ListenBrainz "Created for You" playlists badge**: Removed the "alpha" label - it's been working reliably and doesn't need the warning anymore.
+- **Watched track mismatch on multiplication sign in titles**: `×` (U+00D7 MULTIPLICATION SIGN) was not being mapped to ASCII `x` during normalisation, causing tracks like "4x4xU" to fail matching against Spotify's "4×4×U". Added to the fullwidth/lookalike character map alongside the existing fullwidth pipe and dash fixes.
+- **Spotify playlist import broken by music videos**: When a Spotify playlist contains a music video entry, Spotify returns `"Music Video"` as the artist name rather than the actual artist. Both the embed scraper and headless browser scraper now detect this and attempt to salvage the artist by parsing the track title (which often contains "Artist - Title"). If a clean artist/title split can be found the track is imported correctly; if not, the entry is skipped rather than polluting the list with garbage.
+
+### Changed
+
+---
+
 ## v2.3.0 - g33kphr33k's Birthday Edition (2026-03-05)
 
 ### Added

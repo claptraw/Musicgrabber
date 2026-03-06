@@ -149,8 +149,19 @@ try:
                         artist = parts[1].strip()
                         if artist == "E" and len(parts) >= 3:
                             artist = parts[2].strip()
-                        if track_name and artist and artist != "E":
-                            seen_tracks_by_index[track_index] = f"{artist} - {track_name}"
+                        if not track_name or artist == "E":
+                            continue
+                        # Music video rows show "Music Video" as the artist.
+                        # Try salvaging the artist from the title (often "Artist - Title").
+                        if artist.lower() == "music video":
+                            dash = re.search(r"\s+[-\u2013\u2014]\s+", track_name)
+                            if dash:
+                                salvaged_artist = track_name[:dash.start()].strip()
+                                salvaged_title = track_name[dash.end():].strip()
+                                if salvaged_artist and salvaged_title:
+                                    seen_tracks_by_index[track_index] = f"{salvaged_artist} - {salvaged_title}"
+                            continue
+                        seen_tracks_by_index[track_index] = f"{artist} - {track_name}"
                 except Exception:
                     continue
 

@@ -7,6 +7,39 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.3.1": {
+        title: "What's New in v2.3.1",
+        sections: [
+            {
+                heading: "Spotify music video fix",
+                items: [
+                    "Playlists containing music video entries no longer break the import. Spotify labels these with 'Music Video' as the artist, so both the embed scraper and the headless browser now detect this and attempt to salvage the real artist and title from the track name. If it can't be parsed cleanly, the entry is skipped rather than imported as garbage",
+                    "Tested against a 2000+ track playlist with a mix of music videos and regular tracks - all came through correctly"
+                ]
+            },
+            {
+                heading: "Single-user mode restored after deleting accounts",
+                items: [
+                    "If you deleted all guest accounts and only your own admin account remained, MusicGrabber would incorrectly keep showing the login screen. Multi-user mode now only activates when there are two or more accounts - one account is treated the same as none"
+                ]
+            },
+            {
+                heading: "UI polish",
+                items: [
+                    "Preview audio fades in over 5 seconds rather than jumping to full volume",
+                    "The Save Settings button, Ko-fi link, and Release Notes button now live in a fixed bar at the bottom of the settings page, always within reach no matter how far you've scrolled",
+                    "Create a new playlist on the fly from the search results page - no need to go to the Watched tab first"
+                ]
+            },
+            {
+                heading: "Security",
+                items: [
+                    "Several admin-only endpoints (stats, job cleanup, check-all, blacklist) were missing access checks and were reachable by regular users. Fixed",
+                    "Search token validation is now scoped to the user who issued the token"
+                ]
+            }
+        ]
+    },
     "2.3.0": {
         title: "What's New in v2.3.0 - g33kphr33k's Birthday Edition",
         sections: [

@@ -777,6 +777,10 @@
         let previewCache = new Map(); // Cache preview URLs
         const MAX_PREVIEW_CACHE = 100;
         const HOVER_DELAY = 2000; // 2 seconds before preview starts
+        let _previewFadeInterval = null;
+        const PREVIEW_FADE_DURATION = 5000; // ms to ramp from 0 to target volume
+
+        const previewVolume = 0.8; // Fixed preview volume - fade-in handles the ramp
 
         // Preview functions
         function startHoverTimer(videoId, element, result) {
@@ -829,11 +833,23 @@
                 currentPreviewId = videoId;
 
                 previewAudio.src = audioUrl;
-                previewAudio.volume = 0.5;
+                previewAudio.volume = 0;
                 previewAudio.play().catch(() => {
                     // Autoplay blocked or other error
                     stopPreview();
                 });
+
+                // Fade in to target volume over PREVIEW_FADE_DURATION
+                if (_previewFadeInterval) clearInterval(_previewFadeInterval);
+                const fadeSteps = 30;
+                const fadeStepMs = PREVIEW_FADE_DURATION / fadeSteps;
+                let step = 0;
+                _previewFadeInterval = setInterval(() => {
+                    step++;
+                    previewAudio.volume = Math.min(previewVolume, (step / fadeSteps) * previewVolume);
+                    if (step >= fadeSteps) clearInterval(_previewFadeInterval);
+                }, fadeStepMs);
+
 
             } catch (error) {
                 element.classList.remove('loading-preview');
@@ -843,6 +859,7 @@
 
         function stopPreview() {
             clearHoverTimer();
+            if (_previewFadeInterval) { clearInterval(_previewFadeInterval); _previewFadeInterval = null; }
             previewAudio.pause();
             previewAudio.src = '';
             currentPreviewId = null;
@@ -959,6 +976,10 @@
                     loadBlacklist();
                     if (isAdmin()) loadUsers();
                 }
+
+                // Show floating save bar only on settings tab
+                const floatingBar = document.getElementById('settingsFloatingBar');
+                if (floatingBar) floatingBar.style.display = currentTab === 'settings' ? 'flex' : 'none';
             });
         });
 
