@@ -400,6 +400,12 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+        # Migration: track position within the source playlist for correct M3U ordering
+        try:
+            conn.execute("ALTER TABLE watched_playlist_tracks ADD COLUMN position INTEGER")
+        except sqlite3.OperationalError:
+            pass
+
         # Multi-user support tables
         conn.execute("""
         CREATE TABLE IF NOT EXISTS users (

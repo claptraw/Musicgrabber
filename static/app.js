@@ -3830,6 +3830,7 @@
 
         // Mapping from setting keys to form element IDs
         const settingsFieldMap = {
+            'skip_dupes': 'settingSkipDupes',
             'enable_musicbrainz': 'settingEnableMusicbrainz',
             'enable_lyrics': 'settingEnableLyrics',
             'acoustid_api_key': 'settingAcoustidKey',
@@ -3852,6 +3853,8 @@
             'navidrome_pass': 'settingNavidromePass',
             'jellyfin_url': 'settingJellyfinUrl',
             'jellyfin_api_key': 'settingJellyfinApiKey',
+            'lidarr_url': 'settingLidarrUrl',
+            'lidarr_api_key': 'settingLidarrApiKey',
             'notify_on': 'settingNotifyOn',
             'telegram_webhook_url': 'settingTelegramUrl',
             'webhook_url': 'settingWebhookUrl',
@@ -4577,6 +4580,11 @@
                     url: document.getElementById('settingJellyfinUrl').value.trim(),
                     api_key: document.getElementById('settingJellyfinApiKey').value.trim()
                 };
+            } else if (service === 'lidarr') {
+                body = {
+                    url: document.getElementById('settingLidarrUrl').value.trim(),
+                    api_key: document.getElementById('settingLidarrApiKey').value.trim()
+                };
             } else if (service === 'youtube-cookies') {
                 body = {
                     cookies: document.getElementById('settingYoutubeCookies').value
@@ -4654,6 +4662,7 @@
         document.getElementById('testSlskdBtn').addEventListener('click', () => testConnection('slskd'));
         document.getElementById('testNavidromeBtn').addEventListener('click', () => testConnection('navidrome'));
         document.getElementById('testJellyfinBtn').addEventListener('click', () => testConnection('jellyfin'));
+        document.getElementById('testLidarrBtn').addEventListener('click', () => testConnection('lidarr'));
         document.getElementById('testYoutubeCookiesBtn').addEventListener('click', () => testConnection('youtube-cookies'));
         document.getElementById('testSpotifyCookiesBtn').addEventListener('click', () => testConnection('spotify-cookies'));
         document.getElementById('testAppriseBtn').addEventListener('click', () => testConnection('apprise'));

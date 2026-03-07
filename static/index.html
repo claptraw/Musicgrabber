@@ -373,6 +373,13 @@
                 <h3 class="settings-section-title">General</h3>
                 <div class="settings-grid">
                     <label class="settings-label">
+                        <span>Skip duplicates</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingSkipDupes" checked>
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
+                    <label class="settings-label">
                         <span>MusicBrainz Metadata</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingEnableMusicbrainz" checked>
@@ -521,6 +528,26 @@
                     </div>
                     <button type="button" class="test-btn" id="testJellyfinBtn">Test Connection</button>
                     <div id="jellyfinTestResult" class="test-result"></div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3 class="settings-section-title">Lidarr</h3>
+                <div class="settings-form">
+                    <div class="settings-row">
+                        <label for="settingLidarrUrl">URL</label>
+                        <input type="text" id="settingLidarrUrl" placeholder="http://lidarr:8686">
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingLidarrApiKey">API Key</label>
+                        <div class="password-field">
+                            <input type="password" id="settingLidarrApiKey" placeholder="api-key">
+                            <button type="button" class="password-toggle" data-target="settingLidarrApiKey">Show</button>
+                        </div>
+                    </div>
+                    <button type="button" class="test-btn" id="testLidarrBtn">Test Connection</button>
+                    <div id="lidarrTestResult" class="test-result"></div>
+                    <span class="settings-hint">When configured, MusicGrabber checks Lidarr for existing tracks before downloading. Tracks already in your Lidarr library are skipped automatically.</span>
                 </div>
             </div>
 

@@ -123,7 +123,7 @@ def get_all_settings(user_id: str | None = None) -> dict:
 
 # Define which settings are sensitive (should be masked in GET response)
 SENSITIVE_SETTINGS = {
-    "slskd_pass", "navidrome_pass", "jellyfin_api_key",
+    "slskd_pass", "navidrome_pass", "jellyfin_api_key", "lidarr_api_key",
     "smtp_pass", "telegram_webhook_url", "api_key", "youtube_cookies",
     "spotify_cookies",
 }
@@ -133,6 +133,7 @@ USER_SETTINGS_KEYS = {
     "music_dir", "singles_subdir", "playlists_subdir", "organise_by_artist",
     "navidrome_url", "navidrome_user", "navidrome_pass", "navidrome_dupe_check",
     "jellyfin_url", "jellyfin_api_key",
+    "lidarr_url", "lidarr_api_key",
     "notify_on", "telegram_webhook_url", "apprise_url",
     "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "smtp_to", "smtp_tls",
     "youtube_cookies",
@@ -175,7 +176,11 @@ SETTINGS_SCHEMA = {
     # Jellyfin
     "jellyfin_url": {"type": "str", "default": "", "env": "JELLYFIN_URL"},
     "jellyfin_api_key": {"type": "str", "default": "", "env": "JELLYFIN_API_KEY", "sensitive": True},
-    # Navidrome dupe check
+    # Lidarr
+    "lidarr_url": {"type": "str", "default": "", "env": "LIDARR_URL"},
+    "lidarr_api_key": {"type": "str", "default": "", "env": "LIDARR_API_KEY", "sensitive": True},
+    # Duplicate checking
+    "skip_dupes": {"type": "bool", "default": True, "env": "SKIP_DUPES"},
     "navidrome_dupe_check": {"type": "bool", "default": True, "env": "NAVIDROME_DUPE_CHECK"},
     # Notifications
     "notify_on": {"type": "str", "default": "playlists,bulk,errors", "env": "NOTIFY_ON"},

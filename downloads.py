@@ -451,6 +451,94 @@ def check_navidrome_duplicate(artist: str, title: str, user_id: str | None = Non
         return None  # Never let a dupe check failure block a download
 
 
+def check_lidarr_duplicate(artist: str, title: str, user_id: str | None = None) -> Optional[Path]:
+    """Check if a track already exists in Lidarr via its REST API.
+
+    Fetches the artist list, fuzzy-matches the requested artist, then checks
+    their tracks for a title match with hasFile=True. When found, resolves the
+    real file path via the trackfile endpoint so M3U entries can use it.
+
+    Returns the Path to the file if found, or None if not found / Lidarr is
+    unconfigured / anything goes wrong.
+    """
+    lidarr_url = get_setting("lidarr_url", user_id=user_id)
+    lidarr_api_key = get_setting("lidarr_api_key", user_id=user_id)
+
+    if not (lidarr_url and lidarr_api_key):
+        return None
+
+    headers = {"X-Api-Key": lidarr_api_key}
+    base = lidarr_url.rstrip("/")
+
+    _punct_re = re.compile(r"[''`´\u2018\u2019\u201b\u02bc]")
+
+    def _norm(s: str) -> str:
+        return _punct_re.sub("'", (s or "").strip()).casefold()
+
+    _version_re = re.compile(
+        r'[\s\(\[]+(?:remaster(?:ed)?|remastered \d{4}|\d{4} remaster|'
+        r'radio edit|single (?:version|edit)|album (?:version|edit)|'
+        r'original (?:version|mix)|mono|stereo|explicit|clean)([\s\)\]]+|$)',
+        re.IGNORECASE
+    )
+
+    def _base_title(t: str) -> str:
+        return _version_re.sub("", t).strip().casefold()
+
+    try:
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
+            artists_resp = client.get(f"{base}/api/v1/artist", headers=headers)
+            if artists_resp.status_code != 200:
+                return None
+            artists = artists_resp.json()
+
+            artist_norm = _norm(artist)
+            matched_artist = None
+            for a in artists:
+                if _norm(a.get("artistName", "")) == artist_norm:
+                    matched_artist = a
+                    break
+
+            if not matched_artist:
+                return None
+
+            artist_id = matched_artist["id"]
+
+            # Fetch tracks and trackfiles for this artist in parallel requests.
+            # Trackfiles have the real paths; tracks tell us which trackFileId matched.
+            tracks_resp = client.get(f"{base}/api/v1/track", headers=headers, params={"artistId": artist_id})
+            trackfiles_resp = client.get(f"{base}/api/v1/trackfile", headers=headers, params={"artistId": artist_id})
+
+        if tracks_resp.status_code != 200:
+            return None
+
+        tracks = tracks_resp.json()
+        trackfile_map: dict[int, str] = {}
+        if trackfiles_resp.status_code == 200:
+            for tf in trackfiles_resp.json():
+                if tf.get("path"):
+                    trackfile_map[tf["id"]] = tf["path"]
+
+        title_norm = _norm(title)
+        title_base = _base_title(title)
+
+        for track in tracks:
+            if not track.get("hasFile"):
+                continue
+            raw = (track.get("title") or "").strip()
+            if _norm(raw) == title_norm or (_base_title(raw) == title_base and title_base == title_norm):
+                raw_path = trackfile_map.get(track.get("trackFileId", -1), "")
+                if raw_path.startswith("/"):
+                    return Path(raw_path)
+                # Lidarr knows it exists but path isn't on our filesystem  -  sentinel
+                return Path(title)
+
+        return None
+
+    except Exception:
+        return None  # Never let a dupe check failure block a download
+
+
 def trigger_jellyfin_scan(user_id: str | None = None):
     """Trigger a Jellyfin library scan via API"""
     jellyfin_url = get_setting("jellyfin_url", user_id=user_id)
@@ -1271,7 +1359,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                    FROM watched_playlist_tracks wpt
                    LEFT JOIN jobs j ON j.id = wpt.job_id
                    WHERE playlist_id = ? AND downloaded_at IS NOT NULL AND removed_at IS NULL
-                   ORDER BY first_seen""",
+                   ORDER BY COALESCE(position, 999999), first_seen""",
                 (playlist_id,)
             ).fetchall()
         else:
@@ -1282,7 +1370,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                    FROM watched_playlist_tracks wpt
                    LEFT JOIN jobs j ON j.id = wpt.job_id
                    WHERE playlist_id = ? AND downloaded_at IS NOT NULL
-                   ORDER BY first_seen""",
+                   ORDER BY COALESCE(position, 999999), first_seen""",
                 (playlist_id,)
             ).fetchall()
 
@@ -1364,7 +1452,11 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                 if nav and _is_real_path(nav):
                     existing = nav
                     break
-                if _is_navidrome_sentinel(nav):
+                lidarr = check_lidarr_duplicate(artist, title, user_id=user_id)
+                if lidarr and _is_real_path(lidarr):
+                    existing = lidarr
+                    break
+                if _is_navidrome_sentinel(nav) or (lidarr and not lidarr.is_absolute()):
                     navidrome_sentinel_hit = True
 
             if existing:
@@ -1396,7 +1488,11 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                 if nav and _is_real_path(nav):
                     audio_file = nav
                     break
-                if _is_navidrome_sentinel(nav):
+                lidarr = check_lidarr_duplicate(artist, title, user_id=user_id)
+                if lidarr and _is_real_path(lidarr):
+                    audio_file = lidarr
+                    break
+                if _is_navidrome_sentinel(nav) or (lidarr and not lidarr.is_absolute()):
                     navidrome_sentinel_hit = True
 
             if audio_file:
@@ -1799,11 +1895,13 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         # Update job with extracted info (store slskd peer as uploader for blacklist)
         _update_job(job_id, title=title, artist=artist, uploader=username)
 
-        # Check for duplicates (local filesystem, then Navidrome if configured)
+        # Check for duplicates (local filesystem, then Navidrome, then Lidarr)
         existing_file = check_duplicate(artist, title, user_id=user_id)
         if not existing_file:
             existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
-        if existing_file:
+        if not existing_file:
+            existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
+        if existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
             _update_job(
                 job_id,
                 status="completed",
@@ -2221,15 +2319,17 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
 
         _update_job(job_id, title=title, artist=artist, uploader=artist)
 
-        # Duplicate check  -  local filesystem first, then Navidrome if configured
+        # Duplicate check  -  local filesystem first, then Navidrome, then Lidarr
         existing_file = check_duplicate(artist, title, user_id=user_id)
         if not existing_file:
             existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
+        if not existing_file:
+            existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
         # For playlist routing, a synthetic Navidrome sentinel path is unusable.
         # Don't mark as "already exists" if we cannot actually append a path.
         if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
             existing_file = None
-        if existing_file and playlist_name:
+        if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
             # Track already exists somewhere  -  add it to the target playlist and call it done.
             # Local paths guard with .exists(); absolute Navidrome real paths are trusted directly
             # (MusicGrabber may not share Navidrome's filesystem view, but the M3U consumer does).
@@ -2247,7 +2347,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             if marked and (existing_file.is_absolute() or existing_file.exists()):
                 _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
             return
-        elif existing_file:
+        elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
             _update_job(
                 job_id,
                 status="completed",
@@ -2508,10 +2608,12 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         existing_file = check_duplicate(artist, title, user_id=user_id)
         if not existing_file:
             existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
+        if not existing_file:
+            existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
         if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
             existing_file = None
-        if existing_file and playlist_name:
-            src = "library" if existing_file.exists() else "Navidrome"
+        if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
+            src = "library" if existing_file.exists() else "Navidrome / Lidarr"
             _update_job(
                 job_id,
                 status="completed",
@@ -2523,7 +2625,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             if marked and (existing_file.is_absolute() or existing_file.exists()):
                 _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
             return
-        elif existing_file:
+        elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
             _update_job(
                 job_id,
                 status="completed",
@@ -2801,15 +2903,17 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         # Update job with extracted info (store raw uploader for blacklist reporting)
         _update_job(job_id, title=title, artist=artist, uploader=channel)
 
-        # Duplicate check  -  local filesystem first, then Navidrome if configured
+        # Duplicate check  -  local filesystem first, then Navidrome, then Lidarr
         existing_file = check_duplicate(artist, title, user_id=user_id)
         if not existing_file:
             existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
+        if not existing_file:
+            existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
         # For playlist routing, a synthetic Navidrome sentinel path is unusable.
         # Don't mark as "already exists" if we cannot actually append a path.
         if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
             existing_file = None
-        if existing_file and playlist_name:
+        if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
             # Track already exists somewhere  -  add it to the target playlist and call it done.
             # Local paths guard with .exists(); absolute Navidrome real paths are trusted directly
             # (MusicGrabber may not share Navidrome's filesystem view, but the M3U consumer does).
@@ -2827,7 +2931,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             if marked and (existing_file.is_absolute() or existing_file.exists()):
                 _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
             return
-        elif existing_file:
+        elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
             _update_job(
                 job_id,
                 status="completed",

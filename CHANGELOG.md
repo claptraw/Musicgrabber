@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.3.2 (dev)
+
+### Added
+- **Skip duplicates toggle**: New toggle in Settings → General. When disabled, MusicGrabber still queries your local library, Navidrome, and Lidarr for path resolution (so watched playlist M3Us stay accurate), but tracks are downloaded regardless of whether they already exist. Default on.
+- **Lidarr duplicate check**: Configure a Lidarr URL and API key in Settings and MusicGrabber will query your Lidarr library before downloading. Tracks already in Lidarr with a file are skipped. Real file paths are resolved via the trackfile API, so watched playlist M3U entries work correctly for Lidarr-managed tracks too. Runs as a final fallback after the local filesystem and Navidrome checks.
+
+### Fixed
+- **Bulk import broken**: `process_bulk_import_worker` was being called with a `user_id` keyword argument it doesn't accept, crashing the background thread immediately. The worker reads `user_id` from the DB row itself, so the extra argument was redundant.
+- **Watched playlist M3U track order**: M3Us were ordered by `first_seen` timestamp, which meant the initial bulk sync produced arbitrary ordering and subsequent refreshes didn't reflect moves within the source playlist. Track positions are now stored on every refresh and M3Us are built in upstream order. Existing installs get correct ordering automatically on the next playlist refresh. Old rows without a position sort after newly-positioned ones, so nothing gets scrambled on upgrade.
+
+### Changed
+
+---
+
 ## v2.3.1 (2026-03-06)
 
 ### Added

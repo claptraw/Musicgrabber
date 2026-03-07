@@ -149,6 +149,10 @@ class TestJellyfinRequest(BaseModel):
     url: Optional[str] = None
     api_key: Optional[str] = None
 
+class TestLidarrRequest(BaseModel):
+    url: Optional[str] = None
+    api_key: Optional[str] = None
+
 class TestAppriseRequest(BaseModel):
     url: Optional[str] = None
 

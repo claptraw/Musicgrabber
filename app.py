@@ -44,7 +44,7 @@ from models import (
     AsyncBulkImportRequest, WatchedPlaylistRequest, WatchedPlaylistUpdate,
     WatchedArtistRequest, WatchedArtistUpdate,
     SettingsUpdate, SearchResult, BlacklistRequest,
-    TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestYouTubeCookiesRequest,
+    TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestLidarrRequest, TestYouTubeCookiesRequest,
     TestAppriseRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest,
     ExploreRequest,
     LoginRequest, ChangePasswordRequest, CreateUserRequest,
@@ -803,6 +803,45 @@ def test_jellyfin_connection(http_request: Request, body: TestJellyfinRequest = 
         return {"success": False, "message": "Connection timed out"}
     except Exception as e:
         print(f"Jellyfin connection test error: {type(e).__name__}: {e}")
+        return {"success": False, "message": "Connection failed  -  check server logs for details"}
+
+
+@app.post("/api/settings/test/lidarr")
+def test_lidarr_connection(http_request: Request, body: TestLidarrRequest = None):
+    """Test connection to Lidarr. Uses form values if provided, otherwise saved settings."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    url = (body.url if body and body.url else None) or _get_typed_setting("lidarr_url")
+    api_key = (body.api_key if body and body.api_key else None) or _get_typed_setting("lidarr_api_key")
+
+    if not url:
+        return {"success": False, "message": "Lidarr URL not configured"}
+    if not api_key:
+        return {"success": False, "message": "Lidarr API key not configured"}
+
+    try:
+        with httpx.Client(timeout=10) as client:
+            response = client.get(
+                f"{url.rstrip('/')}/api/v1/system/status",
+                headers={"X-Api-Key": api_key}
+            )
+            if response.status_code == 200:
+                data = response.json()
+                version = data.get("version", "unknown")
+                artist_resp = client.get(
+                    f"{url.rstrip('/')}/api/v1/artist",
+                    headers={"X-Api-Key": api_key}
+                )
+                artist_count = len(artist_resp.json()) if artist_resp.status_code == 200 else 0
+                return {"success": True, "message": f"Connected to Lidarr v{version} ({artist_count} artists)"}
+            elif response.status_code == 401:
+                return {"success": False, "message": "Invalid API key"}
+            else:
+                return {"success": False, "message": f"Connection failed: {response.status_code}"}
+    except httpx.TimeoutException:
+        return {"success": False, "message": "Connection timed out"}
+    except Exception as e:
+        print(f"Lidarr connection test error: {type(e).__name__}: {e}")
         return {"success": False, "message": "Connection failed  -  check server logs for details"}
 
 
@@ -2062,7 +2101,7 @@ def bulk_import_async(body: AsyncBulkImportRequest, http_request: Request):
         conn.commit()
 
     # Start background worker for this import
-    spawn_daemon_thread(process_bulk_import_worker, import_id, user_id=user_id)
+    spawn_daemon_thread(process_bulk_import_worker, import_id)
 
     return {
         "import_id": import_id,

@@ -7,6 +7,33 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.3.2": {
+        title: "What's New in v2.3.2",
+        sections: [
+            {
+                heading: "Lidarr duplicate check",
+                items: [
+                    "If you run Lidarr alongside MusicGrabber, you can now point MusicGrabber at your Lidarr instance (Settings → Lidarr, URL and API key). Before downloading anything, MusicGrabber will check whether the track already exists in your Lidarr library. If it does, the download is skipped",
+                    "Real file paths are resolved via Lidarr's trackfile API, so watched playlist M3U entries include the correct path to the Lidarr-managed file - useful if you use Plex, Plexamp, or any other player that reads M3Us from a shared music directory",
+                    "Runs as a final fallback after the local filesystem and Navidrome checks, so it doesn't slow things down when the track is already in your MusicGrabber library"
+                ]
+            },
+            {
+                heading: "Bulk import crash fix",
+                items: [
+                    "Bulk import was broken - pasting tracks into the box would appear to start but immediately fail silently. The background worker was being called with a user_id argument it doesn't accept; it reads that from the database itself. One redundant argument removed, bulk import works again"
+                ]
+            },
+            {
+                heading: "Watched playlist track order",
+                items: [
+                    "M3U files generated from watched playlists now follow the same track order as the source playlist. Previously they were ordered by when MusicGrabber first saw each track, which was effectively random for the initial sync",
+                    "Positions are updated on every refresh, so if someone reorders the source playlist MusicGrabber will reflect that on the next check",
+                    "Existing playlists get correct ordering automatically after their next refresh - no manual intervention needed"
+                ]
+            }
+        ]
+    },
     "2.3.1": {
         title: "What's New in v2.3.1",
         sections: [

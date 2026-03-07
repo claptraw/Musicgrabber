@@ -755,8 +755,13 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             missing_tracks = []
             removed_count = 0
 
-            for artist, title in tracks:
+            for position, (artist, title) in enumerate(tracks):
                 track_hash = hash_track(artist, title)
+                # Always keep positions current so M3U reflects upstream order
+                conn.execute(
+                    "UPDATE watched_playlist_tracks SET position = ? WHERE playlist_id = ? AND track_hash = ?",
+                    (position, playlist_id, track_hash)
+                )
                 existing = tracked.get(track_hash)
                 if not existing:
                     new_tracks.append((artist, title, track_hash))
@@ -819,12 +824,14 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     )
 
             # Insert any new tracks so they are tracked before download
+            # Build a position lookup from the current upstream order
+            track_positions = {hash_track(a, t): i for i, (a, t) in enumerate(tracks)}
             for artist, title, track_hash in new_tracks:
                 conn.execute("""
                     INSERT INTO watched_playlist_tracks
-                    (playlist_id, track_hash, artist, title)
-                    VALUES (?, ?, ?, ?)
-                """, (playlist_id, track_hash, artist, title))
+                    (playlist_id, track_hash, artist, title, position)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (playlist_id, track_hash, artist, title, track_positions.get(track_hash)))
 
             tracks_to_import = [(artist, title) for artist, title, _ in new_tracks + missing_tracks]
             use_playlists_dir = bool(playlist.get("use_playlists_dir", False))
