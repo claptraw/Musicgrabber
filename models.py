@@ -47,6 +47,7 @@ class WatchedPlaylistRequest(BaseModel):
     make_m3u: bool = False
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
     sync_mode: str = "append"  # "append" = grow forever; "mirror" = track upstream removals in M3U
+    preferred_sources: str = "all"  # Comma-separated source IDs or "all"
 
 class WatchedPlaylistUpdate(BaseModel):
     refresh_interval_hours: Optional[int] = None
@@ -55,6 +56,7 @@ class WatchedPlaylistUpdate(BaseModel):
     make_m3u: Optional[bool] = None
     use_playlists_dir: Optional[bool] = None
     sync_mode: Optional[str] = None  # "append" or "mirror"
+    preferred_sources: Optional[str] = None  # Comma-separated source IDs or "all"
 
 class SettingsUpdate(BaseModel):
     """Settings that can be updated via the UI"""

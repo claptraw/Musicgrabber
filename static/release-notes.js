@@ -7,6 +7,21 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.3.3": {
+        title: "What's New in v2.3.3",
+        sections: [
+            {
+                heading: "Per-playlist source selection",
+                items: [
+                    "Each watched playlist now has a Sources row with toggleable chips — one per search source (YouTube, SoundCloud, MP3Phoenix, Monochrome).",
+                    "By default all sources are active. Deselect any you don't want used for that playlist.",
+                    "The Watch form also has the selector so you can set preferences on the way in.",
+                    "If you pick a source that's globally disabled in Settings, MusicGrabber quietly falls back to all enabled sources instead of finding nothing.",
+                    "Bug fix on playlist selector fixed.",
+                ]
+            }
+        ]
+    },
     "2.3.2": {
         title: "What's New in v2.3.2",
         sections: [

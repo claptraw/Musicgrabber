@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.3.3 (2026-03-07)
+
+### Added
+- **Per-playlist source selection**: Each watched playlist now has a Sources setting, toggle which search sources (YouTube, SoundCloud, MP3Phoenix, Monochrome) are used when downloading new tracks. All sources remain active by default. Chips appear on the playlist card and in the Watch form. Selecting a source that's globally disabled falls back to all enabled sources rather than finding nothing.
+
+### Changed
+- **Live recording scoring**: Unambiguous live tags — `(Live)`, `[Live]`, `- Live`, `Live at ...`, `Live from ...`, `Live Version` — now score -80 instead of the previous flat -50 for any mention of "live". A bare occurrence of the word without a clear qualifier drops to -30, reducing false positives for artists actually named "Live" or titles that contain the word incidentally.
+
+### Fixed
+- **Multi-user scoping**: `update_watched_playlist` was fetching the updated record without the user scope, meaning an admin update could theoretically return another user's row. `delete_job_file` was using the global playlists directory instead of the requesting user's.
+- **Playlist selector missing watched playlists for upgraded installs**: `GET /api/playlists` used a hand-rolled scope query that didn't include legacy `user_id IS NULL` rows for admin users. Long-term users who upgraded from single-user mode couldn't see their watched playlists in the "Add to playlist" selector. Fixed to use the same `_user_scope()` helper as every other endpoint.
+
+
 ## v2.3.2 (2026-03-07)
 
 ### Added

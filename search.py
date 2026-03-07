@@ -506,9 +506,18 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
     return results[:limit]
 
 
-def search_all(query: str, limit: int) -> list[dict]:
-    """Search every enabled source in parallel, merge by quality score."""
+def search_all(query: str, limit: int, sources: list[str] | None = None) -> list[dict]:
+    """Search enabled sources in parallel, merge by quality score.
+
+    If *sources* is provided (list of source IDs), only those sources are used,
+    provided they are also enabled in settings. Falls back to all enabled sources
+    if the filtered set is empty (e.g. source disabled globally but playlist prefers it).
+    """
     active = _enabled_sources()
+    if sources:
+        # Intersect requested sources with enabled ones; fall back to all if none survive
+        filtered = {k: v for k, v in active.items() if k in sources}
+        active = filtered if filtered else active
     futures = {}
     with ThreadPoolExecutor(max_workers=len(active) + 1) as pool:
         for name, cfg in active.items():

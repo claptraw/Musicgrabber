@@ -85,6 +85,7 @@ def start_bulk_import_for_tracks(
     use_playlists_dir: bool = False,
     watch_artist_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    preferred_sources: Optional[str] = None,
 ) -> str:
     """Create a bulk import job from a list of (artist, title) tuples."""
     import_id = str(uuid.uuid4())[:8]
@@ -93,10 +94,10 @@ def start_bulk_import_for_tracks(
         conn.execute(
             """INSERT INTO bulk_imports
                (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac,
-                watch_playlist_id, use_playlists_dir, watch_artist_id, user_id)
-               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?)""",
+                watch_playlist_id, use_playlists_dir, watch_artist_id, user_id, preferred_sources)
+               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?, ?)""",
             (import_id, len(tracks), int(convert_to_flac), watch_playlist_id,
-             int(use_playlists_dir), watch_artist_id, user_id)
+             int(use_playlists_dir), watch_artist_id, user_id, preferred_sources or "all")
         )
 
         for line_num, (artist, song) in enumerate(tracks, 1):
@@ -133,6 +134,12 @@ def process_bulk_import_worker(import_id: str):
         watch_artist_id = import_row["watch_artist_id"]
         use_playlists_dir = bool(import_row["use_playlists_dir"])
         user_id = import_row["user_id"]
+        _preferred_sources_raw = import_row["preferred_sources"] or "all"
+        # Parse "youtube,soundcloud" into ["youtube", "soundcloud"], or None for "all"
+        preferred_sources_list = (
+            None if _preferred_sources_raw == "all"
+            else [s.strip() for s in _preferred_sources_raw.split(",") if s.strip()]
+        )
 
         # For watched playlist imports, playlist_name is stored as NULL in bulk_imports.
         # Fetch the actual name from watched_playlists so folder routing works correctly.
@@ -172,10 +179,10 @@ def process_bulk_import_worker(import_id: str):
                 conn.execute("UPDATE bulk_import_tracks SET status = 'searching' WHERE id = ?", (track_id,))
                 conn.commit()
 
-            # Search all sources in parallel, get results ranked by quality score
+            # Search preferred (or all) sources in parallel, ranked by quality score
             try:
                 search_query = f"{artist} - {song}"
-                search_results = search_all(search_query, limit=10)
+                search_results = search_all(search_query, limit=10, sources=preferred_sources_list)
 
                 if not search_results:
                     with db_conn() as conn:

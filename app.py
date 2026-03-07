@@ -271,16 +271,18 @@ def list_music_dirs(path: str = "", recursive: bool = False, max_depth: int | No
 # =============================================================================
 
 @app.get("/api/playlists")
-def list_playlists():
+def list_playlists(http_request: Request):
     """List available playlists for the playlist routing selector.
 
     Returns watched playlists (from DB) and any physical .m3u files found in the
     Playlists directory. Watched playlists take priority if names collide.
     """
+    user_id = getattr(http_request.state, "user_id", None)
+    is_admin = getattr(http_request.state, "is_admin", False)
     results = {}
 
     # Physical .m3u files from Playlists dir (lowest priority)
-    playlists_dir = get_playlists_dir()
+    playlists_dir = get_playlists_dir(user_id=user_id)
     if playlists_dir and playlists_dir.exists():
         for m3u in sorted(playlists_dir.rglob("*.m3u"), key=lambda p: p.stem.casefold()):
             name = m3u.stem
@@ -292,10 +294,12 @@ def list_playlists():
             }
 
     # Watched playlists from DB (higher priority  -  overwrite any same-named .m3u entry)
+    _scope_frag, _scope_params = _user_scope(user_id, is_admin)
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, name, platform FROM watched_playlists ORDER BY name COLLATE NOCASE"
+            f"SELECT id, name, platform FROM watched_playlists WHERE {_scope_frag} ORDER BY name COLLATE NOCASE",
+            _scope_params
         ).fetchall()
 
     for row in rows:
@@ -1862,7 +1866,7 @@ def delete_job_file(job_id: str, http_request: Request):
     # and is safe to nuke. If it lives in Singles (or anywhere else) it belongs to the broader
     # library and may be referenced by other playlists  -  remove it from this playlist's M3U
     # only, leave the file alone.
-    playlists_dir = get_playlists_dir()
+    playlists_dir = get_playlists_dir(user_id=user_id)
     file_is_playlist_owned = False
     if playlists_dir:
         try:
@@ -2256,11 +2260,12 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                 playlist_id = str(uuid.uuid4())[:8]
                 conn.execute("""
                     INSERT INTO watched_playlists
-                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (playlist_id, lb["playlist_url"], lb["name"], "listenbrainz",
                       refresh_hours, int(body.convert_to_flac),
-                      int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(lb["tracks"]), user_id))
+                      int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(lb["tracks"]), user_id,
+                      body.preferred_sources or "all"))
 
                 for artist, title in lb["tracks"]:
                     track_hash = hash_track(artist, title)
@@ -2287,6 +2292,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                     watch_playlist_id=playlist_id,
                     use_playlists_dir=body.use_playlists_dir,
                     user_id=user_id,
+                    preferred_sources=body.preferred_sources or "all",
                 )
 
         return {
@@ -2321,11 +2327,12 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
         sync_mode = body.sync_mode if body.sync_mode in ("append", "mirror") else "append"
         conn.execute("""
             INSERT INTO watched_playlists
-            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (playlist_id, body.url, playlist_name, platform,
               body.refresh_interval_hours, int(body.convert_to_flac),
-              int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(tracks), user_id))
+              int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(tracks), user_id,
+              body.preferred_sources or "all"))
 
         # Insert all current tracks as "seen"
         for artist, title in tracks:
@@ -2346,6 +2353,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
             watch_playlist_id=playlist_id,
             use_playlists_dir=body.use_playlists_dir,
             user_id=user_id,
+            preferred_sources=body.preferred_sources or "all",
         )
 
     return {
@@ -2466,6 +2474,10 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, ht
             updates.append("sync_mode = ?")
             params.append(request.sync_mode)
 
+        if request.preferred_sources is not None:
+            updates.append("preferred_sources = ?")
+            params.append(request.preferred_sources or "all")
+
         if updates:
             params.append(playlist_id)
             conn.execute(
@@ -2476,7 +2488,8 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, ht
 
         # Fetch updated record
         updated = conn.execute(
-            "SELECT * FROM watched_playlists WHERE id = ?", (playlist_id,)
+            f"SELECT * FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            (playlist_id, *_scope_params)
         ).fetchone()
 
     return {"playlist": dict(updated)}
@@ -2605,7 +2618,7 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"SELECT id, name, convert_to_flac, use_playlists_dir FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            f"SELECT id, name, convert_to_flac, use_playlists_dir, preferred_sources FROM watched_playlists WHERE id = ? AND {_scope_frag}",
             (playlist_id, *_scope_params)
         ).fetchone()
 
@@ -2620,6 +2633,7 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
         watch_playlist_id=playlist_id,
         use_playlists_dir=bool(playlist["use_playlists_dir"]),
         user_id=user_id,
+        preferred_sources=playlist["preferred_sources"] or "all",
     )
 
     return {"import_id": import_id, "status": "queued", "message": f"Searching for {request.artist} - {request.title}"}

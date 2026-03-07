@@ -320,9 +320,15 @@ def score_search_result(
     album_lower = (album or "").lower()
     score = 100  # Start with base score
 
-    # Penalties for live performances
-    if re.search(r'\b(live|concert|tour|performance|unplugged)\b', title_lower):
-        score -= 50
+    # Penalties for live performances.
+    # Unambiguous live tags in brackets/parentheses or after a dash get a heavier
+    # hit (-80) than a bare occurrence of the word (-30), so "Live - Artist Name"
+    # or an artist literally called "Live" doesn't get nuked the same way as
+    # "Song Title (Live at Wembley)".
+    if re.search(r'[\(\[]\s*live\b|[-–]\s*live\b|\blive\s+at\b|\blive\s+from\b|\blive\s+version\b', title_lower):
+        score -= 80
+    elif re.search(r'\b(live|concert|tour|performance|unplugged)\b', title_lower):
+        score -= 30
 
     # Absolute disqualifiers: results containing these words are never what anyone wants,
     # regardless of query or context. Scored so low they cannot win even against silence.

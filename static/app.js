@@ -962,6 +962,7 @@
                 if (currentTab === 'watched') {
                     loadWatchedPlaylists();
                     loadWatchedArtists();
+                    populateSourceChips();
                 } else if (watchedRefreshPollInterval) {
                     clearInterval(watchedRefreshPollInterval);
                     watchedRefreshPollInterval = null;
@@ -2528,6 +2529,7 @@
 
                 const data = await playlistsRes.json();
                 renderWatchedPlaylists(data.playlists);
+                populateSourceChips();
             } catch (error) {
                 if (showLoading) {
                     watchedList.innerHTML = `
@@ -2627,6 +2629,12 @@
                                     <option value="append" ${(p.sync_mode || 'append') === 'append' ? 'selected' : ''}>Append</option>
                                     <option value="mirror" ${p.sync_mode === 'mirror' ? 'selected' : ''}>Mirror</option>
                                 </select>
+                            </label>
+                            <label class="watched-card-toggle" title="Which search sources to use when downloading new tracks for this playlist. Deselect all to search everything.">
+                                Sources
+                                <div class="watched-sources-chips" data-playlist-id="${p.id}">
+                                    ${renderSourceChips(p.id, p.preferred_sources || 'all')}
+                                </div>
                             </label>
                         </div>
                         ${p.stale_navidrome_paths > 0 ? `
@@ -2733,7 +2741,8 @@
                         convert_to_flac: watchedConvertToFlac ? watchedConvertToFlac.checked : convertToFlacCheckbox.checked,
                         make_m3u: document.getElementById('watchedMakeM3u') ? document.getElementById('watchedMakeM3u').checked : false,
                         use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false,
-                        sync_mode: document.getElementById('watchedSyncModeSelect') ? document.getElementById('watchedSyncModeSelect').value : 'append'
+                        sync_mode: document.getElementById('watchedSyncModeSelect') ? document.getElementById('watchedSyncModeSelect').value : 'append',
+                        preferred_sources: getWatchedPreferredSources()
                     })
                 });
 
@@ -3180,6 +3189,90 @@
                 showToast(syncMode === 'mirror' ? 'Sync mode: Mirror (M3U tracks upstream)' : 'Sync mode: Append (M3U grows over time)');
             } catch (error) {
                 showToast('Failed to update sync mode', true);
+                loadWatchedPlaylists();
+            }
+        }
+
+        // Source chips: render per-source toggle chips for a watched playlist card or the add form
+        let _cachedSources = null;
+        async function _fetchSources() {
+            if (_cachedSources) return _cachedSources;
+            try {
+                const res = await apiFetch('/api/sources');
+                if (res.ok) _cachedSources = (await res.json()).sources || [];
+            } catch {}
+            return _cachedSources || [];
+        }
+
+        function renderSourceChips(playlistId, preferredSources) {
+            // Only show globally-enabled sources; repopulate once sources load if cache is empty
+            const sources = (_cachedSources || []).filter(s => s.enabled);
+            const active = preferredSources === 'all' ? [] : preferredSources.split(',').map(s => s.trim());
+            return sources.map(s => {
+                const on = active.length === 0 || active.includes(s.id);
+                return `<button type="button" class="source-chip ${on ? 'on' : 'off'}" data-source="${escapeAttr(s.id)}"
+                    onclick="toggleSourceChip(this, '${escapeAttr(playlistId)}')"
+                    title="${escapeAttr(s.label)}">${escapeHtml(s.badge)}</button>`;
+            }).join('');
+        }
+
+        async function populateSourceChips() {
+            await _fetchSources();
+            // Re-render any chips containers that used stale/empty data
+            document.querySelectorAll('.watched-sources-chips[data-playlist-id]').forEach(el => {
+                const pid = el.dataset.playlistId;
+                // Read current chip state before replacing
+                const existing = [...el.querySelectorAll('.source-chip')];
+                let pref = 'all';
+                if (existing.length > 0) {
+                    const on = existing.filter(c => c.classList.contains('on')).map(c => c.dataset.source);
+                    pref = on.length === existing.length ? 'all' : on.join(',');
+                }
+                el.innerHTML = renderSourceChips(pid, pref);
+            });
+            // Populate the add-form selector (only globally-enabled sources, all on by default)
+            const formSel = document.getElementById('watchedSourcesSelector');
+            if (formSel && formSel.children.length === 0) {
+                const sources = (_cachedSources || []).filter(s => s.enabled);
+                formSel.innerHTML = sources.map(s =>
+                    `<button type="button" class="source-chip on" data-source="${escapeAttr(s.id)}"
+                        onclick="this.classList.toggle('on'); this.classList.toggle('off')"
+                        title="${escapeAttr(s.label)}">${escapeHtml(s.badge)}</button>`
+                ).join('');
+            }
+        }
+
+        function toggleSourceChip(btn, playlistId) {
+            btn.classList.toggle('on');
+            btn.classList.toggle('off');
+            // Collect current state for this playlist
+            const container = btn.closest('.watched-sources-chips');
+            const chips = [...container.querySelectorAll('.source-chip')];
+            const on = chips.filter(c => c.classList.contains('on')).map(c => c.dataset.source);
+            // "all on" = send "all"; partial = comma list; none = "all" (fallback, don't allow locking out)
+            const preferred = (on.length === 0 || on.length === chips.length) ? 'all' : on.join(',');
+            updateWatchedPlaylistPreferredSources(playlistId, preferred);
+        }
+
+        function getWatchedPreferredSources() {
+            const chips = [...document.querySelectorAll('#watchedSourcesSelector .source-chip')];
+            if (chips.length === 0) return 'all';
+            const on = chips.filter(c => c.classList.contains('on')).map(c => c.dataset.source);
+            return (on.length === 0 || on.length === chips.length) ? 'all' : on.join(',');
+        }
+
+        async function updateWatchedPlaylistPreferredSources(playlistId, preferred) {
+            try {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preferred_sources: preferred })
+                });
+                if (!response.ok) throw new Error('Update failed');
+                const label = preferred === 'all' ? 'all sources' : preferred;
+                showToast(`Sources: ${label}`);
+            } catch (error) {
+                showToast('Failed to update sources', true);
                 loadWatchedPlaylists();
             }
         }

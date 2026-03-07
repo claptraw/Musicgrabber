@@ -486,6 +486,14 @@ def init_db():
             conn.execute("ALTER TABLE search_logs ADD COLUMN user_id TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN preferred_sources TEXT DEFAULT 'all'")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_imports ADD COLUMN preferred_sources TEXT DEFAULT 'all'")
+        except sqlite3.OperationalError:
+            pass
 
         # --- DB version tracking ---
         # Version is stored in settings as 'db_version' (integer string).
