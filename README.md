@@ -6,7 +6,7 @@ I've hit my own personal milestone with this project. It's as feature-complete a
 
 This project is a mash up of humand and AI, I will not hide that. If you're against AI code being used, please walk by this project. However, it is fully reviewed, security peer-checked and regularly pulled apart by humans.
 
-**v2.3.0 - g33kphr33k's Birthday Edition**
+**v2.3.2**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
