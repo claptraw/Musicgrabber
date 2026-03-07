@@ -2571,7 +2571,7 @@
                     youtube: '<i class="fa-brands fa-youtube" title="YouTube"></i>',
                     amazon: '<i class="fa-brands fa-amazon" title="Amazon Music"></i>',
                     tidal: '<i class="fa-solid fa-water" title="Tidal"></i>',
-                    listenbrainz: '<i class="fa-solid fa-music" title="ListenBrainz (Alpha)"></i> <span class="badge-alpha">alpha</span>'
+                    listenbrainz: '<i class="fa-solid fa-music" title="ListenBrainz"></i>'
                 };
                 const platformIcon = platformIcons[p.platform] || '<i class="fa-solid fa-list"></i>';
                 const lastChecked = p.last_checked ? formatTimeAgo(p.last_checked) : 'Never';
