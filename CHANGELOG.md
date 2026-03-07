@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.3.2 (dev)
+## v2.3.2 (2026-03-07)
 
 ### Added
 - **Skip duplicates toggle**: New toggle in Settings → General. When disabled, MusicGrabber still queries your local library, Navidrome, and Lidarr for path resolution (so watched playlist M3Us stay accurate), but tracks are downloaded regardless of whether they already exist. Default on.
