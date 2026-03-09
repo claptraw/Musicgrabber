@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.3.4 (2026-03-09)
+
+### Added
+- **Apple Music playlist import**: Public Apple Music playlists and albums can now be imported and watched. No browser required — Apple server-renders the full track list into the page, so it's a plain HTTP fetch. Supports all regional storefronts. Private playlists and personal libraries (anything requiring sign-in) are not supported.
+- **ALAC output format**: ALAC is now a selectable audio format alongside FLAC, Opus, and MP3. Files are saved as .m4a (Apple Lossless Audio Codec). Good for modded iPods and Apple devices that want lossless without FLAC support.
+
+### Fixed
+- **Watched track falsely shown as missing**: Tracks already in the library via Monochrome (or any album-structured folder outside Singles) were being re-queued on every playlist refresh. The file check now consults the stored resolved path first, so if MusicGrabber recorded exactly where it landed, that's the ground truth, no more fruitless rummaging through the Singles folder for something filed under an album path.
+- **Queue: "Already exists" shows friendlier label**: The download queue previously showed the full file path as an error for duplicate-skipped tracks. It now displays "Already in library" inline, with the actual path moved into the expanded details row.
+- **ListenBrainz Alpha badge**: Removed the Alpha badge from ListenBrainz watched playlist cards.
+- **Watched track mismatch: colon subtitles**: Spotify stores track subtitles as `Title (Subtitle)` while YouTube/releases use `Title: Subtitle`. The normaliser now strips colon-introduced subtitles before comparison, so tracks like `This Land: Theme from Borderlands 4` correctly match `This Land (Theme from Borderlands 4)`.
+- **Watch mismatch log**: Mismatches are now stored persistently in the database and shown in a new panel at the bottom of the Stats tab. Each entry shows expected vs actual artist/title, the normalised forms that were compared, and which playlist triggered it. Survives container restarts. Includes a Clear Log button for when you've investigated and moved on.
+- **Watch normaliser improvements** (from mismatch log analysis): three additional gap fixes: (1) accented/decorated characters (e.g. `JAŸ-Z`) now decompose to ASCII equivalents via NFKD before comparison; (2) artist names that normalise entirely to single characters (e.g. `B.o.B` → `b o b`) no longer produce an empty word-set that fails the subset check; (3) YouTube translation suffixes (`× TRADUÇÃO`, `x Translation`, etc.) are stripped from titles before matching.
+
+---
+
 ## v2.3.3 (2026-03-07)
 
 ### Added

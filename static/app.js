@@ -580,20 +580,22 @@
             }
         }
 
-        // audioFormat tracks which format to use when conversion is on ("flac", "opus", or "mp3")
+        // audioFormat tracks which format to use when conversion is on ("flac", "alac", "opus", or "mp3")
         let audioFormat = 'flac';
 
         function setAudioFormat(format) {
-            audioFormat = ['flac', 'opus', 'mp3'].includes(format) ? format : 'flac';
+            audioFormat = ['flac', 'alac', 'opus', 'mp3'].includes(format) ? format : 'flac';
 
             const btnFlac = document.getElementById('formatBtnFlac');
+            const btnAlac = document.getElementById('formatBtnAlac');
             const btnOpus = document.getElementById('formatBtnOpus');
             const btnMp3  = document.getElementById('formatBtnMp3');
             if (btnFlac) btnFlac.classList.toggle('active', audioFormat === 'flac');
+            if (btnAlac) btnAlac.classList.toggle('active', audioFormat === 'alac');
             if (btnOpus) btnOpus.classList.toggle('active', audioFormat === 'opus');
             if (btnMp3)  btnMp3.classList.toggle('active',  audioFormat === 'mp3');
 
-            const labels = { flac: 'FLAC', opus: 'Opus', mp3: 'MP3' };
+            const labels = { flac: 'FLAC', alac: 'ALAC', opus: 'Opus', mp3: 'MP3' };
             const label = labels[audioFormat];
             const headerLabel = document.getElementById('headerFormatLabel');
             if (headerLabel) headerLabel.textContent = label;
@@ -603,6 +605,8 @@
             const artistFlacLabel = document.getElementById('artistFlacLabel');
             if (artistFlacLabel) artistFlacLabel.textContent = `Convert to ${label}`;
 
+            const alacNote = document.getElementById('alacFormatNote');
+            if (alacNote) alacNote.style.display = audioFormat === 'alac' ? 'block' : 'none';
             const mp3Note = document.getElementById('mp3FormatNote');
             if (mp3Note) mp3Note.style.display = audioFormat === 'mp3' ? 'block' : 'none';
 
@@ -614,7 +618,7 @@
         }
 
         const versionLabel = document.getElementById('versionLabel');
-        const PLAYLIST_SERVICES = ["Spotify", "YouTube", "Amazon Music", "Tidal"];
+        const PLAYLIST_SERVICES = ["Spotify", "YouTube", "Apple Music", "Amazon Music", "Tidal"];
 
         function renderPlaylistServicesText() {
             const text = PLAYLIST_SERVICES.join(", ");
@@ -1643,10 +1647,11 @@
                     <div class="job-info">
                         <div class="job-title">${escapeHtml(job.artist ? `${job.artist} - ${job.title}` : job.title)}${job.status === 'completed_with_errors' ? '<span class="job-warning-badge">ISSUES</span>' : ''}</div>
                         <div class="job-meta">${formatJobStatus(job.status)} • ${formatTime(job.created_at)}</div>
-                        ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ''}
+                        ${job.error ? `<div class="job-error">${job.error.startsWith('Already exists') ? 'Already in library' : escapeHtml(job.error)}</div>` : ''}
                         ${hasDetails ? `
                         <div class="job-details" style="display:${isExpanded ? 'block' : 'none'};">
                             ${job.audio_quality ? `<div class="job-details-row"><span class="job-details-label">Quality:</span> ${escapeHtml(job.audio_quality)}</div>` : ''}
+                            ${job.error && job.error.startsWith('Already exists') ? `<div class="job-details-row"><span class="job-details-label">Path:</span> <span class="job-details-url">${escapeHtml(job.error.replace(/^Already exists(?: in [^:]+)?:\s*/, '').replace(/ \(added to playlist\)$/, ''))}</span></div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Source:</span> ${escapeHtml(sourceLabel)}</div>
                             ${job.metadata_source ? `<div class="job-details-row"><span class="job-details-label">Metadata:</span> ${escapeHtml(formatMetadataSource(job.metadata_source))}</div>` : ''}
                             ${sourceUrl ? `<div class="job-details-row"><span class="job-details-label">URL:</span> ${isClickableUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sourceUrl)}</a>` : `<span class="job-details-url">${escapeHtml(sourceUrl)}</span>`}</div>` : ''}
@@ -2380,13 +2385,14 @@
                 return;
             }
 
-            // URL validation - Spotify playlists/albums, Amazon Music playlists, Tidal, and YouTube/YT Music playlists
+            // URL validation - Spotify playlists/albums, Amazon Music playlists, Tidal, Apple Music, and YouTube/YT Music playlists
             const isSpotify = url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//);
             const isAmazon = url.match(/^https?:\/\/music\.amazon\.[a-z.]+\/(user-playlists|playlists)\//);
             const isTidal = url.match(/^https?:\/\/(www\.)?tidal\.com\/(browse\/)?playlist\/[0-9a-f-]{36}/i);
+            const isApple = url.match(/^https?:\/\/music\.apple\.com\/[a-z]{2}\/(playlist|album)\//i);
             const isYouTube = url.match(/^https?:\/\/(www\.|music\.)?youtube\.com\/(playlist|watch)\?[^"]*list=/i);
-            if (!isSpotify && !isAmazon && !isTidal && !isYouTube) {
-                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Amazon Music, or Tidal playlist link.';
+            if (!isSpotify && !isAmazon && !isTidal && !isApple && !isYouTube) {
+                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, or Tidal playlist link.';
                 spotifyError.style.display = 'block';
                 return;
             }
@@ -2569,6 +2575,7 @@
                 const platformIcons = {
                     spotify: '<i class="fa-brands fa-spotify" title="Spotify"></i>',
                     youtube: '<i class="fa-brands fa-youtube" title="YouTube"></i>',
+                    apple: '<i class="fa-brands fa-apple" title="Apple Music"></i>',
                     amazon: '<i class="fa-brands fa-amazon" title="Amazon Music"></i>',
                     tidal: '<i class="fa-solid fa-water" title="Tidal"></i>',
                     listenbrainz: '<i class="fa-solid fa-music" title="ListenBrainz"></i>'
@@ -2711,6 +2718,7 @@
             let platform = null;
             if (url.includes('spotify.com')) platform = 'spotify';
             else if (url.includes('youtube.com') || url.includes('youtu.be')) platform = 'youtube';
+            else if (url.includes('music.apple.com')) platform = 'apple';
             else if (url.includes('amazon.') || url.includes('music.amazon')) platform = 'amazon';
             else if (url.includes('tidal.com')) platform = 'tidal';
 
@@ -3618,7 +3626,14 @@
                     panel.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);padding:8px 0;">No missing singles.</p>';
                     return;
                 }
-                panel.innerHTML = `<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">${data.tracks.length} missing single(s):</div>` +
+                panel.innerHTML = `
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <span style="font-size:12px;color:var(--text-secondary);">${data.tracks.length} missing single(s)</span>
+                        <button onclick="retryAllArtistMissing('${artistId}', this)"
+                            style="padding:4px 12px;font-size:12px;font-family:inherit;font-weight:600;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;">
+                            Queue All
+                        </button>
+                    </div>` +
                     data.tracks.map(t => `
                         <div style="padding:4px 0;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
                             <span style="flex:1;min-width:0;font-size:12px;">${escapeHtml(t.artist || '')} &ndash; ${escapeHtml(t.title)}</span>
@@ -3685,6 +3700,24 @@
             }
         }
 
+        async function retryAllArtistMissing(artistId, btn) {
+            btn.disabled = true;
+            btn.textContent = 'Queuing...';
+            try {
+                const res = await apiFetch(`/api/watched-artists/${artistId}/retry-all-missing`, { method: 'POST' });
+                const data = await res.json();
+                showToast(`Queued ${data.queued} track(s)`);
+                btn.textContent = `${data.queued} queued`;
+                // Disable all individual retry buttons too
+                const panel = document.getElementById(`artist-missing-${artistId}`);
+                if (panel) panel.querySelectorAll('button:not([onclick*="retryAllArtistMissing"])').forEach(b => { b.disabled = true; b.textContent = 'Queued'; });
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = 'Queue All';
+                showToast('Failed to queue tracks', true);
+            }
+        }
+
         async function refreshAllArtists() {
             const btn = document.getElementById('refreshAllArtistsBtn');
             btn.disabled = true;
@@ -3739,6 +3772,58 @@
                     </div>
                 `;
             }
+
+            loadMismatches();
+        }
+
+        async function loadMismatches() {
+            const section = document.getElementById('mismatchSection');
+            const content = document.getElementById('mismatchContent');
+            if (!section || !content) return;
+
+            try {
+                const res = await apiFetch('/api/mismatches');
+                if (!res.ok) { section.style.display = 'none'; return; }
+                const data = await res.json();
+                const rows = data.mismatches || [];
+                section.style.display = rows.length > 0 ? 'block' : 'none';
+                if (rows.length === 0) return;
+
+                content.innerHTML = rows.map(m => `
+                    <div class="mismatch-row">
+                        <div class="mismatch-meta">
+                            <span class="mismatch-playlist">${escapeHtml(m.playlist_name || m.playlist_id || '—')}</span>
+                            <span class="mismatch-date">${m.created_at ? m.created_at.slice(0, 16).replace('T', ' ') : ''}</span>
+                        </div>
+                        <div class="mismatch-pair">
+                            <div class="mismatch-line mismatch-expected">
+                                <span class="mismatch-tag">Expected</span>
+                                <span>${escapeHtml(m.expected_artist)} &ndash; ${escapeHtml(m.expected_title)}</span>
+                            </div>
+                            <div class="mismatch-line mismatch-got">
+                                <span class="mismatch-tag">Got</span>
+                                <span>${escapeHtml(m.actual_artist || 'Unknown')} &ndash; ${escapeHtml(m.actual_title || 'Unknown')}</span>
+                            </div>
+                        </div>
+                        <details class="mismatch-normalised">
+                            <summary>Normalised</summary>
+                            <div class="mismatch-norm-line"><span class="mismatch-tag">Exp</span> ${escapeHtml(m.exp_normalised)}</div>
+                            <div class="mismatch-norm-line"><span class="mismatch-tag">Got</span> ${escapeHtml(m.got_normalised)}</div>
+                        </details>
+                    </div>
+                `).join('');
+            } catch {
+                section.style.display = 'none';
+            }
+        }
+
+        const clearMismatchesBtn = document.getElementById('clearMismatchesBtn');
+        if (clearMismatchesBtn) {
+            clearMismatchesBtn.addEventListener('click', async () => {
+                if (!confirm('Clear the entire mismatch log?')) return;
+                await apiFetch('/api/mismatches', { method: 'DELETE' });
+                loadMismatches();
+            });
         }
 
         function formatBytes(bytes) {
@@ -3837,14 +3922,14 @@
                         ${ytCount > 0 ? `<div style="flex: ${ytCount}; background: #ff0000; border-radius: 4px;"></div>` : ''}
                         ${pxCount > 0 ? `<div style="flex: ${pxCount}; background: #e05c00; border-radius: 4px;"></div>` : ''}
                         ${scCount > 0 ? `<div style="flex: ${scCount}; background: #ff5500; border-radius: 4px;"></div>` : ''}
-                        ${moCount > 0 ? `<div style="flex: ${moCount}; background: #111111; border-radius: 4px;"></div>` : ''}
+                        ${moCount > 0 ? `<div style="flex: ${moCount}; background: #00bcd4; border-radius: 4px;"></div>` : ''}
                         ${slkCount > 0 ? `<div style="flex: ${slkCount}; background: #4a9eff; border-radius: 4px;"></div>` : ''}
                     </div>
                     <div style="display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap;">
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff0000; border-radius: 2px; margin-right: 4px;"></span>YouTube: ${ytCount}</span>
                         ${pxCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #e05c00; border-radius: 2px; margin-right: 4px;"></span>MP3Phoenix: ${pxCount}</span>` : ''}
                         ${scCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff5500; border-radius: 2px; margin-right: 4px;"></span>SoundCloud: ${scCount}</span>` : ''}
-                        ${moCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #111111; border-radius: 2px; margin-right: 4px;"></span>Monochrome: ${moCount}</span>` : ''}
+                        ${moCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #00bcd4; border-radius: 2px; margin-right: 4px;"></span>Monochrome: ${moCount}</span>` : ''}
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #4a9eff; border-radius: 2px; margin-right: 4px;"></span>Soulseek: ${slkCount}</span>
                     </div>
                 </div>
@@ -4910,8 +4995,8 @@
                         <span style="flex:1; font-weight:${u.id === currentUser?.id ? '600' : '400'};">${escapeHtml(u.username)}</span>
                         <span style="color:var(--text-secondary); font-size:13px;">${u.role}</span>
                         ${u.id !== currentUser?.id
-                            ? `<button class="btn-sm" style="background:var(--warning,#b45309);color:#fff;" onclick="forcePasswordReset('${escapeAttr(u.id)}', '${escapeAttr(u.username)}')">Force reset</button>
-                               <button class="btn-sm btn-danger" onclick="deleteUser('${escapeAttr(u.id)}', '${escapeAttr(u.username)}')">Remove</button>`
+                            ? `<button class="user-action-btn warning" onclick="forcePasswordReset('${escapeAttr(u.id)}', '${escapeAttr(u.username)}')">Force reset</button>
+                               <button class="user-action-btn" onclick="deleteUser('${escapeAttr(u.id)}', '${escapeAttr(u.username)}')">Remove</button>`
                             : `<span style="color:var(--text-secondary); font-size:13px;">(you)</span>`}
                     </div>
                 `).join('') || '<p style="color:var(--text-secondary); font-size:13px;">No users yet.</p>';

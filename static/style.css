@@ -2781,6 +2781,88 @@ h1 {
     margin: 0 0 12px;
 }
 
+/* --------------------------------------------------------------------------
+   Watch mismatch log (Stats tab)
+-------------------------------------------------------------------------- */
+
+.mismatch-intro {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 0 0 12px;
+}
+
+.mismatch-row {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    font-size: 13px;
+}
+
+.mismatch-meta {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.mismatch-playlist {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.mismatch-date {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.mismatch-pair {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.mismatch-line {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.mismatch-tag {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    width: 52px;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+}
+
+.mismatch-expected .mismatch-tag { color: var(--accent); }
+.mismatch-got .mismatch-tag      { color: var(--error); }
+
+.mismatch-normalised {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.mismatch-normalised summary {
+    cursor: pointer;
+    user-select: none;
+    color: var(--text-secondary);
+    opacity: 0.7;
+}
+
+.mismatch-norm-line {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+    font-family: monospace;
+    word-break: break-all;
+}
+
 .blacklist-content {
     font-size: 13px;
     color: var(--text-secondary);
@@ -2849,7 +2931,37 @@ h1 {
     color: #fff;
     border: none;
     font-size: 14px;
+    font-family: inherit;
+    font-weight: 600;
     cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+.user-add-btn:hover {
+    opacity: 0.85;
+}
+
+.user-action-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.user-action-btn:hover {
+    color: var(--error);
+    border-color: var(--error);
+}
+
+.user-action-btn.warning:hover {
+    color: #f59e0b;
+    border-color: #f59e0b;
 }
 
 /* --------------------------------------------------------------------------

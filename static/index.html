@@ -149,10 +149,10 @@
                     </div>
                     <div id="spotifyError" style="display: none;" class="form-error"></div>
                     <div class="bulk-services-row">
-                        <span id="playlistServicesHint" class="bulk-services-hint">Supported services: Spotify, YouTube, Amazon Music, Tidal</span>
+                        <span id="playlistServicesHint" class="bulk-services-hint">Supported services: Spotify, YouTube, Apple Music, Amazon Music, Tidal</span>
                         <span
                             id="playlistServicesTooltip"
-                            title="Supported services: Spotify, YouTube, Amazon Music, Tidal"
+                            title="Supported services: Spotify, YouTube, Apple Music, Amazon Music, Tidal"
                             class="info-badge"
                         >i</span>
                     </div>
@@ -203,14 +203,14 @@
             </div>
             <div class="watched-add-panel">
                 <p class="watched-panel-text">
-                    Add a Spotify, YouTube, Amazon Music, or Tidal playlist to automatically download new tracks when they're added.
+                    Add a Spotify, YouTube, Apple Music, Amazon Music, or Tidal playlist to automatically download new tracks when they're added.
                 </p>
                 <p id="watchedScheduleInfo" class="watched-schedule-info"></p>
                 <div class="watched-url-row">
                     <input
                         type="text"
                         id="watchedUrlInput"
-                        placeholder="Spotify, YouTube, Amazon Music, or Tidal playlist URL"
+                        placeholder="Spotify, YouTube, Apple Music, Amazon Music, or Tidal playlist URL"
                         class="panel-text-input"
                     >
                     <button
@@ -372,32 +372,43 @@
                 <button class="clear-btn warning-btn" id="resetStatsBtn">Reset Stats</button>
             </div>
             <div id="statsContent" class="results"></div>
+            <div id="mismatchSection" style="display:none;">
+                <div class="queue-header" style="margin-top:20px;">
+                    <h2 class="queue-section-heading">Watch Mismatches</h2>
+                    <button class="clear-btn" id="clearMismatchesBtn">Clear Log</button>
+                </div>
+                <p class="mismatch-intro">Tracks that downloaded successfully but didn't match what the watched playlist expected. Useful for spotting normalisation gaps.</p>
+                <div id="mismatchContent"></div>
+            </div>
         </div>
 
         <div id="settingsTabContainer" class="tab-panel">
             <div class="settings-section">
                 <h3 class="settings-section-title">General</h3>
                 <div class="settings-grid">
-                    <label class="settings-label">
+                    <label class="settings-label settings-label-wrap">
                         <span>Skip duplicates</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingSkipDupes" checked>
                             <span class="toggle-slider"></span>
                         </div>
+                        <span class="settings-hint settings-hint-full">When on, tracks already in your library, Navidrome, or Lidarr are skipped. Turn off if you want to re-download something. Duplicate checks still run for M3U path resolution either way.</span>
                     </label>
-                    <label class="settings-label">
+                    <label class="settings-label settings-label-wrap">
                         <span>MusicBrainz Metadata</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingEnableMusicbrainz" checked>
                             <span class="toggle-slider"></span>
                         </div>
+                        <span class="settings-hint settings-hint-full">Looks up each download on MusicBrainz to correct artist/title tags, add release year, and verify track duration. Occasional false matches are possible for obscure tracks.</span>
                     </label>
-                    <label class="settings-label">
+                    <label class="settings-label settings-label-wrap">
                         <span>Fetch Lyrics (LRClib)</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingEnableLyrics" checked>
                             <span class="toggle-slider"></span>
                         </div>
+                        <span class="settings-hint settings-hint-full">Downloads synced (.lrc) or plain lyrics from LRClib after each track is saved. Displayed by players that support LRC files (e.g. Navidrome, foobar2000).</span>
                     </label>
                     <label class="settings-label settings-label-top">
                         <span>Search Sources</span>
@@ -437,9 +448,12 @@
                         <span>Audio Format</span>
                         <div class="format-btn-group">
                             <button type="button" id="formatBtnFlac" class="format-option active" onclick="setAudioFormat('flac'); saveSettings();">FLAC</button>
+                            <button type="button" id="formatBtnAlac" class="format-option" onclick="setAudioFormat('alac'); saveSettings();">ALAC</button>
                             <button type="button" id="formatBtnOpus" class="format-option" onclick="setAudioFormat('opus'); saveSettings();">Opus</button>
                             <button type="button" id="formatBtnMp3"  class="format-option" onclick="setAudioFormat('mp3');  saveSettings();">MP3</button>
                         </div>
+                        <span class="settings-hint settings-hint-full">The format all downloads are converted to. FLAC and ALAC are lossless. Opus is high-quality lossy (smaller files). MP3 for maximum compatibility.</span>
+                        <span id="alacFormatNote" style="display:none;" class="mp3-format-note">ALAC is lossless, saved as .m4a. Good for modded iPods and Apple devices.</span>
                         <span id="mp3FormatNote" style="display:none;" class="mp3-format-note">MP3 is encoded at ~192 kbps variable bitrate. May cause quality loss if the source is already lossy (e.g. from YouTube).</span>
                         <input type="checkbox" id="settingDefaultFlac" checked style="display:none;">
                         <input type="text" id="settingAudioFormat" value="flac" style="display:none;">
@@ -534,6 +548,7 @@
                     </div>
                     <button type="button" class="test-btn" id="testJellyfinBtn">Test Connection</button>
                     <div id="jellyfinTestResult" class="test-result"></div>
+                    <span class="settings-hint">When configured, MusicGrabber triggers a Jellyfin library scan after each download so new tracks appear immediately. Only the music library is refreshed.</span>
                 </div>
             </div>
 
@@ -594,22 +609,6 @@
                 </div>
             </div>
 
-            <div class="settings-section admin-only">
-                <h3 class="settings-section-title">Spotify (Advanced)</h3>
-                <div class="settings-form">
-                    <div class="settings-row">
-                        <label for="settingSpotifyBrowserTimeout">Browser Timeout (seconds)</label>
-                        <input type="number" id="settingSpotifyBrowserTimeout" placeholder="180" value="180" min="60" max="1800" class="settings-input-sm">
-                        <span class="settings-hint">Base timeout for large Spotify playlist extraction. Can also be set via <code>SPOTIFY_BROWSER_TIMEOUT_SECONDS</code>.</span>
-                    </div>
-                    <div class="settings-row">
-                        <label for="settingSpotifyBrowserStall">No-progress Stall Window (seconds)</label>
-                        <input type="number" id="settingSpotifyBrowserStall" placeholder="30" value="30" min="5" max="300" class="settings-input-sm">
-                        <span class="settings-hint">Stop scrolling when no new rows appear for this long. Can also be set via <code>SPOTIFY_BROWSER_STALL_SECONDS</code>.</span>
-                    </div>
-                </div>
-            </div>
-
             <div class="settings-section">
                 <h3 class="settings-section-title">Notifications</h3>
                 <div class="settings-form">
@@ -629,6 +628,7 @@
                                 <input type="checkbox" id="settingNotifyOnErrors" class="notify-checkbox"> Errors only
                             </label>
                         </div>
+                        <span class="settings-hint-sm">Choose which download types send notifications. "Errors only" limits all selected types to failure notifications.</span>
                         <input type="hidden" id="settingNotifyOn">
                     </div>
                     <div class="settings-row">
@@ -637,6 +637,7 @@
                             <input type="password" id="settingTelegramUrl" placeholder="https://api.telegram.org/bot.../sendMessage?chat_id=...">
                             <button type="button" class="password-toggle" data-target="settingTelegramUrl">Show</button>
                         </div>
+                        <span class="settings-hint-sm">Full Telegram Bot API URL including your bot token and chat ID. Create a bot via <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>, then get your chat ID by messaging <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>.</span>
                     </div>
                     <div class="settings-row">
                         <label for="settingWebhookUrl">Webhook URL</label>
@@ -721,6 +722,7 @@
                     <div class="settings-row">
                         <label for="settingSlskdDownloads">Downloads Path</label>
                         <input type="text" id="settingSlskdDownloads" placeholder="/downloads">
+                        <span class="settings-hint-sm">The path slskd writes completed downloads to, as seen from MusicGrabber's container (e.g. <code>/downloads</code>). Must be accessible to MusicGrabber so it can move files into your music library.</span>
                     </div>
                     <button type="button" class="test-btn" id="testSlskdBtn">Test Connection</button>
                     <div id="slskdTestResult" class="test-result"></div>
@@ -750,6 +752,22 @@
                 </div>
             </div>
 
+            <div class="settings-section admin-only">
+                <h3 class="settings-section-title">Spotify (Advanced)</h3>
+                <div class="settings-form">
+                    <div class="settings-row">
+                        <label for="settingSpotifyBrowserTimeout">Browser Timeout (seconds)</label>
+                        <input type="number" id="settingSpotifyBrowserTimeout" placeholder="180" value="180" min="60" max="1800" class="settings-input-sm">
+                        <span class="settings-hint">Base timeout for large Spotify playlist extraction. Can also be set via <code>SPOTIFY_BROWSER_TIMEOUT_SECONDS</code>.</span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingSpotifyBrowserStall">No-progress Stall Window (seconds)</label>
+                        <input type="number" id="settingSpotifyBrowserStall" placeholder="30" value="30" min="5" max="300" class="settings-input-sm">
+                        <span class="settings-hint">Stop scrolling when no new rows appear for this long. Can also be set via <code>SPOTIFY_BROWSER_STALL_SECONDS</code>.</span>
+                    </div>
+                </div>
+            </div>
+
             <div class="settings-section">
                 <h3 class="settings-section-title">Security</h3>
                 <div class="settings-form">
@@ -767,6 +785,7 @@
                             <span id="browserApiKeyStatus" class="browser-api-key-status"></span>
                             <button type="button" id="clearApiKeyBtn" class="clear-btn clear-stored-key-btn" style="display:none;">Clear Stored Key</button>
                         </div>
+                        <span class="settings-hint-sm">In API key mode, MusicGrabber stores your key in this browser for future visits. "Clear Stored Key" removes it from this browser only — you'll be prompted to re-enter it next time.</span>
                     </div>
                     <!-- Change My Password (shown in session mode only) -->
                     <div id="changePasswordSection" style="display:none;">

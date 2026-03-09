@@ -1249,6 +1249,37 @@ def reset_stats(http_request: Request, confirm: bool = False):
     return {"deleted_jobs": deleted_jobs, "deleted_searches": deleted_searches}
 
 
+@app.get("/api/mismatches")
+def get_mismatches(http_request: Request, limit: int = 200):
+    """Return recent watched-track match mismatches for investigation."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT m.id, m.job_id, m.playlist_id, m.expected_artist, m.expected_title,
+                      m.actual_artist, m.actual_title, m.exp_normalised, m.got_normalised,
+                      m.created_at, wp.name AS playlist_name
+               FROM watched_match_mismatches m
+               LEFT JOIN watched_playlists wp ON wp.id = m.playlist_id
+               ORDER BY m.created_at DESC
+               LIMIT ?""",
+            (min(limit, 500),),
+        ).fetchall()
+    return {"mismatches": [dict(r) for r in rows]}
+
+
+@app.delete("/api/mismatches")
+def clear_mismatches(http_request: Request):
+    """Clear the mismatch log."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    with db_conn() as conn:
+        deleted = conn.execute("DELETE FROM watched_match_mismatches").rowcount
+        conn.commit()
+    return {"deleted": deleted}
+
+
 # =============================================================================
 # Search API
 # =============================================================================
@@ -2878,7 +2909,7 @@ def get_missing_artist_tracks(artist_id: str, http_request: Request):
                LEFT JOIN jobs j ON wat.job_id = j.id
                WHERE wat.artist_id = ?
                  AND wat.downloaded_at IS NULL
-                 AND (j.status IS NULL OR j.status NOT IN ('queued', 'downloading', 'completed'))
+                 AND (j.status IS NULL OR j.status NOT IN ('queued', 'downloading'))
                ORDER BY wat.release_date DESC NULLS LAST, wat.title""",
             (artist_id,)
         ).fetchall()
@@ -2905,6 +2936,41 @@ def retry_missing_artist_track(artist_id: str, request: RetryMissingTrackRequest
         user_id=user_id,
     )
     return {"success": True, "import_id": import_id}
+
+
+@app.post("/api/watched-artists/{artist_id}/retry-all-missing")
+def retry_all_missing_artist_tracks(artist_id: str, http_request: Request):
+    """Queue all undownloaded singles for this artist in one bulk import."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        artist = conn.execute(
+            f"SELECT name, convert_to_flac FROM watched_artists WHERE id = ? AND {_scope_frag}",
+            (artist_id, *_scope_params)
+        ).fetchone()
+        if not artist:
+            raise HTTPException(status_code=404, detail="Artist not found")
+        tracks = conn.execute(
+            """SELECT artist, title FROM watched_artist_tracks
+               WHERE artist_id = ?
+                 AND downloaded_at IS NULL
+                 AND (job_id IS NULL OR job_id NOT IN (
+                     SELECT id FROM jobs WHERE status IN ('queued', 'downloading')
+                 ))
+               ORDER BY release_date DESC NULLS LAST, title""",
+            (artist_id,)
+        ).fetchall()
+    if not tracks:
+        return {"success": True, "queued": 0, "import_id": None}
+    import_id = start_bulk_import_for_tracks(
+        [(t["artist"], t["title"]) for t in tracks],
+        convert_to_flac=bool(artist["convert_to_flac"]),
+        watch_artist_id=artist_id,
+        user_id=user_id,
+    )
+    return {"success": True, "queued": len(tracks), "import_id": import_id}
 
 
 @app.post("/api/watched-artists/check-all")

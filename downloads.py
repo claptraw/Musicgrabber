@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -32,7 +33,7 @@ from constants import (
     MAX_AUDIO_START_OFFSET_SECS,
     MB_DURATION_TOLERANCE,
 )
-from db import db_conn
+from db import db_conn, log_match_mismatch
 from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
 from notifications import send_notification
 from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir
@@ -650,13 +651,13 @@ def _build_ytdlp_download_cmd(
     """
     if convert_to_flac:
         fmt = get_setting("audio_format", "flac")  # Global default; per-user override applied at call site
-        fmt = fmt if fmt in ("flac", "opus", "mp3") else "flac"
+        fmt = fmt if fmt in ("flac", "opus", "mp3", "alac") else "flac"
         format_args = ["--audio-format", fmt]
     else:
         fmt = None
         format_args = []  # Keep original format from source
     # MP3 VBR ~192k (LAME -V 2)  -  good trade-off between size and quality.
-    # For FLAC/Opus, quality 0 = best (lossless / highest bitrate).
+    # For FLAC/Opus/ALAC, quality 0 = best (lossless / highest bitrate).
     audio_quality = "2" if fmt == "mp3" else "0"
     base_args = _ytdlp_base_args() if use_cookies else []
     url = source_url or f"https://www.youtube.com/watch?v={video_id}"
@@ -702,6 +703,11 @@ def _normalise_watched_match_text(text: str) -> str:
     # (e.g. ｜ U+FF5C for pipes, － U+FF0D for dashes). The regex comparisons below
     # all use ASCII forms, so map them before anything else.
     t = t.replace("\uff5c", "|").replace("\uff0d", "-").replace("\u00d7", "x")
+    # Map decorated Latin letters to their ASCII base so e.g. "JAŸ-Z" matches "Jay-Z".
+    # NFKD decomposes precomposed chars (Ÿ → Y + combining diaeresis), then we drop
+    # the combining marks, leaving bare ASCII equivalents.
+    t = unicodedata.normalize("NFKD", t)
+    t = "".join(c for c in t if not unicodedata.combining(c))
     # Strip Spotify-style dash suffixes before bracket stripping, e.g.
     # "Better Now - Acoustic", "Fly - Acoustic", "Forever Young - From NBC’s Parenthood"
     # These are version/context qualifiers Spotify encodes as ‘ - Suffix’ but YouTube
@@ -715,8 +721,16 @@ def _normalise_watched_match_text(text: str) -> str:
         "",
         t,
     )
+    # Strip × / x -separated translation/annotation suffixes that YouTube appends to
+    # official titles in non-English markets: "Manly Man × TRADUÇÃO", "Song x Translation"
+    t = re.sub(r"\s+x\s+(?:tradu[cç][aã]o|translation|traduzione|traduccion|traducao|letras?)\b.*$", "", t)
     # Strip pipe-separated session/channel suffixes: "Track | OurVinyl Sessions", "Track | Live on KEXP"
     t = re.sub(r"\s*\|.*$", "", t)
+    # Strip colon-introduced subtitles: "This Land: Theme from Borderlands 4" -> "This Land".
+    # Spotify stores these as "(Theme from Borderlands 4)" which gets stripped below, so we
+    # need to strip the colon form too before both sides can match. Guard: only strip when
+    # there’s at least one word before the colon (avoid nuking "A: Track" artist prefixes).
+    t = re.sub(r"(?<=\w)\s*:\s+\S.*$", "", t)
     # Strip bracketed clauses: (feat. X), [feat. X], (Acoustic), (From NBC’s Parenthood), etc.
     t = re.sub(r"\s*[\(\[].*?[\)\]]", "", t)
     # Strip inline feat./ft./featuring clauses not in brackets, e.g. "Track feat. Artist"
@@ -741,8 +755,16 @@ _ARTIST_NOISE_WORDS = frozenset({"feat", "ft", "featuring", "vs", "x", "and", "t
 
 
 def _artist_words(artist_norm: str) -> set:
-    """Split a normalised artist string into a set of significant words."""
-    return {w for w in artist_norm.split() if w not in _ARTIST_NOISE_WORDS and len(w) > 1}
+    """Split a normalised artist string into a set of significant words.
+
+    Single-character words are kept because some artist names are nothing but
+    single chars after normalisation (e.g. B.o.B → 'b o b'). The noise word
+    set handles the actual junk (feat, vs, x, the, etc.).
+    """
+    words = {w for w in artist_norm.split() if w not in _ARTIST_NOISE_WORDS}
+    # If filtering noise words wiped everything, fall back to the raw split
+    # so we always have something to compare against.
+    return words or set(artist_norm.split())
 
 
 def _has_remix_suffix(extra: str) -> bool:
@@ -782,6 +804,15 @@ def _watched_track_matches_expected(expected_artist: str, expected_title: str, a
 
     if not exp_title or not got_title:
         return False
+
+    # Detect swapped artist/title fields — yt-dlp occasionally reads the video title
+    # as the artist and the channel/uploader as the title. If the got fields match the
+    # expected fields in the opposite order, accept it rather than failing the whole track.
+    if (
+        _normalise_watched_match_text(got_artist) == _normalise_watched_match_text(exp_title)
+        and _normalise_watched_match_text(got_title) == _normalise_watched_match_text(exp_artist)
+    ):
+        return True
 
     et, gt = _strip_version_suffix(exp_title), _strip_version_suffix(got_title)
     title_ok = (et == gt)
@@ -840,17 +871,27 @@ def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = 
         if not link:
             return True
 
-        if not _watched_track_matches_expected(
-            link["expected_artist"] or "",
-            link["expected_title"] or "",
-            link["actual_artist"] or "",
-            link["actual_title"] or "",
-        ):
+        exp_artist_raw = link["expected_artist"] or ""
+        exp_title_raw = link["expected_title"] or ""
+        got_artist_raw = link["actual_artist"] or ""
+        got_title_raw = link["actual_title"] or ""
+
+        if not _watched_track_matches_expected(exp_artist_raw, exp_title_raw, got_artist_raw, got_title_raw):
             msg = (
-                f"Watched track mismatch: expected '{link['expected_artist']} - {link['expected_title']}', "
-                f"got '{link['actual_artist'] or 'Unknown'} - {link['actual_title'] or 'Unknown'}'"
+                f"Watched track mismatch: expected '{exp_artist_raw} - {exp_title_raw}', "
+                f"got '{got_artist_raw or 'Unknown'} - {got_title_raw or 'Unknown'}'"
             )
             print(msg)
+            log_match_mismatch(
+                job_id=job_id,
+                playlist_id=link["playlist_id"],
+                expected_artist=exp_artist_raw,
+                expected_title=exp_title_raw,
+                actual_artist=got_artist_raw,
+                actual_title=got_title_raw,
+                exp_normalised=f"{_normalise_watched_match_text(exp_artist_raw)} - {_normalise_watched_match_text(exp_title_raw)}",
+                got_normalised=f"{_normalise_watched_match_text(got_artist_raw)} - {_normalise_watched_match_text(got_title_raw)}",
+            )
             old = conn.execute("SELECT error FROM jobs WHERE id = ?", (job_id,)).fetchone()
             old_error = (old[0] or "").strip() if old else ""
             merged_error = f"{old_error} | {msg}" if old_error else msg
@@ -1979,16 +2020,20 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
         # Determine final filename
         audio_fmt = get_setting("audio_format", "flac", user_id=user_id) if convert_to_flac else None
-        if audio_fmt not in ("flac", "opus", "mp3"):
+        if audio_fmt not in ("flac", "opus", "mp3", "alac"):
             audio_fmt = "flac"
 
-        target_ext = f".{audio_fmt}" if audio_fmt else source_ext
+        # ALAC lives in an .m4a container
+        target_ext = ".m4a" if audio_fmt == "alac" else (f".{audio_fmt}" if audio_fmt else source_ext)
         needs_convert = convert_to_flac and source_ext != target_ext
 
         if needs_convert:
             # Convert to the target format
             if audio_fmt == "flac":
                 ffmpeg_codec = "flac"
+                extra_args = []
+            elif audio_fmt == "alac":
+                ffmpeg_codec = "alac"
                 extra_args = []
             elif audio_fmt == "opus":
                 ffmpeg_codec = "libopus"
@@ -2370,7 +2415,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         # Monochrome always delivers FLAC from the CDN. If the user wants MP3/Opus,
         # we download as FLAC first and transcode after integrity checks pass.
         audio_fmt = get_setting("audio_format", "flac", user_id=user_id) if convert_to_flac else "flac"
-        if audio_fmt not in ("flac", "opus", "mp3"):
+        if audio_fmt not in ("flac", "opus", "mp3", "alac"):
             audio_fmt = "flac"
         output_path = artist_dir / f"{safe_title}.flac"
 
@@ -2430,13 +2475,18 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         # in the FLAC so it survives the transcode. We do this after integrity checks and
         # MusicBrainz so the conversion is never wasted on a file we'd reject anyway.
         if audio_fmt != "flac":
-            if audio_fmt == "opus":
+            if audio_fmt == "alac":
+                ffmpeg_codec = "alac"
+                extra_args = []
+                converted_path = output_path.with_suffix(".m4a")
+            elif audio_fmt == "opus":
                 ffmpeg_codec = "libopus"
                 extra_args = ["-b:a", "320k"]
+                converted_path = output_path.with_suffix(f".{audio_fmt}")
             else:  # mp3
                 ffmpeg_codec = "libmp3lame"
                 extra_args = ["-q:a", "2"]
-            converted_path = output_path.with_suffix(f".{audio_fmt}")
+                converted_path = output_path.with_suffix(f".{audio_fmt}")
             convert_cmd = ["ffmpeg", "-y", "-i", str(output_path), "-c:a", ffmpeg_codec, *extra_args, str(converted_path)]
             conv_result = subprocess.run(convert_cmd, capture_output=True, timeout=TIMEOUT_FFMPEG_CONVERT)
             if conv_result.returncode == 0:

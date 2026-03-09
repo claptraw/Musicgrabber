@@ -7,6 +7,33 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.3.4": {
+        title: "What's New in v2.3.4",
+        sections: [
+            {
+                heading: "Apple Music import",
+                items: [
+                    "Public Apple Music playlists and albums can now be imported and watched. Paste the URL in the Watch or bulk import box.",
+                    "No browser or API key needed — Apple server-renders the full track list, so a plain HTTP fetch is all it takes.",
+                    "Supports all regional storefronts. Private playlists and personal libraries aren't accessible (Apple won't let us in without a sign-in).",
+                ]
+            },
+            {
+                heading: "ALAC output format",
+                items: [
+                    "ALAC (Apple Lossless) is now a selectable audio format in Settings, alongside FLAC, Opus, and MP3.",
+                    "Files are saved as .m4a. Lossless quality, great for modded iPods and Apple devices that don't speak FLAC.",
+                ]
+            },
+            {
+                heading: "Bug fixes",
+                items: [
+                    "Watched tracks in album-structured folders (e.g. from Monochrome) were being re-queued as missing on every refresh. MusicGrabber now checks the exact path it recorded at download time, so tracks outside the Singles folder are recognised correctly.",
+                    "The download queue now shows \"Already in library\" instead of a raw file path for duplicate-skipped tracks. The full path is still there if you expand the job.",
+                ]
+            }
+        ]
+    },
     "2.3.3": {
         title: "What's New in v2.3.3",
         sections: [

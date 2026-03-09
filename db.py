@@ -495,6 +495,26 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+        # Watched track match mismatches  -  persistent audit log so we can spot
+        # normalisation gaps without relying on Docker log retention.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS watched_match_mismatches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT,
+            playlist_id TEXT,
+            expected_artist TEXT,
+            expected_title TEXT,
+            actual_artist TEXT,
+            actual_title TEXT,
+            exp_normalised TEXT,
+            got_normalised TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mismatches_created ON watched_match_mismatches(created_at)"
+        )
+
         # --- DB version tracking ---
         # Version is stored in settings as 'db_version' (integer string).
         # Increment when table recreations or other irreversible migrations run.
@@ -783,6 +803,32 @@ def start_stale_job_monitor():
 # ---------------------------------------------------------------------------
 # Blacklist helpers  -  kept close to the DB layer for easy reuse
 # ---------------------------------------------------------------------------
+
+def log_match_mismatch(
+    job_id: str,
+    playlist_id: str,
+    expected_artist: str,
+    expected_title: str,
+    actual_artist: str,
+    actual_title: str,
+    exp_normalised: str,
+    got_normalised: str,
+) -> None:
+    """Persist a watched-track mismatch so it survives container restarts."""
+    try:
+        with db_conn() as conn:
+            conn.execute(
+                """INSERT INTO watched_match_mismatches
+                   (job_id, playlist_id, expected_artist, expected_title,
+                    actual_artist, actual_title, exp_normalised, got_normalised)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (job_id, playlist_id, expected_artist, expected_title,
+                 actual_artist, actual_title, exp_normalised, got_normalised),
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"Failed to log mismatch: {e}")
+
 
 def get_blacklisted_video_ids() -> set[str]:
     """Return all blacklisted video IDs (any source)."""

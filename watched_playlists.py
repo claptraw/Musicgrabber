@@ -5,6 +5,7 @@ Platform detection, track fetching, playlist refresh, and background scheduler.
 """
 
 import json
+import pathlib
 import random
 import re
 import sqlite3
@@ -22,6 +23,7 @@ from constants import (
 from db import db_conn
 from bulk_import import start_bulk_import_for_tracks
 from amazon import fetch_amazon_playlist
+from apple import fetch_apple_music_playlist
 from downloads import rebuild_watched_playlist_m3u
 from settings import get_playlists_dir, get_setting
 from spotify import fetch_spotify_playlist_via_browser
@@ -74,13 +76,20 @@ def _playlist_file_exists(playlist_name: str, artist: str, title: str, user_id: 
     return False
 
 
-def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: str, title: str, job_artist: str = "", job_title: str = "", user_id: str | None = None) -> bool:
+def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: str, title: str, job_artist: str = "", job_title: str = "", user_id: str | None = None, resolved_path: str | None = None) -> bool:
     """Return True if we can resolve a local file for this watched track.
 
-    Checks MusicGrabber's own library first, then falls back to Navidrome (real
-    absolute paths only  -  synthetic paths mean real-path mode is off, which is
-    a config problem, not a reason to re-download).
+    Checks the stored resolved_path first (covers tracks found in album folders or
+    other non-Singles locations), then MusicGrabber's own library, then falls back
+    to Navidrome (real absolute paths only  -  synthetic paths mean real-path mode
+    is off, which is a config problem, not a reason to re-download).
     """
+    # Fastest check: if we recorded exactly where the file landed, trust it
+    if resolved_path:
+        rp = pathlib.Path(resolved_path)
+        if rp.is_absolute() and rp.exists():
+            return True
+
     pairs = []
     for a, t in ((job_artist, job_title), (artist, title)):
         a = (a or "").strip()
@@ -125,6 +134,11 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if youtube_list:
         return "youtube", youtube_list.group(2)
 
+    # Apple Music playlist or album (any storefront)
+    apple_playlist = re.match(r'https?://music\.apple\.com/[a-z]{2}/(playlist|album)/', url, re.IGNORECASE)
+    if apple_playlist:
+        return "apple", url  # Full URL needed  -  storefront is part of the path
+
     # Amazon Music playlist (user or curated, any regional TLD)
     amazon_playlist = re.match(r'https?://music\.amazon\.[a-z.]+/(user-playlists|playlists)/\S+', url)
     if amazon_playlist:
@@ -151,7 +165,7 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
 
     raise HTTPException(
         status_code=400,
-        detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube/YouTube Music playlists, Amazon Music playlists, Tidal public playlists, ListenBrainz playlists or usernames."
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, Tidal public playlists, ListenBrainz playlists or usernames."
     )
 
 
@@ -591,6 +605,19 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
 
         return tracks, playlist_name
 
+    elif platform == "apple":
+        result = fetch_apple_music_playlist(url)
+
+        tracks = []
+        for track_str in result["tracks"]:
+            if " - " in track_str:
+                artist, title = track_str.split(" - ", 1)
+                tracks.append((artist.strip(), title.strip()))
+            else:
+                tracks.append(("Unknown", track_str.strip()))
+
+        return tracks, result["playlist_name"]
+
     elif platform == "amazon":
         result = fetch_amazon_playlist(url)
 
@@ -742,7 +769,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             set_refresh_stage("diffing")
             track_rows = conn.execute(
                 """SELECT wpt.track_hash, wpt.downloaded_at, wpt.job_id, wpt.removed_at,
-                          wpt.artist, wpt.title, j.status as job_status,
+                          wpt.artist, wpt.title, wpt.resolved_path, j.status as job_status,
                           j.artist as job_artist, j.title as job_title
                    FROM watched_playlist_tracks wpt
                    LEFT JOIN jobs j ON wpt.job_id = j.id
@@ -785,6 +812,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                         existing["job_artist"] or "",
                         existing["job_title"] or "",
                         user_id=user_id,
+                        resolved_path=existing["resolved_path"],
                     ):
                         conn.execute(
                             "UPDATE watched_playlist_tracks SET downloaded_at = NULL WHERE playlist_id = ? AND track_hash = ?",
