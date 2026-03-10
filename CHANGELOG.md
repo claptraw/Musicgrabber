@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.3.5 (2026-03-10)
+
+### Added
+
+### Fixed
+- **Manual downloads bypass MusicBrainz duration check**: If you picked a specific track from the search results yourself, MusicGrabber now trusts your choice instead of rejecting it because MusicBrainz disagrees about the duration. Automated downloads (watched playlists, bulk import) still reject mismatches so junk doesn't sneak in unattended.
+- **Playlist selector: refresh on open**: The "Add to playlist" dropdown now reloads the playlist list each time it's opened, rather than only at page load. Fixes cases where the initial load failed silently (e.g. a brief auth hiccup on page init). Also logs the failure reason to the browser console now, which should help debug the remaining mystery of why some users see an empty list.
+
 ## v2.3.4 (2026-03-09)
 
 ### Added

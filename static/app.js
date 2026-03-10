@@ -425,12 +425,15 @@
         async function loadPlaylists() {
             try {
                 const resp = await apiFetch('/api/playlists');
-                if (!resp.ok) return;
+                if (!resp.ok) {
+                    console.warn('GET /api/playlists returned', resp.status);
+                    return;
+                }
                 const data = await resp.json();
                 _playlists = data.playlists || [];
                 _populatePlaylistSelector();
             } catch (e) {
-                // Non-critical - selector just won't show any options
+                console.warn('loadPlaylists failed:', e);
             }
         }
 
@@ -501,6 +504,7 @@
                     panel.style.display = 'flex';
                     toggle.textContent = 'Adding to playlist';
                     toggle.classList.add('active');
+                    loadPlaylists();
                     sel.focus();
                 }
             });

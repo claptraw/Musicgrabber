@@ -200,12 +200,16 @@ def _validate_audio_integrity(file_path: Path) -> tuple[bool, str, float]:
     return True, "", duration
 
 
-def _check_duration_against_mb(actual_secs: float, mb_metadata: Optional[dict], artist: str, title: str) -> tuple[bool, str]:
+def _check_duration_against_mb(actual_secs: float, mb_metadata: Optional[dict], artist: str, title: str,
+                               job_id: str | None = None) -> tuple[bool, str]:
     """Compare the downloaded file's duration against the MusicBrainz expected duration.
 
     Returns (ok, reason). ok=True means the duration is within MB_DURATION_TOLERANCE
     of the expected value, or MB didn't return a duration (in which case we can't check).
     This is a no-op when MusicBrainz is disabled, since lookup_metadata returns None.
+
+    Manual downloads (those with a search_token, i.e. the user deliberately picked this
+    specific result) bypass the check — they made their choice, we respect it.
     """
     if not mb_metadata:
         return True, ""
@@ -216,6 +220,14 @@ def _check_duration_against_mb(actual_secs: float, mb_metadata: Optional[dict], 
     high = expected * (1 + MB_DURATION_TOLERANCE)
     if low <= actual_secs <= high:
         return True, ""
+    # User manually selected this track from search results — trust their judgement.
+    if job_id:
+        with db_conn() as conn:
+            row = conn.execute("SELECT search_token FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row and row[0]:
+                print(f"Duration mismatch for {artist} - {title} ({actual_secs:.0f}s vs {expected:.0f}s expected) "
+                      f"— manual download, keeping anyway")
+                return True, ""
     return (
         False,
         f"Duration mismatch for {artist} - {title}: got {actual_secs:.0f}s, "
@@ -1804,7 +1816,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 mb_metadata = lookup_metadata(artist, title, audio_file)
 
                 # Duration sanity check against MusicBrainz expected length
-                dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title)
+                dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
                 if not dur_ok:
                     audio_file.unlink(missing_ok=True)
                     print(dur_reason)
@@ -2084,7 +2096,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         mb_metadata = lookup_metadata(artist, title, final_file)
 
         # Duration sanity check against MusicBrainz expected length
-        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title)
+        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
         if not dur_ok:
             final_file.unlink(missing_ok=True)
             raise Exception(dur_reason)
@@ -2463,7 +2475,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         mb_metadata = lookup_metadata(artist, title, output_path)
 
         # Duration sanity check  -  Tidal should never serve the wrong track, but worth a nudge.
-        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title)
+        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
         if not dur_ok:
             output_path.unlink(missing_ok=True)
             raise Exception(dur_reason)
@@ -2756,7 +2768,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         if mb_metadata:
             metadata_source = mb_metadata.get("source", metadata_source)
 
-        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title)
+        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
         if not dur_ok:
             output_path.unlink(missing_ok=True)
             _note_blacklist_entry(
@@ -3126,7 +3138,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
         # Duration sanity check: if MusicBrainz knows the expected length, verify we're within 10%.
         # Catches wrong tracks that passed the corruption check but are wildly the wrong length.
-        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title)
+        dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
         if not dur_ok:
             audio_file.unlink(missing_ok=True)
             print(dur_reason)

@@ -7,6 +7,18 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.3.5": {
+        title: "What's New in v2.3.5",
+        sections: [
+            {
+                heading: "Bug fixes",
+                items: [
+                    "Manual downloads no longer get rejected by the MusicBrainz duration check. If you picked a specific track from the search results, MusicGrabber now trusts your judgement. Automated downloads (watched playlists, bulk import) still reject duration mismatches.",
+                    "The \"Add to playlist\" dropdown now refreshes every time you open it, rather than only on page load. Fixes cases where the initial load failed silently and left the list empty.",
+                ]
+            }
+        ]
+    },
     "2.3.4": {
         title: "What's New in v2.3.4",
         sections: [
