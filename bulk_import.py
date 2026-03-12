@@ -47,6 +47,45 @@ def _candidate_mentions_expected_artist(candidate: dict, expected_artist: str) -
     return len(tokens) > 1 and all(t in combined for t in tokens)
 
 
+def _candidate_looks_like_cover(candidate: dict) -> bool:
+    """Return True for obvious cover/tribute/karaoke style uploads."""
+    combined = _normalise_candidate_match_text(
+        f"{candidate.get('title', '')} {candidate.get('channel', '')}"
+    )
+    markers = (
+        "cover",
+        "tribute",
+        "karaoke",
+        "instrumental",
+        "for piano",
+        "piano version",
+    )
+    return any(marker in combined for marker in markers)
+
+
+def _candidate_channel_matches_expected_artist(candidate: dict, expected_artist: str) -> bool:
+    """Strict artist-channel match used for album-mode imports."""
+    expected_norm = _normalise_candidate_match_text(expected_artist)
+    if not expected_norm:
+        return False
+
+    channel_norm = _normalise_candidate_match_text(candidate.get("channel", ""))
+    if not channel_norm:
+        return False
+
+    if channel_norm == expected_norm:
+        return True
+
+    allowed_suffixes = {"topic", "official", "music", "records", "channel"}
+    if channel_norm.startswith(f"{expected_norm} "):
+        suffix_tokens = channel_norm[len(expected_norm):].strip().split()
+        if suffix_tokens and all(tok in allowed_suffixes for tok in suffix_tokens):
+            return True
+
+    compact_suffixes = ("vevo", "official")
+    return any(channel_norm == f"{expected_norm}{suffix}" for suffix in compact_suffixes)
+
+
 def clean_bulk_import_line(line: str) -> str:
     """Clean a line from bulk import text
 
@@ -86,6 +125,9 @@ def start_bulk_import_for_tracks(
     watch_artist_id: Optional[str] = None,
     user_id: Optional[str] = None,
     preferred_sources: Optional[str] = None,
+    override_dir: Optional[str] = None,
+    album_release_mbid: Optional[str] = None,
+    album_total_tracks: Optional[int] = None,
 ) -> str:
     """Create a bulk import job from a list of (artist, title) tuples."""
     import_id = str(uuid.uuid4())[:8]
@@ -94,10 +136,12 @@ def start_bulk_import_for_tracks(
         conn.execute(
             """INSERT INTO bulk_imports
                (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac,
-                watch_playlist_id, use_playlists_dir, watch_artist_id, user_id, preferred_sources)
-               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?, ?)""",
+                watch_playlist_id, use_playlists_dir, watch_artist_id, user_id, preferred_sources,
+                override_dir, album_release_mbid, album_total_tracks)
+               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (import_id, len(tracks), int(convert_to_flac), watch_playlist_id,
-             int(use_playlists_dir), watch_artist_id, user_id, preferred_sources or "all")
+             int(use_playlists_dir), watch_artist_id, user_id, preferred_sources or "all",
+             override_dir, album_release_mbid, album_total_tracks)
         )
 
         for line_num, (artist, song) in enumerate(tracks, 1):
@@ -134,6 +178,7 @@ def process_bulk_import_worker(import_id: str):
         watch_artist_id = import_row["watch_artist_id"]
         use_playlists_dir = bool(import_row["use_playlists_dir"])
         user_id = import_row["user_id"]
+        override_dir = import_row["override_dir"]  # absolute path string or None
         _preferred_sources_raw = import_row["preferred_sources"] or "all"
         # Parse "youtube,soundcloud" into ["youtube", "soundcloud"], or None for "all"
         preferred_sources_list = (
@@ -199,12 +244,35 @@ def process_bulk_import_worker(import_id: str):
                     continue
 
                 # Results are already sorted by quality_score descending.
-                # For watched imports we know the expected artist upfront, so prefer the
-                # first candidate whose title or channel actually contains the artist name.
-                # This stops an identically-titled upload by a different artist from sneaking
-                # in ahead of the correct one just because it scored slightly higher overall.
                 best_match = search_results[0]
-                if (watch_playlist_id or watch_artist_id) and artist:
+                if override_dir and artist:
+                    # Album mode: be strict on artist to avoid tribute/cover uploads.
+                    strict_matches = [
+                        c for c in search_results
+                        if not _candidate_looks_like_cover(c)
+                        and _candidate_channel_matches_expected_artist(c, artist)
+                    ]
+                    if strict_matches:
+                        best_match = strict_matches[0]
+                    else:
+                        with db_conn() as conn:
+                            conn.execute(
+                                "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
+                                ("No strict artist match found", track_id)
+                            )
+                            conn.execute(
+                                "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                                (import_id,)
+                            )
+                            conn.commit()
+                        print(
+                            f"Album import {import_id}: no strict artist match for "
+                            f"'{artist} - {song}', skipping track"
+                        )
+                        time.sleep(base_delay)
+                        continue
+                elif (watch_playlist_id or watch_artist_id) and artist:
+                    # Watched imports: looser artist preference is fine.
                     for candidate in search_results:
                         if _candidate_mentions_expected_artist(candidate, artist):
                             best_match = candidate
@@ -269,14 +337,19 @@ def process_bulk_import_worker(import_id: str):
                 # doesn't queue behind slow yt-dlp jobs.  Everything else goes through
                 # the bounded pool (max 3 concurrent) to avoid hammering YouTube.
                 _pname = playlist_name if use_playlists_dir else None
+                # Album downloads (override_dir set) bypass dupe checks — you picked the album
+                # intentionally, and the track lives in Albums/ not Singles/ anyway.
+                _skip_dupes = bool(override_dir)
                 if source == "mp3phoenix":
                     spawn_daemon_thread(process_download, job_id, video_id, convert_to_flac,
                                         source_url, _pname, use_playlists_dir,
-                                        user_id=user_id)
+                                        user_id=user_id, override_dir=override_dir,
+                                        skip_dupe_check=_skip_dupes)
                 else:
                     _download_pool.submit(process_download, job_id, video_id, convert_to_flac,
                                           source_url, _pname, use_playlists_dir,
-                                          user_id=user_id)
+                                          user_id=user_id, override_dir=override_dir,
+                                          skip_dupe_check=_skip_dupes)
 
             except Exception as e:
                 with db_conn() as conn:
@@ -304,7 +377,11 @@ def process_bulk_import_worker(import_id: str):
 
             # Get final counts for notification
             cursor = conn.execute(
-                "SELECT total_tracks, queued, failed, skipped FROM bulk_imports WHERE id = ?",
+                """
+                SELECT total_tracks, queued, failed, skipped, create_playlist, playlist_name
+                FROM bulk_imports
+                WHERE id = ?
+                """,
                 (import_id,)
             )
             final_row = cursor.fetchone()
@@ -312,6 +389,11 @@ def process_bulk_import_worker(import_id: str):
             final_failed = final_row["failed"] if final_row else 0
             final_skipped = final_row["skipped"] if final_row else 0
             final_total = final_row["total_tracks"] if final_row else 0
+            # Re-read these flags at completion to avoid a race where API updates
+            # create_playlist/playlist_name immediately after worker start.
+            if final_row:
+                create_playlist = bool(final_row["create_playlist"])
+                playlist_name = final_row["playlist_name"]
 
         # Send notification for bulk import
         bulk_status = "completed_with_errors" if final_failed > 0 else "completed"

@@ -7,6 +7,27 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.4.0": {
+        title: "What's New in v2.4.0",
+        sections: [
+            {
+                heading: "Album Download tab",
+                items: [
+                    "There's now a dedicated Albums tab for downloading full albums intentionally. Search for an artist, pick an album, preview the tracklist, and download the lot in one go.",
+                    "Files are saved as Albums/Artist/Album/Track rather than getting mixed in with Singles. No more manually sorting things after the fact.",
+                    "Optionally generate an M3U playlist alongside the download.",
+                    "Artist and album data comes from MusicBrainz, so you get proper metadata rather than YouTube's creative guesswork.",
+                    "The Albums folder path is configurable in Settings, right next to the Singles and Playlists folders.",
+                ]
+            },
+            {
+                heading: "Bug fixes",
+                items: [
+                    "Fixed a crash on /api/playlists when the Playlists directory was on a broken or stale mount. Returns an empty list now instead of a 500 error.",
+                ]
+            }
+        ]
+    },
     "2.3.5": {
         title: "What's New in v2.3.5",
         sections: [

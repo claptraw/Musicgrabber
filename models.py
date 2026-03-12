@@ -28,6 +28,13 @@ class DownloadRequest(BaseModel):
     # Playlist routing  -  optional, defaults to Singles
     playlist_name: Optional[str] = None  # Name of target playlist (M3U stem)
     use_playlists_dir: bool = False  # Route into Playlists dir instead of Singles
+    # Album routing (search results -> selected album track)
+    album_release_mbid: Optional[str] = None
+    album_artist: Optional[str] = None
+    album_name: Optional[str] = None
+    album_track_title: Optional[str] = None
+    album_track_number: Optional[int] = None
+    album_track_total: Optional[int] = None
 
 class PlaylistFetchRequest(BaseModel):
     url: str  # Spotify, Amazon Music, etc. playlist URL
@@ -69,6 +76,7 @@ class SettingsUpdate(BaseModel):
     min_audio_bitrate: Optional[int] = None
     singles_subdir: Optional[str] = None
     playlists_subdir: Optional[str] = None
+    albums_subdir: Optional[str] = None
     organise_by_artist: Optional[bool] = None
     # Search sources
     source_youtube_enabled: Optional[bool] = None
@@ -176,6 +184,15 @@ class WatchedArtistUpdate(BaseModel):
     refresh_interval_hours: Optional[int] = None
     convert_to_flac: Optional[bool] = None
     from_date: Optional[str] = None
+
+class AlbumDownloadRequest(BaseModel):
+    artist: str
+    album_title: str
+    release_mbid: str
+    make_m3u: bool = False
+    m3u_name: Optional[str] = None
+    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+
 
 class RetryMissingTrackRequest(BaseModel):
     artist: str

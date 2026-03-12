@@ -217,6 +217,12 @@ h1 {
     color: var(--warning, #f59e0b);
 }
 
+.album-route-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    max-width: 340px;
+}
+
 .playlist-selector-clear {
     padding: 3px 7px;
     font-size: 13px;
@@ -560,7 +566,7 @@ h1 {
 
 .tabs {
     display: flex;
-    gap: 8px;
+    gap: 5px;
     margin-bottom: 20px;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
@@ -600,8 +606,8 @@ h1 {
 }
 
 .tab {
-    padding: 8px 16px;
-    font-size: 14px;
+    padding: 5px 8px;
+    font-size: 12px;
     font-family: inherit;
     font-weight: 600;
     background: transparent;
@@ -2435,6 +2441,180 @@ h1 {
     transition: all 0.2s;
 }
 
+.bulk-import-btn:disabled {
+    background: var(--border);
+    color: var(--text-secondary);
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+/* --------------------------------------------------------------------------
+   Albums tab
+-------------------------------------------------------------------------- */
+
+.album-artist-results {
+    margin: 18px 0 26px;
+    padding: 6px 2px;
+    display: flex;
+    flex-wrap: wrap;
+    column-gap: 12px;
+    row-gap: 12px;
+}
+
+.album-search-note {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.album-artist-btn {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    text-align: left;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.album-artist-btn:hover,
+.album-artist-btn.selected {
+    border-color: var(--accent);
+    background: var(--hover-bg);
+}
+
+.album-artist-name {
+    font-weight: 600;
+}
+
+.album-artist-disambig {
+    color: var(--text-secondary);
+    margin-left: 8px;
+    font-size: 12px;
+}
+
+.album-section-heading {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin: 0 0 10px;
+}
+
+.album-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-bottom: 16px;
+}
+
+.album-list-btn {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    text-align: left;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.album-list-btn:hover,
+.album-list-btn.selected {
+    border-color: var(--accent);
+    background: var(--hover-bg);
+}
+
+.album-list-title {
+    font-weight: 600;
+}
+
+.album-list-year {
+    color: var(--text-secondary);
+    margin-left: 8px;
+    font-size: 12px;
+}
+
+.album-tracklist {
+    margin: 0 0 12px 20px;
+    padding: 0;
+    font-size: 13px;
+    color: var(--text-primary);
+    line-height: 1.7;
+}
+
+.album-track-existing {
+    color: var(--text-secondary);
+}
+
+.album-track-missing {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.album-track-legend {
+    margin: 0 0 8px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.album-track-legend .missing {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.album-track-legend .existing {
+    color: var(--text-secondary);
+}
+
+.album-m3u-hint {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.album-existing-warning {
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--warning-border, #d97706);
+    background: var(--warning-bg, #fef3c7);
+    color: var(--warning-text, #92400e);
+    font-size: 12px;
+}
+
+.album-reset-btn {
+    margin-top: 0;
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    transform: translateY(6px);
+    transition: max-height 0.2s ease, margin-top 0.2s ease, padding 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
+}
+
+.album-reset-btn.show {
+    margin-top: 12px;
+    max-height: 56px;
+    padding-top: 14px;
+    padding-bottom: 14px;
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+
 /* --------------------------------------------------------------------------
    Watched playlists / watched artists tab
 -------------------------------------------------------------------------- */
@@ -3238,9 +3418,27 @@ h1 {
     margin-top: 2px;
 }
 
-/* Playlist selector row - JS-toggled; bottom margin applied when visible */
+/* Destination picker row (unified "Add to...") - JS-toggled */
 .playlist-selector-row-wrap {
-    margin-bottom: 8px;
+    display: inline-flex;
+    flex-direction: column;
+    vertical-align: top;
+    margin: 0 8px 8px 0;
+}
+
+/* Mode choice panel shown after clicking "Add to..." */
+.dest-mode-panel {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+
+/* Album two-level browser panel */
+.album-route-panel {
+    flex-wrap: wrap;
+    gap: 8px;
 }
 
 /* ListenBrainz toggle row */
@@ -3257,4 +3455,3 @@ h1 {
 .settings-input-path-text {
     width: 320px;
 }
-

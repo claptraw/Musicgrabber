@@ -2,11 +2,11 @@
 
 ## Milestone feature release
 
-I've hit my own personal milestone with this project. It's as feature-complete as I ever intended it to be. There are some outstanding requests such as adding Albums support, but that was never the intention. This project is for music searching, playlist expanding, and artist discovery, while keeping your music locally hosted. That said, although MusicGrabber can pull and store your music locally, if you enjoy an artist, support them and buy their music if you can afford to.
+I've hit my own personal milestone with this project. It's as feature-complete as I ever intended it to be. This project is for music searching, playlist expanding, and artist discovery, while keeping your music locally hosted. That said, although MusicGrabber can pull and store your music locally, if you enjoy an artist, support them and buy their music if you can afford to.
 
 This project is a mash up of humand and AI, I will not hide that. If you're against AI code being used, please walk by this project. However, it is fully reviewed, security peer-checked and regularly pulled apart by humans.
 
-**v2.3.5**
+**v2.4.0**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
 

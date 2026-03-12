@@ -130,7 +130,7 @@ SENSITIVE_SETTINGS = {
 
 # Settings that belong to each user (stored in user_settings table)
 USER_SETTINGS_KEYS = {
-    "music_dir", "singles_subdir", "playlists_subdir", "organise_by_artist",
+    "music_dir", "singles_subdir", "playlists_subdir", "albums_subdir", "organise_by_artist",
     "navidrome_url", "navidrome_user", "navidrome_pass", "navidrome_dupe_check",
     "jellyfin_url", "jellyfin_api_key",
     "lidarr_url", "lidarr_api_key",
@@ -163,6 +163,7 @@ SETTINGS_SCHEMA = {
     "min_audio_bitrate": {"type": "int", "default": 0, "env": "MIN_AUDIO_BITRATE"},
     "singles_subdir": {"type": "str", "default": "Singles", "env": "SINGLES_SUBDIR"},
     "playlists_subdir": {"type": "str", "default": "", "env": "PLAYLISTS_SUBDIR"},
+    "albums_subdir": {"type": "str", "default": "Albums", "env": "ALBUMS_SUBDIR"},
     "organise_by_artist": {"type": "bool", "default": True, "env": "ORGANISE_BY_ARTIST"},
     # Soulseek/slskd
     "slskd_url": {"type": "str", "default": "", "env": "SLSKD_URL"},
@@ -260,6 +261,19 @@ def get_playlists_dir(user_id: str | None = None) -> Path | None:
     subdir = get_setting("playlists_subdir", "", user_id=user_id).strip()
     if not subdir:
         return None  # Feature disabled, fall back to Singles behaviour
+    if subdir == ".":
+        return music_dir
+    return music_dir / subdir
+
+
+def get_albums_dir(user_id: str | None = None) -> Path:
+    """Get the albums download directory for a user.
+
+    Files land at: albums_dir / Artist / Album / Track.flac
+    Returns music_dir / albums_subdir (default "Albums").
+    """
+    music_dir = Path(get_setting("music_dir", str(MUSIC_DIR), user_id=user_id))
+    subdir = get_setting("albums_subdir", "Albums", user_id=user_id).strip() or "Albums"
     if subdir == ".":
         return music_dir
     return music_dir / subdir

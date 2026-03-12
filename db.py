@@ -89,6 +89,12 @@ def init_db():
             source_url TEXT,
             file_deleted INTEGER DEFAULT 0,
             metadata_source TEXT,
+            override_dir TEXT,
+            album_release_mbid TEXT,
+            album_name TEXT,
+            album_track_title TEXT,
+            album_track_number INTEGER,
+            album_track_total INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             completed_at TIMESTAMP
         )
@@ -142,6 +148,30 @@ def init_db():
             conn.execute("ALTER TABLE jobs ADD COLUMN metadata_source TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN override_dir TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN album_release_mbid TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN album_name TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN album_track_title TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN album_track_number INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN album_track_total INTEGER")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_search_token ON jobs(search_token)")
 
         # Bulk imports table - tracks the overall import job
@@ -160,6 +190,7 @@ def init_db():
             watch_playlist_id TEXT,
             rate_limited_until TIMESTAMP,
             error TEXT,
+            album_release_mbid TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             completed_at TIMESTAMP
         )
@@ -192,6 +223,10 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE bulk_imports ADD COLUMN watch_artist_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_imports ADD COLUMN album_total_tracks INTEGER")
         except sqlite3.OperationalError:
             pass
 
@@ -492,6 +527,14 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE bulk_imports ADD COLUMN preferred_sources TEXT DEFAULT 'all'")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_imports ADD COLUMN override_dir TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_imports ADD COLUMN album_release_mbid TEXT")
         except sqlite3.OperationalError:
             pass
 

@@ -241,7 +241,26 @@ def _search_monochrome_api(query: str, limit: int) -> list[dict]:
         })
 
     results.sort(key=lambda x: x["quality_score"], reverse=True)
-    return results[:limit]
+
+    # Deduplicate by ISRC: same recording listed at multiple quality tiers shows
+    # up as separate Tidal tracks. Keep only the highest-scoring entry per ISRC
+    # (that's the HI_RES one if it exists), then give it a +20 bonus — the download
+    # path always tries HI_RES first anyway, so showing duplicates is just noise.
+    seen_isrc: dict[str, int] = {}  # isrc -> index in deduped list
+    deduped = []
+    for r in results:
+        isrc = r.get("monochrome_isrc") or ""
+        if not isrc:
+            deduped.append(r)
+            continue
+        if isrc not in seen_isrc:
+            r["quality_score"] += 20
+            seen_isrc[isrc] = len(deduped)
+            deduped.append(r)
+        # Lower-quality duplicate for the same ISRC — discard it silently
+
+    deduped.sort(key=lambda x: x["quality_score"], reverse=True)
+    return deduped[:limit]
 
 
 def _resolve_monochrome_url(query: str, limit: int) -> list[dict]:

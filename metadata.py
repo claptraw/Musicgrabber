@@ -5,6 +5,7 @@ AcoustID fingerprinting, MusicBrainz lookups, LRClib lyrics, and audio file tagg
 """
 
 import json
+import base64
 import re
 import subprocess
 from pathlib import Path
@@ -446,27 +447,59 @@ def _is_source_branding(text: str) -> bool:
     )
 
 
-def apply_metadata_to_file(file_path: Path, artist: str, title: str, album: str = "", year: str = None):
+def apply_metadata_to_file(
+    file_path: Path,
+    artist: str,
+    title: str,
+    album: str = "",
+    year: str = None,
+    track_number: int | None = None,
+    track_total: int | None = None,
+    album_art_bytes: bytes | None = None,
+    album_art_mime: str | None = None,
+    album_artist: str | None = None,
+):
     """Apply metadata to audio file using mutagen (supports multiple formats)"""
     try:
         suffix = file_path.suffix.lower()
+        track_number = int(track_number) if track_number else None
+        track_total = int(track_total) if track_total else None
+        art_mime = (album_art_mime or "image/jpeg").lower()
+        has_art = bool(album_art_bytes)
 
         if suffix == '.flac':
+            from mutagen.flac import Picture
             audio = FLAC(str(file_path))
             audio["ARTIST"] = artist
             audio["TITLE"] = title
             if album:
                 audio["ALBUM"] = album
+            if album_artist:
+                audio["ALBUMARTIST"] = album_artist
+                audio["ALBUM ARTIST"] = album_artist
             if year:
                 audio["DATE"] = year
+            if track_number:
+                audio["TRACKNUMBER"] = str(track_number)
+                if track_total:
+                    audio["TRACKTOTAL"] = str(track_total)
+                    audio["TOTALTRACKS"] = str(track_total)
             # Wipe yt-dlp source branding from COMMENT tag
             if any(_is_source_branding(c) for c in audio.get("COMMENT", [])):
                 audio["COMMENT"] = []
+            if has_art:
+                pic = Picture()
+                pic.type = 3  # front cover
+                pic.mime = art_mime
+                pic.data = album_art_bytes
+                audio.clear_pictures()
+                audio.add_picture(pic)
             audio.save()
 
         elif suffix == '.mp3':
             from mutagen.easyid3 import EasyID3
             from mutagen.mp3 import MP3
+            from mutagen.id3 import ID3, APIC
             try:
                 audio = EasyID3(str(file_path))
             except Exception:
@@ -479,29 +512,49 @@ def apply_metadata_to_file(file_path: Path, artist: str, title: str, album: str 
             audio["title"] = title
             if album:
                 audio["album"] = album
+            if album_artist:
+                audio["albumartist"] = [album_artist]
             if year:
                 audio["date"] = year
+            if track_number:
+                tn = f"{track_number}/{track_total}" if track_total else str(track_number)
+                audio["tracknumber"] = [tn]
             if any(_is_source_branding(c) for c in audio.get("comment", [])):
                 audio["comment"] = []
             audio.save()
+            if has_art:
+                mp3 = MP3(str(file_path), ID3=ID3)
+                if mp3.tags is None:
+                    mp3.add_tags()
+                mp3.tags.delall("APIC")
+                mp3.tags.add(APIC(encoding=3, mime=art_mime, type=3, desc="Cover", data=album_art_bytes))
+                mp3.save(v2_version=3)
 
         elif suffix in ['.m4a', '.mp4']:
-            from mutagen.mp4 import MP4
+            from mutagen.mp4 import MP4, MP4Cover
             audio = MP4(str(file_path))
             audio["\xa9ART"] = [artist]
             audio["\xa9nam"] = [title]
             if album:
                 audio["\xa9alb"] = [album]
+            if album_artist:
+                audio["aART"] = [album_artist]
             if year:
                 audio["\xa9day"] = [year]
+            if track_number:
+                audio["trkn"] = [(track_number, track_total or 0)]
             # \xa9cmt is the comment atom
             if any(_is_source_branding(c) for c in audio.get("\xa9cmt", [])):
                 audio["\xa9cmt"] = []
+            if has_art:
+                fmt = MP4Cover.FORMAT_PNG if art_mime == "image/png" else MP4Cover.FORMAT_JPEG
+                audio["covr"] = [MP4Cover(album_art_bytes, imageformat=fmt)]
             audio.save()
 
         elif suffix in ['.ogg', '.opus']:
             from mutagen.oggopus import OggOpus
             from mutagen.oggvorbis import OggVorbis
+            from mutagen.flac import Picture
             try:
                 if suffix == '.opus':
                     audio = OggOpus(str(file_path))
@@ -511,10 +564,24 @@ def apply_metadata_to_file(file_path: Path, artist: str, title: str, album: str 
                 audio["TITLE"] = title
                 if album:
                     audio["ALBUM"] = album
+                if album_artist:
+                    audio["ALBUMARTIST"] = album_artist
+                    audio["ALBUM ARTIST"] = album_artist
                 if year:
                     audio["DATE"] = year
+                if track_number:
+                    audio["TRACKNUMBER"] = str(track_number)
+                    if track_total:
+                        audio["TRACKTOTAL"] = str(track_total)
+                        audio["TOTALTRACKS"] = str(track_total)
                 if any(_is_source_branding(c) for c in audio.get("COMMENT", [])):
                     audio["COMMENT"] = []
+                if has_art:
+                    pic = Picture()
+                    pic.type = 3  # front cover
+                    pic.mime = art_mime
+                    pic.data = album_art_bytes
+                    audio["METADATA_BLOCK_PICTURE"] = [base64.b64encode(pic.write()).decode("ascii")]
                 audio.save()
             except Exception:
                 pass  # Some ogg variants may not be supported
@@ -649,3 +716,114 @@ def fetch_artist_singles(mbid: str) -> list[dict]:
         print(f"MusicBrainz singles fetch error for {mbid}: {e}")
 
     return tracks
+
+
+def fetch_artist_albums(mbid: str) -> list[dict]:
+    """Fetch studio albums for an artist from MusicBrainz.
+
+    Returns [{title, year, release_mbid}, ...] sorted by year ascending.
+    Filters out compilations, live albums, soundtracks and other non-studio releases.
+    Paginates automatically; sleeps 1 second between pages to respect rate limits.
+    """
+    import time as _time
+    headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+    albums: list[dict] = []
+    offset = 0
+    limit = 100
+    total = None
+    seen_release_groups: set[str] = set()
+
+    _EXCLUDED_SECONDARY_TYPES = {
+        "Compilation", "Live", "Remix", "Soundtrack", "Interview",
+        "Spokenword", "Audiobook", "Audio drama", "DJ-mix", "Mixtape/Street",
+        "Demo",
+    }
+
+    try:
+        while True:
+            params = {
+                "artist": mbid,
+                "type": "album",
+                "limit": limit,
+                "offset": offset,
+                "inc": "release-groups",
+                "fmt": "json",
+            }
+            with httpx.Client(timeout=TIMEOUT_MUSICBRAINZ_ARTIST) as client:
+                response = client.get("https://musicbrainz.org/ws/2/release", params=params, headers=headers)
+            if response.status_code != 200:
+                print(f"MusicBrainz albums fetch failed for {mbid}: HTTP {response.status_code}")
+                break
+            data = response.json()
+            if total is None:
+                total = data.get("release-count", 0)
+            releases = data.get("releases", [])
+            if not releases:
+                break
+
+            for release in releases:
+                rg = release.get("release-group") or {}
+                rg_id = rg.get("id", "")
+                secondary_types = rg.get("secondary-types") or []
+                if any(t in _EXCLUDED_SECONDARY_TYPES for t in secondary_types):
+                    continue
+                # One entry per release group — earliest release wins
+                if rg_id and rg_id in seen_release_groups:
+                    continue
+                if rg_id:
+                    seen_release_groups.add(rg_id)
+
+                title = release.get("title", "")
+                date = release.get("date") or release.get("first-release-date") or ""
+                year = date[:4] if date else ""
+                release_mbid = release.get("id", "")
+                if title:
+                    albums.append({
+                        "title": title,
+                        "year": year,
+                        "release_mbid": release_mbid,
+                    })
+
+            offset += len(releases)
+            if offset >= total:
+                break
+            _time.sleep(1)  # MusicBrainz rate limit: 1 req/sec
+
+    except Exception as e:
+        print(f"MusicBrainz albums fetch error for {mbid}: {e}")
+
+    albums.sort(key=lambda a: a["year"] or "9999")
+    return albums
+
+
+def fetch_album_tracks(release_mbid: str) -> list[dict]:
+    """Fetch the tracklist for a specific release from MusicBrainz.
+
+    Returns [{position, title}, ...] in track order.
+    Position is a string (e.g. "1", "A1") as MusicBrainz provides it.
+    """
+    headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+    try:
+        params = {"inc": "recordings", "fmt": "json"}
+        with httpx.Client(timeout=TIMEOUT_MUSICBRAINZ_ARTIST) as client:
+            response = client.get(
+                f"https://musicbrainz.org/ws/2/release/{release_mbid}",
+                params=params,
+                headers=headers,
+            )
+        if response.status_code != 200:
+            print(f"MusicBrainz tracklist fetch failed for {release_mbid}: HTTP {response.status_code}")
+            return []
+        data = response.json()
+        tracks: list[dict] = []
+        for medium in data.get("media", []):
+            for track in medium.get("tracks", []):
+                recording = track.get("recording") or {}
+                title = recording.get("title") or track.get("title", "")
+                position = str(track.get("position") or track.get("number") or "")
+                if title:
+                    tracks.append({"position": position, "title": title})
+        return tracks
+    except Exception as e:
+        print(f"MusicBrainz tracklist fetch error for {release_mbid}: {e}")
+        return []

@@ -90,9 +90,18 @@
             <div class="search-history" id="searchHistory"></div>
         </div>
 
-        <!-- Playlist toggle chip - only visible when playlists are available -->
-        <div id="playlistSelectorRow" style="display: none;" class="playlist-selector-row-wrap">
-            <button type="button" id="playlistSelectorToggle" class="playlist-selector-toggle">+ Add to playlist</button>
+        <!-- Unified destination picker - shown when search results are present -->
+        <div id="destinationPickerRow" style="display: none;" class="playlist-selector-row-wrap">
+            <button type="button" id="destinationPickerToggle" class="playlist-selector-toggle">+ Add to...</button>
+
+            <!-- Step 1: choose Playlist or Album -->
+            <div id="destinationModePanel" class="dest-mode-panel" style="display: none;">
+                <button type="button" id="destModePlaylist" class="playlist-selector-toggle">Playlist</button>
+                <button type="button" id="destModeAlbum" class="playlist-selector-toggle">Album</button>
+                <button type="button" id="destinationPickerClear" class="playlist-selector-clear" title="Cancel">&#x2715;</button>
+            </div>
+
+            <!-- Playlist sub-panel (content unchanged) -->
             <div id="playlistSelector" class="playlist-selector" style="display: none;">
                 <select id="playlistSelectorInput" class="playlist-selector-select">
                     <option value="">Singles (default)</option>
@@ -105,11 +114,30 @@
                 </span>
                 <button type="button" id="playlistSelectorClear" class="playlist-selector-clear" title="Clear and collapse">&#x2715;</button>
             </div>
+
+            <!-- Album sub-panel: two-level disk browser -->
+            <div id="albumRoutePanel" class="playlist-selector album-route-panel" style="display: none;">
+                <select id="albumArtistSelect" class="playlist-selector-select">
+                    <option value="">Select artist...</option>
+                </select>
+                <select id="albumFolderSelect" class="playlist-selector-select" style="display: none;">
+                    <option value="">Select album...</option>
+                </select>
+                <span id="albumRouteStatus" class="album-route-label" style="display: none;"></span>
+                <select id="albumRouteMode" class="playlist-selector-select" style="display: none;">
+                    <option value="auto">Auto-match track</option>
+                    <option value="manual">Pick track...</option>
+                </select>
+                <select id="albumRouteTrackSelect" class="playlist-selector-select" style="display: none;"></select>
+                <span id="albumRouteWarn" class="playlist-selector-warn" style="display: none;"></span>
+                <button type="button" id="albumRouteClear" class="playlist-selector-clear" title="Clear and collapse">&#x2715;</button>
+            </div>
         </div>
 
         <div class="tabs">
             <button class="tab active" data-tab="results">Results</button>
             <button class="tab" data-tab="bulk">Bulk Import</button>
+            <button class="tab" data-tab="albums">Albums</button>
             <button class="tab" data-tab="watched">Watched</button>
             <button class="tab" data-tab="queue">Queue</button>
             <button class="tab" data-tab="stats">Stats</button>
@@ -194,6 +222,47 @@
                 </button>
             </div>
             <div id="bulkResults" class="results"></div>
+        </div>
+
+        <div id="albumsTabContainer" class="tab-panel">
+            <div class="bulk-intro">
+                <p class="bulk-intro-text">Search for an artist, pick an album, preview the tracklist, and download the whole thing in one go. Files land in your Albums folder.</p>
+            </div>
+
+            <div class="search-box">
+                <input type="text" id="albumArtistInput" class="search-input" placeholder="Search for an artist…" autocomplete="off">
+                <button id="albumArtistSearchBtn" class="search-btn">Search</button>
+            </div>
+            <div class="album-search-note">
+                Album mode uses best-effort single-track matching, not full release mirroring. It will try to source each track intelligently, but it may not produce a perfect 1:1 album copy. For exact album hunting, use Lidarr (with Usenet/torrents) or Soulseek.
+            </div>
+
+            <div id="albumArtistResults" class="album-artist-results" style="display:none;"></div>
+
+            <div id="albumListSection" style="display:none;">
+                <h3 class="album-section-heading" id="albumListHeading"></h3>
+                <div id="albumList" class="album-list"></div>
+            </div>
+
+            <div id="albumTracklistSection" style="display:none;">
+                <h3 class="album-section-heading" id="albumTracklistHeading"></h3>
+                <div id="albumExistingWarning" class="album-existing-warning" style="display:none;"></div>
+                <div id="albumTrackLegend" class="album-track-legend" style="display:none;"></div>
+                <ol id="albumTracklist" class="album-tracklist"></ol>
+                <div class="bulk-playlist-row" style="margin-top: 12px;">
+                    <input type="checkbox" id="albumMakeM3u">
+                    <label for="albumMakeM3u">Generate M3U playlist</label>
+                </div>
+                <div id="albumM3uHint" class="album-m3u-hint" style="display:none;"></div>
+                <button id="albumDownloadBtn" class="bulk-import-btn" style="margin-top: 12px;">
+                    Download Album
+                </button>
+                <button id="albumResetBtn" class="bulk-import-btn album-reset-btn" type="button">
+                    Search Another Album
+                </button>
+            </div>
+
+            <div id="albumProgress" style="display:none;"></div>
         </div>
 
         <div id="watchedTabContainer" class="tab-panel">
@@ -503,6 +572,19 @@
                         </div>
                         <span class="settings-hint-sm">Separate folder for playlist downloads. Leave disabled to keep playlist tracks in Singles. When set, playlist tracks are saved as <code>Artist - Title.ext</code> inside a named subfolder.</span>
                         <span id="playlistsPathPreview" class="settings-path-preview"></span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingAlbumsSubdir">Albums Subfolder</label>
+                        <div class="settings-subdir-flex">
+                            <select id="settingAlbumsSubdir" class="settings-input-path">
+                                <option value="Albums">/music/Albums</option>
+                            </select>
+                        </div>
+                        <div id="customAlbumsSubdirRow" style="display:none;" class="custom-subdir-row">
+                            <input type="text" id="customAlbumsSubdirInput" placeholder="Path under /music (e.g. Albums)" class="settings-input-path-text">
+                        </div>
+                        <span class="settings-hint-sm">Folder for album downloads from the Albums tab. Files are organised as <code>Albums/Artist/Album/Track.flac</code>.</span>
+                        <span id="albumsPathPreview" class="settings-path-preview"></span>
                     </div>
                 </div>
             </div>

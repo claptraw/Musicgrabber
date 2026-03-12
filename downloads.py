@@ -12,6 +12,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -36,7 +37,7 @@ from constants import (
 from db import db_conn, log_match_mismatch
 from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
 from notifications import send_notification
-from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir
+from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir, get_albums_dir
 from slskd import (
     download_from_slskd, extract_track_info_from_path,
     search_slskd, should_retry_slskd_error,
@@ -59,6 +60,8 @@ from youtube import (
 
 _AUDIO_RECHECK_MAX_ATTEMPTS = 2
 _AUDIO_RESEARCH_MAX_ALTERNATES = 2
+_ALBUM_ART_CACHE: dict[str, tuple[bytes, str] | None] = {}
+_ALBUM_ART_CACHE_LOCK = threading.Lock()
 
 
 def _default_metadata_source(source: str) -> str:
@@ -109,6 +112,257 @@ def _playlist_stem(artist: str, title: str, fallback: str) -> str:
     safe_artist = sanitize_filename(artist or "Unknown Artist")
     safe_title = _safe_sanitized_title(title, fallback)
     return f"{safe_artist} - {safe_title}"
+
+
+def _get_job_album_context(job_id: str) -> dict:
+    """Return album-routing context stored on a single download job."""
+    if not job_id:
+        return {}
+
+    def _derive_names_from_override_dir(override_dir: str | None) -> tuple[str | None, str | None]:
+        if not override_dir:
+            return None, None
+        try:
+            p = Path(override_dir)
+            album_name = p.name.strip() if p.name else None
+            album_artist = p.parent.name.strip() if p.parent and p.parent.name else None
+            return album_artist or None, album_name or None
+        except Exception:
+            return None, None
+
+    try:
+        with db_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT override_dir, album_release_mbid, album_name, album_track_title,
+                       album_track_number, album_track_total
+                FROM jobs
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+        if not row:
+            with db_conn() as conn:
+                conn.row_factory = sqlite3.Row
+                bi_row = conn.execute(
+                    """
+                    SELECT bi.override_dir, bi.album_release_mbid, bi.total_tracks,
+                           bi.album_total_tracks,
+                           bit.song AS track_title, bit.line_num AS track_number
+                    FROM bulk_import_tracks bit
+                    JOIN bulk_imports bi ON bi.id = bit.import_id
+                    WHERE bit.job_id = ?
+                      AND bi.override_dir IS NOT NULL
+                      AND bi.override_dir != ''
+                    LIMIT 1
+                    """,
+                    (job_id,),
+                ).fetchone()
+            if not bi_row:
+                return {}
+            album_artist, album_name = _derive_names_from_override_dir((bi_row["override_dir"] or "").strip() or None)
+            _track_total_raw = bi_row["album_total_tracks"] or bi_row["total_tracks"]
+            return {
+                "override_dir": (bi_row["override_dir"] or "").strip() or None,
+                "release_mbid": (bi_row["album_release_mbid"] or "").strip() or None,
+                "album_artist": album_artist,
+                "album_name": album_name,
+                "track_title": (bi_row["track_title"] or "").strip() or None,
+                "track_number": int(bi_row["track_number"]) if bi_row["track_number"] else None,
+                "track_total": int(_track_total_raw) if _track_total_raw else None,
+            }
+
+        override_dir = (row["override_dir"] or "").strip() or None
+        release_mbid = (row["album_release_mbid"] or "").strip() or None
+        album_name = (row["album_name"] or "").strip() or None
+        track_title = (row["album_track_title"] or "").strip() or None
+        track_number = int(row["album_track_number"]) if row["album_track_number"] else None
+        track_total = int(row["album_track_total"]) if row["album_track_total"] else None
+
+        if not any([override_dir, release_mbid, album_name, track_title, track_number, track_total]):
+            with db_conn() as conn:
+                conn.row_factory = sqlite3.Row
+                bi_row = conn.execute(
+                    """
+                    SELECT bi.override_dir, bi.album_release_mbid, bi.total_tracks,
+                           bi.album_total_tracks,
+                           bit.song AS track_title, bit.line_num AS track_number
+                    FROM bulk_import_tracks bit
+                    JOIN bulk_imports bi ON bi.id = bit.import_id
+                    WHERE bit.job_id = ?
+                      AND bi.override_dir IS NOT NULL
+                      AND bi.override_dir != ''
+                    LIMIT 1
+                    """,
+                    (job_id,),
+                ).fetchone()
+            if bi_row:
+                album_artist, album_name_from_dir = _derive_names_from_override_dir((bi_row["override_dir"] or "").strip() or None)
+                _track_total_raw = bi_row["album_total_tracks"] or bi_row["total_tracks"]
+                return {
+                    "override_dir": (bi_row["override_dir"] or "").strip() or None,
+                    "release_mbid": (bi_row["album_release_mbid"] or "").strip() or None,
+                    "album_artist": album_artist,
+                    "album_name": album_name_from_dir or None,
+                    "track_title": (bi_row["track_title"] or "").strip() or None,
+                    "track_number": int(bi_row["track_number"]) if bi_row["track_number"] else None,
+                    "track_total": int(_track_total_raw) if _track_total_raw else None,
+                }
+
+        album_artist, album_name_from_dir = _derive_names_from_override_dir(override_dir)
+        return {
+            "override_dir": (row["override_dir"] or "").strip() or None,
+            "release_mbid": release_mbid,
+            "album_artist": album_artist,
+            "album_name": album_name or album_name_from_dir or None,
+            "track_title": track_title,
+            "track_number": track_number,
+            "track_total": track_total,
+        }
+    except Exception:
+        return {}
+
+
+def _get_album_track_tag_context(job_id: str) -> tuple[int | None, int | None]:
+    """Return (track_number, track_total) for album-mode bulk-import jobs."""
+    if not job_id:
+        return None, None
+    job_ctx = _get_job_album_context(job_id)
+    track_number = job_ctx.get("track_number")
+    track_total = job_ctx.get("track_total")
+    if track_number is not None or track_total is not None:
+        if track_number is not None and track_number <= 0:
+            track_number = None
+        if track_total is not None and track_total <= 0:
+            track_total = None
+        return track_number, track_total
+    try:
+        with db_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT bit.line_num AS track_number,
+                       COALESCE(bi.album_total_tracks, bi.total_tracks) AS track_total
+                FROM bulk_import_tracks bit
+                JOIN bulk_imports bi ON bi.id = bit.import_id
+                WHERE bit.job_id = ?
+                  AND bi.override_dir IS NOT NULL
+                  AND bi.override_dir != ''
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+        if not row:
+            return None, None
+        track_number = int(row["track_number"]) if row["track_number"] else None
+        track_total = int(row["track_total"]) if row["track_total"] else None
+        if track_number is not None and track_number <= 0:
+            track_number = None
+        if track_total is not None and track_total <= 0:
+            track_total = None
+        return track_number, track_total
+    except Exception:
+        return None, None
+
+
+def _get_album_release_mbid(job_id: str) -> str | None:
+    """Return MusicBrainz release MBID for album-mode jobs, if available."""
+    if not job_id:
+        return None
+    job_ctx = _get_job_album_context(job_id)
+    if job_ctx.get("release_mbid"):
+        return job_ctx["release_mbid"]
+    try:
+        with db_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT bi.album_release_mbid
+                FROM bulk_import_tracks bit
+                JOIN bulk_imports bi ON bi.id = bit.import_id
+                WHERE bit.job_id = ?
+                  AND bi.override_dir IS NOT NULL
+                  AND bi.override_dir != ''
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+        if not row:
+            return None
+        mbid = (row[0] or "").strip()
+        return mbid or None
+    except Exception:
+        return None
+
+
+def _guess_cover_mime(data: bytes, content_type: str | None = None) -> str:
+    """Best-effort cover MIME detection for tag embedding."""
+    ct = (content_type or "").split(";")[0].strip().lower()
+    if ct in ("image/jpeg", "image/jpg", "image/png"):
+        return "image/jpeg" if ct == "image/jpg" else ct
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    return "image/jpeg"
+
+
+def _fetch_musicbrainz_cover_art(release_mbid: str) -> tuple[bytes, str] | None:
+    """Fetch album front art from Cover Art Archive for a MusicBrainz release."""
+    mbid = (release_mbid or "").strip()
+    if not mbid:
+        return None
+    urls = (
+        f"https://coverartarchive.org/release/{mbid}/front-500",
+        f"https://coverartarchive.org/release/{mbid}/front",
+    )
+    for url in urls:
+        try:
+            resp = httpx.get(url, timeout=TIMEOUT_HTTP_REQUEST, follow_redirects=True)
+            if resp.status_code == 200 and resp.content:
+                mime = _guess_cover_mime(resp.content, resp.headers.get("content-type"))
+                return resp.content, mime
+        except Exception:
+            continue
+    return None
+
+
+def _get_album_art_context(job_id: str) -> tuple[bytes | None, str | None]:
+    """Return cached (cover_bytes, mime) for album-mode jobs."""
+    release_mbid = _get_album_release_mbid(job_id)
+    if not release_mbid:
+        return None, None
+
+    with _ALBUM_ART_CACHE_LOCK:
+        if release_mbid in _ALBUM_ART_CACHE:
+            cached = _ALBUM_ART_CACHE[release_mbid]
+            return cached if cached else (None, None)
+
+    fetched = _fetch_musicbrainz_cover_art(release_mbid)
+    with _ALBUM_ART_CACHE_LOCK:
+        _ALBUM_ART_CACHE[release_mbid] = fetched
+
+    return fetched if fetched else (None, None)
+
+
+def _ensure_album_cover_files(override_dir: str | None, album_art_bytes: bytes | None, album_art_mime: str | None) -> None:
+    """Write cover files for album-mode folders so library scanners can pick artwork."""
+    if not override_dir or not album_art_bytes:
+        return
+    try:
+        album_dir = Path(override_dir)
+        album_dir.mkdir(parents=True, exist_ok=True)
+        ext = ".png" if (album_art_mime or "").lower() == "image/png" else ".jpg"
+        for stem in ("cover", "folder"):
+            p = album_dir / f"{stem}{ext}"
+            if p.exists() and p.stat().st_size > 0:
+                continue
+            p.write_bytes(album_art_bytes)
+            set_file_permissions(p)
+    except Exception:
+        # Non-fatal; embedded artwork tags are still applied when possible.
+        pass
 
 
 def _find_downloaded_audio_or_raise(artist_dir: Path, sanitized_title: str) -> Path:
@@ -696,10 +950,76 @@ def _build_ytdlp_download_cmd(
     ]
 
 
+def _remux_album_webm_for_tagging(audio_file: Path, override_dir: str | None) -> Path:
+    """Remux album-routed WebM audio into a taggable container without re-encoding."""
+    if not override_dir or audio_file.suffix.lower() != ".webm":
+        return audio_file
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "quiet",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(audio_file),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        codec = (probe.stdout or "").strip().splitlines()[0].strip().lower() if probe.returncode == 0 else ""
+        if codec == "opus":
+            remuxed = audio_file.with_suffix(".opus")
+        elif codec == "vorbis":
+            remuxed = audio_file.with_suffix(".ogg")
+        else:
+            return audio_file
+
+        remuxed.unlink(missing_ok=True)
+        remux_result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(audio_file),
+                "-vn",
+                "-c", "copy",
+                str(remuxed),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_FFMPEG_CONVERT,
+        )
+        if remux_result.returncode != 0 or not remuxed.exists() or remuxed.stat().st_size == 0:
+            remuxed.unlink(missing_ok=True)
+            return audio_file
+
+        audio_file.unlink(missing_ok=True)
+        set_file_permissions(remuxed)
+        print(f"Album mode: remuxed WebM to {remuxed.suffix} for metadata/artwork support")
+        return remuxed
+    except Exception as e:
+        print(f"Album mode WebM remux skipped: {e}")
+        return audio_file
+
+
+_ALLOWED_JOB_COLS = frozenset({
+    "video_id", "title", "artist", "status", "error", "download_type",
+    "playlist_name", "total_tracks", "completed_tracks", "failed_tracks",
+    "skipped_tracks", "m3u_path", "source", "slskd_username", "slskd_filename",
+    "convert_to_flac", "source_url", "file_deleted", "metadata_source",
+    "override_dir", "album_release_mbid", "album_name", "album_track_title",
+    "album_track_number", "album_track_total", "completed_at", "uploader",
+    "audio_quality",
+})
+
+
 def _update_job(job_id: str, **fields) -> None:
     """Update job fields in the database."""
     if not fields:
         return
+    unknown = set(fields) - _ALLOWED_JOB_COLS
+    if unknown:
+        raise ValueError(f"_update_job: unknown column(s): {unknown}")
     columns = ", ".join(f"{key} = ?" for key in fields)
     values = list(fields.values())
     with db_conn() as conn:
@@ -1218,6 +1538,87 @@ def _run_ytdlp_with_retries(
     return download_result, download_timed_out
 
 
+def rebuild_album_m3u(album_dir: Path, playlist_name: str | None = None) -> Path | None:
+    """Build/update an album-local M3U from audio files in the album directory."""
+    try:
+        album_dir = Path(album_dir)
+        if not album_dir.exists() or not album_dir.is_dir():
+            return None
+
+        def _audio_meta(file_path: Path) -> tuple[int | None, int, str]:
+            """Return (track_number, duration_secs, display_title) from mutagen tags."""
+            try:
+                from mutagen import File as MutagenFile
+                audio = MutagenFile(str(file_path), easy=True)
+                if not audio:
+                    return None, -1, file_path.stem
+                # Track number
+                track_no = None
+                vals = audio.get("tracknumber") or audio.get("TRACKNUMBER") or []
+                if vals:
+                    m = re.match(r"\s*(\d+)", str(vals[0]))
+                    if m:
+                        track_no = int(m.group(1))
+                # Duration
+                duration = -1
+                if hasattr(audio, "info") and audio.info and hasattr(audio.info, "length"):
+                    duration = int(audio.info.length)
+                # Display title: prefer title tag, fall back to stem
+                title_vals = audio.get("title") or audio.get("TITLE") or []
+                display = str(title_vals[0]).strip() if title_vals else file_path.stem
+                return track_no, duration, display
+            except Exception:
+                return None, -1, file_path.stem
+
+        audio_files = [p for p in album_dir.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS]
+        if not audio_files:
+            return None
+
+        meta_cache = {p: _audio_meta(p) for p in audio_files}
+        audio_files.sort(
+            key=lambda p: (
+                meta_cache[p][0] is None,
+                meta_cache[p][0] if meta_cache[p][0] is not None else 10_000,
+                p.name.casefold(),
+            )
+        )
+
+        playlist_base = (playlist_name or "").strip()
+        if playlist_base.lower().endswith(".m3u"):
+            playlist_base = playlist_base[:-4]
+        safe_playlist = sanitize_filename(playlist_base) or sanitize_filename(album_dir.name) or "Album"
+        m3u_path = album_dir / f"{safe_playlist}.m3u"
+        with open(m3u_path, 'w', encoding='utf-8') as f:
+            f.write("#EXTM3U\n")
+            for p in audio_files:
+                _, duration, display = meta_cache[p]
+                f.write(f"#EXTINF:{duration},{display}\n")
+                f.write(f"{p.name}\n")
+        set_file_permissions(m3u_path)
+        return m3u_path
+    except Exception as e:
+        print(f"Warning: failed to rebuild album M3U in {album_dir}: {e}")
+        return None
+
+
+def _refresh_album_m3u_if_present(override_dir: str | None) -> None:
+    """Rebuild existing album-local M3U files after album-routed track downloads."""
+    if not override_dir:
+        return
+    try:
+        album_dir = Path(override_dir)
+        if not album_dir.exists() or not album_dir.is_dir():
+            return
+        existing_m3us = [
+            p for p in album_dir.iterdir()
+            if p.is_file() and p.suffix.lower() == ".m3u"
+        ]
+        for m3u_path in existing_m3us:
+            rebuild_album_m3u(album_dir, m3u_path.stem)
+    except Exception as e:
+        print(f"Warning: failed to refresh album M3U(s) in {override_dir}: {e}")
+
+
 def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count: int, use_playlists_dir: bool = False):
     """Create an M3U playlist from a bulk import after all downloads complete
 
@@ -1225,6 +1626,16 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
     When use_playlists_dir is True and playlists_subdir is configured, the M3U and its
     relative track paths are written into the Playlists folder instead of Singles.
     """
+    with db_conn() as conn:
+        row = conn.execute(
+            "SELECT override_dir FROM bulk_imports WHERE id = ?",
+            (bulk_import_id,),
+        ).fetchone()
+    override_dir = (row[0] if row and row[0] else None)
+    if override_dir:
+        rebuild_album_m3u(Path(override_dir), playlist_name)
+        return
+
     # Wait for all downloads to complete (with timeout)
     max_wait_time = PLAYLIST_WAIT_MAX
     check_interval = PLAYLIST_WAIT_INTERVAL
@@ -1936,14 +2347,25 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
 
 
-def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_to_flac: bool = True, user_id: str | None = None):
+def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_to_flac: bool = True, user_id: str | None = None, override_dir: str | None = None):
     """Process a Soulseek download job via slskd"""
+    album_ctx = _get_job_album_context(job_id)
+    if not override_dir and album_ctx.get("override_dir"):
+        override_dir = album_ctx["override_dir"]
+    forced_album_artist = album_ctx.get("album_artist")
+    forced_album_name = album_ctx.get("album_name")
+    forced_track_title = album_ctx.get("track_title")
+    album_track_number, album_track_total = _get_album_track_tag_context(job_id)
+    album_art_bytes, album_art_mime = _get_album_art_context(job_id)
+    _ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
     try:
         _update_job(job_id, status="downloading")
 
         # If artist/title not provided, extract from filename
         if not artist or not title:
             artist, title = extract_track_info_from_path(filename)
+        if forced_track_title:
+            title = forced_track_title
 
         # Update job with extracted info (store slskd peer as uploader for blacklist)
         _update_job(job_id, title=title, artist=artist, uploader=username)
@@ -1965,7 +2387,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             return
 
         # Create download directory (with or without artist subfolder)
-        artist_dir = get_download_dir(artist, user_id=user_id)
+        artist_dir = Path(override_dir) if override_dir else get_download_dir(artist, user_id=user_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download from slskd with retries on common queue/abort failures
@@ -2019,7 +2441,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             raise Exception(last_error or "Soulseek download failed")
 
         # Rename to our standard naming
-        sanitized_title = _output_stem(artist, title, Path(filename).stem or job_id, user_id=user_id)
+        sanitized_title = _output_stem(artist, forced_track_title or title, Path(filename).stem or job_id, user_id=user_id)
         source_ext = downloaded_file.suffix.lower()
 
         # Probe the source file BEFORE conversion so we know the real quality
@@ -2105,20 +2527,37 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             metadata_source = mb_metadata.get("metadata_source", metadata_source)
             mb_artist = mb_metadata.get("artist", artist)
             mb_title = mb_metadata.get("title", title)
+            tag_title = forced_track_title or mb_title
+            tag_album = forced_album_name or mb_metadata.get("album", "")
             apply_metadata_to_file(
-                final_file, mb_artist, mb_title,
-                mb_metadata.get("album", ""),
-                mb_metadata.get("year")
+                final_file, mb_artist, tag_title,
+                tag_album,
+                mb_metadata.get("year"),
+                track_number=album_track_number,
+                track_total=album_track_total,
+                album_art_bytes=album_art_bytes,
+                album_art_mime=album_art_mime,
+                album_artist=forced_album_artist,
             )
             # Use canonical artist/title from MusicBrainz
             if mb_artist != artist:
                 final_file = _relocate_for_normalised_artist(final_file, artist, mb_artist, user_id=user_id)
                 artist = mb_artist
-            if mb_title != title:
-                title = mb_title
+            title = tag_title
             _update_job(job_id, artist=artist, title=title)
         else:
-            apply_metadata_to_file(final_file, artist, title)
+            apply_metadata_to_file(
+                final_file,
+                artist,
+                forced_track_title or title,
+                forced_album_name or "",
+                track_number=album_track_number,
+                track_total=album_track_total,
+                album_art_bytes=album_art_bytes,
+                album_art_mime=album_art_mime,
+                album_artist=forced_album_artist,
+            )
+            title = forced_track_title or title
 
         # Fetch and save lyrics
         lyrics = fetch_lyrics(artist, title)
@@ -2149,6 +2588,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             final_file.with_suffix(".lrc").unlink(missing_ok=True)
             _update_job(job_id, status="failed", completed_at=datetime.now(timezone.utc).isoformat())
             return
+        _refresh_album_m3u_if_present(override_dir)
 
         print(f"slskd: Successfully downloaded {artist} - {title}")
 
@@ -2189,7 +2629,7 @@ def _monochrome_cover_url(cover_uuid: str) -> str:
 class _MonochromeAllTiers403(Exception):
     """Raised when every Monochrome quality tier returns 403 for a track.
 
-    Caught by _process_monochrome_download to trigger a YouTube fallback
+    Caught by _process_monochrome_download to trigger a cross-source fallback
     rather than marking the job as outright failed.
     """
 
@@ -2198,8 +2638,8 @@ def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
     """Download a FLAC directly from the Monochrome/Tidal API.
 
     No yt-dlp, no messing about  -  just a straight stream off the CDN.
-    Tries HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW in order; if all tiers 403, raises _MonochromeAllTiers403
-    so the caller can fall back to YouTube rather than giving up entirely.
+    Tries HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW in order; if all tiers 403, raises
+    _MonochromeAllTiers403 so the caller can try another candidate/source.
     """
     quality_attempts = ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"]
     resp = None
@@ -2347,7 +2787,9 @@ def _get_monochrome_track_info(track_id: str) -> dict | None:
 
 def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bool = True,
                                   playlist_name: str = None, use_playlists_dir: bool = False,
-                                  user_id: str | None = None):
+                                  user_id: str | None = None, override_dir: str | None = None,
+                                  skip_dupe_check: bool = False,
+                                  attempted_ids: set[str] | None = None):
     """Download a track directly from Monochrome/Tidal  -  no yt-dlp needed.
 
     The API gives us proper metadata (artist, album, ISRC) so we don't need
@@ -2357,6 +2799,17 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
     source_label = "monochrome"
     artist = None
     title = track_id
+    album_ctx = _get_job_album_context(job_id)
+    if not override_dir and album_ctx.get("override_dir"):
+        override_dir = album_ctx["override_dir"]
+    forced_album_artist = album_ctx.get("album_artist")
+    forced_album_name = album_ctx.get("album_name")
+    forced_track_title = album_ctx.get("track_title")
+    album_track_number, album_track_total = _get_album_track_tag_context(job_id)
+    album_art_bytes, album_art_mime = _get_album_art_context(job_id)
+    _ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
+    attempted_ids = set(attempted_ids or [])
+    attempted_ids.add(track_id)
 
     try:
         _update_job(job_id, status="downloading")
@@ -2367,58 +2820,66 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             raise Exception(f"Failed to get track info for Monochrome track {track_id}")
 
         title = info.get("title", "Unknown")
+        if forced_track_title:
+            title = forced_track_title
         artist_obj = info.get("artist") or {}
         artist = artist_obj.get("name", "Unknown")
         album_obj = info.get("album") or {}
         album_title = album_obj.get("title", "Singles")
+        if forced_album_name:
+            album_title = forced_album_name
         cover_uuid = album_obj.get("cover", "")
         isrc = info.get("isrc", "")
 
         _update_job(job_id, title=title, artist=artist, uploader=artist)
 
         # Duplicate check  -  local filesystem first, then Navidrome, then Lidarr
-        existing_file = check_duplicate(artist, title, user_id=user_id)
-        if not existing_file:
-            existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
-        if not existing_file:
-            existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
-        # For playlist routing, a synthetic Navidrome sentinel path is unusable.
-        # Don't mark as "already exists" if we cannot actually append a path.
-        if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
-            existing_file = None
-        if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
-            # Track already exists somewhere  -  add it to the target playlist and call it done.
-            # Local paths guard with .exists(); absolute Navidrome real paths are trusted directly
-            # (MusicGrabber may not share Navidrome's filesystem view, but the M3U consumer does).
-            # The sentinel Path(title) is neither absolute nor locally present, so it's still skipped.
-            source_label = "library" if existing_file.exists() else "Navidrome"
-            error_label = f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
-            _update_job(
-                job_id,
-                status="completed",
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                error=error_label
-            )
-            real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
-            marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
-            if marked and (existing_file.is_absolute() or existing_file.exists()):
-                _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
-            return
-        elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
-            _update_job(
-                job_id,
-                status="completed",
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                error=f"Already exists: {_display_path(existing_file)}"
-            )
-            _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
-            return
+        if not skip_dupe_check:
+            existing_file = check_duplicate(artist, title, user_id=user_id)
+            if not existing_file:
+                existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
+            if not existing_file:
+                existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
+            # For playlist routing, a synthetic Navidrome sentinel path is unusable.
+            # Don't mark as "already exists" if we cannot actually append a path.
+            if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
+                existing_file = None
+            if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
+                # Track already exists somewhere  -  add it to the target playlist and call it done.
+                # Local paths guard with .exists(); absolute Navidrome real paths are trusted directly
+                # (MusicGrabber may not share Navidrome's filesystem view, but the M3U consumer does).
+                # The sentinel Path(title) is neither absolute nor locally present, so it's still skipped.
+                source_label = "library" if existing_file.exists() else "Navidrome"
+                error_label = f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
+                _update_job(
+                    job_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    error=error_label
+                )
+                real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
+                marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
+                if marked and (existing_file.is_absolute() or existing_file.exists()):
+                    _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+                return
+            elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
+                _update_job(
+                    job_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    error=f"Already exists: {_display_path(existing_file)}"
+                )
+                _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
+                return
 
         # Create download directory  -  respect playlist routing if requested
         playlists_dir = get_playlists_dir(user_id=user_id) if (use_playlists_dir and playlist_name) else None
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_filename(playlist_name)
             safe_title = _playlist_stem(artist, title, track_id)
+        elif override_dir:
+            artist_dir = Path(override_dir)
+            safe_title = _output_stem(artist, title, track_id, user_id=user_id)
         else:
             artist_dir = get_download_dir(artist, user_id=user_id)
             safe_title = _output_stem(artist, title, track_id, user_id=user_id)
@@ -2481,7 +2942,18 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             raise Exception(dur_reason)
 
         year = mb_metadata.get("year") if mb_metadata else None
-        apply_metadata_to_file(output_path, artist, title, album_title, year)
+        apply_metadata_to_file(
+            output_path,
+            artist,
+            title,
+            album_title,
+            year,
+            track_number=album_track_number,
+            track_total=album_track_total,
+            album_art_bytes=album_art_bytes,
+            album_art_mime=album_art_mime,
+            album_artist=forced_album_artist,
+        )
 
         # Convert FLAC to MP3/Opus if the user asked for that. Metadata is already embedded
         # in the FLAC so it survives the transcode. We do this after integrity checks and
@@ -2509,6 +2981,20 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                 # Conversion failed  -  keep the FLAC, better than nothing
                 print(f"Monochrome: ffmpeg conversion to {audio_fmt} failed, keeping FLAC")
 
+            # Re-apply metadata on converted files (some transcode paths can drop tags).
+            apply_metadata_to_file(
+                output_path,
+                artist,
+                title,
+                album_title,
+                year,
+                track_number=album_track_number,
+                track_total=album_track_total,
+                album_art_bytes=album_art_bytes,
+                album_art_mime=album_art_mime,
+                album_artist=forced_album_artist,
+            )
+
         # Lyrics
         lyrics = fetch_lyrics(artist, title)
         if lyrics:
@@ -2534,6 +3020,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         _mark_watched_artist_track_downloaded(job_id, resolved_path=output_path)
         if marked:
             _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
+            _refresh_album_m3u_if_present(override_dir)
         else:
             # Tidal served the wrong track (AcoustID disagreed). Clean up and let retry sort it.
             output_path.unlink(missing_ok=True)
@@ -2555,38 +3042,42 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
 
     except _MonochromeAllTiers403:
         # Track is geo-restricted or unlicensed on every Tidal quality tier.
-        # Fall back to YouTube rather than leaving the user with a failed job.
-        print(f"Monochrome: all tiers 403 for '{artist} - {title}', falling back to YouTube search")
+        # Retry with the next best untried candidate across all enabled sources.
+        print(f"Monochrome: all tiers 403 for '{artist} - {title}', searching all sources for fallback")
         try:
             query = f"{artist} - {title}" if artist and artist != "Unknown" else title
-            _update_job(job_id, error="Monochrome all tiers returned 403, trying YouTube fallback")
-            # Search YouTube directly  -  search_all merges sources by quality_score and Monochrome's
-            # lossless bonuses would push YouTube results out of the top-N slice every time.
-            yt_results, yt_reason = _search_youtube_for_monochrome_fallback(query, limit=5)
-            if not yt_results:
-                raise Exception(yt_reason or "No YouTube results found as fallback")
-            best = yt_results[0]
-            print(f"Monochrome fallback: using YouTube result '{best.get('title')}' ({best['video_id']})")
-            yt_video_id = best["video_id"]
+            _update_job(job_id, error="Monochrome all tiers returned 403, trying next best source")
+            best = _find_alternate_search_candidate(query, attempted_ids)
+            if not best:
+                raise Exception("No alternate source candidates available")
+            fallback_video_id = best["video_id"]
+            fallback_source = best.get("source", "youtube")
+            fallback_source_url = best.get("source_url")
+            print(
+                f"Monochrome fallback: using {fallback_source} result "
+                f"'{best.get('title')}' ({fallback_video_id})"
+            )
             _update_job(
                 job_id,
-                source="youtube",
-                video_id=yt_video_id,
-                source_url=best.get("source_url") or f"https://www.youtube.com/watch?v={yt_video_id}",
-                error="Monochrome all tiers returned 403, switched to YouTube fallback",
+                source=fallback_source,
+                video_id=fallback_video_id,
+                source_url=fallback_source_url,
+                error=f"Monochrome all tiers returned 403, switched to {fallback_source} fallback",
             )
-            # Re-use the same job, just route it through the YouTube path
-            process_download(job_id, yt_video_id, convert_to_flac,
-                             source_url=None, playlist_name=playlist_name,
-                             use_playlists_dir=use_playlists_dir, user_id=user_id)
+            # Re-use the same job, now routed through the next best candidate.
+            process_download(job_id, fallback_video_id, convert_to_flac,
+                             source_url=fallback_source_url, playlist_name=playlist_name,
+                             use_playlists_dir=use_playlists_dir, user_id=user_id,
+                             override_dir=override_dir, skip_dupe_check=skip_dupe_check,
+                             attempted_ids=attempted_ids)
         except Exception as fallback_err:
-            print(f"Monochrome YouTube fallback failed: {fallback_err}")
+            print(f"Monochrome fallback failed: {fallback_err}")
             _update_job(job_id, status="failed",
-                        error=f"Monochrome: all tiers restricted. YouTube fallback also failed: {fallback_err}",
+                        error=f"Monochrome: all tiers restricted. Cross-source fallback also failed: {fallback_err}",
                         completed_at=datetime.now(timezone.utc).isoformat())
             send_notification(notification_type="error", title=title, artist=artist,
                               source=source_label, status="failed",
-                              error="All Monochrome tiers restricted, YouTube fallback failed",
+                              error="All Monochrome tiers restricted, cross-source fallback failed",
                               user_id=user_id)
 
     except Exception as e:
@@ -2608,7 +3099,8 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
                                   convert_to_flac: bool = True,
                                   playlist_name: str = None, use_playlists_dir: bool = False,
                                   video_id: str = "", attempted_ids: set[str] | None = None,
-                                  user_id: str | None = None):
+                                  user_id: str | None = None, override_dir: str | None = None,
+                                  skip_dupe_check: bool = False):
     """Download a track from mp3phoenix.net directly, no yt-dlp required.
 
     The download_url is the full https://mp3phoenix.net/getmp3/... URL captured
@@ -2619,6 +3111,17 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
     source_label = "mp3phoenix"
     artist = artist_hint or "Unknown"
     title = title_hint or "Unknown"
+    album_ctx = _get_job_album_context(job_id)
+    if not override_dir and album_ctx.get("override_dir"):
+        override_dir = album_ctx["override_dir"]
+    forced_album_artist = album_ctx.get("album_artist")
+    forced_album_name = album_ctx.get("album_name")
+    forced_track_title = album_ctx.get("track_title")
+    if forced_track_title:
+        title = forced_track_title
+    album_track_number, album_track_total = _get_album_track_tag_context(job_id)
+    album_art_bytes, album_art_mime = _get_album_art_context(job_id)
+    _ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
     attempted_ids = set(attempted_ids or [])
     if video_id:
         attempted_ids.add(video_id)
@@ -2660,6 +3163,8 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             attempted_ids=attempted_ids,
             integrity_attempt=1,
             user_id=user_id,
+            override_dir=override_dir,
+            skip_dupe_check=skip_dupe_check,
         )
         return True
 
@@ -2667,44 +3172,48 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         _update_job(job_id, status="downloading", title=title, artist=artist, uploader=artist)
 
         # Duplicate check before touching the network
-        existing_file = check_duplicate(artist, title, user_id=user_id)
-        if not existing_file:
-            existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
-        if not existing_file:
-            existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
-        if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
-            existing_file = None
-        if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
-            src = "library" if existing_file.exists() else "Navidrome / Lidarr"
-            _update_job(
-                job_id,
-                status="completed",
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                error=f"Already exists in {src}: {_display_path(existing_file)} (added to playlist)"
-            )
-            real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
-            marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
-            if marked and (existing_file.is_absolute() or existing_file.exists()):
-                _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
-            return
-        elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
-            _update_job(
-                job_id,
-                status="completed",
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                error=f"Already exists: {_display_path(existing_file)}"
-            )
-            _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
-            return
+        if not skip_dupe_check:
+            existing_file = check_duplicate(artist, title, user_id=user_id)
+            if not existing_file:
+                existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
+            if not existing_file:
+                existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
+            if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
+                existing_file = None
+            if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
+                src = "library" if existing_file.exists() else "Navidrome / Lidarr"
+                _update_job(
+                    job_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    error=f"Already exists in {src}: {_display_path(existing_file)} (added to playlist)"
+                )
+                real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
+                marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
+                if marked and (existing_file.is_absolute() or existing_file.exists()):
+                    _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+                return
+            elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
+                _update_job(
+                    job_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    error=f"Already exists: {_display_path(existing_file)}"
+                )
+                _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
+                return
 
         # Resolve output path
         playlists_dir = get_playlists_dir(user_id=user_id) if (use_playlists_dir and playlist_name) else None
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_filename(playlist_name)
-            safe_title = _playlist_stem(artist, title, job_id)
+            safe_title = _playlist_stem(artist, forced_track_title or title, job_id)
+        elif override_dir:
+            artist_dir = Path(override_dir)
+            safe_title = _output_stem(artist, forced_track_title or title, job_id, user_id=user_id)
         else:
             artist_dir = get_download_dir(artist, user_id=user_id)
-            safe_title = _output_stem(artist, title, job_id, user_id=user_id)
+            safe_title = _output_stem(artist, forced_track_title or title, job_id, user_id=user_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download as MP3 first  -  we'll convert to FLAC below if requested
@@ -2784,8 +3293,20 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             raise Exception(dur_reason)
 
         year = mb_metadata.get("year") if mb_metadata else None
-        album = mb_metadata.get("album") if mb_metadata else None
-        apply_metadata_to_file(output_path, artist, title, album or "Singles", year)
+        album = forced_album_name or (mb_metadata.get("album") if mb_metadata else None)
+        title = forced_track_title or title
+        apply_metadata_to_file(
+            output_path,
+            artist,
+            title,
+            album or "Singles",
+            year,
+            track_number=album_track_number,
+            track_total=album_track_total,
+            album_art_bytes=album_art_bytes,
+            album_art_mime=album_art_mime,
+            album_artist=forced_album_artist,
+        )
 
         lyrics = fetch_lyrics(artist, title)
         if lyrics:
@@ -2809,6 +3330,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         _mark_watched_artist_track_downloaded(job_id, resolved_path=output_path)
         if marked:
             _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
+            _refresh_album_m3u_if_present(override_dir)
 
         print(f"mp3phoenix: Downloaded {artist} - {title}")
 
@@ -2877,13 +3399,16 @@ def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_
 def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, source_url: str = None,
                      playlist_name: str = None, use_playlists_dir: bool = False,
                      attempted_ids: set[str] | None = None, integrity_attempt: int = 1,
-                     user_id: str | None = None):
+                     user_id: str | None = None, override_dir: str | None = None,
+                     skip_dupe_check: bool = False):
     """Process a download job.
 
     source_url overrides the default YouTube URL construction  -  used for
     SoundCloud and any future yt-dlp-supported source.
     Monochrome and mp3phoenix tracks bypass yt-dlp entirely and download directly.
     playlist_name + use_playlists_dir route bulk import tracks into the Playlists folder.
+    override_dir, when set, is an absolute path string used as the download directory
+    instead of the normal Singles/Artist layout  -  used by album downloads.
     """
     is_soundcloud = source_url and "soundcloud.com" in source_url
     is_monochrome = source_url and "monochrome.tf" in source_url
@@ -2892,10 +3417,29 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
     attempted_ids = set(attempted_ids or [])
     attempted_ids.add(video_id)
+    album_ctx = _get_job_album_context(job_id)
+    if not override_dir and album_ctx.get("override_dir"):
+        override_dir = album_ctx["override_dir"]
+    forced_album_artist = album_ctx.get("album_artist")
+    forced_album_name = album_ctx.get("album_name")
+    forced_track_title = album_ctx.get("track_title")
+    album_track_number, album_track_total = _get_album_track_tag_context(job_id)
+    album_art_bytes, album_art_mime = _get_album_art_context(job_id)
+    _ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
 
     # Monochrome gets its own dedicated download path  -  no yt-dlp needed
     if is_monochrome:
-        _process_monochrome_download(job_id, video_id, convert_to_flac, playlist_name, use_playlists_dir, user_id=user_id)
+        _process_monochrome_download(
+            job_id,
+            video_id,
+            convert_to_flac,
+            playlist_name,
+            use_playlists_dir,
+            user_id=user_id,
+            override_dir=override_dir,
+            skip_dupe_check=skip_dupe_check,
+            attempted_ids=attempted_ids,
+        )
         return
 
     # mp3phoenix: direct HTTP stream, no yt-dlp needed.
@@ -2912,6 +3456,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             job_id, source_url, artist_hint, title_hint,
             convert_to_flac, playlist_name, use_playlists_dir,
             video_id=video_id, attempted_ids=attempted_ids, user_id=user_id,
+            override_dir=override_dir, skip_dupe_check=skip_dupe_check,
         )
         return
 
@@ -2961,56 +3506,63 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         full_title = info.get("title", "Unknown")
         channel = info.get("uploader", info.get("channel", "Unknown")) if is_url_source else info.get("channel", info.get("uploader", "Unknown"))
         artist, title = extract_artist_title(full_title, channel)
+        if forced_track_title:
+            title = forced_track_title
 
         # Update job with extracted info (store raw uploader for blacklist reporting)
         _update_job(job_id, title=title, artist=artist, uploader=channel)
 
         # Duplicate check  -  local filesystem first, then Navidrome, then Lidarr
-        existing_file = check_duplicate(artist, title, user_id=user_id)
-        if not existing_file:
-            existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
-        if not existing_file:
-            existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
-        # For playlist routing, a synthetic Navidrome sentinel path is unusable.
-        # Don't mark as "already exists" if we cannot actually append a path.
-        if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
-            existing_file = None
-        if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
-            # Track already exists somewhere  -  add it to the target playlist and call it done.
-            # Local paths guard with .exists(); absolute Navidrome real paths are trusted directly
-            # (MusicGrabber may not share Navidrome's filesystem view, but the M3U consumer does).
-            # The sentinel Path(title) is neither absolute nor locally present, so it's still skipped.
-            source_label = "library" if existing_file.exists() else "Navidrome"
-            error_label = f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
-            _update_job(
-                job_id,
-                status="completed",
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                error=error_label
-            )
-            real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
-            marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
-            if marked and (existing_file.is_absolute() or existing_file.exists()):
-                _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
-            return
-        elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
-            _update_job(
-                job_id,
-                status="completed",
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                error=f"Already exists: {_display_path(existing_file)}"
-            )
-            _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
-            return
+        # Skipped when override_dir is set (e.g. album mode) and skip_dupe_check is True.
+        if not skip_dupe_check:
+            existing_file = check_duplicate(artist, title, user_id=user_id)
+            if not existing_file:
+                existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
+            if not existing_file:
+                existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
+            # For playlist routing, a synthetic Navidrome sentinel path is unusable.
+            # Don't mark as "already exists" if we cannot actually append a path.
+            if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
+                existing_file = None
+            if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
+                # Track already exists somewhere  -  add it to the target playlist and call it done.
+                # Local paths guard with .exists(); absolute Navidrome real paths are trusted directly
+                # (MusicGrabber may not share Navidrome's filesystem view, but the M3U consumer does).
+                # The sentinel Path(title) is neither absolute nor locally present, so it's still skipped.
+                source_label = "library" if existing_file.exists() else "Navidrome"
+                error_label = f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
+                _update_job(
+                    job_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    error=error_label
+                )
+                real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
+                marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
+                if marked and (existing_file.is_absolute() or existing_file.exists()):
+                    _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+                return
+            elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
+                _update_job(
+                    job_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    error=f"Already exists: {_display_path(existing_file)}"
+                )
+                _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
+                return
 
-        # Create download directory  -  either Playlists/Name/ or the standard Singles layout
+        # Create download directory  -  Playlists/Name/, album override dir, or standard Singles layout
         playlists_dir = get_playlists_dir(user_id=user_id) if (use_playlists_dir and playlist_name) else None
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_filename(playlist_name)
-            safe_title = _playlist_stem(artist, title, video_id)
+            safe_title = _playlist_stem(artist, forced_track_title or title, video_id)
+        elif override_dir:
+            artist_dir = Path(override_dir)
+            safe_title = _output_stem(artist, forced_track_title or title, video_id, user_id=user_id)
         else:
             artist_dir = get_download_dir(artist, user_id=user_id)
-            safe_title = _output_stem(artist, title, video_id, user_id=user_id)
+            safe_title = _output_stem(artist, forced_track_title or title, video_id, user_id=user_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download with best audio quality
@@ -3084,6 +3636,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                     attempted_ids=attempted_ids,
                     integrity_attempt=integrity_attempt + 1,
                     user_id=user_id,
+                    override_dir=override_dir,
+                    skip_dupe_check=skip_dupe_check,
                 )
 
             _note_blacklist_entry(
@@ -3116,11 +3670,17 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         attempted_ids=attempted_ids,
                         integrity_attempt=1,
                         user_id=user_id,
+                        override_dir=override_dir,
+                        skip_dupe_check=skip_dupe_check,
                     )
 
             raise Exception(
                 f"Downloaded audio failed integrity checks and no alternate candidate succeeded: {integrity_reason}"
             )
+
+        # In album mode with conversion off, yt-dlp often leaves .webm files, which
+        # are awkward to tag. Remux to .opus/.ogg (stream copy) so tags/art can land.
+        audio_file = _remux_album_webm_for_tagging(audio_file, override_dir)
 
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(audio_file)
@@ -3159,6 +3719,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         attempted_ids=attempted_ids,
                         integrity_attempt=1,
                         user_id=user_id,
+                        override_dir=override_dir,
+                        skip_dupe_check=skip_dupe_check,
                     )
             raise Exception(dur_reason)
 
@@ -3166,10 +3728,17 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             metadata_source = mb_metadata.get("metadata_source", metadata_source)
             mb_artist = mb_metadata.get("artist", artist)
             mb_title = mb_metadata.get("title", title)
+            tag_title = forced_track_title or mb_title
+            tag_album = forced_album_name or mb_metadata.get("album", "")
             apply_metadata_to_file(
-                audio_file, mb_artist, mb_title,
-                mb_metadata.get("album", ""),
-                mb_metadata.get("year")
+                audio_file, mb_artist, tag_title,
+                tag_album,
+                mb_metadata.get("year"),
+                track_number=album_track_number,
+                track_total=album_track_total,
+                album_art_bytes=album_art_bytes,
+                album_art_mime=album_art_mime,
+                album_artist=forced_album_artist,
             )
             # Use the canonical artist/title from MusicBrainz everywhere
             if mb_artist != artist:
@@ -3177,11 +3746,22 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 if not playlists_dir:
                     audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist, user_id=user_id)
                 artist = mb_artist
-            if mb_title != title:
-                title = mb_title
+            title = tag_title
             _update_job(job_id, artist=artist, title=title)
         else:
-            apply_metadata_to_file(audio_file, artist, title)
+            tag_title = forced_track_title or title
+            apply_metadata_to_file(
+                audio_file,
+                artist,
+                tag_title,
+                forced_album_name or "",
+                track_number=album_track_number,
+                track_total=album_track_total,
+                album_art_bytes=album_art_bytes,
+                album_art_mime=album_art_mime,
+                album_artist=forced_album_artist,
+            )
+            title = tag_title
 
         # Fetch and save lyrics
         lyrics = fetch_lyrics(artist, title)
@@ -3208,6 +3788,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         _mark_watched_artist_track_downloaded(job_id, resolved_path=audio_file)
         if marked:
             _append_to_physical_m3u(audio_file, playlist_name, use_playlists_dir)
+            _refresh_album_m3u_if_present(override_dir)
         else:
             # Wrong track downloaded (AcoustID/MusicBrainz identified it as something else).
             # Delete the file (and any lyrics) so the library isn't polluted, and flip the

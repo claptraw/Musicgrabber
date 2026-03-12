@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.4.0 (dev)
+
+### Added
+- **Album Download tab**: Dedicated tab for intentional album downloads. Search for an artist via MusicBrainz, pick an album, preview the tracklist, and download the lot. Files land at `Albums/Artist/Album/Track.flac` rather than rattling around in Singles. Optional M3U generation included.
+- **Configurable Albums folder**: New `Albums folder` setting in Settings (alongside Singles and Playlists). Defaults to `Albums` under your music directory. Leave it blank to dump everything in the same place as Singles.
+- **Album existing-track precheck + partial queueing**: After selecting an album, MusicGrabber now checks the destination album folder and shows how many tracks already exist. Downloading queues only missing tracks and skips the rest. If all tracks already exist, nothing is queued and the UI clearly says so.
+- **Albums completion reset action**: A `Search Another Album` button now fades in after album completion (or already-complete detection). It resets the album flow and scrolls back to the top of the Albums tab.
+- **Albums expectation note**: Added an advisory note under the artist search input explaining Album mode is best-effort track sourcing, not exact release mirroring, and recommending Lidarr/Soulseek for strict album acquisition workflows.
+- **Album art embedding for album mode**: Album downloads now use the selected MusicBrainz release MBID to fetch front cover art from Cover Art Archive and embed it into each downloaded track's metadata (FLAC, MP3, M4A/MP4, and OGG/Opus where supported).
+- **Unified "Add to..." destination picker**: The separate "Add to playlist" and "Add to album" chips in search results are merged into a single "Add to..." button. Choosing Album browses the Albums directory on disk by artist then album folder, reads the `.albuminfo` sidecar to get the MusicBrainz release context, and auto-matches the track. Manual track override is available if auto-match can't place it.
+- **`.albuminfo` sidecar file**: Albums created via the Albums tab now write a hidden `.albuminfo` JSON file into the album directory (artist, album title, MusicBrainz release MBID). Survives DB wipes and is used by the new picker to restore full album context without guessing from a folder name.
+
+### Fixed
+- **`/api/playlists` 500 error**: Broken or stale mounts under the Playlists directory (e.g. a dead NFS share returning `OSError: [Errno 22] Invalid argument`) no longer crash the endpoint. Returns an empty list instead of exploding.
+- **Albums folder custom path not persisting**: Typed custom Albums paths now save correctly and survive refresh/restart instead of snapping back to `Albums`.
+- **Albums artist chips spacing/layout**: Artist result buttons in Albums were still cramped because JS forced `display:block` inline, overriding layout CSS. The inline override was removed so flex wrapping/gaps apply consistently.
+- **Album metadata missing track numbers**: Album downloads now embed per-track `track_number` and album `track_total` tags when writing metadata.
+- **Album mode duplicate handling during source fallback**: Album downloads now preserve duplicate-check bypass behavior throughout fallback/retry paths, preventing partial album runs from being blocked by single-track duplicate guards.
+- **Monochrome all-tier-403 fallback too narrow**: Monochrome 403 fallback no longer jumps straight to YouTube-only. It now searches for alternate candidates across sources and retries with the next best untried match first.
+- **Album-mode false positives (covers/tributes) in candidate selection**: Album matching now applies stricter artist/channel relevance checks to reduce bad picks like piano/tribute substitutions when looking for original album tracks.
+- **Album M3U creation race + location**: In some album runs, `Generate M3U playlist` was enabled but no playlist file was produced because the worker read stale flags at startup. Completion now re-reads the final `create_playlist` state, and album M3Us are rebuilt directly in the selected album folder (`Albums/Artist/Album/`) every time.
+- **Album mode ignored convert toggle**: The Albums tab download request was hardcoded with `convert_to_flac: true`, so tracks converted even when conversion was turned off. Album downloads now follow the global convert toggle correctly.
+- **Scheduler double-start race**: Both the watched playlist and watched artist schedulers could be started twice in quick succession (e.g. app startup + first API call) because the `_scheduler_running` flag was checked without a lock. Added `threading.Lock()` around the start guard in both schedulers.
+- **Album remux: empty output file not caught**: If ffmpeg produced a zero-byte output file while still returning exit code 0, the original WebM would be deleted and nothing useful kept. The remux check now also verifies non-zero output size before unlinking the source.
+- **`_update_job()` unvalidated column names**: Job update calls used string concatenation for the `SET` clause with no column whitelist. Column names are now validated against a known-good frozenset before the query is built.
+- **Album `track_total` tag wrong on partial downloads**: If only some tracks were missing (e.g. 3 of 12), those tracks got tagged `3/3` instead of `3/12` because the count came from the bulk import batch size rather than the full album. A new `album_total_tracks` column on `bulk_imports` stores the real count and it's now used for all TRACKTOTAL tags.
+- **Album double-queue on impatient re-submit**: Clicking Download Album twice in quick succession (before any files had arrived) would queue the same tracks twice and both downloads would race each other to the same files. The endpoint now checks for an in-flight import against the same album directory and returns the existing import ID instead of starting a new one.
+- **Album M3U missing track info**: Album playlist files were bare filename lists with no duration or display title. They now include proper `#EXTINF` entries (duration + title tag) so players show correct metadata immediately without waiting for a library scan.
+- **Album track fuzzy match too loose**: The fallback matcher for mapping a search result title to an album tracklist could fire on a single shared token (e.g. "My" from "My Love"). Threshold tightened to require ≥80% of the shorter token set to overlap, floored at 2 tokens.
+- **Download Album button stays active-looking when disabled**: Added a proper `:disabled` CSS rule to `.bulk-import-btn` so the button visibly greys out when an album is queuing, downloading, or complete.
+- **Monochrome duplicate results for same track**: Search results could show two Monochrome entries for the same recording (one `HI_RES_LOSSLESS`, one `LOSSLESS`) as separate cards. Results are now deduplicated by ISRC, keeping the highest-quality entry and awarding it a +20 score bonus. The download path already tries HI_RES first regardless of which card you click, so the duplicates were just noise.
+
+### Changed
+- **Album download endpoint behavior**: `/api/albums/download` now returns richer status for existing-vs-missing tracks (`existing_count`, `missing_count`, `queued_count`, warning text), enabling better UI messaging and no-op handling when an album is already complete.
+- **`/api/albums/download` now typed**: The endpoint uses a proper `AlbumDownloadRequest` Pydantic model instead of an unvalidated raw dict.
+
+
 ## v2.3.5 (2026-03-10)
 
 ### Added

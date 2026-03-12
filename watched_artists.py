@@ -7,6 +7,7 @@ Mirrors the watched playlists pattern: lock, fetch, diff, queue, done.
 
 import random
 import sqlite3
+import threading
 import time
 
 from constants import WATCHED_PLAYLIST_CHECK_HOURS, WATCHED_REFRESH_STALE_SECONDS
@@ -17,6 +18,7 @@ from utils import hash_track, spawn_daemon_thread, check_duplicate
 
 
 _scheduler_running = False
+_scheduler_lock = threading.Lock()
 
 
 def refresh_watched_artist(artist_id: str) -> dict:
@@ -259,9 +261,6 @@ def refresh_watched_artist(artist_id: str) -> dict:
 
 def watched_artist_scheduler():
     """Background thread that periodically checks watched artists for new singles."""
-    global _scheduler_running
-    _scheduler_running = True
-
     print(f"Watched artist scheduler started (checking every {WATCHED_PLAYLIST_CHECK_HOURS} hours)")
 
     # Let the main scheduler go first
@@ -310,7 +309,9 @@ def start_artist_scheduler():
         print("Watched artist scheduler disabled (WATCHED_PLAYLIST_CHECK_HOURS=0)")
         return
 
-    if _scheduler_running:
-        return
+    with _scheduler_lock:
+        if _scheduler_running:
+            return
+        _scheduler_running = True
 
     spawn_daemon_thread(watched_artist_scheduler)

@@ -10,6 +10,7 @@ import random
 import re
 import sqlite3
 import subprocess
+import threading
 import time
 
 from fastapi import HTTPException
@@ -955,13 +956,11 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
 # =============================================================================
 
 _scheduler_running = False
+_scheduler_lock = threading.Lock()
 
 
 def watched_playlist_scheduler():
     """Background thread that periodically checks watched playlists"""
-    global _scheduler_running
-    _scheduler_running = True
-
     print(f"Watched playlist scheduler started (checking every {WATCHED_PLAYLIST_CHECK_HOURS} hours)")
 
     # Brief delay to let the app fully initialise, then check immediately
@@ -1013,7 +1012,9 @@ def start_scheduler():
         print("Watched playlist scheduler disabled (WATCHED_PLAYLIST_CHECK_HOURS=0)")
         return
 
-    if _scheduler_running:
-        return
+    with _scheduler_lock:
+        if _scheduler_running:
+            return
+        _scheduler_running = True
 
     spawn_daemon_thread(watched_playlist_scheduler)

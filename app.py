@@ -4,6 +4,7 @@ Music Grabber - A self-hosted music acquisition service
 Searches YouTube, downloads best quality audio with optional conversion to FLAC, drops into Navidrome library
 """
 
+import contextlib
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import sqlite3
 import subprocess
 import tempfile
 import uuid
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +39,7 @@ from constants import (
 from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs, cleanup_old_search_logs
 from settings import (
     get_setting, get_setting_bool, set_setting, set_user_setting, get_singles_dir, get_playlists_dir,
+    get_albums_dir,
     SETTINGS_SCHEMA, SENSITIVE_SETTINGS, USER_SETTINGS_KEYS, _get_typed_setting, _is_env_override,
 )
 from models import (
@@ -46,7 +49,7 @@ from models import (
     SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestLidarrRequest, TestYouTubeCookiesRequest,
     TestAppriseRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest,
-    ExploreRequest,
+    AlbumDownloadRequest, ExploreRequest,
     LoginRequest, ChangePasswordRequest, CreateUserRequest,
     SetUserPasswordRequest, SetUserRoleRequest,
     DownloadTokenRequest,
@@ -67,7 +70,7 @@ from search import search_source, search_all, get_available_sources, SOURCE_REGI
 from slskd import slskd_enabled, search_slskd
 from downloads import (
     process_download, process_playlist_download, process_slskd_download,
-    rebuild_watched_playlist_m3u,
+    rebuild_watched_playlist_m3u, rebuild_album_m3u,
 )
 from bulk_import import clean_bulk_import_line, start_bulk_import_for_tracks, process_bulk_import_worker
 from watched_playlists import (
@@ -75,8 +78,8 @@ from watched_playlists import (
     fetch_listenbrainz_createdfor, start_scheduler,
 )
 from watched_artists import refresh_watched_artist, start_artist_scheduler
-from metadata import search_artist_mbid
-from utils import hash_track, is_valid_youtube_id, spawn_daemon_thread, subsonic_auth_params
+from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks
+from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 
 URL_BASED_SOURCES = {"soundcloud", "monochrome", "mp3phoenix"}
 
@@ -130,6 +133,11 @@ app.add_middleware(AuthMiddleware)
 def root():
     """Serve the main UI"""
     return FileResponse("static/index.html")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse("static/favicon.png", media_type="image/png")
 
 def _is_volume_mounted() -> bool:
     """Check if MUSIC_DIR appears to be a mounted volume.
@@ -284,7 +292,11 @@ def list_playlists(http_request: Request):
     # Physical .m3u files from Playlists dir (lowest priority)
     playlists_dir = get_playlists_dir(user_id=user_id)
     if playlists_dir and playlists_dir.exists():
-        for m3u in sorted(playlists_dir.rglob("*.m3u"), key=lambda p: p.stem.casefold()):
+        try:
+            m3u_files = sorted(playlists_dir.rglob("*.m3u"), key=lambda p: p.stem.casefold())
+        except OSError:
+            m3u_files = []
+        for m3u in m3u_files:
             name = m3u.stem
             results[name] = {
                 "name": name,
@@ -577,8 +589,8 @@ def update_settings(updates: SettingsUpdate, request: Request):
         else:
             value = str(value)
 
-        # Validate singles_subdir / playlists_subdir to keep writes under MUSIC_DIR.
-        if key in ("singles_subdir", "playlists_subdir"):
+        # Validate subfolder settings to keep writes under MUSIC_DIR.
+        if key in ("singles_subdir", "playlists_subdir", "albums_subdir"):
             raw = value.strip().replace("\\", "/")
             if raw == "." or raw == "":
                 value = raw
@@ -590,7 +602,12 @@ def update_settings(updates: SettingsUpdate, request: Request):
                 ]
                 if any(part == ".." for part in parts):
                     raise HTTPException(status_code=400, detail=f"Invalid {key.replace('_', ' ')} path")
-                value = "/".join(parts) or ("Singles" if key == "singles_subdir" else "Playlists")
+                default_subdir = {
+                    "singles_subdir": "Singles",
+                    "playlists_subdir": "Playlists",
+                    "albums_subdir": "Albums",
+                }[key]
+                value = "/".join(parts) or default_subdir
                 try:
                     (MUSIC_DIR / value).resolve().relative_to(MUSIC_DIR.resolve())
                 except ValueError:
@@ -1550,20 +1567,53 @@ def download(body: DownloadRequest, http_request: Request):
         else:
             source_url = f"https://www.youtube.com/watch?v={body.video_id}" if body.video_id else None
 
+        album_release_mbid = (body.album_release_mbid or "").strip() or None
+        album_artist = (body.album_artist or "").strip() or None
+        album_name = (body.album_name or "").strip() or None
+        album_track_title = (body.album_track_title or "").strip() or None
+        album_track_number = int(body.album_track_number) if body.album_track_number else None
+        album_track_total = int(body.album_track_total) if body.album_track_total else None
+        if album_track_number is not None and album_track_number <= 0:
+            album_track_number = None
+        if album_track_total is not None and album_track_total <= 0:
+            album_track_total = None
+        override_dir = None
+
+        album_fields_present = any([album_release_mbid, album_artist, album_name, album_track_title, album_track_number, album_track_total])
+        if album_fields_present:
+            if body.download_type == "playlist":
+                raise HTTPException(status_code=400, detail="Album routing cannot be used with playlist downloads")
+            if not album_release_mbid or not album_name or not album_track_title:
+                raise HTTPException(status_code=400, detail="album_release_mbid, album_name, and album_track_title are required for album routing")
+            route_artist = album_artist or (artist or "").strip()
+            if not route_artist:
+                raise HTTPException(status_code=400, detail="album_artist (or artist) is required for album routing")
+            override_dir = str(get_albums_dir(user_id=user_id) / sanitize_filename(route_artist) / sanitize_filename(album_name))
+
         valid_search_token = _validated_search_token(body.search_token, user_id=user_id)
 
         if body.download_type == "playlist":
             conn.execute(
-                """INSERT INTO jobs (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac, source_url, search_token, user_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (job_id, body.video_id, title, "queued", "playlist", title, "youtube", int(body.convert_to_flac), source_url, valid_search_token, user_id)
+                """INSERT INTO jobs
+                   (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac, source_url, search_token, user_id,
+                    override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    job_id, body.video_id, title, "queued", "playlist", title, "youtube", int(body.convert_to_flac), source_url, valid_search_token, user_id,
+                    None, None, None, None, None, None,
+                )
             )
         else:
             conn.execute(
-                """INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, convert_to_flac, source_url, search_token, user_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (job_id, body.video_id, title, artist or "", "queued", "single", source,
-                 body.slskd_username, body.slskd_filename, int(body.convert_to_flac), source_url, valid_search_token, user_id)
+                """INSERT INTO jobs
+                   (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, convert_to_flac, source_url, search_token, user_id,
+                    override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    job_id, body.video_id, title, artist or "", "queued", "single", source,
+                    body.slskd_username, body.slskd_filename, int(body.convert_to_flac), source_url, valid_search_token, user_id,
+                    override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total,
+                )
             )
         conn.commit()
 
@@ -1581,6 +1631,7 @@ def download(body: DownloadRequest, http_request: Request):
             title,
             body.convert_to_flac,
             user_id=user_id,
+            override_dir=override_dir,
         )
     elif source in URL_BASED_SOURCES:
         spawn_daemon_thread(
@@ -1589,6 +1640,8 @@ def download(body: DownloadRequest, http_request: Request):
             playlist_name=body.playlist_name,
             use_playlists_dir=body.use_playlists_dir,
             user_id=user_id,
+            override_dir=override_dir,
+            skip_dupe_check=bool(override_dir),
         )
     else:
         spawn_daemon_thread(
@@ -1596,6 +1649,8 @@ def download(body: DownloadRequest, http_request: Request):
             playlist_name=body.playlist_name,
             use_playlists_dir=body.use_playlists_dir,
             user_id=user_id,
+            override_dir=override_dir,
+            skip_dupe_check=bool(override_dir),
         )
 
     return {"job_id": job_id, "status": "queued"}
@@ -1846,12 +1901,29 @@ def retry_job(job_id: str, http_request: Request):
             job.get("title", ""),
             convert_to_flac,
             user_id=user_id,
+            override_dir=job.get("override_dir"),
         )
     elif job.get("source") in URL_BASED_SOURCES and job.get("source_url"):
-        spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac, source_url=job["source_url"],
-                            user_id=user_id)
+        spawn_daemon_thread(
+            process_download,
+            job_id,
+            job["video_id"],
+            convert_to_flac,
+            source_url=job["source_url"],
+            user_id=user_id,
+            override_dir=job.get("override_dir"),
+            skip_dupe_check=bool(job.get("override_dir")),
+        )
     else:
-        spawn_daemon_thread(process_download, job_id, job["video_id"], convert_to_flac, user_id=user_id)
+        spawn_daemon_thread(
+            process_download,
+            job_id,
+            job["video_id"],
+            convert_to_flac,
+            user_id=user_id,
+            override_dir=job.get("override_dir"),
+            skip_dupe_check=bool(job.get("override_dir")),
+        )
 
     return {"job_id": job_id, "status": "queued"}
 
@@ -3000,6 +3072,393 @@ def check_all_watched_artists(http_request: Request):
         "checked": len(results),
         "total_new_tracks": total_new,
         "results": results,
+    }
+
+
+# =============================================================================
+# Album Download Routes
+# =============================================================================
+
+@app.get("/api/albums/search-artist")
+def albums_search_artist(q: str):
+    """Search MusicBrainz for an artist by name.
+
+    Returns up to 5 candidates with mbid, name, disambiguation, and score.
+    """
+    if not q or not q.strip():
+        raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
+    results = search_artist_mbid(q.strip())
+    return {"artists": results}
+
+
+@app.get("/api/albums/artist/{mbid}/albums")
+def albums_list_artist_albums(mbid: str):
+    """Fetch studio albums for a MusicBrainz artist MBID.
+
+    Returns [{title, year, release_mbid}, ...] sorted by year.
+    """
+    if not mbid or not mbid.strip():
+        raise HTTPException(status_code=400, detail="Artist MBID is required")
+    albums = fetch_artist_albums(mbid.strip())
+    return {"albums": albums}
+
+
+@app.get("/api/albums/release/{release_mbid}/tracks")
+def albums_get_tracklist(release_mbid: str):
+    """Fetch the tracklist for a MusicBrainz release MBID.
+
+    Returns [{position, title}, ...] in track order.
+    """
+    if not release_mbid or not release_mbid.strip():
+        raise HTTPException(status_code=400, detail="Release MBID is required")
+    tracks = fetch_album_tracks(release_mbid.strip())
+    if not tracks:
+        raise HTTPException(status_code=404, detail="No tracks found for this release")
+    return {"tracks": tracks}
+
+
+def _album_track_stem(artist: str, title: str, user_id: str | None = None) -> str:
+    """Build the expected filename stem for an album track in override_dir mode."""
+    from utils import sanitize_filename
+    safe_title = sanitize_filename(title or "") or "Unknown Title"
+    if not get_setting_bool("organise_by_artist", True, user_id=user_id):
+        safe_artist = sanitize_filename(artist or "Unknown Artist")
+        return f"{safe_artist} - {safe_title}"
+    return safe_title
+
+
+def _album_track_status(artist: str, album_title: str, tracks: list[dict], user_id: str | None = None) -> dict:
+    """Return existing/missing status for tracklist against the target album directory."""
+    from utils import sanitize_filename
+
+    album_dir = get_albums_dir(user_id=user_id) / sanitize_filename(artist) / sanitize_filename(album_title)
+    audio_files = [p for p in album_dir.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS] if album_dir.exists() else []
+    audio_stems = [p.stem for p in audio_files]
+
+    track_status = []
+    for t in tracks:
+        title = (t.get("title") or "").strip()
+        stem = _album_track_stem(artist, title, user_id=user_id)
+        exists_exact = any((album_dir / f"{stem}{ext}").exists() for ext in AUDIO_EXTENSIONS)
+        exists_fuzzy = False
+        if not exists_exact:
+            norm_title = _normalise_album_match_text(title)
+            if norm_title:
+                for file_stem in audio_stems:
+                    norm_stem = _normalise_album_match_text(file_stem)
+                    if not norm_stem:
+                        continue
+                    if norm_stem == norm_title or norm_stem.endswith(f" {norm_title}"):
+                        exists_fuzzy = True
+                        break
+        exists = bool(exists_exact or exists_fuzzy)
+        track_status.append({
+            "position": t.get("position"),
+            "title": title,
+            "exists": exists,
+        })
+
+    existing_tracks = [t for t in track_status if t["exists"]]
+    missing_tracks = [t for t in track_status if not t["exists"]]
+    m3u_files = sorted([p.name for p in album_dir.glob("*.m3u") if p.is_file()], key=str.casefold) if album_dir.exists() else []
+    return {
+        "album_dir": album_dir,
+        "tracks": track_status,
+        "existing_tracks": existing_tracks,
+        "missing_tracks": missing_tracks,
+        "m3u_files": m3u_files,
+    }
+
+
+def _normalise_album_match_text(text: str) -> str:
+    """Normalise track titles for album-track matching."""
+    t = clean_title(text or "")
+    t = t.replace("’", "'").replace("‘", "'").replace("`", "'")
+    t = unicodedata.normalize("NFKD", t)
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
+    t = re.sub(r"\b(?:feat\.?|ft\.?|featuring)\b.*$", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s*[\(\[].*?[\)\]]", "", t)
+    t = re.sub(r"[^a-z0-9]+", " ", t.lower())
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _match_album_track(tracks: list[dict], candidate_title: str) -> dict | None:
+    """Return a single best album track match for a candidate title."""
+    cand = _normalise_album_match_text(candidate_title)
+    if not cand:
+        return None
+
+    exact = [t for t in tracks if _normalise_album_match_text(t.get("title") or "") == cand]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        return None
+
+    cand_tokens = set(cand.split())
+    fuzzy = []
+    for t in tracks:
+        tn = _normalise_album_match_text(t.get("title") or "")
+        if not tn:
+            continue
+        t_tokens = set(tn.split())
+        overlap = len(cand_tokens & t_tokens)
+        # Require ≥80% of the shorter token set to overlap; floor at 2 tokens to
+        # avoid matching on coincidental single words in short titles like "My Love".
+        min_overlap = max(2, round(0.8 * min(len(cand_tokens), len(t_tokens))))
+        if overlap >= min_overlap:
+            fuzzy.append((overlap, t))
+    if len(fuzzy) == 1:
+        return fuzzy[0][1]
+    return None
+
+
+@app.post("/api/albums/release/{release_mbid}/match-track")
+def albums_match_track(release_mbid: str, body: dict):
+    """Match a candidate song to a specific track on the selected album."""
+    title = (body.get("title") or "").strip()
+    candidate_artist = (body.get("artist") or "").strip()
+    album_artist = (body.get("album_artist") or "").strip()
+    if not release_mbid or not release_mbid.strip():
+        raise HTTPException(status_code=400, detail="Release MBID is required")
+    if not title:
+        raise HTTPException(status_code=400, detail="Track title is required")
+
+    if candidate_artist and album_artist:
+        cand_artist_n = _normalise_album_match_text(candidate_artist)
+        album_artist_n = _normalise_album_match_text(album_artist)
+        if cand_artist_n and album_artist_n:
+            cand_tokens = {t for t in cand_artist_n.split() if len(t) > 1}
+            album_tokens = {t for t in album_artist_n.split() if len(t) > 1}
+            if album_tokens and not album_tokens.issubset(cand_tokens):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Result artist '{candidate_artist}' does not match selected album artist '{album_artist}'",
+                )
+
+    tracks = fetch_album_tracks(release_mbid.strip())
+    if not tracks:
+        raise HTTPException(status_code=404, detail="No tracks found for this release")
+
+    matched = _match_album_track(tracks, title)
+    if not matched:
+        raise HTTPException(status_code=422, detail=f"No album-track match found for '{title}'")
+
+    try:
+        track_number = int((matched.get("position") or "").strip())
+    except Exception:
+        track_number = None
+
+    return {
+        "matched": True,
+        "track_title": (matched.get("title") or "").strip(),
+        "track_number": track_number,
+        "track_total": len(tracks),
+    }
+
+
+@app.get("/api/albums/release/{release_mbid}/missing")
+def albums_missing_tracks(release_mbid: str, artist: str, album_title: str, request: Request):
+    """Report which tracks are already present on disk for a selected album."""
+    artist = (artist or "").strip()
+    album_title = (album_title or "").strip()
+    if not release_mbid or not release_mbid.strip():
+        raise HTTPException(status_code=400, detail="Release MBID is required")
+    if not artist or not album_title:
+        raise HTTPException(status_code=400, detail="artist and album_title are required")
+
+    tracks = fetch_album_tracks(release_mbid.strip())
+    if not tracks:
+        raise HTTPException(status_code=404, detail="No tracks found for this release")
+
+    user_id = getattr(request.state, "user_id", None)
+    status = _album_track_status(artist, album_title, tracks, user_id=user_id)
+    return {
+        "album_dir": str(status["album_dir"]),
+        "total_tracks": len(status["tracks"]),
+        "tracks": status["tracks"],
+        "existing_count": len(status["existing_tracks"]),
+        "missing_count": len(status["missing_tracks"]),
+        "existing_tracks": status["existing_tracks"],
+        "missing_tracks": status["missing_tracks"],
+        "has_existing_m3u": bool(status["m3u_files"]),
+        "existing_m3u_files": status["m3u_files"],
+    }
+
+
+@app.get("/api/albums/dirs")
+def albums_list_artists(request: Request):
+    """List artist folders found under the Albums directory on disk."""
+    user_id = getattr(request.state, "user_id", None)
+    base = get_albums_dir(user_id=user_id)
+    if not base.exists():
+        return {"artists": []}
+    artists = sorted(
+        [d.name for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")],
+        key=str.casefold,
+    )
+    return {"artists": artists}
+
+
+@app.get("/api/albums/dirs/{artist}")
+def albums_list_albums(artist: str, request: Request):
+    """List album folders within an artist directory."""
+    if ".." in artist:
+        raise HTTPException(status_code=400, detail="Invalid artist name")
+    user_id = getattr(request.state, "user_id", None)
+    base = get_albums_dir(user_id=user_id)
+    artist_dir = base / sanitize_filename(artist)
+    if not artist_dir.exists():
+        raise HTTPException(status_code=404, detail="Artist directory not found")
+    albums = sorted(
+        [d.name for d in artist_dir.iterdir() if d.is_dir() and not d.name.startswith(".")],
+        key=str.casefold,
+    )
+    return {"albums": albums}
+
+
+@app.get("/api/albums/dirs/{artist}/{album}/info")
+def albums_dir_info(artist: str, album: str, request: Request):
+    """Read .albuminfo sidecar from an album directory and return MB tracklist."""
+    if ".." in artist or ".." in album:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    user_id = getattr(request.state, "user_id", None)
+    base = get_albums_dir(user_id=user_id)
+    album_dir = base / sanitize_filename(artist) / sanitize_filename(album)
+    albuminfo_path = album_dir / ".albuminfo"
+    if not albuminfo_path.exists():
+        return {"found": False}
+    try:
+        data = json.loads(albuminfo_path.read_text(encoding="utf-8"))
+        release_mbid = (data.get("release_mbid") or "").strip()
+        tracks = fetch_album_tracks(release_mbid) if release_mbid else []
+        return {
+            "found": True,
+            "artist": data.get("artist", ""),
+            "album": data.get("album", ""),
+            "release_mbid": release_mbid,
+            "tracks": tracks,
+        }
+    except Exception:
+        return {"found": False}
+
+
+@app.post("/api/albums/download")
+def albums_download(body: AlbumDownloadRequest, http_request: Request):
+    """Queue a full album for download.
+
+    Fetches tracklist from MusicBrainz, creates a bulk import job routed to
+    Albums/Artist/Album/ instead of the normal Singles layout.
+    Returns {import_id} for polling via /api/bulk-import/{id}/status.
+    """
+    user_id = getattr(http_request.state, "user_id", None)
+
+    artist = body.artist.strip()
+    album_title = body.album_title.strip()
+    release_mbid = body.release_mbid.strip()
+    make_m3u = body.make_m3u
+    m3u_name = (body.m3u_name or "").strip()
+    convert_to_flac = body.convert_to_flac
+
+    if not artist or not album_title or not release_mbid:
+        raise HTTPException(status_code=400, detail="artist, album_title, and release_mbid are required")
+
+    tracks = fetch_album_tracks(release_mbid)
+    if not tracks:
+        raise HTTPException(status_code=404, detail="Could not fetch tracklist from MusicBrainz")
+
+    status = _album_track_status(artist, album_title, tracks, user_id=user_id)
+    album_dir = status["album_dir"]
+    missing_tracks = status["missing_tracks"]
+    album_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write a .albuminfo sidecar so the picker can restore MBID context without a DB.
+    # Atomic write (mkstemp + rename) so a crash mid-write leaves nothing corrupt.
+    albuminfo_path = album_dir / ".albuminfo"
+    if not albuminfo_path.exists():
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=album_dir, suffix=".albuminfo.tmp")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"artist": artist, "album": album_title, "release_mbid": release_mbid}, indent=2))
+            Path(tmp_path).rename(albuminfo_path)
+            set_file_permissions(albuminfo_path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+
+    # Refuse to queue if an in-flight import is already targeting this album directory.
+    # Catches double-clicks and impatient re-submissions before any files have landed.
+    with db_conn() as conn:
+        inflight = conn.execute(
+            """SELECT id FROM bulk_imports
+               WHERE override_dir = ?
+                 AND status IN ('pending', 'processing')
+                 AND completed_at IS NULL
+               LIMIT 1""",
+            (str(album_dir),),
+        ).fetchone()
+    if inflight:
+        return {
+            "import_id": inflight[0],
+            "track_count": len(tracks),
+            "queued_count": len(missing_tracks),
+            "existing_count": len(status["existing_tracks"]),
+            "missing_count": len(missing_tracks),
+            "album_dir": str(album_dir),
+            "warning": "Download already in progress for this album.",
+            "already_queued": True,
+        }
+
+    # Queue only missing tracks; already-present tracks are left as-is.
+    track_pairs = [(artist, t["title"]) for t in missing_tracks]
+
+    if not track_pairs:
+        updated_m3u = None
+        if make_m3u:
+            updated_m3u = rebuild_album_m3u(album_dir, m3u_name or f"{artist} - {album_title}")
+        return {
+            "import_id": None,
+            "track_count": len(tracks),
+            "queued_count": 0,
+            "existing_count": len(status["existing_tracks"]),
+            "missing_count": 0,
+            "album_dir": str(album_dir),
+            "m3u_updated": bool(updated_m3u),
+            "m3u_path": str(updated_m3u) if updated_m3u else None,
+            "warning": "Album already exists on disk. Nothing queued." + (" Existing M3U updated." if updated_m3u else ""),
+        }
+
+    from bulk_import import start_bulk_import_for_tracks
+    import_id = start_bulk_import_for_tracks(
+        tracks=track_pairs,
+        convert_to_flac=convert_to_flac,
+        user_id=user_id,
+        override_dir=str(album_dir),
+        album_release_mbid=release_mbid,
+        album_total_tracks=len(tracks),
+    )
+
+    # If M3U requested, store the album details so create_bulk_playlist can pick it up.
+    # We repurpose the existing create_playlist + playlist_name mechanism.
+    if make_m3u:
+        playlist_label = m3u_name or f"{artist} - {album_title}"
+        if playlist_label.lower().endswith(".m3u"):
+            playlist_label = playlist_label[:-4]
+        playlist_label = playlist_label.strip() or f"{artist} - {album_title}"
+        with db_conn() as conn:
+            conn.execute(
+                "UPDATE bulk_imports SET create_playlist = 1, playlist_name = ? WHERE id = ?",
+                (playlist_label, import_id)
+            )
+            conn.commit()
+
+    return {
+        "import_id": import_id,
+        "track_count": len(tracks),
+        "queued_count": len(track_pairs),
+        "existing_count": len(status["existing_tracks"]),
+        "missing_count": len(missing_tracks),
+        "album_dir": str(album_dir),
+        "warning": f"{len(status['existing_tracks'])} track(s) already existed; queued {len(track_pairs)} missing track(s).",
     }
 
 
