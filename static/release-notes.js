@@ -18,12 +18,39 @@ const RELEASE_NOTES = {
                     "Optionally generate an M3U playlist alongside the download.",
                     "Artist and album data comes from MusicBrainz, so you get proper metadata rather than YouTube's creative guesswork.",
                     "The Albums folder path is configurable in Settings, right next to the Singles and Playlists folders.",
+                    "Only missing tracks are queued — if half the album is already there, only the gaps are downloaded. The precheck tells you upfront how many tracks exist and how many will be fetched.",
+                ]
+            },
+            {
+                heading: "Unified \"Add to...\" destination picker",
+                items: [
+                    "The separate \"Add to playlist\" and \"Add to album\" chips in search results have been replaced by a single \"Add to...\" button.",
+                    "Choosing Album opens a two-level browser: pick an artist folder, then an album folder. MusicGrabber reads the .albuminfo sidecar written at download time to get the MusicBrainz context automatically.",
+                    "If auto-matching can't place the track, a manual track picker appears so you can select the right slot yourself.",
+                    "Folders without an .albuminfo sidecar still work — the track lands in the right folder, just without MusicBrainz metadata enrichment.",
+                ]
+            },
+            {
+                heading: "Album quality-of-life fixes",
+                items: [
+                    "TRACKTOTAL tags are now correct when only some tracks were missing. Previously a partial download (e.g. 3 of 12 tracks) would tag those files 3/3 instead of 3/12.",
+                    "Album M3U files now include proper duration and title entries so players show correct metadata immediately, without waiting for a library scan.",
+                    "Clicking Download Album twice in quick succession no longer queues everything twice and races to download the same files. The second click is a no-op if an import is already running for that album.",
+                ]
+            },
+            {
+                heading: "Watched playlist matching improvements",
+                items: [
+                    "Scandinavian and other non-decomposable characters (Ø, ø, Ł, æ, ß, etc.) now normalise correctly. BYØRN was failing to match BYORN because NFKD can't decompose those letters.",
+                    "Tracks namespaced under a mixtape or project in ALL CAPS (e.g. STONEHENGE - GEEKED UP) now strip the prefix before matching, so they resolve to the correct track.",
+                    "Monochrome search results no longer show duplicate cards for the same recording at different quality tiers. The highest quality entry is kept and given a scoring boost; the rest are silently dropped.",
                 ]
             },
             {
                 heading: "Bug fixes",
                 items: [
                     "Fixed a crash on /api/playlists when the Playlists directory was on a broken or stale mount. Returns an empty list now instead of a 500 error.",
+                    "Monochrome downloads that fail on all quality tiers now search across all enabled sources for the best alternative, rather than defaulting straight to YouTube.",
                 ]
             }
         ]

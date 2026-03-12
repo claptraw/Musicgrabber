@@ -3437,6 +3437,22 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
     forced_track_title = album_ctx.get("track_title")
     album_track_number, album_track_total = _get_album_track_tag_context(job_id)
     album_art_bytes, album_art_mime = _get_album_art_context(job_id)
+    # For single jobs routed into an album folder via "Add to..." (no bulk_imports row),
+    # the DB lookup above finds no MBID. Fall back to the .albuminfo sidecar in that dir.
+    if not album_art_bytes and override_dir:
+        sidecar = Path(override_dir) / ".albuminfo"
+        if sidecar.exists():
+            try:
+                sidecar_data = json.loads(sidecar.read_text())
+                sidecar_mbid = (sidecar_data.get("release_mbid") or "").strip()
+                if sidecar_mbid:
+                    fetched = _fetch_musicbrainz_cover_art(sidecar_mbid)
+                    if fetched:
+                        album_art_bytes, album_art_mime = fetched
+                        with _ALBUM_ART_CACHE_LOCK:
+                            _ALBUM_ART_CACHE[sidecar_mbid] = fetched
+            except Exception:
+                pass
     _ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
 
     # Monochrome gets its own dedicated download path  -  no yt-dlp needed
