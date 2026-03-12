@@ -1583,8 +1583,12 @@ def download(body: DownloadRequest, http_request: Request):
         if album_fields_present:
             if body.download_type == "playlist":
                 raise HTTPException(status_code=400, detail="Album routing cannot be used with playlist downloads")
-            if not album_release_mbid or not album_name or not album_track_title:
-                raise HTTPException(status_code=400, detail="album_release_mbid, album_name, and album_track_title are required for album routing")
+            # Full album routing requires MBID + name + track title.
+            # Exception: no_mbid folder-only routing just needs album_name + album_artist.
+            if album_release_mbid and (not album_name or not album_track_title):
+                raise HTTPException(status_code=400, detail="album_name and album_track_title are required when album_release_mbid is provided")
+            if not album_release_mbid and not album_name:
+                raise HTTPException(status_code=400, detail="album_name is required for album folder routing")
             route_artist = album_artist or (artist or "").strip()
             if not route_artist:
                 raise HTTPException(status_code=400, detail="album_artist (or artist) is required for album routing")
