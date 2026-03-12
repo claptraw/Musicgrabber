@@ -385,6 +385,12 @@ def init_db():
             conn.execute("ALTER TABLE watched_playlists ADD COLUMN refresh_import_id TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            # ListenBrainz "Created for You" playlists rotate weekly — store the username so we can
+            # re-resolve the current week's UUID when the pinned one goes stale.
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN lb_username TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         # Watched artists - artists to monitor for new singles via MusicBrainz
         conn.execute("""

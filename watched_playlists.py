@@ -761,7 +761,46 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
         try:
             # Fetch current tracks
             set_refresh_stage("fetching")
-            tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
+            # ListenBrainz "Created for You" playlists rotate weekly — if the stored UUID is stale,
+            # re-resolve via the createdfor API and update the URL before fetching.
+            if playlist["platform"] == "listenbrainz" and playlist.get("lb_username"):
+                try:
+                    tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
+                except HTTPException as e:
+                    if e.status_code != 404:
+                        raise
+                    # Stale UUID — ask ListenBrainz for the current week's playlists and find ours by name
+                    print(f"ListenBrainz playlist '{playlist['name']}' returned 404 — re-resolving via createdfor API")
+                    lb_playlists = fetch_listenbrainz_createdfor(playlist["lb_username"])
+                    playlist_name = playlist["name"] or ""
+                    # Match by exact name first, then by prefix (name stems like "Weekly Exploration for X")
+                    matched = next(
+                        (p for p in lb_playlists if p["name"] == playlist_name),
+                        None,
+                    )
+                    if not matched:
+                        # Prefix match: "Weekly Exploration for g33kphr33k, week of ..." -> "Weekly Exploration for g33kphr33k"
+                        name_prefix = playlist_name.split(", week of")[0].split(", ")[0]
+                        matched = next(
+                            (p for p in lb_playlists if p["name"].startswith(name_prefix)),
+                            None,
+                        )
+                    if not matched:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"ListenBrainz playlist '{playlist_name}' not found in current createdfor list for '{playlist['lb_username']}'"
+                        )
+                    new_url = matched["playlist_url"]
+                    conn.execute(
+                        "UPDATE watched_playlists SET url = ? WHERE id = ?",
+                        (new_url, playlist_id)
+                    )
+                    conn.commit()
+                    playlist["url"] = new_url
+                    print(f"Updated ListenBrainz URL for '{playlist_name}' to {new_url}")
+                    tracks = matched["tracks"]
+            else:
+                tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
 
             # Build a set of hashes for what the upstream playlist currently contains
             current_hashes = {hash_track(artist, title) for artist, title in tracks}

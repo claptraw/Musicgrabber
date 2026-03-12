@@ -7,6 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.4.1": {
+        title: "What's New in v2.4.1",
+        sections: [
+            {
+                heading: "Bug fix",
+                items: [
+                    "ListenBrainz 'Created for You' playlists (Weekly Exploration, Weekly Jams, etc.) rotate to a new URL every Monday. MusicGrabber was storing the old UUID and refreshing a dead playlist forever. It now re-resolves the current week's URL automatically when it hits a 404 — no manual re-adding needed.",
+                ]
+            }
+        ]
+    },
     "2.4.0": {
         title: "What's New in v2.4.0",
         sections: [

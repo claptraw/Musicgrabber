@@ -2367,12 +2367,12 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                 playlist_id = str(uuid.uuid4())[:8]
                 conn.execute("""
                     INSERT INTO watched_playlists
-                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, lb_username)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (playlist_id, lb["playlist_url"], lb["name"], "listenbrainz",
                       refresh_hours, int(body.convert_to_flac),
                       int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(lb["tracks"]), user_id,
-                      body.preferred_sources or "all"))
+                      body.preferred_sources or "all", platform_id))
 
                 for artist, title in lb["tracks"]:
                     track_hash = hash_track(artist, title)
