@@ -30,6 +30,8 @@
 - **Album M3U missing track info**: Album playlist files were bare filename lists with no duration or display title. They now include proper `#EXTINF` entries (duration + title tag) so players show correct metadata immediately without waiting for a library scan.
 - **Album track fuzzy match too loose**: The fallback matcher for mapping a search result title to an album tracklist could fire on a single shared token (e.g. "My" from "My Love"). Threshold tightened to require ≥80% of the shorter token set to overlap, floored at 2 tokens.
 - **Download Album button stays active-looking when disabled**: Added a proper `:disabled` CSS rule to `.bulk-import-btn` so the button visibly greys out when an album is queuing, downloading, or complete.
+- **Watch normaliser: Scandinavian and non-decomposable characters**: Characters like `Ø`, `ø`, `Ł`, `ł`, `æ`, `Æ`, `ß`, etc. are distinct letters that NFKD decomposition leaves untouched, so `BYØRN` was failing to match `BYORN`. An explicit mapping now converts these to their nearest ASCII equivalents before normalisation.
+- **Watch normaliser: mixtape/album title prefixes**: Some streaming services store track titles with a project prefix in ALL CAPS, e.g. `STONEHENGE - GEEKED UP`. The normaliser now strips a leading all-caps prefix (3+ chars, no lowercase, followed by ` - `) before comparison.
 - **Monochrome duplicate results for same track**: Search results could show two Monochrome entries for the same recording (one `HI_RES_LOSSLESS`, one `LOSSLESS`) as separate cards. Results are now deduplicated by ISRC, keeping the highest-quality entry and awarding it a +20 score bonus. The download path already tries HI_RES first regardless of which card you click, so the duplicates were just noise.
 
 ### Changed

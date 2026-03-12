@@ -1029,7 +1029,14 @@ def _update_job(job_id: str, **fields) -> None:
 
 def _normalise_watched_match_text(text: str) -> str:
     """Normalise artist/title text for strict watched-track match checks."""
-    t = (text or "").lower()
+    raw = (text or "")
+    # Strip mixtape/album prefixes like "STONEHENGE - GEEKED UP" → "GEEKED UP".
+    # Some streaming services namespace track titles under a project name in ALL CAPS.
+    # Only strip when: prefix is 3+ chars, contains NO lowercase letters, and is
+    # followed by a space-dash-space before a letter/digit (i.e. a real title follows).
+    if re.match(r"^[A-Z0-9][A-Z0-9 ]{2,} - [A-Za-z0-9]", raw):
+        raw = re.sub(r"^[A-Z0-9][A-Z0-9 ]{2,} - ", "", raw)
+    t = raw.lower()
     t = t.replace("\u2019", "’").replace("\u2018", "’").replace("`", "’")
     # Normalise fullwidth punctuation that YouTube loves to use instead of ASCII
     # (e.g. ｜ U+FF5C for pipes, － U+FF0D for dashes). The regex comparisons below
@@ -1038,6 +1045,11 @@ def _normalise_watched_match_text(text: str) -> str:
     # Map decorated Latin letters to their ASCII base so e.g. "JAŸ-Z" matches "Jay-Z".
     # NFKD decomposes precomposed chars (Ÿ → Y + combining diaeresis), then we drop
     # the combining marks, leaving bare ASCII equivalents.
+    # Chars that NFKD won't decompose (distinct letters in their scripts) need an
+    # explicit mapping first — otherwise "BYØRN" stays "byørn" after NFKD.
+    t = (t.replace("ø", "o").replace("ł", "l").replace("ð", "d")
+          .replace("þ", "th").replace("æ", "ae").replace("œ", "oe")
+          .replace("ß", "ss").replace("ŋ", "n"))
     t = unicodedata.normalize("NFKD", t)
     t = "".join(c for c in t if not unicodedata.combining(c))
     # Strip Spotify-style dash suffixes before bracket stripping, e.g.
