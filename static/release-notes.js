@@ -13,7 +13,8 @@ const RELEASE_NOTES = {
             {
                 heading: "Bug fix",
                 items: [
-                    "ListenBrainz 'Created for You' playlists (Weekly Exploration, Weekly Jams, etc.) rotate to a new URL every Monday. MusicGrabber was storing the old UUID and refreshing a dead playlist forever. It now re-resolves the current week's URL automatically when it hits a 404 — no manual re-adding needed.",
+                    "ListenBrainz 'Created for You' playlists (Weekly Exploration, Weekly Jams, etc.) rotate to a new URL every Monday. MusicGrabber was storing the old UUID and refreshing a dead playlist forever. It now re-resolves the current week's URL automatically going forward.",
+                    "Action required for existing users: delete your ListenBrainz watched playlist cards and re-add them using your ListenBrainz username. This lets MusicGrabber store the information it needs to auto-update the URL each week. Cards added before this update won't self-heal.",
                 ]
             }
         ]

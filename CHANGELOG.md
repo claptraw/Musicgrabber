@@ -3,7 +3,7 @@
 ## v2.4.1 (2026-03-12)
 
 ### Fixed
-- **ListenBrainz weekly playlist URL rotation**: "Created for You" playlists (Weekly Exploration, Weekly Jams, etc.) are regenerated every Monday with a new UUID. The watched entry stored the old URL and would 404 forever. MusicGrabber now stores the ListenBrainz username alongside the playlist entry; on a 404 during refresh it re-queries the `createdfor` API, matches by playlist name, updates the stored URL automatically, and continues as normal. No manual intervention needed.
+- **ListenBrainz weekly playlist URL rotation**: "Created for You" playlists (Weekly Exploration, Weekly Jams, etc.) are regenerated every Monday with a new UUID. The watched entry stored the old URL and would 404 forever. MusicGrabber now stores the ListenBrainz username alongside the playlist entry; on a 404 during refresh it re-queries the `createdfor` API, matches by playlist name, updates the stored URL automatically, and continues as normal. **Existing users should delete their ListenBrainz watched playlist cards and re-add them via their username** — cards added before this update don't have the username stored and won't self-heal.
 
 ## v2.4.0 (2026-03-12)
 

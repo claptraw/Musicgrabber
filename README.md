@@ -4,7 +4,7 @@
 
 I've hit my own personal milestone with this project. It's as feature-complete as I ever intended it to be. This project is for music searching, playlist expanding, and artist discovery, while keeping your music locally hosted. That said, although MusicGrabber can pull and store your music locally, if you enjoy an artist, support them and buy their music if you can afford to.
 
-This project is a mash up of humand and AI, I will not hide that. If you're against AI code being used, please walk by this project. However, it is fully reviewed, security peer-checked and regularly pulled apart by humans.
+This project is a mash up of human and AI, I will not hide that. If you're against AI code being used, please walk by this project. However, it is fully reviewed, security peer-checked and regularly pulled apart by vicious and cold hearted humans, as well as clinical AI agents.
 
 **v2.4.1**
 
@@ -70,13 +70,17 @@ For YouTube and SoundCloud, FLAC conversion is primarily for standardisation and
 
 ## Screenshots
 
-| Search & Results | Bulk Import | Queue |
+| Search & Results | Albums | Queue |
 |:---:|:---:|:---:|
-| ![Search and Results](assets/SearchAndResults.png) | ![Bulk Import](assets/BulkImport.png) | ![Queue](assets/Queue.png) |
+| ![Search and Results](assets/SearchAndResults.png) | ![Album Mode](assets/AlbumMode.png) | ![Queue](assets/Queue.png) |
 
-| Watched Playlists | Settings | Dark & Light Theme |
+| Watched Playlists | Bulk Import | Settings |
 |:---:|:---:|:---:|
-| ![Watched Playlists](assets/WatchedPlaylists.png) | ![Settings](assets/SettingsTab.png) | ![Dark and Light Theme](assets/NightAndDay.png) |
+| ![Watched Playlists](assets/WatchedPlaylists.png) | ![Bulk Import](assets/BulkImport.png) | ![Settings](assets/SettingsTab.png) |
+
+| Integrations & Cookies | Notifications | Dark & Light Theme |
+|:---:|:---:|:---:|
+| ![Integrations and Cookies](assets/IntegrationsAndCookies.png) | ![Notifications](assets/Notifications.png) | ![Dark and Light Theme](assets/NightAndDay.png) |
 
 ## Quick Start
 

@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
@@ -761,44 +762,56 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
         try:
             # Fetch current tracks
             set_refresh_stage("fetching")
-            # ListenBrainz "Created for You" playlists rotate weekly — if the stored UUID is stale,
-            # re-resolve via the createdfor API and update the URL before fetching.
+            # ListenBrainz "Created for You" playlists rotate every Monday — check the date stamp in
+            # the playlist name ("week of YYYY-MM-DD") and proactively re-resolve if it's ≥6 days old.
+            # Also re-resolves reactively on 404 in case the name date wasn't parseable.
             if playlist["platform"] == "listenbrainz" and playlist.get("lb_username"):
-                try:
-                    tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
-                except HTTPException as e:
-                    if e.status_code != 404:
-                        raise
-                    # Stale UUID — ask ListenBrainz for the current week's playlists and find ours by name
-                    print(f"ListenBrainz playlist '{playlist['name']}' returned 404 — re-resolving via createdfor API")
+                playlist_name = playlist["name"] or ""
+
+                def _lb_needs_reresolution() -> bool:
+                    m = re.search(r'week of (\d{4}-\d{2}-\d{2})', playlist_name)
+                    if not m:
+                        return False
+                    try:
+                        week_date = datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                        age_days = (datetime.now(timezone.utc) - week_date).days
+                        return age_days >= 6
+                    except ValueError:
+                        return False
+
+                def _lb_reresolution_fetch() -> list:
+                    """Re-query createdfor API, update stored URL, return tracks."""
+                    print(f"ListenBrainz playlist '{playlist_name}' appears stale — re-resolving via createdfor API")
                     lb_playlists = fetch_listenbrainz_createdfor(playlist["lb_username"])
-                    playlist_name = playlist["name"] or ""
-                    # Match by exact name first, then by prefix (name stems like "Weekly Exploration for X")
-                    matched = next(
-                        (p for p in lb_playlists if p["name"] == playlist_name),
-                        None,
-                    )
+                    # Exact name match first, then prefix ("Weekly Exploration for X, week of ..." -> "Weekly Exploration for X")
+                    matched = next((p for p in lb_playlists if p["name"] == playlist_name), None)
                     if not matched:
-                        # Prefix match: "Weekly Exploration for g33kphr33k, week of ..." -> "Weekly Exploration for g33kphr33k"
-                        name_prefix = playlist_name.split(", week of")[0].split(", ")[0]
-                        matched = next(
-                            (p for p in lb_playlists if p["name"].startswith(name_prefix)),
-                            None,
-                        )
+                        name_prefix = playlist_name.split(", week of")[0]
+                        matched = next((p for p in lb_playlists if p["name"].startswith(name_prefix)), None)
                     if not matched:
                         raise HTTPException(
                             status_code=404,
                             detail=f"ListenBrainz playlist '{playlist_name}' not found in current createdfor list for '{playlist['lb_username']}'"
                         )
                     new_url = matched["playlist_url"]
-                    conn.execute(
-                        "UPDATE watched_playlists SET url = ? WHERE id = ?",
-                        (new_url, playlist_id)
-                    )
-                    conn.commit()
-                    playlist["url"] = new_url
-                    print(f"Updated ListenBrainz URL for '{playlist_name}' to {new_url}")
-                    tracks = matched["tracks"]
+                    if new_url != playlist["url"]:
+                        conn.execute("UPDATE watched_playlists SET url = ?, name = ? WHERE id = ?",
+                                     (new_url, matched["name"], playlist_id))
+                        conn.commit()
+                        playlist["url"] = new_url
+                        playlist["name"] = matched["name"]
+                        print(f"Updated ListenBrainz URL for '{matched['name']}' to {new_url}")
+                    return matched["tracks"]
+
+                if _lb_needs_reresolution():
+                    tracks = _lb_reresolution_fetch()
+                else:
+                    try:
+                        tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
+                    except HTTPException as e:
+                        if e.status_code != 404:
+                            raise
+                        tracks = _lb_reresolution_fetch()
             else:
                 tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
 
