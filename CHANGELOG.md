@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.4.0 (dev)
+## v2.4.0 (2026-03-12)
 
 ### Added
 - **Album Download tab**: Dedicated tab for intentional album downloads. Search for an artist via MusicBrainz, pick an album, preview the tracklist, and download the lot. Files land at `Albums/Artist/Album/Track.flac` rather than rattling around in Singles. Optional M3U generation included.

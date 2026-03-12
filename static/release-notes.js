@@ -39,18 +39,26 @@ const RELEASE_NOTES = {
                 ]
             },
             {
+                heading: "Watched Artists",
+                items: [
+                    "Follow an artist by MusicBrainz ID and new singles are downloaded automatically as they appear. Same controls as watched playlists: check interval, convert-to-FLAC, missing panel, track list.",
+                    "Singles only — remixes, live versions, soundtracks, DJ mixes, and compilations are filtered out at the MusicBrainz level.",
+                    "Tracks already on disk are recognised on first refresh, so you won't re-download things you already have.",
+                ]
+            },
+            {
                 heading: "Watched playlist matching improvements",
                 items: [
                     "Scandinavian and other non-decomposable characters (Ø, ø, Ł, æ, ß, etc.) now normalise correctly. BYØRN was failing to match BYORN because NFKD can't decompose those letters.",
-                    "Tracks namespaced under a mixtape or project in ALL CAPS (e.g. STONEHENGE - GEEKED UP) now strip the prefix before matching, so they resolve to the correct track.",
-                    "Monochrome search results no longer show duplicate cards for the same recording at different quality tiers. The highest quality entry is kept and given a scoring boost; the rest are silently dropped.",
+                    "Tracks namespaced under a mixtape or project in ALL CAPS (e.g. STONEHENGE - GEEKED UP) now strip the leading prefix before matching, so they resolve to the correct track.",
                 ]
             },
             {
                 heading: "Bug fixes",
                 items: [
-                    "Fixed a crash on /api/playlists when the Playlists directory was on a broken or stale mount. Returns an empty list now instead of a 500 error.",
+                    "Monochrome search results no longer show duplicate cards for the same recording at different quality tiers. The highest quality entry is kept and given a scoring boost; the duplicates are dropped.",
                     "Monochrome downloads that fail on all quality tiers now search across all enabled sources for the best alternative, rather than defaulting straight to YouTube.",
+                    "Fixed a crash on /api/playlists when the Playlists directory was on a broken or stale mount. Returns an empty list now instead of a 500 error.",
                 ]
             }
         ]
