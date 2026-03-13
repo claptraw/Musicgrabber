@@ -162,6 +162,15 @@ def download_mp3phoenix_track(download_url: str, output_path: Path) -> None:
         follow_redirects=True,
     ) as resp:
         resp.raise_for_status()
+        expected_size = int(resp.headers.get("content-length", 0))
         with open(output_path, "wb") as f:
             for chunk in resp.iter_bytes(chunk_size=16384):
                 f.write(chunk)
+
+    actual_size = output_path.stat().st_size
+    if actual_size == 0:
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError("MP3Phoenix download produced an empty file")
+    if expected_size > 0 and actual_size < expected_size:
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"MP3Phoenix download truncated: got {actual_size} of {expected_size} bytes")

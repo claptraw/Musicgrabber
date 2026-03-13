@@ -993,6 +993,17 @@ def _remux_album_webm_for_tagging(audio_file: Path, override_dir: str | None) ->
             remuxed.unlink(missing_ok=True)
             return audio_file
 
+        # Verify the remuxed file has a readable audio stream before we bin the original
+        verify = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(remuxed)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if verify.returncode != 0 or not (verify.stdout or "").strip():
+            remuxed.unlink(missing_ok=True)
+            return audio_file
+
         audio_file.unlink(missing_ok=True)
         set_file_permissions(remuxed)
         print(f"Album mode: remuxed WebM to {remuxed.suffix} for metadata/artwork support")

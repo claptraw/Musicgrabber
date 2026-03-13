@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.4.2 (dev)
+
+### Fixed
+- **WebM remux atomicity**: album-routed WebM files are now verified with ffprobe before the original is unlinked — a corrupt remux no longer silently destroys the source file
+- **MBID validation**: invalid UUID strings passed as MusicBrainz IDs now return a 422 immediately rather than silently failing downstream
+- **MP3Phoenix truncated downloads**: file size is checked against `Content-Length` after download; empty or truncated files are deleted and the job fails cleanly rather than leaving a stub on disk
+
 ## v2.4.1 (2026-03-12)
 
 ### Fixed

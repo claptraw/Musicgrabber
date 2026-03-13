@@ -2,9 +2,18 @@
 MusicGrabber - Pydantic Request/Response Models
 """
 
+import re
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from constants import DEFAULT_CONVERT_TO_FLAC, MAX_SEARCH_QUERY_LENGTH
+
+_UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+
+
+def _validate_mbid(v: str | None) -> str | None:
+    if v and not _UUID_RE.match(v):
+        raise ValueError("Invalid MBID format (expected UUID)")
+    return v
 
 
 class SearchRequest(BaseModel):
@@ -30,6 +39,7 @@ class DownloadRequest(BaseModel):
     use_playlists_dir: bool = False  # Route into Playlists dir instead of Singles
     # Album routing (search results -> selected album track)
     album_release_mbid: Optional[str] = None
+    _validate_album_release_mbid = field_validator("album_release_mbid")(_validate_mbid)
     album_artist: Optional[str] = None
     album_name: Optional[str] = None
     album_track_title: Optional[str] = None
@@ -178,6 +188,7 @@ class WatchedArtistRequest(BaseModel):
     from_date: str  # YYYY-MM-DD
     refresh_interval_hours: int = 24
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+    _validate_mbid = field_validator("mbid")(_validate_mbid)
 
 class WatchedArtistUpdate(BaseModel):
     enabled: Optional[bool] = None
@@ -192,6 +203,7 @@ class AlbumDownloadRequest(BaseModel):
     make_m3u: bool = False
     m3u_name: Optional[str] = None
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+    _validate_release_mbid = field_validator("release_mbid")(_validate_mbid)
 
 
 class RetryMissingTrackRequest(BaseModel):
