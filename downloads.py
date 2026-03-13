@@ -33,6 +33,8 @@ from constants import (
     YOUTUBE_SEARCH_MULTIPLIER, YOUTUBE_SEARCH_MIN_FETCH,
     MAX_AUDIO_START_OFFSET_SECS,
     MB_DURATION_TOLERANCE,
+    SILENCE_DETECT_DURATION, SILENCE_DETECT_NOISE,
+    SILENCE_DETECT_MIN_START, SILENCE_DETECT_MAX_END_FRAC,
 )
 from db import db_conn, log_match_mismatch
 from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
@@ -451,7 +453,60 @@ def _validate_audio_integrity(file_path: Path) -> tuple[bool, str, float]:
         except (TypeError, ValueError):
             pass  # Unparseable start_time: give it the benefit of the doubt
 
+    # Check for mid-track silence: the Content ID fraud special.
+    # Someone uploads a track the right length, pads a chunk of it with silence in the
+    # middle, and monetises the confused views. We only scan the first 60% of the track
+    # so legitimate hidden/secret tracks on album closers don't get caught.
+    silence_reason = _check_mid_track_silence(file_path, duration)
+    if silence_reason:
+        return False, silence_reason, duration
+
     return True, "", duration
+
+
+def _check_mid_track_silence(file_path: Path, duration: float) -> str | None:
+    """Return an error string if suspicious mid-track silence is detected, else None.
+
+    Scans only the first SILENCE_DETECT_MAX_END_FRAC of the track so hidden/secret
+    tracks (a proud 90s CD tradition) don't get wrongly rejected.
+    """
+    if duration < SILENCE_DETECT_MIN_START * 2:
+        return None  # Track too short to have a meaningful mid-section to check
+
+    scan_end = duration * SILENCE_DETECT_MAX_END_FRAC
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(file_path),
+                "-t", str(scan_end),
+                "-af", f"silencedetect=noise={SILENCE_DETECT_NOISE}dB:d={SILENCE_DETECT_DURATION}",
+                "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        stderr = result.stderr or ""
+        # silencedetect writes to stderr: "silence_start: 47.3" / "silence_end: 82.1"
+        for line in stderr.splitlines():
+            if "silence_start:" not in line:
+                continue
+            try:
+                silence_start = float(line.split("silence_start:")[-1].strip())
+            except (ValueError, IndexError):
+                continue
+            if silence_start >= SILENCE_DETECT_MIN_START:
+                return (
+                    f"Suspicious silence detected at {silence_start:.1f}s "
+                    f"(>{SILENCE_DETECT_DURATION:.0f}s of silence in the first "
+                    f"{SILENCE_DETECT_MAX_END_FRAC*100:.0f}% of the track) — "
+                    f"possible Content ID fraud upload"
+                )
+    except Exception as e:
+        # If ffmpeg fails for any reason, don't block the download — just warn
+        print(f"Silence detection skipped for {file_path.name}: {e}")
+    return None
 
 
 def _check_duration_against_mb(actual_secs: float, mb_metadata: Optional[dict], artist: str, title: str,

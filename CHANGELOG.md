@@ -1,8 +1,12 @@
 # Changelog
 
-## v2.4.2 (dev)
+## v2.4.2 (2026-03-13)
+
+### Added
+- **Mid-track silence detection**: catches Content ID fraud uploads where someone pads the middle of a track with silence to avoid fingerprinting while hitting the right total duration. ffmpeg scans the first 60% of the track (leaving hidden/secret album-closer tracks alone) and rejects anything with more than 8 consecutive seconds of silence after the 15s mark. Feeds the normal retry/blacklist path.
 
 ### Fixed
+- **Fresh install schema incomplete**: `watched_playlists` and `bulk_imports` base `CREATE TABLE` statements were missing columns added since v2.3.x (`preferred_sources`, `lb_username`, `make_m3u`, `use_playlists_dir`, `sync_mode`, `user_id`, and others). Fresh installs would immediately hit `OperationalError: table has no column` errors. Upgraders were unaffected as `ALTER TABLE` migrations ran correctly.
 - **WebM remux atomicity**: album-routed WebM files are now verified with ffprobe before the original is unlinked — a corrupt remux no longer silently destroys the source file
 - **MBID validation**: invalid UUID strings passed as MusicBrainz IDs now return a 422 immediately rather than silently failing downstream
 - **MP3Phoenix truncated downloads**: file size is checked against `Content-Length` after download; empty or truncated files are deleted and the job fails cleanly rather than leaving a stub on disk

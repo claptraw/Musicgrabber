@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.4.1"
+VERSION = "2.4.2"
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -102,6 +102,10 @@ ACOUSTID_MIN_SCORE = 0.8         # Below this, the match is too dodgy to trust
 MIN_SONG_DURATION_SECS = 30      # Files shorter than this are too brief to fingerprint reliably
 MAX_AUDIO_START_OFFSET_SECS = 1.0  # Start offsets above this indicate a preview segment, not a full track
 MB_DURATION_TOLERANCE = 0.10     # 10% either side of MusicBrainz expected duration; outside = wrong track
+SILENCE_DETECT_DURATION = 8.0    # Seconds of continuous silence that flags a sabotaged track
+SILENCE_DETECT_NOISE = -50.0     # dB threshold below which audio counts as silence
+SILENCE_DETECT_MIN_START = 15.0  # Ignore silence that starts before this point (legitimate intros)
+SILENCE_DETECT_MAX_END_FRAC = 0.60  # Only scan the first 60% of the track — leaves hidden/secret tracks alone
 
 # Watched artists  -  MusicBrainz artist search and singles polling
 MB_ARTIST_SEARCH_LIMIT = 5       # Candidate results returned when searching by name

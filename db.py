@@ -188,9 +188,15 @@ def init_db():
             playlist_name TEXT,
             convert_to_flac INTEGER DEFAULT 1,
             watch_playlist_id TEXT,
+            use_playlists_dir INTEGER DEFAULT 0,
+            watch_artist_id TEXT,
+            user_id TEXT,
+            preferred_sources TEXT DEFAULT 'all',
+            override_dir TEXT,
+            album_release_mbid TEXT,
+            album_total_tracks INTEGER,
             rate_limited_until TIMESTAMP,
             error TEXT,
-            album_release_mbid TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             completed_at TIMESTAMP
         )
@@ -234,7 +240,7 @@ def init_db():
         conn.execute("""
         CREATE TABLE IF NOT EXISTS watched_playlists (
             id TEXT PRIMARY KEY,
-            url TEXT NOT NULL UNIQUE,
+            url TEXT NOT NULL,
             name TEXT,
             platform TEXT NOT NULL,
             refresh_interval_hours INTEGER DEFAULT 24,
@@ -242,13 +248,21 @@ def init_db():
             last_track_count INTEGER DEFAULT 0,
             enabled INTEGER DEFAULT 1,
             convert_to_flac INTEGER DEFAULT 1,
+            make_m3u INTEGER DEFAULT 0,
+            use_playlists_dir INTEGER DEFAULT 0,
+            sync_mode TEXT DEFAULT 'append',
+            stale_navidrome_paths INTEGER DEFAULT 0,
+            preferred_sources TEXT DEFAULT 'all',
+            lb_username TEXT,
             refresh_state TEXT DEFAULT 'idle',
             refresh_stage TEXT,
             refresh_started_at TIMESTAMP,
             refresh_completed_at TIMESTAMP,
             refresh_error TEXT,
             refresh_import_id TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            user_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, url)
         )
     """)
 
@@ -593,6 +607,8 @@ def init_db():
                 use_playlists_dir INTEGER DEFAULT 0,
                 sync_mode TEXT DEFAULT 'append',
                 stale_navidrome_paths INTEGER DEFAULT 0,
+                preferred_sources TEXT DEFAULT 'all',
+                lb_username TEXT,
                 refresh_state TEXT DEFAULT 'idle',
                 refresh_stage TEXT,
                 refresh_started_at TIMESTAMP,
@@ -612,6 +628,8 @@ def init_db():
                    COALESCE(use_playlists_dir, 0),
                    COALESCE(sync_mode, 'append'),
                    COALESCE(stale_navidrome_paths, 0),
+                   COALESCE(preferred_sources, 'all'),
+                   lb_username,
                    COALESCE(refresh_state, 'idle'),
                    refresh_stage, refresh_started_at, refresh_completed_at,
                    refresh_error, refresh_import_id,

@@ -7,6 +7,21 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.4.2": {
+        title: "What's New in v2.4.2",
+        sections: [
+            {
+                heading: "Bug fixes",
+                items: [
+                    "Fresh installs were broken — the database schema was missing columns added in recent releases, causing immediate errors on first run. Upgraders were fine as their databases were patched automatically, but anyone starting fresh from v2.4.0 or v2.4.1 would hit a crash. Fixed.",
+                    "Mid-track silence detection: ffmpeg now scans the first 60% of every downloaded track for suspicious gaps of 8+ seconds. This catches Content ID fraud uploads where someone pads a track with silence in the middle to avoid fingerprinting while still matching the expected duration. The first 15 seconds and the final 40% are ignored, so legitimate long intros and hidden tracks on album closers are left alone.",
+                    "WebM remux safety: album-routed files that need remuxing are now verified before the original is deleted. A corrupt output no longer silently destroys the source.",
+                    "MBID validation: invalid MusicBrainz IDs now fail fast with a clear error rather than quietly failing deep in a lookup.",
+                    "MP3Phoenix downloads: size is checked after download — truncated files are deleted immediately rather than left as stubs.",
+                ]
+            }
+        ]
+    },
     "2.4.1": {
         title: "What's New in v2.4.1",
         sections: [
