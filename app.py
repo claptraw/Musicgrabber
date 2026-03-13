@@ -1919,14 +1919,18 @@ def retry_job(job_id: str, http_request: Request):
             skip_dupe_check=bool(job.get("override_dir")),
         )
     else:
+        # Pass the original video_id as already-attempted so the download path
+        # searches for an alternate rather than re-fetching the same dud result.
+        prior_id = job.get("video_id") or ""
         spawn_daemon_thread(
             process_download,
             job_id,
-            job["video_id"],
+            prior_id,
             convert_to_flac,
             user_id=user_id,
             override_dir=job.get("override_dir"),
             skip_dupe_check=bool(job.get("override_dir")),
+            attempted_ids={prior_id} if prior_id else None,
         )
 
     return {"job_id": job_id, "status": "queued"}

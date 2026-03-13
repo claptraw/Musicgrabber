@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.4.3 (dev)
+
+### Added
+
+### Changed
+
+### Fixed
+- **Re-download always fetched the same bad result**: hitting Re-download on a failed job (e.g. duration mismatch, wrong track) would re-attempt the exact same video ID and fail again. The original ID is now passed as already-attempted, so the download path searches for an alternate candidate instead.
+
 ## v2.4.2 (2026-03-13)
 
 ### Added
