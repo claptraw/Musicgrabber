@@ -1907,33 +1907,24 @@ def retry_job(job_id: str, http_request: Request):
             user_id=user_id,
             override_dir=job.get("override_dir"),
         )
-    elif job.get("source") in URL_BASED_SOURCES and job.get("source_url"):
-        spawn_daemon_thread(
-            process_download,
-            job_id,
-            job["video_id"],
-            convert_to_flac,
-            source_url=job["source_url"],
-            user_id=user_id,
-            override_dir=job.get("override_dir"),
-            skip_dupe_check=bool(job.get("override_dir")),
-        )
     else:
-        # Find a fresh candidate upfront, skipping the ID that already failed.
-        # Passing prior_id as video_id and also in attempted_ids doesn't work —
-        # process_download still downloads it first; the skip only fires on retries.
+        # For both YouTube and URL-based sources (Monochrome, SoundCloud, mp3phoenix):
+        # search across all sources and pick the best untried candidate.
+        # Re-trying the same source_url or video_id that already failed is pointless.
         prior_id = job.get("video_id") or ""
         attempted = {prior_id} if prior_id else set()
-        new_id = prior_id  # fallback: same ID if nothing better found
+        new_id = prior_id
+        new_source_url = None
         artist_hint = job.get("artist") or ""
         title_hint  = job.get("title") or ""
-        if prior_id and (artist_hint or title_hint):
+        if artist_hint or title_hint:
             query = f"{artist_hint} - {title_hint}".strip(" -")
             try:
                 for cand in search_all(query, limit=12):
                     cand_id = (cand.get("video_id") or "").strip()
                     if cand_id and cand_id not in attempted:
                         new_id = cand_id
+                        new_source_url = cand.get("source_url")
                         break
             except Exception as e:
                 print(f"Re-download alternate search failed for job {job_id}: {e}")
@@ -1942,6 +1933,7 @@ def retry_job(job_id: str, http_request: Request):
             job_id,
             new_id,
             convert_to_flac,
+            source_url=new_source_url,
             user_id=user_id,
             override_dir=job.get("override_dir"),
             skip_dupe_check=bool(job.get("override_dir")),
