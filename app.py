@@ -1919,18 +1919,33 @@ def retry_job(job_id: str, http_request: Request):
             skip_dupe_check=bool(job.get("override_dir")),
         )
     else:
-        # Pass the original video_id as already-attempted so the download path
-        # searches for an alternate rather than re-fetching the same dud result.
+        # Find a fresh candidate upfront, skipping the ID that already failed.
+        # Passing prior_id as video_id and also in attempted_ids doesn't work —
+        # process_download still downloads it first; the skip only fires on retries.
         prior_id = job.get("video_id") or ""
+        attempted = {prior_id} if prior_id else set()
+        new_id = prior_id  # fallback: same ID if nothing better found
+        artist_hint = job.get("artist") or ""
+        title_hint  = job.get("title") or ""
+        if prior_id and (artist_hint or title_hint):
+            query = f"{artist_hint} - {title_hint}".strip(" -")
+            try:
+                for cand in search_all(query, limit=12):
+                    cand_id = (cand.get("video_id") or "").strip()
+                    if cand_id and cand_id not in attempted:
+                        new_id = cand_id
+                        break
+            except Exception as e:
+                print(f"Re-download alternate search failed for job {job_id}: {e}")
         spawn_daemon_thread(
             process_download,
             job_id,
-            prior_id,
+            new_id,
             convert_to_flac,
             user_id=user_id,
             override_dir=job.get("override_dir"),
             skip_dupe_check=bool(job.get("override_dir")),
-            attempted_ids={prior_id} if prior_id else None,
+            attempted_ids=attempted,
         )
 
     return {"job_id": job_id, "status": "queued"}
