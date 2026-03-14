@@ -303,6 +303,16 @@ def _lookup_musicbrainz_by_id(recording_id: str) -> Optional[dict]:
         if release.get("title"):
             result["album"] = release["title"]
 
+        # Track position within the release
+        for medium in release.get("media", []):
+            for track in medium.get("tracks", []):
+                result["track_number"] = track.get("number")
+                result["track_total"] = medium.get("track-count")
+                break
+            else:
+                continue
+            break
+
         # Recording-level length (ms) is on the top-level recording object
         length_ms = data.get("length")
         if length_ms:
@@ -347,15 +357,19 @@ def lookup_metadata(artist: str, title: str, file_path: Path = None) -> Optional
 
             if acoustid_meta:
                 acoustid_meta["metadata_source"] = "acoustid_fingerprint"
-                # Step 2: Fill in the release date from MusicBrainz
+                # Step 2: Fill in release info (album, year, duration) from MusicBrainz
                 recording_id = acoustid_meta.get("recording_id")
-                if recording_id and not acoustid_meta.get("year"):
+                if recording_id:
                     mb_extra = _lookup_musicbrainz_by_id(recording_id)
                     if mb_extra:
-                        if mb_extra.get("year"):
+                        if mb_extra.get("year") and not acoustid_meta.get("year"):
                             acoustid_meta["year"] = mb_extra["year"]
                         if mb_extra.get("album") and not acoustid_meta.get("album"):
                             acoustid_meta["album"] = mb_extra["album"]
+                        if mb_extra.get("track_number") and not acoustid_meta.get("track_number"):
+                            acoustid_meta["track_number"] = mb_extra["track_number"]
+                        if mb_extra.get("track_total") and not acoustid_meta.get("track_total"):
+                            acoustid_meta["track_total"] = mb_extra["track_total"]
                         if mb_extra.get("expected_duration_secs") and not acoustid_meta.get("expected_duration_secs"):
                             acoustid_meta["expected_duration_secs"] = mb_extra["expected_duration_secs"]
 
