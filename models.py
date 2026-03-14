@@ -88,6 +88,7 @@ class SettingsUpdate(BaseModel):
     playlists_subdir: Optional[str] = None
     albums_subdir: Optional[str] = None
     organise_by_artist: Optional[bool] = None
+    auto_album_singles: Optional[bool] = None
     # Search sources
     source_youtube_enabled: Optional[bool] = None
     source_mp3phoenix_enabled: Optional[bool] = None
