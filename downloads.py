@@ -3440,9 +3440,14 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
                 return
             raise Exception(dur_reason)
 
-        year = mb_metadata.get("year") if mb_metadata else None
+        if mb_metadata:
+            artist = mb_metadata.get("artist") or artist
+            title  = forced_track_title or mb_metadata.get("title") or title
+            _update_job(job_id, artist=artist, title=title)
+        else:
+            title = forced_track_title or title
+        year  = mb_metadata.get("year") if mb_metadata else None
         album = forced_album_name or (mb_metadata.get("album") if mb_metadata else None)
-        title = forced_track_title or title
         apply_metadata_to_file(
             output_path,
             artist,
