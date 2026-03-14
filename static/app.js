@@ -1714,8 +1714,8 @@
                     source: result.source || 'youtube',
                     search_token: currentSearchLogToken
                 };
-                if (result.artist) {
-                    payload.artist = result.artist;
+                if (result.artist || result.channel) {
+                    payload.artist = result.artist || result.channel;
                 }
 
                 // URL-based sources need the full URL for downloading

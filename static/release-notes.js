@@ -7,6 +7,27 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.4.3": {
+        title: "What's New in v2.4.3",
+        sections: [
+            {
+                heading: "Auto-album routing for singles",
+                items: [
+                    "New opt-in setting: when enabled, singles with a MusicBrainz album match are automatically moved into Singles/Artist/Album/ after download, complete with track number tags. Falls back silently to Singles/Artist/ for new or unrecognised tracks — no errors, no fuss.",
+                    "Find it in Settings under Library. Off by default so existing layouts are untouched.",
+                ]
+            },
+            {
+                heading: "Bug fixes",
+                items: [
+                    "Re-download was picking the same bad result every time. It now excludes the failed video ID and searches for a fresh candidate.",
+                    "MusicBrainz album and track number data was being skipped for most tracks — the lookup was only triggered when a year was missing, which is almost never. Fixed.",
+                    "MP3Phoenix downloads were storing the artist as Unknown in the queue. The artist from the search result is now passed through correctly.",
+                    "The auto-album routing toggle wasn't saving due to a missing field in the settings model. Fixed.",
+                ]
+            }
+        ]
+    },
     "2.4.2": {
         title: "What's New in v2.4.2",
         sections: [

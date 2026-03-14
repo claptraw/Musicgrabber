@@ -1,13 +1,15 @@
 # Changelog
 
-## v2.4.3 (dev)
+## v2.4.3 (2026-03-14)
 
 ### Added
-
-### Changed
+- **Auto-album routing for singles**: opt-in setting (off by default) that moves a successfully downloaded single into `Singles/Artist/Album/Track.ext` when MusicBrainz returns an album match. Track number and total are tagged automatically. Falls back silently to the normal `Singles/Artist/` layout when MB has no match (new releases, obscure tracks, etc.). Wired into YouTube, Soulseek, and MP3Phoenix paths; Monochrome excluded to preserve its Tidal metadata.
 
 ### Fixed
 - **Re-download always fetched the same bad result**: hitting Re-download on a failed job (e.g. duration mismatch, wrong track) would re-attempt the exact same video ID and fail again. The original ID is now passed as already-attempted, so the download path searches for an alternate candidate instead.
+- **MusicBrainz album lookup skipped when year already known**: the MB-by-ID follow-up call (which fetches album name and track position) was gated on year being absent from the AcoustID result. Since most tracks have a year, album data was almost never retrieved. Now always called when a recording ID is available.
+- **MP3Phoenix artist stored as Unknown**: the search result artist was being sent as `channel` but the download payload only checked `artist`, so jobs were stored with a blank artist. Both fields are now checked, and MB artist/title are applied post-download as they are for other sources.
+- **Auto-album routing setting not persisting**: `auto_album_singles` was missing from the `SettingsUpdate` Pydantic model, so Pydantic silently dropped it from every PUT request and the toggle never saved.
 
 ## v2.4.2 (2026-03-13)
 
