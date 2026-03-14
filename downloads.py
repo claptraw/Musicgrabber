@@ -1416,6 +1416,72 @@ def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artis
     return new_path
 
 
+def _auto_route_single_to_album(
+    audio_file: Path, artist: str, title: str,
+    mb_metadata: dict, job_id: str, user_id: str | None
+) -> Path:
+    """If auto_album_singles is enabled and MB returned an album name, move the file
+    from Singles/Artist/ into Singles/Artist/Album/ and retag with track number.
+
+    Returns the new path (or the original if nothing changed or the setting is off).
+    Silent on fallback  -  new/obscure tracks with no MB album just stay put.
+    """
+    if not get_setting_bool("auto_album_singles", False, user_id=user_id):
+        return audio_file
+
+    album = (mb_metadata.get("album") or "").strip()
+    if not album:
+        return audio_file
+
+    singles_dir = get_singles_dir(user_id=user_id)
+    safe_artist = sanitize_filename(artist)
+    safe_album  = sanitize_filename(album)
+    album_dir   = singles_dir / safe_artist / safe_album
+
+    if audio_file.parent == album_dir:
+        return audio_file  # Already there
+
+    album_dir.mkdir(parents=True, exist_ok=True)
+    new_path = album_dir / audio_file.name
+
+    if new_path.exists():
+        print(f"Auto-album routing: target already exists, skipping move: {new_path}")
+        return audio_file
+
+    audio_file.rename(new_path)
+    set_file_permissions(new_path)
+
+    # Move any .lrc that came along for the ride
+    old_lrc = audio_file.with_suffix(".lrc")
+    if old_lrc.exists():
+        new_lrc = new_path.with_suffix(".lrc")
+        old_lrc.rename(new_lrc)
+        set_file_permissions(new_lrc)
+
+    # Retag with track number/total if MB provided them  -  nicer than leaving them blank
+    track_number = mb_metadata.get("track_number")
+    track_total  = mb_metadata.get("track_total")
+    if track_number or track_total:
+        apply_metadata_to_file(
+            new_path, artist, title, album,
+            mb_metadata.get("year"),
+            track_number=track_number,
+            track_total=track_total,
+        )
+
+    # Tidy up the old artist dir if it's now empty
+    old_dir = audio_file.parent
+    try:
+        if old_dir.exists() and not any(old_dir.iterdir()):
+            old_dir.rmdir()
+    except OSError:
+        pass
+
+    _update_job(job_id, override_dir=str(album_dir))
+    print(f"Auto-album routing: {artist} - {title} → {safe_artist}/{safe_album}/")
+    return new_path
+
+
 def _is_permission_error(stderr: str) -> bool:
     """Check if yt-dlp failed due to a permission denied error on rename."""
     return "Permission denied" in stderr and ".temp." in stderr
@@ -2622,6 +2688,10 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 final_file = _relocate_for_normalised_artist(final_file, artist, mb_artist, user_id=user_id)
                 artist = mb_artist
             title = tag_title
+            if not override_dir:
+                final_file = _auto_route_single_to_album(
+                    final_file, artist, title, mb_metadata, job_id, user_id
+                )
             _update_job(job_id, artist=artist, title=title)
         else:
             apply_metadata_to_file(
@@ -3386,6 +3456,11 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             album_artist=forced_album_artist,
         )
 
+        if not override_dir and mb_metadata:
+            output_path = _auto_route_single_to_album(
+                output_path, artist, title, mb_metadata, job_id, user_id
+            )
+
         lyrics = fetch_lyrics(artist, title)
         if lyrics:
             save_lyrics_file(output_path, lyrics)
@@ -3841,6 +3916,12 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                     audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist, user_id=user_id)
                 artist = mb_artist
             title = tag_title
+            # Auto-route to Singles/Artist/Album/ if the setting is on and we're not
+            # already going to a specific album/playlist destination.
+            if not override_dir and not playlists_dir:
+                audio_file = _auto_route_single_to_album(
+                    audio_file, artist, title, mb_metadata, job_id, user_id
+                )
             _update_job(job_id, artist=artist, title=title)
         else:
             tag_title = forced_track_title or title

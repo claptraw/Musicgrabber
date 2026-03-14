@@ -130,7 +130,7 @@ SENSITIVE_SETTINGS = {
 
 # Settings that belong to each user (stored in user_settings table)
 USER_SETTINGS_KEYS = {
-    "music_dir", "singles_subdir", "playlists_subdir", "albums_subdir", "organise_by_artist",
+    "music_dir", "singles_subdir", "playlists_subdir", "albums_subdir", "organise_by_artist", "auto_album_singles",
     "navidrome_url", "navidrome_user", "navidrome_pass", "navidrome_dupe_check",
     "jellyfin_url", "jellyfin_api_key",
     "lidarr_url", "lidarr_api_key",
@@ -165,6 +165,7 @@ SETTINGS_SCHEMA = {
     "playlists_subdir": {"type": "str", "default": "", "env": "PLAYLISTS_SUBDIR"},
     "albums_subdir": {"type": "str", "default": "Albums", "env": "ALBUMS_SUBDIR"},
     "organise_by_artist": {"type": "bool", "default": True, "env": "ORGANISE_BY_ARTIST"},
+    "auto_album_singles": {"type": "bool", "default": False, "env": "AUTO_ALBUM_SINGLES"},
     # Soulseek/slskd
     "slskd_url": {"type": "str", "default": "", "env": "SLSKD_URL"},
     "slskd_user": {"type": "str", "default": "", "env": "SLSKD_USER"},

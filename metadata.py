@@ -35,7 +35,8 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
         params = {
             "query": f'artist:"{artist}" AND recording:"{title}"',
             "fmt": "json",
-            "limit": 1
+            "limit": 1,
+            "inc": "releases",
         }
 
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
@@ -70,7 +71,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
         if length_ms:
             metadata["expected_duration_secs"] = length_ms / 1000.0
 
-        # Get release information for album and date
+        # Get release information for album, date, and track position
         if recording.get("releases"):
             release = recording["releases"][0]
             metadata["album"] = release.get("title")
@@ -81,6 +82,16 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
                 year_match = re.match(r'(\d{4})', metadata["date"])
                 if year_match:
                     metadata["year"] = year_match.group(1)
+
+            # Track position within the release  -  inc=releases includes media/tracks
+            for medium in release.get("media", []):
+                for track in medium.get("tracks", []):
+                    metadata["track_number"] = track.get("number")
+                    metadata["track_total"] = medium.get("track-count")
+                    break
+                else:
+                    continue
+                break
 
         return metadata
 

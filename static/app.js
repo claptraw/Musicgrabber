@@ -4592,6 +4592,7 @@
             'playlists_subdir': 'settingPlaylistsSubdir',
             'albums_subdir': 'settingAlbumsSubdir',
             'organise_by_artist': 'settingOrganiseByArtist',
+            'auto_album_singles': 'settingAutoAlbumSingles',
             'source_youtube_enabled': 'settingSourceYoutube',
             'source_mp3phoenix_enabled': 'settingSourceMp3phoenix',
             'source_soundcloud_enabled': 'settingSourceSoundcloud',
