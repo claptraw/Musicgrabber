@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.4.4 (2026-03-16)
+
+### Fixed
+- **Non-admin users blocked from testing their own connections**: the Navidrome, Jellyfin, Lidarr, Apprise, YouTube cookies, and Spotify cookies test endpoints all incorrectly required admin privileges. Non-admin users could save their settings fine, but every "Test" button returned 403. The endpoints now work for all users, reading from the requesting user's own settings rather than the global store.
+
 ## v2.4.3 (2026-03-16)
 
 ### Added

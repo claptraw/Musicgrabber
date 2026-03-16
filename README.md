@@ -1,12 +1,5 @@
 # Music Grabber
-
-## Milestone feature release
-
-I've hit my own personal milestone with this project. It's as feature-complete as I ever intended it to be. This project is for music searching, playlist expanding, and artist discovery, while keeping your music locally hosted. That said, although MusicGrabber can pull and store your music locally, if you enjoy an artist, support them and buy their music if you can afford to.
-
-This project is a mash up of human and AI, I will not hide that. If you're against AI code being used, please walk by this project. However, it is fully reviewed, security peer-checked and regularly pulled apart by vicious and cold hearted humans, as well as clinical AI agents.
-
-**v2.4.3**
+**v2.4.4**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -23,12 +16,12 @@ Lidarr's great for albums, but grabbing a single track you heard on the radio sh
 MusicGrabber is intentionally narrow. It is **not**:
 
 - **A full music manager** (not Lidarr, not a replacement for Navidrome/Jellyfin)
-- **An album-discography automation tool** (Watched Artists monitors for new singles only; it does not grab back-catalogues or albums)
+- **An album-discography automation tool** (Watched Artists monitors for new singles only; it does not grab back-catalogues but can pull individual albums)
 - **A streaming server/player** (it acquires files; it does not serve or stream your library)
 - **A DJ/pro-audio workflow tool** (no Atmos/spatial-audio specialist pipeline)
 - **A custom library templating engine** (no advanced token-based naming/structure rules)
 
-If your use case is "I heard a song, I want that song in my library fast," this is the project.
+If your use case is "I heard a song, I want that song in my library fast," this is the project for you.
 
 ## Features
 

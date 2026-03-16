@@ -7,6 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.4.4": {
+        title: "What's New in v2.4.4",
+        sections: [
+            {
+                heading: "Bug fixes",
+                items: [
+                    "Non-admin users were getting a 403 when hitting any 'Test connection' button in Settings, for Navidrome, Jellyfin, Lidarr, Apprise, and both cookie fields. Settings saved fine, but the test buttons were gated admin-only by mistake. Fixed.",
+                ]
+            }
+        ]
+    },
     "2.4.3": {
         title: "What's New in v2.4.3",
         sections: [

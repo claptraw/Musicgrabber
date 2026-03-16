@@ -702,11 +702,10 @@ def test_slskd_connection(http_request: Request, body: TestSlskdRequest = None):
 @app.post("/api/settings/test/navidrome")
 def test_navidrome_connection(http_request: Request, body: TestNavidromeRequest = None):
     """Test connection to Navidrome server. Uses form values if provided, otherwise saved settings."""
-    if not http_request.state.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    url = (body.url if body and body.url else None) or _get_typed_setting("navidrome_url")
-    user = (body.username if body and body.username else None) or _get_typed_setting("navidrome_user")
-    password = (body.password if body and body.password else None) or _get_typed_setting("navidrome_pass")
+    user_id = http_request.state.user_id
+    url = (body.url if body and body.url else None) or _get_typed_setting("navidrome_url", user_id=user_id)
+    user = (body.username if body and body.username else None) or _get_typed_setting("navidrome_user", user_id=user_id)
+    password = (body.password if body and body.password else None) or _get_typed_setting("navidrome_pass", user_id=user_id)
 
     if not url:
         return {"success": False, "message": "Navidrome URL not configured"}
@@ -796,10 +795,9 @@ def test_navidrome_connection(http_request: Request, body: TestNavidromeRequest 
 @app.post("/api/settings/test/jellyfin")
 def test_jellyfin_connection(http_request: Request, body: TestJellyfinRequest = None):
     """Test connection to Jellyfin server. Uses form values if provided, otherwise saved settings."""
-    if not http_request.state.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    url = (body.url if body and body.url else None) or _get_typed_setting("jellyfin_url")
-    api_key = (body.api_key if body and body.api_key else None) or _get_typed_setting("jellyfin_api_key")
+    user_id = http_request.state.user_id
+    url = (body.url if body and body.url else None) or _get_typed_setting("jellyfin_url", user_id=user_id)
+    api_key = (body.api_key if body and body.api_key else None) or _get_typed_setting("jellyfin_api_key", user_id=user_id)
 
     if not url:
         return {"success": False, "message": "Jellyfin URL not configured"}
@@ -830,10 +828,9 @@ def test_jellyfin_connection(http_request: Request, body: TestJellyfinRequest = 
 @app.post("/api/settings/test/lidarr")
 def test_lidarr_connection(http_request: Request, body: TestLidarrRequest = None):
     """Test connection to Lidarr. Uses form values if provided, otherwise saved settings."""
-    if not http_request.state.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    url = (body.url if body and body.url else None) or _get_typed_setting("lidarr_url")
-    api_key = (body.api_key if body and body.api_key else None) or _get_typed_setting("lidarr_api_key")
+    user_id = http_request.state.user_id
+    url = (body.url if body and body.url else None) or _get_typed_setting("lidarr_url", user_id=user_id)
+    api_key = (body.api_key if body and body.api_key else None) or _get_typed_setting("lidarr_api_key", user_id=user_id)
 
     if not url:
         return {"success": False, "message": "Lidarr URL not configured"}
@@ -870,11 +867,10 @@ def test_lidarr_connection(http_request: Request, body: TestLidarrRequest = None
 def test_youtube_cookies(http_request: Request, body: TestYouTubeCookiesRequest = None):
     """Test YouTube cookies by fetching info for a known public video.
     Uses form value if provided, otherwise the saved cookies."""
-    if not http_request.state.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    user_id = http_request.state.user_id
     cookies_text = (body.cookies if body and body.cookies else None)
     if cookies_text is None:
-        cookies_text = get_setting("youtube_cookies", "")
+        cookies_text = get_setting("youtube_cookies", "", user_id=user_id)
 
     if not cookies_text.strip():
         return {"success": False, "message": "No cookies provided"}
@@ -944,8 +940,6 @@ def test_spotify_cookies(http_request: Request, body: TestSpotifyCookiesRequest 
     """Test Spotify cookies by hitting a known private-friendly endpoint.
     Uses the form value if provided, otherwise the saved cookies.
     """
-    if not http_request.state.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
     user_id = http_request.state.user_id
     cookies_text = (body.cookies if body and body.cookies else None)
     if cookies_text is None:
@@ -1003,9 +997,8 @@ def test_spotify_cookies(http_request: Request, body: TestSpotifyCookiesRequest 
 @app.post("/api/settings/test/apprise")
 def test_apprise_notification(http_request: Request, body: TestAppriseRequest = None):
     """Send a test notification via Apprise. Uses form URL if provided, otherwise saved setting."""
-    if not http_request.state.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    url = (body.url if body and body.url else None) or get_setting("apprise_url")
+    user_id = http_request.state.user_id
+    url = (body.url if body and body.url else None) or get_setting("apprise_url", "", user_id=user_id)
 
     if not url:
         return {"success": False, "message": "Apprise URL not configured"}
@@ -1029,9 +1022,8 @@ def test_apprise_notification(http_request: Request, body: TestAppriseRequest = 
 @app.get("/api/settings/youtube-cookies/status")
 def youtube_cookies_status(http_request: Request):
     """Return non-sensitive status for the cookies file."""
-    if not http_request.state.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    cookies_text = get_setting("youtube_cookies", "")
+    user_id = http_request.state.user_id
+    cookies_text = get_setting("youtube_cookies", "", user_id=user_id)
     has_setting = bool(cookies_text.strip())
     file_exists = COOKIES_FILE.exists()
     file_size = COOKIES_FILE.stat().st_size if file_exists else 0
