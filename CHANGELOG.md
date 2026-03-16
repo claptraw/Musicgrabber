@@ -1,11 +1,14 @@
 # Changelog
 
-## v2.4.3 (2026-03-14)
+## v2.4.3 (2026-03-16)
 
 ### Added
-- **Auto-album routing for singles**: opt-in setting (off by default) that moves a successfully downloaded single into `Singles/Artist/Album/Track.ext` when MusicBrainz returns an album match. Track number and total are tagged automatically. Falls back silently to the normal `Singles/Artist/` layout when MB has no match (new releases, obscure tracks, etc.). Wired into YouTube, Soulseek, and MP3Phoenix paths; Monochrome excluded to preserve its Tidal metadata.
+- **Route album-routed singles to the Albums folder**: a second opt-in setting "Route to Albums folder" (requires auto-album routing to be enabled) sends MusicBrainz-matched singles to `Albums/Artist/Album/Track.ext` instead of `Singles/Artist/Album/Track.ext`. For anyone who wants that classic `Artist/Album/Track` layout without touching the Singles subfolder path. Environment variable: `AUTO_ALBUM_SINGLES_USE_ALBUMS_DIR`.
+- **Auto-album routing for singles**: opt-in setting (off by default) that moves a successfully downloaded single into `Singles/Artist/Album/Track.ext` when MusicBrainz returns an album match. Track number and total are tagged automatically. Falls back silently to the normal `Singles/Artist/` layout when MB has no match (new releases, obscure tracks, etc.). Wired into YouTube, Soulseek, MP3Phoenix, and now Monochrome (using Tidal's own album metadata).
 
 ### Fixed
+- **Album routing ignored for Monochrome downloads**: Monochrome has always had Tidal's album title available, but the auto-album routing call was simply never wired into the Monochrome path. Fixed.
+- **MusicBrainz picking radio compilations as the canonical album**: all three MB lookup paths (`_extract_recording_metadata`, `_lookup_musicbrainz_by_id`, `lookup_musicbrainz`) were taking the first release returned without any quality filtering. This caused tracks to be tagged with albums like "Promo Only Modern Rock Radio, December 2001" or "Various Artists: Now That's What I Call Music". The release picker now scores releases, strongly preferring studio albums by the actual artist and penalising compilations, Various Artists credits, and anything with "Promo Only", "Greatest Hits", "Best Of" etc. in the title.
 - **Re-download always fetched the same bad result**: hitting Re-download on a failed job (e.g. duration mismatch, wrong track) would re-attempt the exact same video ID and fail again. The original ID is now passed as already-attempted, so the download path searches for an alternate candidate instead.
 - **MusicBrainz album lookup skipped when year already known**: the MB-by-ID follow-up call (which fetches album name and track position) was gated on year being absent from the AcoustID result. Since most tracks have a year, album data was almost never retrieved. Now always called when a recording ID is available.
 - **MP3Phoenix artist stored as Unknown**: the search result artist was being sent as `channel` but the download payload only checked `artist`, so jobs were stored with a blank artist. Both fields are now checked, and MB artist/title are applied post-download as they are for other sources.

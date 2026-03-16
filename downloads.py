@@ -1433,10 +1433,13 @@ def _auto_route_single_to_album(
     if not album:
         return audio_file
 
-    singles_dir = get_singles_dir(user_id=user_id)
     safe_artist = sanitize_filename(artist)
     safe_album  = sanitize_filename(album)
-    album_dir   = singles_dir / safe_artist / safe_album
+    if get_setting_bool("auto_album_singles_use_albums_dir", False, user_id=user_id):
+        base_dir = get_albums_dir(user_id=user_id)
+    else:
+        base_dir = get_singles_dir(user_id=user_id)
+    album_dir = base_dir / safe_artist / safe_album
 
     if audio_file.parent == album_dir:
         return audio_file  # Already there
@@ -3142,6 +3145,17 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                 album_art_mime=album_art_mime,
                 album_artist=forced_album_artist,
             )
+
+        # Auto-album routing: Tidal already knows the album, so we don't need MB for this.
+        # Only fires when not already in an album/playlist destination.
+        if not override_dir and not playlists_dir and album_title and album_title != "Singles":
+            tidal_meta = {
+                "album": album_title,
+                "track_number": album_track_number,
+                "track_total": album_track_total,
+                "year": year,
+            }
+            output_path = _auto_route_single_to_album(output_path, artist, title, tidal_meta, job_id, user_id)
 
         # Lyrics
         lyrics = fetch_lyrics(artist, title)

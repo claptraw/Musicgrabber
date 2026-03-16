@@ -13,13 +13,16 @@ const RELEASE_NOTES = {
             {
                 heading: "Auto-album routing for singles",
                 items: [
-                    "New opt-in setting: when enabled, singles with a MusicBrainz album match are automatically moved into Singles/Artist/Album/ after download, complete with track number tags. Falls back silently to Singles/Artist/ for new or unrecognised tracks — no errors, no fuss.",
-                    "Find it in Settings under Library. Off by default so existing layouts are untouched.",
+                    "New opt-in setting: when enabled, singles with a MusicBrainz album match are automatically moved into Artist/Album/ after download, complete with track number tags. Falls back silently to Singles/Artist/ for new or unrecognised tracks — no errors, no fuss.",
+                    "A second toggle, 'Route to Albums folder', sends matched tracks to Albums/Artist/Album/ instead of Singles/Artist/Album/. Handy if you want a clean Artist/Album/Track layout without touching your Singles folder.",
+                    "Find both settings in Settings under Library. Both are off by default.",
                 ]
             },
             {
                 heading: "Bug fixes",
                 items: [
+                    "Monochrome downloads weren't triggering album routing at all. Tidal gives us the album title directly, so the routing now uses that instead of waiting for MusicBrainz. Fixed.",
+                    "MusicBrainz was routinely picking radio compilations and promo discs as the canonical album — 'Promo Only Modern Rock Radio, December 2001' instead of the actual studio album. The release picker now scores options and strongly prefers studio albums by the actual artist, penalising Various Artists credits, compilations, and anything with 'Promo Only', 'Greatest Hits', or 'Best Of' in the title.",
                     "Re-download was picking the same bad result every time. It now excludes the failed video ID and searches for a fresh candidate.",
                     "MusicBrainz album and track number data was being skipped for most tracks — the lookup was only triggered when a year was missing, which is almost never. Fixed.",
                     "MP3Phoenix downloads were storing the artist as Unknown in the queue. The artist from the search result is now passed through correctly.",

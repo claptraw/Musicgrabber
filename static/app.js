@@ -4593,6 +4593,7 @@
             'albums_subdir': 'settingAlbumsSubdir',
             'organise_by_artist': 'settingOrganiseByArtist',
             'auto_album_singles': 'settingAutoAlbumSingles',
+            'auto_album_singles_use_albums_dir': 'settingAutoAlbumSinglesUseAlbumsDir',
             'source_youtube_enabled': 'settingSourceYoutube',
             'source_mp3phoenix_enabled': 'settingSourceMp3phoenix',
             'source_soundcloud_enabled': 'settingSourceSoundcloud',
@@ -4707,6 +4708,20 @@
                 // Live path preview: update whenever organise-by-artist toggle changes
                 const organiseToggle = document.getElementById('settingOrganiseByArtist');
                 if (organiseToggle) organiseToggle.onchange = _updatePathPreviews;
+
+                // Grey out "Route to Albums folder" when auto-album routing is off
+                function _updateAlbumsDirToggle() {
+                    const routeRow = document.getElementById('autoAlbumSinglesUseAlbumsDirRow');
+                    const routeInput = document.getElementById('settingAutoAlbumSinglesUseAlbumsDir');
+                    const autoAlbumOn = document.getElementById('settingAutoAlbumSingles')?.checked;
+                    if (routeRow) routeRow.style.opacity = autoAlbumOn ? '' : '0.4';
+                    if (routeInput) routeInput.disabled = !autoAlbumOn;
+                }
+                const autoAlbumToggle = document.getElementById('settingAutoAlbumSingles');
+                if (autoAlbumToggle) {
+                    autoAlbumToggle.addEventListener('change', _updateAlbumsDirToggle);
+                    _updateAlbumsDirToggle();
+                }
 
                 // Update browser API key status
                 updateBrowserApiKeyStatus();

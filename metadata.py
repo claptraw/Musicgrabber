@@ -36,7 +36,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
             "query": f'artist:"{artist}" AND recording:"{title}"',
             "fmt": "json",
             "limit": 1,
-            "inc": "releases",
+            "inc": "releases release-groups artist-credits",
         }
 
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
@@ -71,9 +71,17 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
         if length_ms:
             metadata["expected_duration_secs"] = length_ms / 1000.0
 
-        # Get release information for album, date, and track position
+        # Get release information for album, date, and track position.
+        # Score releases to avoid landing on 'Promo Only Radio Vol. 47' type junk.
         if recording.get("releases"):
-            release = recording["releases"][0]
+            def _release_score_text(rel: dict) -> int:
+                rg = rel.get("release-group") or {}
+                rg_for_score = dict(rg)
+                if not rg_for_score.get("artist-credit"):
+                    rg_for_score["artist-credit"] = rel.get("artist-credit") or []
+                return _score_release_group(rg_for_score, artist)
+
+            release = max(recording["releases"], key=_release_score_text)
             metadata["album"] = release.get("title")
             metadata["date"] = release.get("date")
 
@@ -167,7 +175,54 @@ def _score_recording(recording: dict, expected_artist: str, expected_title: str)
     return score
 
 
-def _extract_recording_metadata(recording: dict) -> dict:
+def _score_release_group(rg: dict, expected_artist: str) -> int:
+    """Score a MusicBrainz release group for use as the canonical album.
+
+    Higher = better. Prefers studio albums by the actual artist; penalises
+    compilations, promos, radio edits, and Various Artists releases so we
+    don't end up tagging everything as 'Promo Only Modern Rock Radio, Vol 47'.
+    """
+    score = 0
+    primary_type  = (rg.get("type") or rg.get("primary-type") or "").lower()
+    secondary_types = [t.lower() for t in (rg.get("secondary-types") or rg.get("secondarytypes") or [])]
+    title = (rg.get("title") or "").lower()
+
+    # Strongly prefer studio albums
+    if primary_type == "album":
+        score += 10
+    elif primary_type == "single":
+        score += 4
+    elif primary_type == "ep":
+        score += 3
+
+    # Penalise compilations, soundtracks, remixes, live albums, promos
+    _bad_secondary = {"compilation", "live", "remix", "soundtrack", "dj-mix", "mixtape/street", "demo"}
+    if any(t in _bad_secondary for t in secondary_types):
+        score -= 8
+
+    # Penalise "Promo Only", "Radio", "Now That's What I Call Music", etc.
+    _bad_title_fragments = ["promo only", "promo-only", "various artist", "radio edit",
+                            "now that's what i call", "now that's what", "hits ", "greatest hits",
+                            "best of", "collection", "the very best"]
+    if any(frag in title for frag in _bad_title_fragments):
+        score -= 10
+
+    # Check release group artist credits
+    rg_artist_credit = rg.get("artist-credit") or []
+    for ac in rg_artist_credit:
+        if isinstance(ac, dict):
+            artist_name = (ac.get("name") or ac.get("artist", {}).get("name") or "").lower()
+            if "various" in artist_name:
+                score -= 12
+            elif expected_artist and expected_artist.lower() in artist_name:
+                score += 6  # Artist's own release
+            elif expected_artist and artist_name in expected_artist.lower():
+                score += 4  # Close enough
+
+    return score
+
+
+def _extract_recording_metadata(recording: dict, expected_artist: str = "") -> dict:
     """Pull artist, title, album, and recording_id from an AcoustID recording."""
     metadata = {
         "title": recording.get("title"),
@@ -183,13 +238,12 @@ def _extract_recording_metadata(recording: dict) -> dict:
             a.get("name", "") for a in artists if a.get("name")
         )
 
-    # Extract album from release groups  -  prefer actual albums over singles/compilations
+    artist_for_scoring = metadata["artist"] or expected_artist
+
+    # Extract album from release groups  -  prefer studio albums by the actual artist
     releasegroups = recording.get("releasegroups", [])
     if releasegroups:
-        album_rg = next(
-            (rg for rg in releasegroups if rg.get("type") == "Album"),
-            releasegroups[0]
-        )
+        album_rg = max(releasegroups, key=lambda rg: _score_release_group(rg, artist_for_scoring))
         metadata["album"] = album_rg.get("title")
 
     return metadata
@@ -257,7 +311,7 @@ def _lookup_acoustid(duration: int, fingerprint: str,
             print(f"AcoustID: best recording match score {match_score} is too low, skipping")
             return None
 
-        metadata = _extract_recording_metadata(recording)
+        metadata = _extract_recording_metadata(recording, expected_artist=expected_artist)
 
         print(f"AcoustID match (fp {fp_score:.2f}, match {match_score}): {metadata['artist']} - {metadata['title']}")
         return metadata
@@ -267,7 +321,7 @@ def _lookup_acoustid(duration: int, fingerprint: str,
         return None
 
 
-def _lookup_musicbrainz_by_id(recording_id: str) -> Optional[dict]:
+def _lookup_musicbrainz_by_id(recording_id: str, expected_artist: str = "") -> Optional[dict]:
     """Fetch release date from MusicBrainz using a recording MBID.
 
     AcoustID gives us the recording ID but not the release date,
@@ -277,7 +331,7 @@ def _lookup_musicbrainz_by_id(recording_id: str) -> Optional[dict]:
         headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
 
         url = f"https://musicbrainz.org/ws/2/recording/{recording_id}"
-        params = {"inc": "releases", "fmt": "json"}
+        params = {"inc": "releases release-groups artist-credits", "fmt": "json"}
 
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             response = client.get(url, params=params, headers=headers)
@@ -290,8 +344,17 @@ def _lookup_musicbrainz_by_id(recording_id: str) -> Optional[dict]:
         if not releases:
             return None
 
-        # Grab the first release's date and title
-        release = releases[0]
+        # Pick the best release rather than blindly taking the first.
+        # Wraps the release in a fake release-group dict so _score_release_group can do its job.
+        def _release_score(rel: dict) -> int:
+            rg = rel.get("release-group") or {}
+            # Fold release-level artist credit into the rg dict for scoring
+            rg_for_score = dict(rg)
+            if not rg_for_score.get("artist-credit"):
+                rg_for_score["artist-credit"] = rel.get("artist-credit") or []
+            return _score_release_group(rg_for_score, expected_artist)
+
+        release = max(releases, key=_release_score)
         result = {}
 
         date_str = release.get("date", "")
@@ -360,7 +423,7 @@ def lookup_metadata(artist: str, title: str, file_path: Path = None) -> Optional
                 # Step 2: Fill in release info (album, year, duration) from MusicBrainz
                 recording_id = acoustid_meta.get("recording_id")
                 if recording_id:
-                    mb_extra = _lookup_musicbrainz_by_id(recording_id)
+                    mb_extra = _lookup_musicbrainz_by_id(recording_id, expected_artist=artist)
                     if mb_extra:
                         if mb_extra.get("year") and not acoustid_meta.get("year"):
                             acoustid_meta["year"] = mb_extra["year"]
