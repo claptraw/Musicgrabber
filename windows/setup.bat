@@ -17,14 +17,23 @@ docker --version >nul 2>&1
 if errorlevel 1 (
     echo.
     echo  Docker Desktop is not installed.
-    echo  Opening the Docker Desktop download page now...
+    echo  Downloading Docker Desktop installer...
+    echo.
+    set DOCKER_INSTALLER=%TEMP%\DockerDesktopInstaller.exe
+    curl -L -o "%DOCKER_INSTALLER%" "https://desktop.docker.com/win/main/amd64/Docker%%20Desktop%%20Installer.exe"
+    if errorlevel 1 (
+        echo  Download failed. Check your internet connection and try again.
+        pause
+        exit /b 1
+    )
+    echo  Launching installer...
     echo.
     echo  After installing Docker Desktop:
     echo    1. Reboot if prompted
     echo    2. Start Docker Desktop and wait for it to finish loading
     echo    3. Run this setup script again
     echo.
-    start https://www.docker.com/products/docker-desktop/
+    start /wait "" "%DOCKER_INSTALLER%"
     pause
     exit /b 1
 )
