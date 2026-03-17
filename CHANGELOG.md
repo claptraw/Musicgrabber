@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.4.5 (2026-03-17)
+
+### Added
+
+### Fixed
+- **Non-Docker installs: `/music` fibs**: if your real music folder was somewhere else, Settings kept pretending everything lived under `/music`. It now tells the truth.
+- **Reverse-proxy subpaths**: MusicGrabber can now behave itself under a prefix like `/musicgrabber` instead of hardcoding `/static` and `/api` off the domain root. Set `ROOT_PATH=/musicgrabber` and have your proxy strip that prefix before forwarding.
+- **Watched tab buttons had a little lie down**: `Search`, `Retry`, `Tracks`, `Copy URL`, `Delete`, and friends could go dead thanks to brittle inline button handlers, especially when a track name arrived with apostrophes. They now use safer click handling, and manual `Search` jumps back to Results with the right playlist already selected.
+- **Duplicate tracks can stop sulking in the wrong playlist**: if a song already exists in one playlist folder, duplicate checking now spots it for the next playlist too, reuses the on-disk path, and stops calling the second playlist entry a failure.
+
+### Changed
+- **Near-match scoring got a bit less dense**: collaborator order and `feat.` / `with` wording now get more benefit of the doubt, so close matches are less likely to be ignored just because the artist names lined up differently.
+
 ## v2.4.4 (2026-03-16)
 
 ### Fixed

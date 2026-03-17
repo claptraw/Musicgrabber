@@ -112,6 +112,34 @@
 
         let serverConfig = {}; // Populated from /api/config at startup
 
+        function normaliseRootPath(path) {
+            path = String(path || '').trim();
+            if (!path || path === '/') return '';
+            return '/' + path.replace(/^\/+|\/+$/g, '');
+        }
+
+        const APP_ROOT_PATH = (() => {
+            const injected = typeof window.__MUSICGRABBER_ROOT_PATH__ === 'string'
+                ? window.__MUSICGRABBER_ROOT_PATH__
+                : '';
+            const meta = document.querySelector('meta[name="musicgrabber-root-path"]')?.content || '';
+            if (injected || meta) return normaliseRootPath(injected || meta);
+            const path = window.location.pathname || '/';
+            return normaliseRootPath(path.replace(/\/+$/, ''));
+        })();
+
+        function withRootPath(path) {
+            const value = String(path || '');
+            if (!value) return APP_ROOT_PATH || '/';
+            if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//')) return value;
+            if (APP_ROOT_PATH && (value === APP_ROOT_PATH || value.startsWith(`${APP_ROOT_PATH}/`) || value.startsWith(`${APP_ROOT_PATH}?`))) {
+                return value;
+            }
+            if (value.startsWith('/')) return `${APP_ROOT_PATH}${value}`;
+            if (value.startsWith('?')) return `${APP_ROOT_PATH || ''}/${value}`;
+            return APP_ROOT_PATH ? `${APP_ROOT_PATH}/${value.replace(/^\/+/, '')}` : `/${value.replace(/^\/+/, '')}`;
+        }
+
         function getSessionToken() {
             return localStorage.getItem('sessionToken') || '';
         }
@@ -147,7 +175,7 @@
         }
 
         function buildJobDownloadPath(jobId) {
-            return `/api/jobs/${encodeURIComponent(String(jobId || ''))}/download`;
+            return withRootPath(`/api/jobs/${encodeURIComponent(String(jobId || ''))}/download`);
         }
 
         async function getJobDownloadUrl(jobId) {
@@ -169,7 +197,7 @@
             try {
                 const url = await getJobDownloadUrl(jobId);
                 const a = document.createElement('a');
-                a.href = url;
+                a.href = withRootPath(url);
                 a.download = '';
                 a.rel = 'noopener';
                 a.style.display = 'none';
@@ -187,7 +215,7 @@
             if (token) {
                 headers['Authorization'] = `Bearer ${token}`;
             }
-            const response = await fetch(url, { ...options, headers });
+            const response = await fetch(withRootPath(url), { ...options, headers });
 
             if (response.status === 401) {
                 // Session expired or invalid — clear local state and show login screen
@@ -240,7 +268,7 @@
             errorDiv.style.display = 'none';
 
             try {
-                const resp = await fetch('/api/auth/login', {
+                const resp = await fetch(withRootPath('/api/auth/login'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username, password }),
@@ -277,7 +305,7 @@
             try {
                 const token = getSessionToken();
                 if (token) {
-                    await fetch('/api/auth/logout', {
+                    await fetch(withRootPath('/api/auth/logout'), {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${token}` },
                     });
@@ -809,7 +837,7 @@
         (async function initApp() {
             let config = null;
             try {
-                const resp = await fetch('/api/config');
+                const resp = await fetch(withRootPath('/api/config'));
                 if (resp.ok) config = await resp.json();
             } catch {}
 
@@ -2880,6 +2908,13 @@
             return escapeHtml(String(text)).replace(/'/g, '&#39;').replace(/\\/g, '\\\\');
         }
 
+        // Produce a JS string literal safe for embedding in a double-quoted HTML attribute.
+        // e.g. jsStr("I'm here") => &quot;I&#39;m here&quot;
+        // Usage: onclick="fn(${jsStr(userValue)})"
+        function jsStr(text) {
+            return escapeHtml(JSON.stringify(String(text)));
+        }
+
         // Line counter (no limit)
         function updateLineCounter() {
             const lines = bulkInput.value.split('\n').filter(line => line.trim());
@@ -2944,6 +2979,106 @@
                 </div>
             `;
             showSearchHistory();
+        });
+        watchedList.addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-action]');
+            if (!btn || !watchedList.contains(btn)) return;
+
+            const action = btn.dataset.action;
+            if (action === 'retry-missing-track') {
+                retryMissingTrack(
+                    btn.dataset.playlistId || '',
+                    btn.dataset.artist || '',
+                    btn.dataset.title || '',
+                    btn.dataset.rowId || ''
+                );
+                return;
+            }
+
+            if (action === 'search-missing-track') {
+                searchMissingTrack(
+                    btn.dataset.playlistId || '',
+                    btn.dataset.playlistName || '',
+                    btn.dataset.artist || '',
+                    btn.dataset.title || ''
+                );
+                return;
+            }
+
+            if (action === 'replace-watched-track') {
+                replaceTrack(
+                    btn.dataset.playlistId || '',
+                    btn.dataset.playlistName || '',
+                    btn.dataset.artist || '',
+                    btn.dataset.title || '',
+                    btn.dataset.jobId || '',
+                    btn.dataset.rowId || ''
+                );
+                return;
+            }
+
+            if (action === 'toggle-playlist-track-list') {
+                toggleTrackList(
+                    btn.dataset.playlistId || '',
+                    btn.dataset.playlistName || ''
+                );
+                return;
+            }
+
+            if (action === 'copy-watched-playlist-url') {
+                copyWatchedPlaylistUrl(btn.dataset.url || '');
+                return;
+            }
+
+            if (action === 'delete-watched-playlist') {
+                deleteWatchedPlaylist(
+                    btn.dataset.playlistId || '',
+                    btn.dataset.playlistName || ''
+                );
+            }
+        });
+        watchedArtistList.addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-action]');
+            if (!btn || !watchedArtistList.contains(btn)) return;
+
+            const action = btn.dataset.action;
+            if (action === 'save-job-to-device') {
+                saveJobToDevice(btn.dataset.jobId || '');
+                return;
+            }
+
+            if (action === 'retry-all-artist-missing') {
+                retryAllArtistMissing(
+                    btn.dataset.artistId || '',
+                    btn
+                );
+                return;
+            }
+
+            if (action === 'retry-artist-track') {
+                retryArtistTrack(
+                    btn.dataset.artistId || '',
+                    btn.dataset.artist || '',
+                    btn.dataset.title || '',
+                    btn
+                );
+                return;
+            }
+
+            if (action === 'toggle-artist-track-list') {
+                toggleArtistTrackList(
+                    btn.dataset.artistId || '',
+                    btn.dataset.artistName || ''
+                );
+                return;
+            }
+
+            if (action === 'delete-watched-artist') {
+                deleteWatchedArtist(
+                    btn.dataset.artistId || '',
+                    btn.dataset.artistName || ''
+                );
+            }
         });
         bulkImportBtn.addEventListener('click', bulkImport);
         clearQueueBtn.addEventListener('click', clearQueue);
@@ -3225,10 +3360,21 @@
                         <div class="watched-card-actions">
                             <button onclick="refreshWatchedPlaylist('${p.id}')" class="watched-action-btn" title="${isRefreshing ? `Refresh in progress: ${escapeAttr(refreshLabel)}` : 'Check for new tracks now'}" ${isRefreshing ? 'disabled' : ''}>${isRefreshing ? 'Checking...' : 'Refresh'}</button>
                             <button onclick="toggleMissingTracks('${p.id}')" class="watched-action-btn" title="Show tracks that failed to download">Missing</button>
-                            <button onclick="toggleTrackList('${p.id}', '${escapeAttr(p.name)}')" class="watched-action-btn" title="Show all tracks and their download status">Tracks</button>
-                            <button onclick="copyWatchedPlaylistUrl('${escapeAttr(p.url)}')" class="watched-action-btn" title="Copy playlist URL">Copy URL</button>
+                            <button type="button"
+                                data-action="toggle-playlist-track-list"
+                                data-playlist-id="${escapeAttr(p.id)}"
+                                data-playlist-name="${escapeAttr(p.name)}"
+                                class="watched-action-btn" title="Show all tracks and their download status">Tracks</button>
+                            <button type="button"
+                                data-action="copy-watched-playlist-url"
+                                data-url="${escapeAttr(p.url)}"
+                                class="watched-action-btn" title="Copy playlist URL">Copy URL</button>
                             <button onclick="toggleWatchedPlaylist('${p.id}', ${p.enabled ? 'false' : 'true'})" class="watched-action-btn watched-action-pause">${p.enabled ? 'Pause' : 'Resume'}</button>
-                            <button onclick="deleteWatchedPlaylist('${p.id}', '${escapeAttr(p.name)}')" class="watched-action-btn watched-action-delete">Delete</button>
+                            <button type="button"
+                                data-action="delete-watched-playlist"
+                                data-playlist-id="${escapeAttr(p.id)}"
+                                data-playlist-name="${escapeAttr(p.name)}"
+                                class="watched-action-btn watched-action-delete">Delete</button>
                         </div>
                         <div id="missing-${p.id}" class="watched-card-expanded" style="display: none;">Loading...</div>
                         <div id="tracks-${p.id}" class="watched-card-expanded" style="display: none;">Loading...</div>
@@ -3572,10 +3718,20 @@
                         <span style="flex: 1; min-width: 0;">${escapeHtml(t.artist)} &ndash; ${escapeHtml(t.title)}${removed}</span>
                         <div style="display: flex; gap: 4px; align-items: center; flex-shrink: 0;">
                             <span style="font-size: 10px; color: var(--text-secondary); white-space: nowrap;">${t.job_status || 'not attempted'}</span>
-                            <button onclick="retryMissingTrack('${playlistId}', '${escapeAttr(t.artist)}', '${escapeAttr(t.title)}', '${trackId}')"
+                            <button type="button"
+                                data-action="retry-missing-track"
+                                data-playlist-id="${escapeAttr(playlistId)}"
+                                data-artist="${escapeAttr(t.artist)}"
+                                data-title="${escapeAttr(t.title)}"
+                                data-row-id="${escapeAttr(trackId)}"
                                 style="padding: 3px 8px; font-size: 11px; font-family: inherit; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap;"
                                 title="Auto-search and re-queue this track">Retry</button>
-                            <button onclick="searchMissingTrack('${playlistId}', '${escapeAttr(data.playlist_name)}', '${escapeAttr(t.artist)}', '${escapeAttr(t.title)}')"
+                            <button type="button"
+                                data-action="search-missing-track"
+                                data-playlist-id="${escapeAttr(playlistId)}"
+                                data-playlist-name="${escapeAttr(data.playlist_name)}"
+                                data-artist="${escapeAttr(t.artist)}"
+                                data-title="${escapeAttr(t.title)}"
                                 style="padding: 3px 8px; font-size: 11px; font-family: inherit; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap;"
                                 title="Search manually and pick a result">Search</button>
                         </div>
@@ -3608,30 +3764,38 @@
             }
         }
 
-        function searchMissingTrack(playlistId, playlistName, artist, title) {
+        async function searchMissingTrack(playlistId, playlistName, artist, title) {
             // Pre-fill the search input
             setSearchValue(`${artist} - ${title}`);
 
-            // Pre-select the watched playlist in the selector and expand the panel
-            const toggle = document.getElementById('playlistSelectorToggle');
-            const panel = document.getElementById('playlistSelector');
+            // Open the destination picker in playlist mode and pre-select this playlist,
+            // so the user can immediately download straight back into the right playlist.
             const sel = document.getElementById('playlistSelectorInput');
+            const playlistPanel = document.getElementById('playlistSelector');
+            const modePanel = document.getElementById('destinationModePanel');
+            const pickerToggle = document.getElementById('destinationPickerToggle');
             if (sel && playlistName) {
+                await loadPlaylists();
+                let found = false;
                 for (const opt of sel.options) {
                     if (opt.value === playlistName) {
                         sel.value = playlistName;
-                        // Expand the panel if it's collapsed so the selection is visible
-                        // and getSelectedPlaylist() returns the value
-                        if (panel && panel.style.display === 'none' && toggle) {
-                            toggle.click();
-                        }
-                        _updatePlaylistSelectorWarning();
+                        found = true;
                         break;
                     }
                 }
+                _destinationMode = 'playlist';
+                if (modePanel) modePanel.style.display = 'none';
+                if (playlistPanel) playlistPanel.style.display = 'flex';
+                if (pickerToggle) {
+                    pickerToggle.textContent = 'Adding to playlist';
+                    pickerToggle.classList.add('active');
+                }
+                if (!found) sel.value = '';
+                _updatePlaylistSelectorWarning();
             }
 
-            // Switch to Results tab by clicking it (reuses existing tab-switch logic)
+            // Switch to Results tab and fire the search
             const resultsTabBtn = document.querySelector('.tab[data-tab="results"]');
             if (resultsTabBtn) resultsTabBtn.click();
 
@@ -3684,7 +3848,14 @@
                         `<span class="track-status-chip track-status-ok">&#10003;</span>
                          ${t.job_id ? `<button onclick="saveJobToDevice('${escapeAttr(t.job_id)}')" title="Save this track to your device" class="track-action-btn">
                              <i class="fa-solid fa-download"></i></button>` : ''}
-                         <button onclick="replaceTrack('${playlistId}', '${escapeAttr(data.playlist_name)}', '${escapeAttr(t.artist)}', '${escapeAttr(t.title)}', '${t.job_id}', '${rowId}')"
+                         <button type="button"
+                             data-action="replace-watched-track"
+                             data-playlist-id="${escapeAttr(playlistId)}"
+                             data-playlist-name="${escapeAttr(data.playlist_name)}"
+                             data-artist="${escapeAttr(t.artist)}"
+                             data-title="${escapeAttr(t.title)}"
+                             data-job-id="${escapeAttr(t.job_id || '')}"
+                             data-row-id="${escapeAttr(rowId)}"
                              class="track-replace-btn" title="Delete this file and search for the correct version">Replace</button>`
                     )).join('');
                 }
@@ -3693,9 +3864,19 @@
                     html += `<div class="track-list-section-header">Failed / Missing (${sections.failed.length})</div>`;
                     html += sections.failed.map((t, i) => trackRow(t, `f${i}`, (t, rowId) =>
                         `<span class="track-status-chip track-status-fail">&#10007;</span>
-                         <button onclick="retryMissingTrack('${playlistId}', '${escapeAttr(t.artist)}', '${escapeAttr(t.title)}', '${rowId}')"
+                         <button type="button"
+                             data-action="retry-missing-track"
+                             data-playlist-id="${escapeAttr(playlistId)}"
+                             data-artist="${escapeAttr(t.artist)}"
+                             data-title="${escapeAttr(t.title)}"
+                             data-row-id="${escapeAttr(rowId)}"
                              class="track-action-btn" title="Auto-search and re-queue">Retry</button>
-                         <button onclick="searchMissingTrack('${playlistId}', '${escapeAttr(data.playlist_name)}', '${escapeAttr(t.artist)}', '${escapeAttr(t.title)}')"
+                         <button type="button"
+                             data-action="search-missing-track"
+                             data-playlist-id="${escapeAttr(playlistId)}"
+                             data-playlist-name="${escapeAttr(data.playlist_name)}"
+                             data-artist="${escapeAttr(t.artist)}"
+                             data-title="${escapeAttr(t.title)}"
                              class="track-action-btn" title="Search manually">Search</button>`
                     )).join('');
                 }
@@ -3742,9 +3923,19 @@
                     const actionsEl = row.querySelector('.track-list-actions');
                     if (actionsEl) {
                         actionsEl.innerHTML = `<span class="track-status-chip track-status-fail">missing</span>
-                            <button onclick="retryMissingTrack('${playlistId}', '${escapeAttr(artist)}', '${escapeAttr(title)}', '${rowId}')"
+                            <button type="button"
+                                data-action="retry-missing-track"
+                                data-playlist-id="${escapeAttr(playlistId)}"
+                                data-artist="${escapeAttr(artist)}"
+                                data-title="${escapeAttr(title)}"
+                                data-row-id="${escapeAttr(rowId)}"
                                 class="track-action-btn">Retry</button>
-                            <button onclick="searchMissingTrack('${playlistId}', '${escapeAttr(playlistName)}', '${escapeAttr(artist)}', '${escapeAttr(title)}')"
+                            <button type="button"
+                                data-action="search-missing-track"
+                                data-playlist-id="${escapeAttr(playlistId)}"
+                                data-playlist-name="${escapeAttr(playlistName)}"
+                                data-artist="${escapeAttr(artist)}"
+                                data-title="${escapeAttr(title)}"
                                 class="track-action-btn">Search</button>`;
                     }
                 }
@@ -3963,7 +4154,7 @@
                             <span style="font-size:13px;font-weight:600;color:var(--text-primary);">${escapeHtml(a.name)}</span>
                             ${a.disambiguation ? `<span style="font-size:11px;color:var(--text-secondary);margin-left:6px;">${escapeHtml(a.disambiguation)}</span>` : ''}
                         </div>
-                        <button class="action-btn" style="padding:4px 10px;font-size:12px;" onclick="selectArtist('${escapeAttr(a.mbid)}','${escapeAttr(a.name)}')">Select</button>
+                        <button class="action-btn" style="padding:4px 10px;font-size:12px;" onclick="selectArtist(${jsStr(a.mbid)},${jsStr(a.name)})">Select</button>
                     </div>
                 `).join('');
             } catch (e) {
@@ -4098,9 +4289,15 @@
                     <div class="watched-card-actions">
                         <button class="watched-action-btn" onclick="refreshWatchedArtist('${artist.id}')" ${isRunning ? 'disabled' : ''}>Refresh</button>
                         <button class="watched-action-btn" onclick="toggleArtistMissingTracks('${artist.id}')">Missing</button>
-                        <button class="watched-action-btn" onclick="toggleArtistTrackList('${artist.id}', '${escapeAttr(artist.name)}')">Tracks</button>
+                        <button class="watched-action-btn" type="button"
+                            data-action="toggle-artist-track-list"
+                            data-artist-id="${escapeAttr(artist.id)}"
+                            data-artist-name="${escapeAttr(artist.name)}">Tracks</button>
                         <button class="watched-action-btn watched-action-pause" onclick="toggleWatchedArtist('${artist.id}', ${!artist.enabled})">${isPaused ? 'Resume' : 'Pause'}</button>
-                        <button class="watched-action-btn watched-action-delete" onclick="deleteWatchedArtist('${artist.id}', '${escapeAttr(artist.name)}')">Delete</button>
+                        <button class="watched-action-btn watched-action-delete" type="button"
+                            data-action="delete-watched-artist"
+                            data-artist-id="${escapeAttr(artist.id)}"
+                            data-artist-name="${escapeAttr(artist.name)}">Delete</button>
                     </div>
                     <div id="artist-missing-${artist.id}" class="watched-card-expanded" style="display:none;"></div>
                     <div id="artist-tracks-${artist.id}" class="watched-card-expanded" style="display:none;"></div>
@@ -4202,7 +4399,9 @@
                 panel.innerHTML = `
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                         <span style="font-size:12px;color:var(--text-secondary);">${data.tracks.length} missing single(s)</span>
-                        <button onclick="retryAllArtistMissing('${artistId}', this)"
+                        <button type="button"
+                            data-action="retry-all-artist-missing"
+                            data-artist-id="${escapeAttr(artistId)}"
                             style="padding:4px 12px;font-size:12px;font-family:inherit;font-weight:600;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;">
                             Queue All
                         </button>
@@ -4212,7 +4411,11 @@
                             <span style="flex:1;min-width:0;font-size:12px;">${escapeHtml(t.artist || '')} &ndash; ${escapeHtml(t.title)}</span>
                             <div style="display:flex;gap:4px;align-items:center;flex-shrink:0;">
                                 ${t.release_date ? `<span style="font-size:11px;color:var(--text-secondary);white-space:nowrap;">${t.release_date}</span>` : ''}
-                                <button onclick="retryArtistTrack('${artistId}','${escapeAttr(t.artist||'')}','${escapeAttr(t.title)}',this)"
+                                <button type="button"
+                                    data-action="retry-artist-track"
+                                    data-artist-id="${escapeAttr(artistId)}"
+                                    data-artist="${escapeAttr(t.artist || '')}"
+                                    data-title="${escapeAttr(t.title)}"
                                     style="padding:3px 8px;font-size:11px;font-family:inherit;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;cursor:pointer;white-space:nowrap;"
                                     title="Auto-search and re-queue this track">Retry</button>
                             </div>
@@ -4242,7 +4445,10 @@
                                 ? '<i class="fa-solid fa-clock" style="color:var(--text-secondary);"></i>'
                                 : '<i class="fa-solid fa-xmark" style="color:var(--error);"></i>';
                         const dlBtn = t.downloaded_at && t.job_id
-                            ? `<button onclick="saveJobToDevice('${escapeAttr(t.job_id)}')" style="padding:2px 8px;font-size:11px;font-family:inherit;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;cursor:pointer;white-space:nowrap;"><i class="fa-solid fa-download"></i></button>`
+                            ? `<button type="button"
+                                data-action="save-job-to-device"
+                                data-job-id="${escapeAttr(t.job_id)}"
+                                style="padding:2px 8px;font-size:11px;font-family:inherit;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;cursor:pointer;white-space:nowrap;"><i class="fa-solid fa-download"></i></button>`
                             : '';
                         return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;">
                             ${statusIcon}
@@ -4283,7 +4489,7 @@
                 btn.textContent = `${data.queued} queued`;
                 // Disable all individual retry buttons too
                 const panel = document.getElementById(`artist-missing-${artistId}`);
-                if (panel) panel.querySelectorAll('button:not([onclick*="retryAllArtistMissing"])').forEach(b => { b.disabled = true; b.textContent = 'Queued'; });
+                if (panel) panel.querySelectorAll('button[data-action="retry-artist-track"]').forEach(b => { b.disabled = true; b.textContent = 'Queued'; });
             } catch (e) {
                 btn.disabled = false;
                 btn.textContent = 'Queue All';
@@ -4795,15 +5001,17 @@
 
             select.innerHTML = '';
 
+            const musicRoot = (serverConfig && serverConfig.music_dir) ? serverConfig.music_dir.replace(/\/+$/, '') : '/music';
+
             const rootOpt = document.createElement('option');
             rootOpt.value = '.';
-            rootOpt.textContent = '/music (root)';
+            rootOpt.textContent = `${musicRoot} (root)`;
             select.appendChild(rootOpt);
 
             for (const relPath of sortedDirs) {
                 const opt = document.createElement('option');
                 opt.value = relPath;
-                opt.textContent = `/music/${relPath}`;
+                opt.textContent = `${musicRoot}/${relPath}`;
                 select.appendChild(opt);
             }
 
@@ -4885,21 +5093,23 @@
             disabledOpt.textContent = '(disabled)';
             select.appendChild(disabledOpt);
 
-            // Second option: /music/Playlists as the obvious default
+            const musicRoot = (serverConfig && serverConfig.music_dir) ? serverConfig.music_dir.replace(/\/+$/, '') : '/music';
+
+            // Second option: musicRoot/Playlists as the obvious default
             const playlistsOpt = document.createElement('option');
             playlistsOpt.value = 'Playlists';
-            playlistsOpt.textContent = '/music/Playlists';
+            playlistsOpt.textContent = `${musicRoot}/Playlists`;
             select.appendChild(playlistsOpt);
 
             const rootOpt = document.createElement('option');
             rootOpt.value = '.';
-            rootOpt.textContent = '/music (root)';
+            rootOpt.textContent = `${musicRoot} (root)`;
             select.appendChild(rootOpt);
 
             for (const relPath of sortedDirs.filter(d => d !== 'Playlists')) {
                 const opt = document.createElement('option');
                 opt.value = relPath;
-                opt.textContent = `/music/${relPath}`;
+                opt.textContent = `${musicRoot}/${relPath}`;
                 select.appendChild(opt);
             }
 
@@ -4969,15 +5179,17 @@
 
             select.innerHTML = '';
 
+            const musicRoot = (serverConfig && serverConfig.music_dir) ? serverConfig.music_dir.replace(/\/+$/, '') : '/music';
+
             const rootOpt = document.createElement('option');
             rootOpt.value = '.';
-            rootOpt.textContent = '/music (root)';
+            rootOpt.textContent = `${musicRoot} (root)`;
             select.appendChild(rootOpt);
 
             for (const relPath of sortedDirs) {
                 const opt = document.createElement('option');
                 opt.value = relPath;
-                opt.textContent = `/music/${relPath}`;
+                opt.textContent = `${musicRoot}/${relPath}`;
                 select.appendChild(opt);
             }
 
@@ -5118,8 +5330,10 @@
                 : (playlistsSelect ? playlistsSelect.value : '');
             const organise = organiseToggle ? organiseToggle.checked : true;
 
+            const musicRoot = (serverConfig && serverConfig.music_dir) ? serverConfig.music_dir.replace(/\/+$/, '') : '/music';
+
             if (singlesEl) {
-                let p = '/music';
+                let p = musicRoot;
                 if (singlesVal && singlesVal !== '.') p += '/' + singlesVal;
                 if (organise) {
                     p += '/Artist Name/Track Title.flac';
@@ -5133,7 +5347,7 @@
                 if (!playlistsVal || playlistsVal === '') {
                     playlistsEl.textContent = '(playlist tracks go to Singles folder)';
                 } else {
-                    let p = '/music';
+                    let p = musicRoot;
                     if (playlistsVal !== '.') p += '/' + playlistsVal;
                     p += '/Playlist Name/Artist - Title.flac';
                     playlistsEl.textContent = 'Files saved to: ' + p;
@@ -5144,7 +5358,7 @@
                 ? (albumsCustom ? albumsCustom.value.trim() : '')
                 : (albumsSelect ? albumsSelect.value : '');
             if (albumsEl) {
-                let p = '/music';
+                let p = musicRoot;
                 if (albumsVal && albumsVal !== '.') p += '/' + albumsVal;
                 p += '/Artist/Album/Track.flac';
                 albumsEl.textContent = 'Files saved to: ' + p;
@@ -5698,8 +5912,8 @@
                         <span style="flex:1; font-weight:${u.id === currentUser?.id ? '600' : '400'};">${escapeHtml(u.username)}</span>
                         <span style="color:var(--text-secondary); font-size:13px;">${u.role}</span>
                         ${u.id !== currentUser?.id
-                            ? `<button class="user-action-btn warning" onclick="forcePasswordReset('${escapeAttr(u.id)}', '${escapeAttr(u.username)}')">Force reset</button>
-                               <button class="user-action-btn" onclick="deleteUser('${escapeAttr(u.id)}', '${escapeAttr(u.username)}')">Remove</button>`
+                            ? `<button class="user-action-btn warning" onclick="forcePasswordReset(${jsStr(u.id)}, ${jsStr(u.username)})">Force reset</button>
+                               <button class="user-action-btn" onclick="deleteUser(${jsStr(u.id)}, ${jsStr(u.username)})">Remove</button>`
                             : `<span style="color:var(--text-secondary); font-size:13px;">(you)</span>`}
                     </div>
                 `).join('') || '<p style="color:var(--text-secondary); font-size:13px;">No users yet.</p>';

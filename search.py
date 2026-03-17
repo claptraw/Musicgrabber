@@ -27,7 +27,11 @@ from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration
 from settings import get_setting, get_setting_bool
 from mp3phoenix import search_mp3phoenix
-from youtube import search_youtube, score_search_result, parse_duration, _normalise_search_text, _parse_query_artist_title, _query_has_variation
+from youtube import (
+    search_youtube, score_search_result, parse_duration,
+    _normalise_search_text, _parse_query_artist_title, _query_has_variation,
+    _artist_match_strength,
+)
 
 # Penalty large enough to push blacklisted uploaders to the bottom of results
 # without hiding them entirely  -  the user might still want to see them
@@ -179,10 +183,12 @@ def _score_monochrome_result(item: dict, query: str | None = None) -> int:
         if expected_artist:
             expected_norm = _normalise_search_text(expected_artist)
             result_norm = _normalise_search_text(artist_name)
-            # Neither contains the other  -  completely different artist.
+            artist_strength = _artist_match_strength(expected_artist, artist_name)
+            # Completely different artist: no substring relationship and weak token overlap.
             # Subtract enough to neutralise even Hi-Res lossless bonus.
             if expected_norm and result_norm and \
-                    expected_norm not in result_norm and result_norm not in expected_norm:
+                    expected_norm not in result_norm and result_norm not in expected_norm and \
+                    artist_strength < 0.6:
                 score -= 150
 
     # Popularity tiebreaker (0–15 points, log-ish scale)

@@ -24,7 +24,7 @@ import httpx
 import base64
 
 from constants import (
-    VERSION, MUSIC_DIR, DB_PATH, COOKIES_FILE,
+    VERSION, MUSIC_DIR, DB_PATH, COOKIES_FILE, ROOT_PATH,
     MONOCHROME_API_URL, TIMEOUT_MONOCHROME_API,
     LISTENBRAINZ_API_URL, TIMEOUT_LISTENBRAINZ,
     TIMEOUT_YTDLP_INFO,
@@ -84,6 +84,24 @@ from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filenam
 URL_BASED_SOURCES = {"soundcloud", "monochrome", "mp3phoenix"}
 
 
+def _request_root_path(request: Request | None = None) -> str:
+    """Return the externally-visible app prefix, normalised like '/musicgrabber'."""
+    raw = ""
+    if request is not None:
+        raw = (request.scope.get("root_path") or "").strip()
+    raw = raw or ROOT_PATH
+    if not raw or raw == "/":
+        return ""
+    return "/" + raw.strip("/")
+
+
+def _app_path(path: str, request: Request | None = None) -> str:
+    """Prefix an app-local path with the configured root path."""
+    path = path if path.startswith("/") else f"/{path}"
+    root_path = _request_root_path(request)
+    return f"{root_path}{path}" if root_path else path
+
+
 def _user_scope(user_id: str | None, is_admin: bool) -> tuple[str, tuple]:
     """Return a SQL WHERE fragment and params for scoping rows to the current user.
 
@@ -104,7 +122,7 @@ def _user_scope(user_id: str | None, is_admin: bool) -> tuple[str, tuple]:
 # Application Setup
 # =============================================================================
 
-app = FastAPI(title="Music Grabber", version=VERSION)
+app = FastAPI(title="Music Grabber", version=VERSION, root_path=ROOT_PATH)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Ensure directories exist
@@ -130,9 +148,11 @@ app.add_middleware(AuthMiddleware)
 # =============================================================================
 
 @app.get("/", response_class=HTMLResponse)
-def root():
+def root(request: Request):
     """Serve the main UI"""
-    return FileResponse("static/index.html")
+    html = Path("static/index.html").read_text(encoding="utf-8")
+    html = html.replace("__ROOT_PATH__", _request_root_path(request))
+    return HTMLResponse(content=html)
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -140,15 +160,16 @@ def favicon():
     return FileResponse("static/favicon.png", media_type="image/png")
 
 def _is_volume_mounted() -> bool:
-    """Check if MUSIC_DIR appears to be a mounted volume.
+    """Check if the configured music directory appears to be a mounted volume.
 
-    Compares device IDs - if /music is on a different device than /,
+    Compares device IDs: if the music dir is on a different device than /,
     it's likely a mounted volume. This helps detect misconfigured setups
     where users forgot to mount their music directory.
     """
     try:
+        configured_music_dir = Path(get_setting("music_dir", str(MUSIC_DIR)))
         root_stat = os.stat("/")
-        music_stat = os.stat(MUSIC_DIR)
+        music_stat = os.stat(configured_music_dir)
         # Different device ID means it's a mount point
         return root_stat.st_dev != music_stat.st_dev
     except OSError:
@@ -157,17 +178,18 @@ def _is_volume_mounted() -> bool:
 
 
 @app.get("/api/config")
-def get_config():
+def get_config(request: Request):
     """Expose server configuration and version for the UI"""
     api_key = get_setting("api_key", "")
     organise_by_artist = get_setting_bool("organise_by_artist", True)
+    configured_music_dir = Path(get_setting("music_dir", str(MUSIC_DIR)))
     singles_dir = get_singles_dir()
     playlists_dir = get_playlists_dir()
 
     # Build human-readable example paths relative to the music root so the
     # frontend can show the user exactly where their files will land.
     try:
-        singles_example = str(singles_dir.relative_to(MUSIC_DIR))
+        singles_example = str(singles_dir.relative_to(configured_music_dir))
     except ValueError:
         singles_example = str(singles_dir)
     if organise_by_artist:
@@ -177,7 +199,7 @@ def get_config():
     playlists_example = None
     if playlists_dir:
         try:
-            pl_rel = str(playlists_dir.relative_to(MUSIC_DIR))
+            pl_rel = str(playlists_dir.relative_to(configured_music_dir))
         except ValueError:
             pl_rel = str(playlists_dir)
         playlists_example = f"{pl_rel}/Playlist Name/Artist - Title.flac"
@@ -196,6 +218,8 @@ def get_config():
         "organise_by_artist": organise_by_artist,
         "singles_path_example": singles_example,
         "playlists_path_example": playlists_example,
+        "music_dir": get_setting("music_dir", str(MUSIC_DIR)),
+        "root_path": _request_root_path(request),
         "auth_required": bool(api_key),
         "auth_mode": "session",
         "users_exist": users_exist,
@@ -224,9 +248,10 @@ def list_music_dirs(path: str = "", recursive: bool = False, max_depth: int | No
         raise HTTPException(status_code=400, detail="Path traversal not allowed")
     clean = "/".join(segments)
 
-    target = MUSIC_DIR / clean if clean else MUSIC_DIR
+    configured_music_dir = Path(get_setting("music_dir", str(MUSIC_DIR)))
+    target = configured_music_dir / clean if clean else configured_music_dir
     target_resolved = target.resolve()
-    music_root = MUSIC_DIR.resolve()
+    music_root = configured_music_dir.resolve()
     # Make sure we haven't escaped MUSIC_DIR
     try:
         target.resolve().relative_to(music_root)
@@ -381,7 +406,7 @@ def issue_download_token(request: Request, body: DownloadTokenRequest):
 
     # Single-user mode has no session token in play; direct links are fine.
     if request.state.user_id is None:
-        return {"url": f"/api/jobs/{job_id}/download", "expires_in": 0}
+        return {"url": _app_path(f"/api/jobs/{job_id}/download", request), "expires_in": 0}
 
     user_id = request.state.user_id
     is_admin = request.state.is_admin
@@ -401,7 +426,7 @@ def issue_download_token(request: Request, body: DownloadTokenRequest):
 
     token = create_download_token(user_id, job_id)
     return {
-        "url": f"/api/jobs/{job_id}/download?download_token={token}",
+        "url": _app_path(f"/api/jobs/{job_id}/download?download_token={token}", request),
         "expires_in": DOWNLOAD_TOKEN_TTL_SECONDS,
     }
 
@@ -609,7 +634,8 @@ def update_settings(updates: SettingsUpdate, request: Request):
                 }[key]
                 value = "/".join(parts) or default_subdir
                 try:
-                    (MUSIC_DIR / value).resolve().relative_to(MUSIC_DIR.resolve())
+                    configured_music_dir = Path(get_setting("music_dir", str(MUSIC_DIR)))
+                    (configured_music_dir / value).resolve().relative_to(configured_music_dir.resolve())
                 except ValueError:
                     raise HTTPException(status_code=400, detail=f"{key.replace('_', ' ')} must stay within music directory")
 

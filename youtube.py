@@ -274,6 +274,54 @@ def _normalise_search_text(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+_ARTIST_MATCH_NOISE = frozenset({
+    "feat", "ft", "featuring", "with", "vs", "x", "and", "the",
+})
+
+
+def _normalise_search_title_text(text: str) -> str:
+    """Normalise title text while stripping common collaborator clauses."""
+    text = _normalise_search_text(text or "")
+    text = re.sub(r'\b(?:feat|ft|featuring)\b\s+.*$', '', text).strip()
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _artist_match_tokens(text: str) -> set[str]:
+    """Return significant artist tokens for loose collaborator/order matching."""
+    norm = _normalise_search_text(text or "")
+    if not norm:
+        return set()
+    tokens = {t for t in norm.split() if t and t not in _ARTIST_MATCH_NOISE}
+    return tokens or set(norm.split())
+
+
+def _token_overlap_ratio(expected: set[str], candidate: set[str]) -> float:
+    """How much of the smaller token set overlaps with the other."""
+    if not expected or not candidate:
+        return 0.0
+    smaller = min(len(expected), len(candidate))
+    if smaller <= 0:
+        return 0.0
+    return len(expected & candidate) / smaller
+
+
+def _artist_match_strength(expected_artist: str, *candidate_artists: str) -> float:
+    """Return best overlap strength between expected artist and candidate artist text.
+
+    1.0 means the smaller set is fully contained in the larger one, which covers
+    collaborator separator changes and artist-order swaps.
+    """
+    expected_tokens = _artist_match_tokens(expected_artist)
+    if not expected_tokens:
+        return 0.0
+    best = 0.0
+    for candidate in candidate_artists:
+        strength = _token_overlap_ratio(expected_tokens, _artist_match_tokens(candidate))
+        if strength > best:
+            best = strength
+    return best
+
+
 _VARIATION_RE = re.compile(
     r'\b(remix|extended|live|acoustic|instrumental|cover|edit|mix|version|'
     r'unplugged|reprise|demo|radio\s+edit|club\s+mix)\b',
@@ -299,6 +347,14 @@ def _parse_query_artist_title(query: str) -> tuple[str | None, str | None]:
             artist, title = query.split(sep, 1)
             return artist.strip(), title.strip()
     return None, None
+
+
+def _parse_result_artist_title(text: str) -> tuple[str | None, str]:
+    """Best-effort split for result titles like 'Artist - Title'."""
+    artist, title = _parse_query_artist_title(text)
+    if artist is None:
+        return None, text
+    return artist, title or ""
 
 
 def score_search_result(
@@ -398,6 +454,9 @@ def score_search_result(
         title_norm = _normalise_search_text(title)
         channel_norm = _normalise_search_text(channel)
         combined_norm = f"{title_norm} {channel_norm}".strip()
+        parsed_result_artist, parsed_result_title = _parse_result_artist_title(title)
+        title_match_norm = _normalise_search_title_text(parsed_result_title or title)
+        full_title_match_norm = _normalise_search_title_text(title)
 
         stopwords = {
             "official", "music", "video", "lyrics", "lyric", "audio",
@@ -416,19 +475,32 @@ def score_search_result(
 
         expected_artist, expected_title = _parse_query_artist_title(query)
         expected_artist_norm = _normalise_search_text(expected_artist or "")
-        expected_title_norm = _normalise_search_text(expected_title or "")
+        expected_title_norm = _normalise_search_title_text(expected_title or "")
         if expected_title_norm:
-            if expected_title_norm in title_norm:
+            title_strength = max(
+                _token_overlap_ratio(set(expected_title_norm.split()), set(title_match_norm.split())),
+                _token_overlap_ratio(set(expected_title_norm.split()), set(full_title_match_norm.split())),
+            )
+            if expected_title_norm in title_match_norm or expected_title_norm in full_title_match_norm:
                 score += 25
+            elif title_strength >= 1.0:
+                score += 15
+            elif title_strength >= 0.75:
+                score += 8
             else:
-                score -= 25
+                score -= 20
         if expected_artist_norm:
+            artist_strength = _artist_match_strength(expected_artist, parsed_result_artist or "", channel, title)
             if expected_artist_norm in title_norm:
                 score += 15
             elif expected_artist_norm in channel_norm:
                 score += 10
+            elif artist_strength >= 1.0:
+                score += 18
+            elif artist_strength >= 0.6:
+                score += 8
             else:
-                score -= 10
+                score -= 12
         if expected_artist_norm and expected_title_norm:
             if f"{expected_artist_norm} {expected_title_norm}" in title_norm:
                 score += 20

@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.4.4**
+**v2.4.5**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -96,6 +96,8 @@ For YouTube and SoundCloud, FLAC conversion is primarily for standardisation and
        environment:
          - MUSIC_DIR=/music
          - DB_PATH=/data/music_grabber.db
+         # Optional: serve behind a reverse-proxy subpath (proxy must strip the prefix)
+         # - ROOT_PATH=/musicgrabber
          - ENABLE_MUSICBRAINZ=true
          - DEFAULT_CONVERT_TO_FLAC=true
          # Optional: Run as specific user (like *arr stack) for correct file permissions
@@ -213,6 +215,7 @@ Settings are stored in the database and persist across container restarts.
 | `LISTEN_PORT` | `8080` | Bind port for the web service inside the container |
 | `MUSIC_DIR` | `/music` | Music library root inside container |
 | `DB_PATH` | `/data/music_grabber.db` | SQLite database path |
+| `ROOT_PATH` | *(empty)* | URL prefix when serving behind a reverse proxy subpath, e.g. `/musicgrabber`. Your proxy should strip this prefix before forwarding to MusicGrabber |
 | `ENABLE_MUSICBRAINZ` | `true` | Enable MusicBrainz metadata lookups |
 | `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
 | `ACOUSTID_API_KEY` | *(shared built-in)* | AcoustID API key for audio fingerprinting. A shared key is built in but **may hit rate limits**. Register a free key at [acoustid.org](https://acoustid.org/login) and set it here (or via Settings tab) to avoid sharing quota |
@@ -458,6 +461,33 @@ music.yourdomain.com {
     reverse_proxy music-grabber:8080
 }
 ```
+
+### Reverse Proxy Subpath (`/musicgrabber`)
+
+If you want to serve MusicGrabber from a subpath instead of a subdomain, set:
+
+```yaml
+environment:
+  - ROOT_PATH=/musicgrabber
+```
+
+Then configure your reverse proxy to strip that prefix before forwarding the request to MusicGrabber.
+
+Example Caddy config:
+
+```caddy
+my-domain.com {
+    handle_path /musicgrabber/* {
+        reverse_proxy music-grabber:8080
+    }
+}
+```
+
+Notes:
+- `ROOT_PATH` should include the leading slash, for example `/musicgrabber`
+- The proxy must remove that prefix before passing the request upstream
+- Without `ROOT_PATH`, MusicGrabber assumes it lives at the domain root
+- Static assets, frontend API calls, and generated download URLs all respect this prefix
 
 ## Usage
 

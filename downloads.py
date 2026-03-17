@@ -1161,7 +1161,7 @@ _REMIX_INDICATOR_WORDS = frozenset({
     "remix", "mix", "edit", "version", "bootleg", "rework", "flip", "refix",
 })
 
-_ARTIST_NOISE_WORDS = frozenset({"feat", "ft", "featuring", "vs", "x", "and", "the"})
+_ARTIST_NOISE_WORDS = frozenset({"feat", "ft", "featuring", "with", "vs", "x", "and", "the"})
 
 
 def _artist_words(artist_norm: str) -> set:
@@ -1810,7 +1810,7 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
-            "SELECT artist, title FROM jobs WHERE playlist_name = ? AND status = 'completed' AND error IS NULL ORDER BY created_at",
+            "SELECT artist, title FROM jobs WHERE playlist_name = ? AND status = 'completed' ORDER BY created_at",
             (bulk_import_id,)
         )
         jobs = [dict(row) for row in cursor.fetchall()]
@@ -2437,7 +2437,12 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     f.write(f"{file_path}\n")
             set_file_permissions(m3u_path)
 
-            _update_job(job_id, m3u_path=str(m3u_path.relative_to(MUSIC_DIR)))
+            configured_music_dir = Path(get_setting("music_dir", str(MUSIC_DIR), user_id=user_id))
+            try:
+                m3u_rel = str(m3u_path.relative_to(configured_music_dir))
+            except ValueError:
+                m3u_rel = str(m3u_path)
+            _update_job(job_id, m3u_path=m3u_rel)
 
         # Trigger library rescans if configured
         trigger_navidrome_scan(user_id=user_id)

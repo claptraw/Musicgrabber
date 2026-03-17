@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from constants import AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH
-from settings import get_singles_dir, get_download_dir
+from settings import get_singles_dir, get_download_dir, get_playlists_dir
 
 
 def sanitize_filename(name: str) -> str:
@@ -146,53 +146,74 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
     return artist.strip() or "Unknown Artist", fallback_title
 
 
-def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Optional[Path]:
-    """Check if a track already exists in the library (any audio format).
+def _find_audio_match_in_dir(directory: Path, stems: list[str]) -> Optional[Path]:
+    """Return the first matching audio file inside one directory."""
+    if not directory.exists():
+        return None
 
-    Checks the current download directory (artist subfolder or flat) and also
-    peeks at the other layout so switching modes doesn't silently re-download.
-    Handles both plain 'Title' stems and 'Artist - Title' stems (flat mode format).
+    for stem in stems:
+        for ext in AUDIO_EXTENSIONS:
+            expected_file = directory / f"{stem}{ext}"
+            if expected_file.exists():
+                return expected_file
+
+    stem_lowers = {s.lower() for s in stems if s}
+    if stem_lowers:
+        for ext in AUDIO_EXTENSIONS:
+            for file in directory.glob(f"*{ext}"):
+                if file.stem.lower() in stem_lowers:
+                    return file
+
+    norm_targets = {_normalise_duplicate_stem(s) for s in stems if s}
+    if norm_targets:
+        for ext in AUDIO_EXTENSIONS:
+            for file in directory.glob(f"*{ext}"):
+                if _normalise_duplicate_stem(file.stem) in norm_targets:
+                    return file
+
+    return None
+
+
+def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Optional[Path]:
+    """Check if a track already exists anywhere in the local library.
+
+    Searches Singles in both flat and artist-subfolder layouts, then scans
+    playlist folders too so a track already downloaded for one playlist can be
+    reused by another without being treated as missing.
     """
     try:
         sanitized_title = sanitize_filename(title)
         sanitized_artist = sanitize_filename(artist or "")
         artist_title_stem = f"{sanitized_artist} - {sanitized_title}" if sanitized_artist else sanitized_title
+        stems = [s for s in (sanitized_title, artist_title_stem) if s]
 
-        # Check both possible locations so mode switches don't cause re-downloads.
-        # Each entry is (directory, stems_to_check).
         checks = [
-            (get_download_dir(artist, user_id=user_id), [sanitized_title, artist_title_stem]),  # current mode
-            (get_singles_dir(user_id=user_id) / sanitize_filename(artist), [sanitized_title, artist_title_stem]),  # artist subfolder
-            (get_singles_dir(user_id=user_id), [sanitized_title, artist_title_stem]),          # flat
+            get_download_dir(artist, user_id=user_id),
+            get_singles_dir(user_id=user_id) / sanitize_filename(artist),
+            get_singles_dir(user_id=user_id),
         ]
         seen = set()
-        for d, stems in checks:
-            d_str = str(d)
-            if d_str in seen or not d.exists():
+        for directory in checks:
+            d_str = str(directory)
+            if d_str in seen:
                 continue
             seen.add(d_str)
+            match = _find_audio_match_in_dir(directory, stems)
+            if match:
+                return match
 
-            for stem in stems:
-                for ext in AUDIO_EXTENSIONS:
-                    expected_file = d / f"{stem}{ext}"
-                    if expected_file.exists():
-                        return expected_file
-
-            # Case-insensitive fallback
-            stem_lowers = {s.lower() for s in stems}
-            for ext in AUDIO_EXTENSIONS:
-                for file in d.glob(f"*{ext}"):
-                    if file.stem.lower() in stem_lowers:
-                        return file
-
-            # Loose fallback: handles legacy files with promo suffixes like
-            # "| A COLORS SHOW" without creating false misses.
-            norm_targets = {_normalise_duplicate_stem(s) for s in stems if s}
-            if norm_targets:
-                for ext in AUDIO_EXTENSIONS:
-                    for file in d.glob(f"*{ext}"):
-                        if _normalise_duplicate_stem(file.stem) in norm_targets:
-                            return file
+        playlists_dir = get_playlists_dir(user_id=user_id)
+        if playlists_dir and playlists_dir.exists():
+            for playlist_dir in sorted(playlists_dir.iterdir(), key=lambda p: p.name.casefold()):
+                if not playlist_dir.is_dir():
+                    continue
+                d_str = str(playlist_dir)
+                if d_str in seen:
+                    continue
+                seen.add(d_str)
+                match = _find_audio_match_in_dir(playlist_dir, stems)
+                if match:
+                    return match
 
         return None
     except Exception:

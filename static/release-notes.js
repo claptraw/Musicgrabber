@@ -7,6 +7,20 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.4.5": {
+        title: "What's New in v2.4.5",
+        sections: [
+            {
+                heading: "Bug fixes",
+                items: [
+                    "If your music folder wasn't actually /music, Settings was telling porkies. It now shows the real path.",
+                    "MusicGrabber can now live under a reverse-proxy subpath like /musicgrabber without losing all its CSS, JS, and API calls in the woods. Set ROOT_PATH and let your proxy strip it.",
+                    "A bunch of Watched tab buttons had stage fright and stopped responding. Search, Retry, Tracks, Copy URL, Delete, and friends are awake again, and manual Search now jumps back to Results with the right playlist already picked.",
+                    "Duplicate tracks that already exist in one playlist folder are now spotted for the next playlist too. No more marking a perfectly good track as failed just because it already lives somewhere on disk.",
+                ]
+            }
+        ]
+    },
     "2.4.4": {
         title: "What's New in v2.4.4",
         sections: [

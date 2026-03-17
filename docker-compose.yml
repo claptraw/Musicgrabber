@@ -18,6 +18,8 @@ services:
       # Required paths
       - MUSIC_DIR=/music
       - DB_PATH=/data/music_grabber.db
+      # Optional: serve behind a reverse-proxy subpath (proxy must strip the prefix)
+      # - ROOT_PATH=/musicgrabber
       # Optional: custom bind (defaults to 0.0.0.0:8080 if unset)
       # IPv6 demo (commented out):
       # - LISTEN_ADDR=::

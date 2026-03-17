@@ -3,13 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="musicgrabber-root-path" content="__ROOT_PATH__">
     <title>Music Grabber</title>
-    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="icon" type="image/png" href="__ROOT_PATH__/static/favicon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg==" crossorigin="anonymous" referrerpolicy="no-referrer">
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="__ROOT_PATH__/static/style.css">
 </head>
 <body>
     <!-- Login screen (shown when users_exist=true and no valid session) -->
@@ -52,7 +53,7 @@
 
     <div id="app" class="container">
         <header>
-            <img src="/static/favicon.png" class="logo" alt="Music Grabber">
+            <img src="__ROOT_PATH__/static/favicon.png" class="logo" alt="Music Grabber">
             <h1>Music Grabber</h1>
             <div class="header-controls">
                 <label class="header-format-label" title="When on, converts downloads to the format selected in Settings. When off, keeps the source format.">
@@ -571,9 +572,9 @@
                             </select>
                         </div>
                         <div id="customSubdirRow" style="display:none;" class="custom-subdir-row">
-                            <input type="text" id="customSubdirInput" placeholder="Path under /music (e.g. Singles/Rock)" class="settings-input-path-text">
+                            <input type="text" id="customSubdirInput" placeholder="Subfolder name (e.g. Singles/Rock)" class="settings-input-path-text">
                         </div>
-                        <span class="settings-hint-sm">Choose an existing folder, use <code>/music</code> root, or pick <code>Custom path…</code>.</span>
+                        <span class="settings-hint-sm">Choose an existing folder, use the music root, or pick <code>Custom path…</code>.</span>
                         <span id="singlesPathPreview" class="settings-path-preview"></span>
                     </div>
                     <div class="settings-row">
@@ -584,7 +585,7 @@
                             </select>
                         </div>
                         <div id="customPlaylistsSubdirRow" style="display:none;" class="custom-subdir-row">
-                            <input type="text" id="customPlaylistsSubdirInput" placeholder="Path under /music (e.g. Playlists)" class="settings-input-path-text">
+                            <input type="text" id="customPlaylistsSubdirInput" placeholder="Subfolder name (e.g. Playlists)" class="settings-input-path-text">
                         </div>
                         <span class="settings-hint-sm">Separate folder for playlist downloads. Leave disabled to keep playlist tracks in Singles. When set, playlist tracks are saved as <code>Artist - Title.ext</code> inside a named subfolder.</span>
                         <span id="playlistsPathPreview" class="settings-path-preview"></span>
@@ -597,7 +598,7 @@
                             </select>
                         </div>
                         <div id="customAlbumsSubdirRow" style="display:none;" class="custom-subdir-row">
-                            <input type="text" id="customAlbumsSubdirInput" placeholder="Path under /music (e.g. Albums)" class="settings-input-path-text">
+                            <input type="text" id="customAlbumsSubdirInput" placeholder="Subfolder name (e.g. Albums)" class="settings-input-path-text">
                         </div>
                         <span class="settings-hint-sm">Folder for album downloads from the Albums tab. Files are organised as <code>Albums/Artist/Album/Track.flac</code>.</span>
                         <span id="albumsPathPreview" class="settings-path-preview"></span>
@@ -977,7 +978,8 @@
     <div class="toast" id="toast"></div>
     <audio id="previewAudio" preload="none"></audio>
 
-    <script src="/static/release-notes.js"></script>
-    <script src="/static/app.js"></script>
+    <script>window.__MUSICGRABBER_ROOT_PATH__ = "__ROOT_PATH__";</script>
+    <script src="__ROOT_PATH__/static/release-notes.js"></script>
+    <script src="__ROOT_PATH__/static/app.js"></script>
 </body>
 </html>

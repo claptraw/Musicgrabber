@@ -7,7 +7,14 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.4.4"
+VERSION = "2.4.5"
+
+
+def _normalise_root_path(value: str) -> str:
+    value = (value or "").strip()
+    if not value or value == "/":
+        return ""
+    return "/" + value.strip("/")
 
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
@@ -34,8 +41,6 @@ LIBRARY_RECONCILE_INTERVAL = int(os.getenv("LIBRARY_RECONCILE_INTERVAL", "1800")
 
 # Bulk import settings
 BULK_IMPORT_SEARCH_DELAY = 1.0           # Seconds between searches (be courteous to all sources)
-BULK_IMPORT_BACKOFF_DELAYS = [30, 60, 120, 300]  # Rate limit backoff sequence (unused, kept for reference)
-BULK_IMPORT_BACKOFF_RESET_AFTER = 5      # Consecutive successes before reducing backoff (unused, kept for reference)
 
 # Playlist creation
 PLAYLIST_WAIT_MAX = 3600         # Max seconds to wait for downloads to complete (1 hour)
@@ -88,6 +93,7 @@ ALLOW_API_KEY_QUERY_PARAM = os.getenv("ALLOW_API_KEY_QUERY_PARAM", "false").lowe
 # Configuration from environment - structural paths
 MUSIC_DIR = Path(os.getenv("MUSIC_DIR", "/music"))
 DB_PATH = Path(os.getenv("DB_PATH", "/data/music_grabber.db"))
+ROOT_PATH = _normalise_root_path(os.getenv("ROOT_PATH", ""))
 
 # Other settings that don't change at runtime (not in UI)
 SLSKD_REQUIRE_FREE_SLOT = os.getenv("SLSKD_REQUIRE_FREE_SLOT", "true").lower() == "true"
