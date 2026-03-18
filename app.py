@@ -335,7 +335,7 @@ def list_playlists(http_request: Request):
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            f"SELECT id, name, platform FROM watched_playlists WHERE {_scope_frag} ORDER BY name COLLATE NOCASE",
+            f"SELECT id, name, platform, sync_mode FROM watched_playlists WHERE {_scope_frag} ORDER BY name COLLATE NOCASE",
             _scope_params
         ).fetchall()
 
@@ -345,6 +345,7 @@ def list_playlists(http_request: Request):
             "is_watched": True,
             "watched_id": row["id"],
             "platform": row["platform"],
+            "sync_mode": row["sync_mode"] or "append",
         }
 
     return {"playlists": sorted(results.values(), key=lambda p: p["name"].casefold())}
@@ -638,6 +639,10 @@ def update_settings(updates: SettingsUpdate, request: Request):
                     (configured_music_dir / value).resolve().relative_to(configured_music_dir.resolve())
                 except ValueError:
                     raise HTTPException(status_code=400, detail=f"{key.replace('_', ' ')} must stay within music directory")
+
+        # Only allow sensible chmod values; a free-text octal field is a footgun
+        if key == "file_permissions" and value not in ("666", "777"):
+            raise HTTPException(status_code=400, detail="file_permissions must be 666 or 777")
 
         # Validate cookie format before saving
         if key == "youtube_cookies" and value.strip() and not _has_valid_cookie_entries(value):

@@ -479,6 +479,7 @@
                 opt.value = pl.name;
                 opt.textContent = pl.is_watched ? `${pl.name} (watched)` : pl.name;
                 opt.dataset.isWatched = pl.is_watched ? '1' : '0';
+                opt.dataset.syncMode = pl.sync_mode || 'append';
                 sel.appendChild(opt);
             }
             const newOpt = document.createElement('option');
@@ -500,9 +501,12 @@
         }
 
         function _updatePlaylistSelectorWarning() {
-            const pl = getSelectedPlaylist();
+            const sel = document.getElementById('playlistSelectorInput');
             const warn = document.getElementById('playlistSelectorWarn');
-            if (warn) warn.style.display = (pl && pl.is_watched) ? 'inline' : 'none';
+            if (!warn || !sel) return;
+            const opt = sel.options[sel.selectedIndex];
+            const isMirror = opt && opt.dataset.isWatched === '1' && opt.dataset.syncMode === 'mirror';
+            warn.style.display = isMirror ? 'inline' : 'none';
         }
 
         function getSelectedAlbumRoute() {
@@ -3017,6 +3021,24 @@
                 return;
             }
 
+            if (action === 'refresh-watched-playlist') {
+                refreshWatchedPlaylist(btn.dataset.playlistId || '');
+                return;
+            }
+
+            if (action === 'toggle-missing-tracks') {
+                toggleMissingTracks(btn.dataset.playlistId || '');
+                return;
+            }
+
+            if (action === 'toggle-watched-playlist') {
+                toggleWatchedPlaylist(
+                    btn.dataset.playlistId || '',
+                    btn.dataset.enabled === 'true' ? 'false' : 'true'
+                );
+                return;
+            }
+
             if (action === 'toggle-playlist-track-list') {
                 toggleTrackList(
                     btn.dataset.playlistId || '',
@@ -3061,6 +3083,24 @@
                     btn.dataset.artist || '',
                     btn.dataset.title || '',
                     btn
+                );
+                return;
+            }
+
+            if (action === 'refresh-watched-artist') {
+                refreshWatchedArtist(btn.dataset.artistId || '');
+                return;
+            }
+
+            if (action === 'toggle-artist-missing-tracks') {
+                toggleArtistMissingTracks(btn.dataset.artistId || '');
+                return;
+            }
+
+            if (action === 'toggle-watched-artist') {
+                toggleWatchedArtist(
+                    btn.dataset.artistId || '',
+                    btn.dataset.enabled === 'true' ? 'false' : 'true'
                 );
                 return;
             }
@@ -3291,9 +3331,13 @@
                 const platformIcon = platformIcons[p.platform] || '<i class="fa-solid fa-list"></i>';
                 const lastChecked = p.last_checked ? formatTimeAgo(p.last_checked) : 'Never';
                 const statusColor = p.enabled ? 'var(--accent)' : 'var(--text-secondary)';
-                const intervalText = p.refresh_interval_hours === 24 ? 'daily' :
+                const intervalText = p.refresh_interval_hours >= 720 ? 'monthly' :
                                      p.refresh_interval_hours === 168 ? 'weekly' :
-                                     p.refresh_interval_hours >= 720 ? 'monthly' :
+                                     p.refresh_interval_hours === 24 ? 'daily' :
+                                     p.refresh_interval_hours === 12 ? 'every 12h' :
+                                     p.refresh_interval_hours === 6 ? 'every 6h' :
+                                     p.refresh_interval_hours === 1 ? 'hourly' :
+                                     p.refresh_interval_hours === 0.5 ? 'every 30min' :
                                      `every ${p.refresh_interval_hours}h`;
                 const refreshLabel = isRefreshing
                     ? formatRefreshStage(refreshStage, refreshStartedAt, p.platform)
@@ -3358,8 +3402,14 @@
                             <span><strong>${p.stale_navidrome_paths} track${p.stale_navidrome_paths === 1 ? '' : 's'}</strong> in the M3U point to files that no longer exist on disk but are still in Navidrome's database. To fix: open Navidrome, go to <strong>Settings &gt; Missing Files</strong>, select all, and click <strong>Remove from Database</strong>. Then trigger a library scan and refresh this playlist.</span>
                         </div>` : ''}
                         <div class="watched-card-actions">
-                            <button onclick="refreshWatchedPlaylist('${p.id}')" class="watched-action-btn" title="${isRefreshing ? `Refresh in progress: ${escapeAttr(refreshLabel)}` : 'Check for new tracks now'}" ${isRefreshing ? 'disabled' : ''}>${isRefreshing ? 'Checking...' : 'Refresh'}</button>
-                            <button onclick="toggleMissingTracks('${p.id}')" class="watched-action-btn" title="Show tracks that failed to download">Missing</button>
+                            <button type="button"
+                                data-action="refresh-watched-playlist"
+                                data-playlist-id="${escapeAttr(p.id)}"
+                                class="watched-action-btn" title="${isRefreshing ? `Refresh in progress: ${escapeAttr(refreshLabel)}` : 'Check for new tracks now'}" ${isRefreshing ? 'disabled' : ''}>${isRefreshing ? 'Checking...' : 'Refresh'}</button>
+                            <button type="button"
+                                data-action="toggle-missing-tracks"
+                                data-playlist-id="${escapeAttr(p.id)}"
+                                class="watched-action-btn" title="Show tracks that failed to download">Missing</button>
                             <button type="button"
                                 data-action="toggle-playlist-track-list"
                                 data-playlist-id="${escapeAttr(p.id)}"
@@ -3369,7 +3419,11 @@
                                 data-action="copy-watched-playlist-url"
                                 data-url="${escapeAttr(p.url)}"
                                 class="watched-action-btn" title="Copy playlist URL">Copy URL</button>
-                            <button onclick="toggleWatchedPlaylist('${p.id}', ${p.enabled ? 'false' : 'true'})" class="watched-action-btn watched-action-pause">${p.enabled ? 'Pause' : 'Resume'}</button>
+                            <button type="button"
+                                data-action="toggle-watched-playlist"
+                                data-playlist-id="${escapeAttr(p.id)}"
+                                data-enabled="${p.enabled ? 'true' : 'false'}"
+                                class="watched-action-btn watched-action-pause">${p.enabled ? 'Pause' : 'Resume'}</button>
                             <button type="button"
                                 data-action="delete-watched-playlist"
                                 data-playlist-id="${escapeAttr(p.id)}"
@@ -3464,7 +3518,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         url: url,
-                        refresh_interval_hours: parseInt(watchedIntervalSelect.value),
+                        refresh_interval_hours: parseFloat(watchedIntervalSelect.value),
                         convert_to_flac: watchedConvertToFlac ? watchedConvertToFlac.checked : convertToFlacCheckbox.checked,
                         make_m3u: document.getElementById('watchedMakeM3u') ? document.getElementById('watchedMakeM3u').checked : false,
                         use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false,
@@ -3536,7 +3590,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         url: username,
-                        refresh_interval_hours: parseInt(watchedIntervalSelect.value),
+                        refresh_interval_hours: parseFloat(watchedIntervalSelect.value),
                         convert_to_flac: watchedConvertToFlac ? watchedConvertToFlac.checked : convertToFlacCheckbox.checked,
                         make_m3u: document.getElementById('watchedMakeM3u') ? document.getElementById('watchedMakeM3u').checked : false,
                         use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false,
@@ -4241,7 +4295,12 @@
                 const isError = artist.refresh_state === 'error';
                 const isPaused = !artist.enabled;
                 const intervalLabel = artist.refresh_interval_hours >= 720 ? 'monthly'
-                    : artist.refresh_interval_hours >= 168 ? 'weekly' : 'daily';
+                    : artist.refresh_interval_hours >= 168 ? 'weekly'
+                    : artist.refresh_interval_hours >= 24 ? 'daily'
+                    : artist.refresh_interval_hours >= 12 ? 'every 12h'
+                    : artist.refresh_interval_hours >= 6 ? 'every 6h'
+                    : artist.refresh_interval_hours >= 1 ? 'hourly'
+                    : 'every 30min';
                 const lastChecked = artist.last_checked
                     ? `Last checked: ${formatTimeAgo(artist.last_checked)}`
                     : 'Never checked';
@@ -4280,6 +4339,10 @@
                         <label class="watched-card-toggle">
                             Check:
                             <select class="watched-card-select" onchange="updateArtistInterval('${artist.id}', this.value)">
+                                <option value="0.5" ${artist.refresh_interval_hours == 0.5 ? 'selected' : ''}>Every 30 min</option>
+                                <option value="1" ${artist.refresh_interval_hours == 1 ? 'selected' : ''}>Hourly</option>
+                                <option value="6" ${artist.refresh_interval_hours == 6 ? 'selected' : ''}>Every 6 hours</option>
+                                <option value="12" ${artist.refresh_interval_hours == 12 ? 'selected' : ''}>Every 12 hours</option>
                                 <option value="24" ${artist.refresh_interval_hours == 24 ? 'selected' : ''}>Daily</option>
                                 <option value="168" ${artist.refresh_interval_hours == 168 ? 'selected' : ''}>Weekly</option>
                                 <option value="720" ${artist.refresh_interval_hours == 720 ? 'selected' : ''}>Monthly</option>
@@ -4287,13 +4350,21 @@
                         </label>
                     </div>
                     <div class="watched-card-actions">
-                        <button class="watched-action-btn" onclick="refreshWatchedArtist('${artist.id}')" ${isRunning ? 'disabled' : ''}>Refresh</button>
-                        <button class="watched-action-btn" onclick="toggleArtistMissingTracks('${artist.id}')">Missing</button>
+                        <button class="watched-action-btn" type="button"
+                            data-action="refresh-watched-artist"
+                            data-artist-id="${escapeAttr(artist.id)}"
+                            ${isRunning ? 'disabled' : ''}>Refresh</button>
+                        <button class="watched-action-btn" type="button"
+                            data-action="toggle-artist-missing-tracks"
+                            data-artist-id="${escapeAttr(artist.id)}">Missing</button>
                         <button class="watched-action-btn" type="button"
                             data-action="toggle-artist-track-list"
                             data-artist-id="${escapeAttr(artist.id)}"
                             data-artist-name="${escapeAttr(artist.name)}">Tracks</button>
-                        <button class="watched-action-btn watched-action-pause" onclick="toggleWatchedArtist('${artist.id}', ${!artist.enabled})">${isPaused ? 'Resume' : 'Pause'}</button>
+                        <button class="watched-action-btn watched-action-pause" type="button"
+                            data-action="toggle-watched-artist"
+                            data-artist-id="${escapeAttr(artist.id)}"
+                            data-enabled="${artist.enabled ? 'true' : 'false'}">${isPaused ? 'Resume' : 'Pause'}</button>
                         <button class="watched-action-btn watched-action-delete" type="button"
                             data-action="delete-watched-artist"
                             data-artist-id="${escapeAttr(artist.id)}"
@@ -4365,7 +4436,7 @@
                 await apiFetch(`/api/watched-artists/${artistId}`, {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ refresh_interval_hours: parseInt(hours) })
+                    body: JSON.stringify({ refresh_interval_hours: parseFloat(hours) })
                 });
             } catch (e) {
                 showToast('Failed to update interval', true);
@@ -4830,6 +4901,7 @@
             'spotify_cookies': 'settingSpotifyCookies',
             'spotify_browser_timeout_seconds': 'settingSpotifyBrowserTimeout',
             'spotify_browser_stall_seconds': 'settingSpotifyBrowserStall',
+            'file_permissions': 'settingFilePermissions',
             'api_key': 'settingApiKey'
         };
 

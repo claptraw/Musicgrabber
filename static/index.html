@@ -111,7 +111,7 @@
                 <input type="text" id="playlistNewNameInput" class="playlist-new-name-input" placeholder="Playlist name" style="display: none;" maxlength="80">
                 <button type="button" id="playlistNewNameConfirm" class="playlist-new-name-confirm" style="display: none;" title="Create playlist">&#x2713;</button>
                 <span id="playlistSelectorWarn" class="playlist-selector-warn" style="display: none;">
-                    Watched playlist - will be overwritten on next sync.
+                    Mirror playlist - manual additions may be removed on next sync.
                 </span>
                 <button type="button" id="playlistSelectorClear" class="playlist-selector-clear" title="Clear and collapse">&#x2715;</button>
             </div>
@@ -312,6 +312,10 @@
                     <label class="watched-control-label">
                         Check this playlist:
                         <select id="watchedIntervalSelect" class="watched-select">
+                            <option value="0.5">Every 30 min</option>
+                            <option value="1">Hourly</option>
+                            <option value="6">Every 6 hours</option>
+                            <option value="12">Every 12 hours</option>
                             <option value="24" selected>Daily</option>
                             <option value="168">Weekly</option>
                             <option value="720">Monthly</option>
@@ -534,7 +538,7 @@
                             <input type="checkbox" id="settingOrganiseByArtist" checked>
                             <span class="toggle-slider"></span>
                         </div>
-                        <span class="settings-hint settings-hint-full">On: <code>Singles/Artist Name/Track.ext</code> &nbsp; Off: <code>Singles/Artist Name - Track.ext</code> (flat, all in one folder)</span>
+                        <span class="settings-hint settings-hint-full">On: <code>Singles/Artist Name/Track.ext</code><br>Off: <code>Singles/Artist Name - Track.ext</code> (flat, all in one folder)</span>
                     </label>
                     <label class="settings-label settings-label-wrap">
                         <span>Auto-album routing for singles</span>
@@ -602,6 +606,16 @@
                         </div>
                         <span class="settings-hint-sm">Folder for album downloads from the Albums tab. Files are organised as <code>Albums/Artist/Album/Track.flac</code>.</span>
                         <span id="albumsPathPreview" class="settings-path-preview"></span>
+                    </div>
+                    <div class="settings-row admin-only">
+                        <label for="settingFilePermissions">Downloaded File Permissions</label>
+                        <div class="settings-subdir-flex">
+                            <select id="settingFilePermissions" class="settings-input-path" onchange="saveSettings()">
+                                <option value="666">666 (rw-rw-rw-) — default</option>
+                                <option value="777">777 (rwxrwxrwx) — NAS/share write access</option>
+                            </select>
+                        </div>
+                        <span class="settings-hint-sm">Permissions applied to each downloaded file. 666 is fine for most setups. Use 777 if your NAS or media server refuses to write to files owned by root.</span>
                     </div>
                 </div>
             </div>

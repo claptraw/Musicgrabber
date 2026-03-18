@@ -59,7 +59,7 @@ class AsyncBulkImportRequest(BaseModel):
 
 class WatchedPlaylistRequest(BaseModel):
     url: str  # Spotify, YouTube, or Amazon Music playlist URL
-    refresh_interval_hours: int = 24
+    refresh_interval_hours: float = 24
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
     make_m3u: bool = False
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
@@ -67,7 +67,7 @@ class WatchedPlaylistRequest(BaseModel):
     preferred_sources: str = "all"  # Comma-separated source IDs or "all"
 
 class WatchedPlaylistUpdate(BaseModel):
-    refresh_interval_hours: Optional[int] = None
+    refresh_interval_hours: Optional[float] = None
     enabled: Optional[bool] = None
     convert_to_flac: Optional[bool] = None
     make_m3u: Optional[bool] = None
@@ -90,6 +90,15 @@ class SettingsUpdate(BaseModel):
     organise_by_artist: Optional[bool] = None
     auto_album_singles: Optional[bool] = None
     auto_album_singles_use_albums_dir: Optional[bool] = None
+    file_permissions: Optional[str] = None
+
+    @field_validator("file_permissions")
+    @classmethod
+    def validate_file_permissions(cls, v):
+        if v is not None and v not in ("666", "777"):
+            raise ValueError("file_permissions must be 666 or 777")
+        return v
+
     # Search sources
     source_youtube_enabled: Optional[bool] = None
     source_mp3phoenix_enabled: Optional[bool] = None
@@ -100,6 +109,9 @@ class SettingsUpdate(BaseModel):
     slskd_user: Optional[str] = None
     slskd_pass: Optional[str] = None
     slskd_downloads_path: Optional[str] = None
+    # Duplicate checking
+    skip_dupes: Optional[bool] = None
+    navidrome_dupe_check: Optional[bool] = None
     # Navidrome
     navidrome_url: Optional[str] = None
     navidrome_user: Optional[str] = None
@@ -107,6 +119,9 @@ class SettingsUpdate(BaseModel):
     # Jellyfin
     jellyfin_url: Optional[str] = None
     jellyfin_api_key: Optional[str] = None
+    # Lidarr
+    lidarr_url: Optional[str] = None
+    lidarr_api_key: Optional[str] = None
     # Notifications
     notify_on: Optional[str] = None
     telegram_webhook_url: Optional[str] = None
@@ -188,13 +203,13 @@ class WatchedArtistRequest(BaseModel):
     mbid: str
     name: str
     from_date: str  # YYYY-MM-DD
-    refresh_interval_hours: int = 24
+    refresh_interval_hours: float = 24
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
     _validate_mbid = field_validator("mbid")(_validate_mbid)
 
 class WatchedArtistUpdate(BaseModel):
     enabled: Optional[bool] = None
-    refresh_interval_hours: Optional[int] = None
+    refresh_interval_hours: Optional[float] = None
     convert_to_flac: Optional[bool] = None
     from_date: Optional[str] = None
 

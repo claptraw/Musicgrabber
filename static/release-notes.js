@@ -7,6 +7,31 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.4.6": {
+        title: "What's New in v2.4.6",
+        sections: [
+            {
+                heading: "New: configurable file permissions",
+                items: [
+                    "Downloaded files have always been set to 666 (rw for everyone) for NAS and SMB compatibility. If your media server or NAS refuses to write to files owned by root, you can now switch to 777 in Settings (admin only). Two options, no free-text field — we're not animals.",
+                ]
+            },
+            {
+                heading: "New: sub-hourly watched playlist intervals",
+                items: [
+                    "Refresh intervals now go down to every 30 minutes, with hourly, 6h, and 12h options added alongside the existing daily/weekly/monthly. The backend already supported it; the UI just hadn't bothered to expose it. Bot-ban consequences are your own.",
+                ]
+            },
+            {
+                heading: "Bug fixes",
+                items: [
+                    "The 'Skip duplicates' toggle was gaslighting you — it looked saved, then quietly forgot every time you refreshed. The setting is now actually written to the database like it promised.",
+                    "The playlist routing selector was showing a 'will be overwritten on sync' warning for Append playlists, which don't get overwritten on sync at all. The warning now only appears for Mirror playlists, where it actually means something.",
+                    "Tracks stuck in Missing because their download job failed, despite the file already being on disk from another route (manual download, different playlist), will now be spotted and cleared on the next refresh.",
+                ]
+            }
+        ]
+    },
     "2.4.5": {
         title: "What's New in v2.4.5",
         sections: [

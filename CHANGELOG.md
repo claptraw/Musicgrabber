@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.4.6 (2026-03-18)
+
+### Added
+- **Configurable downloaded file permissions**: new setting (admin-only) lets you choose between `666` (the default, rw for everyone) and `777` (rwx for everyone, for NAS/share setups where root-owned files refuse to behave). Validated at both the Pydantic model and route level so no funny business gets through. Also overridable via `FILE_PERMISSIONS` env var for the docker-compose crowd.
+- **Sub-hourly watched playlist and artist intervals**: refresh intervals now go down to every 30 minutes (also hourly, 6h, 12h), not just daily/weekly/monthly. The backend already supported arbitrary values; the UI just hadn't exposed them. Bot-ban risk is on you if you go nuts with it.
+- **Failed-job tracks resolved by disk check on next refresh**: if a watched playlist track has a failed job but the file actually landed on disk via another route (manual download, different playlist sync, etc.), the next refresh now spots it, stamps `downloaded_at`, and removes it from Missing. Previously it would sit in Missing forever despite the file being right there.
+
+### Fixed
+- **Skip duplicates toggle not saving**: `skip_dupes` (and `navidrome_dupe_check`) were missing from the `SettingsUpdate` Pydantic model, so every save silently discarded them. The toggle looked like it worked, then cheerfully forgot everything the moment you refreshed.
+- **Lidarr config not surviving restarts**: same root cause as above — `lidarr_url` and `lidarr_api_key` were also missing from `SettingsUpdate`, so Lidarr credentials were quietly dropped on every save and lost on restart.
+- **"Will be overwritten" warning shown for Append playlists**: the playlist routing selector showed a sync-overwrite warning for every watched playlist, including ones on Append mode that don't get cleared on sync. The warning now only appears for Mirror playlists, where it actually applies. Text updated to reflect what Mirror mode actually does.
+- **Remaining watched card buttons using inline `onclick`**: Refresh, Missing, and Pause/Resume on both playlist and artist cards were still using inline handlers, which break on certain proxy setups and are generally fragile. All six migrated to the delegated `data-action` pattern used by the other buttons.
+
+
 ## v2.4.5 (2026-03-17)
 
 ### Added

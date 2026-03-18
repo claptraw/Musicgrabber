@@ -886,6 +886,24 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                 if job_status in ("queued", "downloading"):
                     continue
 
+                # Job failed (or never ran), but check if the file landed on disk anyway
+                # (e.g. a manual download, or a previous sync via a different playlist).
+                if _has_local_track_file(
+                    playlist["name"],
+                    bool(playlist.get("use_playlists_dir", False)),
+                    existing["artist"] or artist,
+                    existing["title"] or title,
+                    existing["job_artist"] or "",
+                    existing["job_title"] or "",
+                    user_id=user_id,
+                    resolved_path=existing["resolved_path"],
+                ):
+                    conn.execute(
+                        "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now') WHERE playlist_id = ? AND track_hash = ?",
+                        (playlist_id, track_hash)
+                    )
+                    continue
+
                 missing_tracks.append((artist, title, track_hash))
 
             # In mirror mode: mark any previously tracked tracks that are no longer in the upstream

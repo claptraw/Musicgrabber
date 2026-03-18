@@ -1,7 +1,15 @@
 @echo off
+:: Auto-elevate to Administrator if not already
+net session >nul 2>&1
+if errorlevel 1 (
+    powershell -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    exit /b
+)
+
 setlocal EnableDelayedExpansion
 
 title MusicGrabber Setup
+set "SCRIPT_PATH=%~f0"
 
 echo.
 echo  =============================================
@@ -19,23 +27,31 @@ if errorlevel 1 (
     echo  Docker Desktop is not installed.
     echo  Downloading Docker Desktop installer...
     echo.
-    set DOCKER_INSTALLER=%TEMP%\DockerDesktopInstaller.exe
-    curl -L -o "%DOCKER_INSTALLER%" "https://desktop.docker.com/win/main/amd64/Docker%%20Desktop%%20Installer.exe"
+    set DOCKER_INSTALLER=C:\temp\DockerDesktopInstaller.exe
+    if not exist "C:\temp" mkdir "C:\temp"
+    echo  This may take a few minutes...
+    curl.exe -L --progress-bar --output "!DOCKER_INSTALLER!" "https://desktop.docker.com/win/main/amd64/Docker%%20Desktop%%20Installer.exe"
     if errorlevel 1 (
         echo  Download failed. Check your internet connection and try again.
         pause
         exit /b 1
     )
+    echo  Registering setup to resume after reboot...
+    reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" /v "MusicGrabberSetup" /t REG_SZ /d "cmd /c \"\"!SCRIPT_PATH!\"\"" /f >nul
+
     echo  Launching installer...
     echo.
-    echo  After installing Docker Desktop:
-    echo    1. Reboot if prompted
-    echo    2. Start Docker Desktop and wait for it to finish loading
-    echo    3. Run this setup script again
+    start /wait "" "!DOCKER_INSTALLER!"
+
     echo.
-    start /wait "" "%DOCKER_INSTALLER%"
-    pause
-    exit /b 1
+    echo  Docker installation complete.
+    echo  This setup will resume automatically after you log back in.
+    echo.
+    set /p REBOOT="  Reboot now? (Y/N): "
+    if /i "!REBOOT!"=="Y" (
+        shutdown /r /t 5 /c "Rebooting to complete Docker installation - MusicGrabber setup will resume on login"
+    )
+    exit /b 0
 )
 echo  Docker found.
 
@@ -43,12 +59,23 @@ echo  Docker found.
 :: 2. Check Docker is actually running
 :: -------------------------------------------------------
 echo [2/4] Checking Docker is running...
-docker info >nul 2>&1
-if errorlevel 1 (
+set DOCKER_READY=0
+for /L %%i in (1,1,12) do (
+    if !DOCKER_READY!==0 (
+        docker ps >nul 2>&1
+        if not errorlevel 1 (
+            set DOCKER_READY=1
+        ) else (
+            echo  Waiting for Docker engine... (attempt %%i/12^)
+            timeout /t 5 /nobreak >nul
+        )
+    )
+)
+if !DOCKER_READY!==0 (
     echo.
-    echo  Docker is installed but not running.
-    echo  Please start Docker Desktop, wait for it to finish loading
-    echo  (the whale icon in the system tray should stop animating),
+    echo  Docker engine is not responding after 60 seconds.
+    echo  Please ensure Docker Desktop is fully started
+    echo  (the whale icon in the system tray should stop animating^),
     echo  then run this script again.
     echo.
     pause
@@ -93,8 +120,8 @@ echo  Writing configuration...
     echo     ports:
     echo       - "38274:8080"
     echo     volumes:
-    echo       - "%MUSIC_PATH%:/music"
-    echo       - "%DATA_PATH%:/data"
+    echo       - '%MUSIC_PATH%:/music'
+    echo       - '%DATA_PATH%:/data'
     echo     environment:
     echo       - MUSIC_DIR=/music
     echo       - DB_PATH=/data/music_grabber.db

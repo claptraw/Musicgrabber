@@ -167,6 +167,7 @@ SETTINGS_SCHEMA = {
     "organise_by_artist": {"type": "bool", "default": True, "env": "ORGANISE_BY_ARTIST"},
     "auto_album_singles": {"type": "bool", "default": False, "env": "AUTO_ALBUM_SINGLES"},
     "auto_album_singles_use_albums_dir": {"type": "bool", "default": False, "env": "AUTO_ALBUM_SINGLES_USE_ALBUMS_DIR"},
+    "file_permissions": {"type": "str", "default": "666", "env": "FILE_PERMISSIONS"},
     # Soulseek/slskd
     "slskd_url": {"type": "str", "default": "", "env": "SLSKD_URL"},
     "slskd_user": {"type": "str", "default": "", "env": "SLSKD_USER"},

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from constants import AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH
-from settings import get_singles_dir, get_download_dir, get_playlists_dir
+from settings import get_singles_dir, get_download_dir, get_playlists_dir, get_setting
 
 
 def sanitize_filename(name: str) -> str:
@@ -221,9 +221,11 @@ def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Opti
 
 
 def set_file_permissions(file_path: Path):
-    """Set file permissions to 666 (rw for all) for NAS/SMB compatibility"""
+    """Set file permissions for NAS/SMB compatibility. Defaults to 666; can be bumped to 777 in settings."""
+    mode_str = get_setting("file_permissions", "666")
+    mode = 0o777 if mode_str == "777" else 0o666
     try:
-        os.chmod(file_path, 0o666)
+        os.chmod(file_path, mode)
     except OSError:
         pass  # Silently ignore permission errors (may not have rights)
 
