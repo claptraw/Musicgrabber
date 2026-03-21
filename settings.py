@@ -130,7 +130,7 @@ SENSITIVE_SETTINGS = {
 
 # Settings that belong to each user (stored in user_settings table)
 USER_SETTINGS_KEYS = {
-    "music_dir", "singles_subdir", "playlists_subdir", "albums_subdir", "organise_by_artist", "auto_album_singles", "auto_album_singles_use_albums_dir",
+    "singles_subdir", "playlists_subdir", "albums_subdir", "organise_by_artist", "auto_album_singles", "auto_album_singles_use_albums_dir",
     "navidrome_url", "navidrome_user", "navidrome_pass", "navidrome_dupe_check",
     "jellyfin_url", "jellyfin_api_key",
     "lidarr_url", "lidarr_api_key",
@@ -143,7 +143,7 @@ USER_SETTINGS_KEYS = {
 
 # These user-scoped keys are personal credentials — a new user with no explicit value
 # should get a blank default rather than inheriting whatever the global setting says.
-# (Navidrome/Jellyfin/music_dir are NOT in this set: shared server, shared library.)
+# (Navidrome/Jellyfin are NOT in this set: shared server, shared library.)
 USER_PRIVATE_KEYS = {
     "notify_on", "telegram_webhook_url", "apprise_url",
     "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "smtp_to", "smtp_tls",

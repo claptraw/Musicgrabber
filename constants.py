@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.4.6"
+VERSION = "2.5.0"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -19,10 +19,10 @@ def _normalise_root_path(value: str) -> str:
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
 TIMEOUT_YTDLP_SEARCH = 30        # Search queries
-TIMEOUT_YTDLP_DOWNLOAD = 300     # Downloading a track (5 minutes)
+TIMEOUT_YTDLP_DOWNLOAD = int(os.getenv("TIMEOUT_YTDLP_DOWNLOAD", "300"))  # Downloading a track (5 minutes)
 TIMEOUT_YTDLP_PREVIEW = 15       # Getting preview URL
 TIMEOUT_YTDLP_PLAYLIST = 60      # Getting playlist contents
-TIMEOUT_FFMPEG_CONVERT = 120     # Converting audio formats
+TIMEOUT_FFMPEG_CONVERT = int(os.getenv("TIMEOUT_FFMPEG_CONVERT", "120"))  # Converting audio formats
 TIMEOUT_HTTP_REQUEST = 10        # MusicBrainz, LRClib, Navidrome API calls
 TIMEOUT_HTTP_SPOTIFY = 30        # Spotify embed fetch
 TIMEOUT_SLSKD_SEARCH = 12        # Soulseek search polling
@@ -34,7 +34,7 @@ TIMEOUT_AMAZON_BROWSER = 180     # Amazon Music playlist scraping (3 minutes)
 TIMEOUT_FPCALC = 30              # Audio fingerprinting via fpcalc
 TIMEOUT_MONOCHROME_API = 15      # Monochrome/Tidal API calls (search + manifest)
 TIMEOUT_MP3PHOENIX_SEARCH = 15   # mp3phoenix AJAX search
-TIMEOUT_MP3PHOENIX_DOWNLOAD = 120  # mp3phoenix direct MP3 stream
+TIMEOUT_MP3PHOENIX_DOWNLOAD = int(os.getenv("TIMEOUT_MP3PHOENIX_DOWNLOAD", "120"))  # mp3phoenix direct MP3 stream
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
 LIBRARY_RECONCILE_INTERVAL = int(os.getenv("LIBRARY_RECONCILE_INTERVAL", "1800"))  # Reconcile deleted/renamed files every 30 minutes
@@ -128,6 +128,11 @@ TIMEOUT_LISTENBRAINZ_PLAYLIST = 15   # Per-playlist JSPF fetch
 # community mirrors listed at github.com/monochrome-music/monochrome/blob/main/INSTANCES.md
 MONOCHROME_API_URL = os.getenv("MONOCHROME_API_URL", "https://api.monochrome.tf")
 MONOCHROME_COVER_BASE = "https://resources.tidal.com/images"
+
+# Cover art fallback chain  -  we try really hard to get proper album art
+COVER_ART_TIMEOUT = 10           # Per-source HTTP timeout for cover art fetches
+ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
+DEEZER_SEARCH_URL = "https://api.deezer.com/search"
 
 # Default settings for fields that need startup values
 DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"

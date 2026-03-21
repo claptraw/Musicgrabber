@@ -24,7 +24,7 @@ from constants import (
     SEARCH_MAX_PER_SOURCE,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
-from metadata import fetch_mb_expected_duration
+from metadata import fetch_mb_expected_duration, search_artist_mbid, fetch_artist_albums
 from settings import get_setting, get_setting_bool
 from mp3phoenix import search_mp3phoenix
 from youtube import (
@@ -441,6 +441,77 @@ def _mb_duration_lookup(query: str) -> float | None:
     return fetch_mb_expected_duration(artist, title)
 
 
+def _mb_album_lookup(query: str) -> dict | None:
+    """Find the MusicBrainz album a track belongs to, if we can figure it out.
+
+    Parses "Artist - Title" from the query, searches MB for the artist, then
+    scans their discography for an album whose title fuzzy-matches the track
+    title. Returns {artist_name, artist_mbid, album_title, release_mbid} or
+    None if the stars don't align.
+    """
+    if _query_has_variation(query):
+        return None
+    artist, title = _parse_query_artist_title(query)
+    if not artist or not title:
+        return None
+
+    artists = search_artist_mbid(artist)
+    if not artists:
+        return None
+    best = artists[0]
+
+    albums = fetch_artist_albums(best["mbid"])
+    if not albums:
+        return None
+
+    matched = _fuzzy_match_album(albums, title)
+    if not matched:
+        return None
+
+    return {
+        "artist_name": best["name"],
+        "artist_mbid": best["mbid"],
+        "album_title": matched["title"],
+        "release_mbid": matched["release_mbid"],
+    }
+
+
+def _fuzzy_match_album(albums: list[dict], track_title: str) -> dict | None:
+    """Try to find which album a track belongs to by title similarity.
+
+    Not bulletproof, but catches the common case where the track title
+    contains the album name (or vice versa). Three passes: exact,
+    normalised, then containment.
+    """
+    import unicodedata
+
+    def _norm(s: str) -> str:
+        s = unicodedata.normalize("NFKD", s)
+        s = s.lower()
+        s = re.sub(r"\s*\(.*?\)\s*", " ", s)   # (Deluxe Edition) etc.
+        s = re.sub(r"\s*\[.*?\]\s*", " ", s)   # [Remastered] etc.
+        s = re.sub(r"[^\w\s]", "", s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    title_lower = track_title.lower()
+    title_norm = _norm(track_title)
+
+    # Pass 1: exact case-insensitive
+    for a in albums:
+        if a["title"].lower() == title_lower:
+            return a
+    # Pass 2: normalised
+    for a in albums:
+        if _norm(a["title"]) == title_norm:
+            return a
+    # Pass 3: one contains the other
+    for a in albums:
+        na = _norm(a["title"])
+        if na and title_norm and (na in title_norm or title_norm in na):
+            return a
+    return None
+
+
 def _apply_mb_duration_scores(results: list[dict], expected_duration_secs: float) -> None:
     """Mutate quality_score on each result based on delta from MB expected duration.
 
@@ -531,12 +602,16 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
     return results[:limit]
 
 
-def search_all(query: str, limit: int, sources: list[str] | None = None) -> list[dict]:
+def search_all(query: str, limit: int, sources: list[str] | None = None) -> tuple[list[dict], dict | None]:
     """Search enabled sources in parallel, merge by quality score.
 
     If *sources* is provided (list of source IDs), only those sources are used,
     provided they are also enabled in settings. Falls back to all enabled sources
     if the filtered set is empty (e.g. source disabled globally but playlist prefers it).
+
+    Returns (results, album_suggestion) where album_suggestion is a dict with
+    artist_name, artist_mbid, album_title, release_mbid, or None if the query
+    didn't resolve to a known album.
     """
     active = _enabled_sources()
     if sources:
@@ -544,11 +619,12 @@ def search_all(query: str, limit: int, sources: list[str] | None = None) -> list
         filtered = {k: v for k, v in active.items() if k in sources}
         active = filtered if filtered else active
     futures = {}
-    with ThreadPoolExecutor(max_workers=len(active) + 1) as pool:
+    with ThreadPoolExecutor(max_workers=len(active) + 2) as pool:
         for name, cfg in active.items():
             futures[pool.submit(cfg["search_fn"], query, limit)] = name
-        # MB lookup runs alongside the source searches at no extra cost
+        # MB lookups run alongside the source searches at no extra cost
         mb_future = pool.submit(_mb_duration_lookup, query)
+        mb_album_future = pool.submit(_mb_album_lookup, query)
 
     all_results = []
     for future in as_completed(futures):
@@ -566,11 +642,16 @@ def search_all(query: str, limit: int, sources: list[str] | None = None) -> list
     except Exception:
         expected_dur = None
 
+    try:
+        album_suggestion = mb_album_future.result(timeout=2)
+    except Exception:
+        album_suggestion = None
+
     all_results = _apply_blacklist_filter(all_results)
     if expected_dur:
         _apply_mb_duration_scores(all_results, expected_dur)
     all_results.sort(key=lambda x: x["quality_score"], reverse=True)
-    return all_results[:limit]
+    return all_results[:limit], album_suggestion
 
 
 def get_available_sources() -> list[dict]:

@@ -973,6 +973,9 @@
             });
         })();
         const MAX_QUEUE_SIZE = 100;
+        const QUEUE_PAGE_SIZE = 10;
+        let queuePage = 1;
+        let allQueueJobs = [];
         let currentBulkImportId = null;
         let bulkImportPollInterval = null;
         let queuePollInterval = null;
@@ -1232,7 +1235,7 @@
                 lastResults = data.results;
                 currentSearchLogToken = data.search_token || null;
                 renderResults(data.results);
-                showRelatedSuggestions(data.results);
+                showRelatedSuggestions(data.results, data.album_suggestion);
 
                 // If slskd is enabled and we're searching YouTube or All, fetch slskd results too
                 if (data.slskd_enabled && (currentSource === 'youtube' || currentSource === 'all')) {
@@ -1301,17 +1304,35 @@
             renderResults(merged);
         }
 
-        // Show related search suggestions based on artists
-        function showRelatedSuggestions(results) {
+        // Show related search suggestions based on artists, plus album suggestion if available
+        function showRelatedSuggestions(results, albumSuggestion) {
             if (!results || results.length === 0) return;
 
             // Extract unique artists/channels
             const artists = [...new Set(results.map(r => r.channel))].slice(0, 5);
 
-            if (artists.length === 0) return;
+            if (artists.length === 0 && !albumSuggestion) return;
 
-            relatedSuggestions.innerHTML = `
-                <div class="related-suggestions">
+            // Album suggestion section (shown first when the backend found a matching album)
+            let albumHtml = '';
+            if (albumSuggestion) {
+                albumHtml = `
+                    <div class="related-title">Artist and Album</div>
+                    <div class="suggestion-chips">
+                        <button class="suggestion-chip album-suggestion-chip"
+                            data-artist="${escapeAttr(albumSuggestion.artist_name)}"
+                            data-artist-mbid="${escapeAttr(albumSuggestion.artist_mbid)}"
+                            data-album="${escapeAttr(albumSuggestion.album_title)}"
+                            data-release-mbid="${escapeAttr(albumSuggestion.release_mbid)}">
+                            <i class="fa-solid fa-compact-disc"></i> ${escapeHtml(albumSuggestion.artist_name)} \u2013 ${escapeHtml(albumSuggestion.album_title)}
+                        </button>
+                    </div>
+                `;
+            }
+
+            let artistHtml = '';
+            if (artists.length > 0) {
+                artistHtml = `
                     <div class="related-title">Related searches</div>
                     <div class="suggestion-chips">
                         ${artists.map(artist => `
@@ -1320,15 +1341,31 @@
                             </button>
                         `).join('')}
                     </div>
-                </div>
-            `;
+                `;
+            }
 
-            relatedSuggestions.querySelectorAll('.suggestion-chip').forEach(chip => {
+            relatedSuggestions.innerHTML = `<div class="related-suggestions">${albumHtml}${artistHtml}</div>`;
+
+            // Wire artist chip click handlers
+            relatedSuggestions.querySelectorAll('.suggestion-chip:not(.album-suggestion-chip)').forEach(chip => {
                 chip.addEventListener('click', () => {
                     setSearchValue(chip.dataset.query);
                     search();
                 });
             });
+
+            // Wire album suggestion chip click handler
+            const albumChip = relatedSuggestions.querySelector('.album-suggestion-chip');
+            if (albumChip) {
+                albumChip.addEventListener('click', () => {
+                    openAlbumFromSearch({
+                        artistName: albumChip.dataset.artist,
+                        albumTitle: albumChip.dataset.album,
+                        artistMbid: albumChip.dataset.artistMbid,
+                        releaseMbid: albumChip.dataset.releaseMbid,
+                    });
+                });
+            }
 
             relatedSuggestions.style.display = 'block';
         }
@@ -1621,9 +1658,11 @@
             } else {
                 parts.push(escapeHtml(result.channel || ''));
             }
-            // Show album for Monochrome results - they have proper metadata
+            // Show album for Monochrome results - clickable to open in Albums tab
             if (result.album) {
-                parts.push(escapeHtml(result.album));
+                const albumArtist = escapeAttr(result.artist || result.channel || '');
+                const albumTitle = escapeAttr(result.album);
+                parts.push(`<span class="album-link" data-artist="${albumArtist}" data-album="${albumTitle}" title="View album in Albums tab">${escapeHtml(result.album)}</span>`);
             }
             return parts.join(' • ');
         }
@@ -1719,6 +1758,19 @@
                     exploreBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
                         exploreSimilar(exploreBtn.dataset.artist);
+                    });
+                }
+
+                // Album link - click to open in Albums tab
+                const albumLink = item.querySelector('.album-link');
+                if (albumLink) {
+                    albumLink.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        openAlbumFromSearch({
+                            artistName: albumLink.dataset.artist,
+                            albumTitle: albumLink.dataset.album
+                        });
                     });
                 }
             });
@@ -1845,15 +1897,16 @@
         }
 
         async function getQueueSize() {
-            try {
-                const response = await apiFetch('/api/jobs?limit=100');
-                if (!response.ok) return 0;
-                const data = await response.json();
-                // Count queued and downloading jobs
-                return data.jobs.filter(j => j.status === 'queued' || j.status === 'downloading').length;
-            } catch (error) {
-                return 0;
-            }
+            // Use cached queue data if available, otherwise fetch
+            const jobs = allQueueJobs.length > 0 ? allQueueJobs : await (async () => {
+                try {
+                    const response = await apiFetch('/api/jobs?limit=250');
+                    if (!response.ok) return [];
+                    const data = await response.json();
+                    return data.jobs;
+                } catch { return []; }
+            })();
+            return jobs.filter(j => j.status === 'queued' || j.status === 'downloading').length;
         }
 
         async function loadJobs(showLoading = true) {
@@ -1862,11 +1915,15 @@
             }
 
             try {
-                const response = await apiFetch('/api/jobs?limit=30');
+                const response = await apiFetch('/api/jobs?limit=250');
                 if (!response.ok) throw new Error('Failed to load jobs');
 
                 const data = await response.json();
-                renderJobs(data.jobs);
+                allQueueJobs = data.jobs;
+                // Clamp page in case jobs were cleared
+                const totalPages = Math.max(1, Math.ceil(allQueueJobs.length / QUEUE_PAGE_SIZE));
+                if (queuePage > totalPages) queuePage = totalPages;
+                renderQueuePage();
             } catch (error) {
                 if (showLoading) {
                     queueTab.innerHTML = `
@@ -1877,6 +1934,32 @@
                     `;
                 }
             }
+        }
+
+        function renderQueuePage() {
+            const totalPages = Math.max(1, Math.ceil(allQueueJobs.length / QUEUE_PAGE_SIZE));
+            const start = (queuePage - 1) * QUEUE_PAGE_SIZE;
+            const pageJobs = allQueueJobs.slice(start, start + QUEUE_PAGE_SIZE);
+            renderJobs(pageJobs);
+
+            const pagerEl = document.getElementById('queuePager');
+            const infoEl = document.getElementById('queuePagerInfo');
+            const prevBtn = document.getElementById('queuePrevBtn');
+            const nextBtn = document.getElementById('queueNextBtn');
+            if (allQueueJobs.length > 1) {
+                pagerEl.style.display = 'flex';
+                infoEl.textContent = `Page ${queuePage} of ${totalPages} (${allQueueJobs.length} jobs)`;
+                prevBtn.disabled = queuePage <= 1;
+                nextBtn.disabled = queuePage >= totalPages;
+            } else {
+                pagerEl.style.display = 'none';
+            }
+        }
+
+        function changeQueuePage(delta) {
+            const totalPages = Math.max(1, Math.ceil(allQueueJobs.length / QUEUE_PAGE_SIZE));
+            queuePage = Math.max(1, Math.min(totalPages, queuePage + delta));
+            renderQueuePage();
         }
 
         function renderJobs(jobs) {
@@ -2528,6 +2611,196 @@
             if (input) input.focus({ preventScroll: true });
         }
 
+        // -------------------------------------------------------------------
+        // Open album from search results (clickable album name / suggestion chip)
+        // -------------------------------------------------------------------
+
+        function findMatchingAlbum(albums, searchTitle) {
+            if (!searchTitle || !albums.length) return null;
+            function normalise(s) {
+                return s.toLowerCase()
+                    .replace(/\s*\(.*?\)\s*/g, ' ')
+                    .replace(/\s*\[.*?\]\s*/g, ' ')
+                    .replace(/[^\w\s]/g, '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+            }
+            const norm = normalise(searchTitle);
+            // Exact case-insensitive
+            for (const a of albums) if (a.title.toLowerCase() === searchTitle.toLowerCase()) return a;
+            // Normalised
+            for (const a of albums) if (normalise(a.title) === norm) return a;
+            // Containment (handles "Album" vs "Album (Deluxe)")
+            for (const a of albums) {
+                const na = normalise(a.title);
+                if (na && norm && (na.includes(norm) || norm.includes(na))) return a;
+            }
+            return null;
+        }
+
+        async function openAlbumFromSearch(opts) {
+            // opts: { artistName, albumTitle, artistMbid?, releaseMbid? }
+            if (!opts.artistName || !opts.albumTitle) return;
+
+            // Switch to Albums tab
+            const albumsTabBtn = document.querySelector('[data-tab="albums"]');
+            if (albumsTabBtn) albumsTabBtn.click();
+
+            // Set the artist name in the input for visual context
+            const input = document.getElementById('albumArtistInput');
+            if (input) input.value = opts.artistName;
+
+            const resultsEl = document.getElementById('albumArtistResults');
+            const listSection = document.getElementById('albumListSection');
+            const listEl = document.getElementById('albumList');
+            const headingEl = document.getElementById('albumListHeading');
+            const tracklistSection = document.getElementById('albumTracklistSection');
+            const progressEl = document.getElementById('albumProgress');
+
+            // Reset state
+            albumSelectedArtist = null;
+            albumSelectedRelease = null;
+            albumSelectedM3uName = null;
+            if (albumPollInterval) { clearInterval(albumPollInterval); albumPollInterval = null; }
+            const downloadBtn = document.getElementById('albumDownloadBtn');
+            if (downloadBtn) { downloadBtn.disabled = false; downloadBtn.textContent = 'Download Album'; }
+            if (tracklistSection) tracklistSection.style.display = 'none';
+            if (progressEl) progressEl.style.display = 'none';
+            setAlbumResetVisible(false);
+
+            if (opts.artistMbid && opts.releaseMbid) {
+                // Fast path: backend already resolved MBIDs
+                albumSelectedArtist = { mbid: opts.artistMbid, name: opts.artistName };
+
+                // Show artist as selected
+                if (resultsEl) {
+                    resultsEl.style.display = '';
+                    resultsEl.innerHTML = '';
+                    const btn = document.createElement('button');
+                    btn.className = 'album-artist-btn selected';
+                    btn.innerHTML = `<span class="album-artist-name">${escapeHtml(opts.artistName)}</span>`;
+                    btn.addEventListener('click', () => selectAlbumArtist(albumSelectedArtist, btn));
+                    resultsEl.appendChild(btn);
+                }
+
+                // Load album list, then auto-select the matching one
+                if (listSection) listSection.style.display = 'block';
+                if (headingEl) headingEl.textContent = `Albums by ${opts.artistName}`;
+                if (listEl) listEl.innerHTML = '<p class="bulk-intro-text">Loading albums\u2026</p>';
+
+                try {
+                    const resp = await apiFetch(`/api/albums/artist/${encodeURIComponent(opts.artistMbid)}/albums`);
+                    if (!resp.ok) throw new Error('Failed to load albums');
+                    const data = await resp.json();
+                    const albums = data.albums || [];
+                    if (!albums.length) {
+                        if (listEl) listEl.innerHTML = '<p class="bulk-intro-text">No albums found.</p>';
+                        return;
+                    }
+                    if (listEl) {
+                        listEl.innerHTML = '';
+                        let matchedBtn = null;
+                        for (const album of albums) {
+                            const abtn = document.createElement('button');
+                            abtn.className = 'album-list-btn';
+                            if (album.release_mbid === opts.releaseMbid) {
+                                abtn.classList.add('selected');
+                                matchedBtn = abtn;
+                            }
+                            abtn.innerHTML = `<span class="album-list-title">${escapeHtml(album.title)}</span>`
+                                + (album.year ? ` <span class="album-list-year">${escapeHtml(album.year)}</span>` : '');
+                            abtn.addEventListener('click', () => selectAlbum(album, abtn));
+                            listEl.appendChild(abtn);
+                        }
+                    }
+                    // Auto-select the album to load its tracklist
+                    const target = albums.find(a => a.release_mbid === opts.releaseMbid);
+                    if (target) {
+                        await selectAlbum(target, listEl?.querySelector('.album-list-btn.selected'));
+                    }
+                } catch (e) {
+                    if (listEl) listEl.innerHTML = `<p class="bulk-intro-text error-text">Failed: ${escapeHtml(e.message)}</p>`;
+                }
+
+            } else {
+                // Slow path: need to look up artist and find the album
+                if (resultsEl) {
+                    resultsEl.style.display = '';
+                    resultsEl.innerHTML = '<p class="bulk-intro-text">Searching for artist\u2026</p>';
+                }
+
+                try {
+                    const artistResp = await apiFetch(`/api/albums/search-artist?q=${encodeURIComponent(opts.artistName)}`);
+                    if (!artistResp.ok) throw new Error('Artist search failed');
+                    const artistData = await artistResp.json();
+                    const artists = artistData.artists || [];
+
+                    if (!artists.length) {
+                        if (resultsEl) resultsEl.innerHTML = '<p class="bulk-intro-text">No matching artist found on MusicBrainz.</p>';
+                        return;
+                    }
+
+                    const bestArtist = artists[0];
+                    albumSelectedArtist = bestArtist;
+
+                    // Render artist buttons with the best one pre-selected
+                    if (resultsEl) {
+                        resultsEl.innerHTML = '';
+                        for (const a of artists) {
+                            const btn = document.createElement('button');
+                            btn.className = 'album-artist-btn';
+                            if (a.mbid === bestArtist.mbid) btn.classList.add('selected');
+                            btn.innerHTML = `<span class="album-artist-name">${escapeHtml(a.name)}</span>`
+                                + (a.disambiguation ? ` <span class="album-artist-disambig">${escapeHtml(a.disambiguation)}</span>` : '');
+                            btn.addEventListener('click', () => selectAlbumArtist(a, btn));
+                            resultsEl.appendChild(btn);
+                        }
+                    }
+
+                    // Load albums
+                    if (listSection) listSection.style.display = 'block';
+                    if (headingEl) headingEl.textContent = `Albums by ${bestArtist.name}`;
+                    if (listEl) listEl.innerHTML = '<p class="bulk-intro-text">Loading albums\u2026</p>';
+
+                    const albumsResp = await apiFetch(`/api/albums/artist/${encodeURIComponent(bestArtist.mbid)}/albums`);
+                    if (!albumsResp.ok) throw new Error('Failed to load albums');
+                    const albumsData = await albumsResp.json();
+                    const albums = albumsData.albums || [];
+
+                    if (!albums.length) {
+                        if (listEl) listEl.innerHTML = '<p class="bulk-intro-text">No albums found for this artist.</p>';
+                        return;
+                    }
+
+                    // Fuzzy-match the album title
+                    const matchedAlbum = findMatchingAlbum(albums, opts.albumTitle);
+
+                    if (listEl) {
+                        listEl.innerHTML = '';
+                        for (const album of albums) {
+                            const abtn = document.createElement('button');
+                            abtn.className = 'album-list-btn';
+                            if (matchedAlbum && album.release_mbid === matchedAlbum.release_mbid) {
+                                abtn.classList.add('selected');
+                            }
+                            abtn.innerHTML = `<span class="album-list-title">${escapeHtml(album.title)}</span>`
+                                + (album.year ? ` <span class="album-list-year">${escapeHtml(album.year)}</span>` : '');
+                            abtn.addEventListener('click', () => selectAlbum(album, abtn));
+                            listEl.appendChild(abtn);
+                        }
+                    }
+
+                    if (matchedAlbum) {
+                        await selectAlbum(matchedAlbum, listEl?.querySelector('.album-list-btn.selected'));
+                    } else {
+                        showToast(`Album "${opts.albumTitle}" not found in MusicBrainz. Pick one manually.`, true);
+                    }
+                } catch (e) {
+                    if (resultsEl) resultsEl.innerHTML = `<p class="bulk-intro-text error-text">Failed: ${escapeHtml(e.message)}</p>`;
+                }
+            }
+        }
+
         async function searchAlbumArtist() {
             const input = document.getElementById('albumArtistInput');
             const resultsEl = document.getElementById('albumArtistResults');
@@ -2821,7 +3094,7 @@
             if (!listEl) return;
             listEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
             try {
-                const res = await apiFetch(`/api/jobs/downloadable?page=${downloadablePage}&per_page=50`);
+                const res = await apiFetch(`/api/jobs/downloadable?page=${downloadablePage}&per_page=15`);
                 const data = await res.json();
                 if (!data.jobs || data.jobs.length === 0) {
                     listEl.innerHTML = '<div class="empty-state"><p>No completed downloads yet.</p></div>';

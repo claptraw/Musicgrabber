@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.4.6**
+**v2.5.0**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
 
@@ -184,6 +184,34 @@ PUID `99` and PGID `100` are Unraid's standard `nobody`/`users` — these give t
 
    Open `http://your-server:38274` on your phone or browser.
 
+### Option D: Windows 10+ (One-Click Setup)
+
+If you're running Windows and don't want to touch the command line, the `windows/` folder has batch scripts that handle everything for you.
+
+**Requirements:** Windows 10 or later. Docker Desktop will be installed automatically if it isn't already.
+
+1. **Download** the `windows/` folder from the repository (or clone the whole repo)
+2. **Right-click `setup.bat`** and select **Run as administrator**
+
+The setup script will:
+- Check for Docker Desktop and download/install it if missing (requires a reboot; setup resumes automatically on next login)
+- Wait for the Docker engine to finish starting
+- Ask where you want your music saved (defaults to `%USERPROFILE%\Music\MusicGrabber`)
+- Create a `docker-compose.yml` in `%APPDATA%\MusicGrabber`
+- Pull the latest MusicGrabber image
+- Optionally start MusicGrabber and open your browser to `http://localhost:38274`
+
+**After setup:**
+
+| Script | What it does |
+|--------|-------------|
+| `run.bat` | Starts Docker Desktop (if not running) and launches MusicGrabber |
+| `stop.bat` | Stops the MusicGrabber container |
+
+Both scripts are copied to `%APPDATA%\MusicGrabber` during setup. You can also put `run.bat` on your Desktop for easy access.
+
+**Configuration:** music is saved to the folder you chose during setup. The database and config live in `%APPDATA%\MusicGrabber`. To change settings after install, edit `%APPDATA%\MusicGrabber\docker-compose.yml` or use the Settings tab in the web UI.
+
 ## Configuration
 
 ### Settings Tab (Recommended)
@@ -250,6 +278,9 @@ Settings are stored in the database and persist across container restarts.
 | `SMTP_TO` | - | Recipient address(es), comma-separated |
 | `SMTP_TLS` | `true` | Use STARTTLS |
 | `API_KEY` | - | API key for authentication (see Security section) |
+| `TIMEOUT_YTDLP_DOWNLOAD` | `300` | Timeout in seconds for yt-dlp to download a single track. Increase for long mixes or slow connections |
+| `TIMEOUT_FFMPEG_CONVERT` | `120` | Timeout in seconds for ffmpeg format conversion. Increase if long tracks are producing broken files |
+| `TIMEOUT_MP3PHOENIX_DOWNLOAD` | `120` | Timeout in seconds for MP3Phoenix HTTP stream downloads |
 
 ### Navidrome Integration
 
@@ -610,44 +641,106 @@ music.yourdomain.com {
 
 ## API Endpoints
 
+### Core
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/` | Web UI |
+| `GET` | `/favicon.ico` | Favicon |
 | `GET` | `/api/config` | Get server config (version, defaults, auth_required) |
-| `GET` | `/api/settings` | Get all settings (requires auth if API key set) |
-| `PUT` | `/api/settings` | Update settings |
+| `GET` | `/api/music-dirs` | List subdirectories of `MUSIC_DIR` (for download path picker; `?recursive=true` for nested) |
+| `GET` | `/api/playlists` | List watched playlists and `.m3u` files (for playlist routing selector) |
+
+### Authentication
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/auth/login` | Authenticate user and return session token |
+| `POST` | `/api/auth/logout` | Invalidate session token |
+| `GET` | `/api/auth/me` | Get current authenticated user info |
+| `POST` | `/api/auth/download-token` | Issue single-use download token for a job file |
+| `PUT` | `/api/auth/password` | Change own password |
+
+### User Management (admin only)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/users` | List all users |
+| `POST` | `/api/users` | Create new user account |
+| `DELETE` | `/api/users/{id}` | Remove user account |
+| `PUT` | `/api/users/{id}/password` | Reset user password |
+| `PUT` | `/api/users/{id}/role` | Change user role |
+| `PUT` | `/api/users/{id}/force-password-change` | Flag user to change password on next login |
+
+### Settings
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/settings` | Get all settings (admin sees global, users see per-user slice) |
+| `PUT` | `/api/settings` | Update settings (per-user or global based on role) |
 | `POST` | `/api/settings/test/slskd` | Test slskd connection |
 | `POST` | `/api/settings/test/navidrome` | Test Navidrome connection |
 | `POST` | `/api/settings/test/jellyfin` | Test Jellyfin connection |
+| `POST` | `/api/settings/test/lidarr` | Test Lidarr connection |
 | `POST` | `/api/settings/test/youtube-cookies` | Test YouTube cookie validity |
 | `POST` | `/api/settings/test/spotify-cookies` | Test Spotify cookie validity |
 | `POST` | `/api/settings/test/apprise` | Test Apprise notification URL |
 | `GET` | `/api/settings/youtube-cookies/status` | Get cookie upload status |
+
+### Search and Preview
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | `GET` | `/api/sources` | List available search sources (for source selector UI) |
 | `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "youtube/soundcloud/monochrome/all"}`) |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
 | `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for URL-based sources like SoundCloud/Monochrome) |
 | `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
+
+### Downloads
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/monochrome/mp3phoenix", "download_type": "single/playlist"}`) |
 | `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` for provenance) |
-| `GET` | `/api/jobs/downloadable` | Paginated list of all completed jobs available to save to device (`?page=1&per_page=50`) |
+| `GET` | `/api/jobs/downloadable` | Paginated list of completed jobs available to save to device (`?page=1&per_page=50`) |
 | `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |
-| `GET` | `/api/jobs/{id}/download` | Download the audio file to the browser (completed jobs only; accepts `?api_key=` for browser-native downloads) |
+| `GET` | `/api/jobs/{id}/download` | Download the audio file to browser (completed jobs only; accepts `?api_key=` for browser-native downloads) |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
 | `DELETE` | `/api/jobs/{id}/file` | Delete downloaded file and lyrics from library |
-| `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`) |
+| `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`), admin only |
+
+### Bulk Import
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | `POST` | `/api/bulk-import-async` | Bulk import songs (async, returns immediately) |
 | `GET` | `/api/bulk-import/{id}/status` | Get async bulk import progress |
 | `GET` | `/api/bulk-imports` | List recent bulk imports |
-| `POST` | `/api/fetch-playlist` | Fetch tracks from supported playlist URL (Spotify, Amazon Music, or Tidal) |
-| `POST` | `/api/spotify-playlist` | Backwards-compat alias for Spotify playlist/album fetch |
+
+### Playlist Fetching
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/fetch-playlist` | Fetch tracks from playlist URL (Spotify, YouTube, Apple Music, Amazon Music, Tidal, ListenBrainz) |
+| `POST` | `/api/spotify-playlist` | Backwards-compat alias for `/api/fetch-playlist` |
+
+### Statistics and Reporting
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | `GET` | `/api/stats` | Get statistics (download counts, daily chart, top artists, search analytics) |
-| `DELETE` | `/api/stats?confirm=true` | Reset stats history (deletes completed/failed job history and search logs; confirmation required) |
-| `POST` | `/api/blacklist` | Report a bad track / block an uploader |
-| `GET` | `/api/blacklist` | List all blacklist entries |
-| `DELETE` | `/api/blacklist/{id}` | Remove a blacklist entry |
-| `GET` | `/api/music-dirs` | List subdirectories of `MUSIC_DIR` (for download path picker) |
-| `GET` | `/api/playlists` | List watched playlists and `.m3u` files (for playlist routing selector) |
+| `DELETE` | `/api/stats?confirm=true` | Reset stats history (admin only; deletes completed/failed job history and search logs) |
+| `GET` | `/api/mismatches` | Get watched playlist track match mismatches (admin only) |
+| `DELETE` | `/api/mismatches` | Clear the mismatch log (admin only) |
+| `POST` | `/api/blacklist` | Report a bad track / block an uploader (admin only) |
+| `GET` | `/api/blacklist` | List all blacklist entries (admin only) |
+| `DELETE` | `/api/blacklist/{id}` | Remove a blacklist entry (admin only) |
+
+### Watched Playlists
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | `GET` | `/api/watched-playlists` | List all watched playlists |
 | `POST` | `/api/watched-playlists` | Add a playlist to watch |
 | `GET` | `/api/watched-playlists/schedule` | Get next scheduled check time |
@@ -659,6 +752,11 @@ music.yourdomain.com {
 | `GET` | `/api/watched-playlists/{id}/tracks` | List all tracks with per-track status |
 | `POST` | `/api/watched-playlists/{id}/retry-track` | Retry a specific missing track |
 | `POST` | `/api/watched-playlists/check-all` | Check all watched playlists |
+
+### Watched Artists
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | `GET` | `/api/watched-artists/search` | Search MusicBrainz for an artist (`?q=Artist+Name`); returns up to 5 candidates |
 | `GET` | `/api/watched-artists` | List all watched artists with track counts |
 | `POST` | `/api/watched-artists` | Add an artist to watch (`{mbid, name, from_date, refresh_interval_hours, convert_to_flac}`) |
@@ -668,7 +766,22 @@ music.yourdomain.com {
 | `GET` | `/api/watched-artists/{id}/tracks` | List all tracked singles with per-track status |
 | `GET` | `/api/watched-artists/{id}/missing` | List singles with no successful download |
 | `POST` | `/api/watched-artists/{id}/retry-track` | Retry a specific missing single (`{artist, title}`) |
+| `POST` | `/api/watched-artists/{id}/retry-all-missing` | Queue all undownloaded singles as a bulk import |
 | `POST` | `/api/watched-artists/check-all` | Check all watched artists |
+
+### Album Downloads
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/albums/search-artist` | Search MusicBrainz for an artist by name (`?q=Artist+Name`) |
+| `GET` | `/api/albums/artist/{mbid}/albums` | Fetch studio albums for a MusicBrainz artist MBID |
+| `GET` | `/api/albums/release/{release_mbid}/tracks` | Fetch tracklist for a MusicBrainz release |
+| `POST` | `/api/albums/release/{release_mbid}/match-track` | Match a candidate song to a specific album track |
+| `GET` | `/api/albums/release/{release_mbid}/missing` | Check which tracks are already on disk for an album |
+| `GET` | `/api/albums/dirs` | List artist folders under the Albums directory |
+| `GET` | `/api/albums/dirs/{artist}` | List album folders within an artist directory |
+| `GET` | `/api/albums/dirs/{artist}/{album}/info` | Read `.albuminfo` sidecar and return MB tracklist |
+| `POST` | `/api/albums/download` | Queue a full album for download with MusicBrainz routing |
 
 ## Updating yt-dlp
 
@@ -772,6 +885,10 @@ docker compose up -d
   ```
 - The app detects the change within 30 seconds — no restart needed. All your jobs, watched playlists, and settings are preserved.
 - To go back fully from scratch, stop the container, delete `/data/music_grabber.db`, and start it again.
+
+**A track with a common name can't be found via Monochrome?**
+- Tidal's search returns a hard cap of 25 results and ranks by keyword popularity across all fields. If your track has a generic title (e.g. "2 Much"), more popular songs by other artists will completely drown it out — even if you include the artist name in the query. This is a Tidal search limitation, not a MusicGrabber bug (Tidal's own website has the same problem).
+- Workaround: find the track on [monochrome.tf](https://monochrome.tf) directly, then paste the track URL into MusicGrabber's search box. The URL resolver bypasses search entirely.
 
 **Metadata quality issues?**
 - Ensure `ENABLE_MUSICBRAINZ=true` in environment variables (or enable it in the Settings tab)

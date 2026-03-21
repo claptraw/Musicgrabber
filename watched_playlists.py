@@ -121,6 +121,10 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
 
     Returns (platform, id) or raises HTTPException if invalid
     """
+    # Spotify liked songs (requires sp_dc cookie)
+    if re.match(r'https?://open\.spotify\.com/collection/tracks', url):
+        return "spotify_likes", "collection/tracks"
+
     # Spotify playlist
     spotify_playlist = re.match(r'https?://open\.spotify\.com/playlist/([a-zA-Z0-9]+)', url)
     if spotify_playlist:
@@ -167,7 +171,7 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
 
     raise HTTPException(
         status_code=400,
-        detail="Invalid playlist URL. Supported: Spotify playlists/albums, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, Tidal public playlists, ListenBrainz playlists or usernames."
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, Tidal public playlists, ListenBrainz playlists or usernames."
     )
 
 
@@ -535,6 +539,26 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
 
     Returns (list of (artist, title) tuples, playlist_name)
     """
+    if platform == "spotify_likes":
+        spotify_cookies_text = get_setting("spotify_cookies", "", user_id=user_id)
+        sp_dc = _extract_sp_dc(spotify_cookies_text) if spotify_cookies_text.strip() else None
+        if not sp_dc:
+            raise HTTPException(
+                status_code=401,
+                detail="Spotify liked songs requires an sp_dc cookie. Add your Spotify cookies in Settings."
+            )
+        result = fetch_spotify_playlist_via_browser(
+            "tracks", "collection", sp_dc=sp_dc, user_id=user_id
+        )
+        tracks = []
+        for track_str in result["tracks"]:
+            if " - " in track_str:
+                artist, title = track_str.split(" - ", 1)
+                tracks.append((artist.strip(), title.strip()))
+            else:
+                tracks.append(("Unknown", track_str.strip()))
+        return tracks, result["playlist_name"]
+
     if platform == "spotify":
         spotify_cookies_text = get_setting("spotify_cookies", "", user_id=user_id)
         sp_dc = _extract_sp_dc(spotify_cookies_text) if spotify_cookies_text.strip() else None
@@ -991,6 +1015,18 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
 
         except HTTPException as e:
             err_msg = str(e.detail)
+            # Spotify cookie expiry deserves a human-readable message and a notification
+            if err_msg == "spotify_cookies_expired":
+                err_msg = "Spotify cookies have expired. Update them in Settings to resume this playlist."
+                try:
+                    from notifications import send_notification
+                    send_notification(
+                        "error", playlist["name"], status="failed",
+                        error=err_msg, playlist_name=playlist["name"],
+                        user_id=user_id,
+                    )
+                except Exception:
+                    pass
             conn.execute(
                 "UPDATE watched_playlists SET last_checked = datetime('now') WHERE id = ?",
                 (playlist_id,)
@@ -1000,7 +1036,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             return {
                 "playlist_id": playlist_id,
                 "name": playlist["name"],
-                "error": e.detail,
+                "error": err_msg,
                 "refresh_state": "error",
                 "refresh_stage": "failed",
             }

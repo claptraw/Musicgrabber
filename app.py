@@ -26,7 +26,7 @@ import base64
 from constants import (
     VERSION, MUSIC_DIR, DB_PATH, COOKIES_FILE, ROOT_PATH,
     MONOCHROME_API_URL, TIMEOUT_MONOCHROME_API,
-    LISTENBRAINZ_API_URL, TIMEOUT_LISTENBRAINZ,
+    TIMEOUT_LISTENBRAINZ,
     TIMEOUT_YTDLP_INFO,
     TIMEOUT_YTDLP_PREVIEW,
     TIMEOUT_SLSKD_SEARCH,
@@ -64,7 +64,7 @@ from auth import (
 from youtube import (
     _has_valid_cookie_entries, _cookie_lines_for_domain_check, _sync_cookies_file,
     _ytdlp_base_args, _is_ytdlp_403, parse_duration,
-    get_cookies_expiry, clear_expired_cookies,
+    get_cookies_expiry,
 )
 from search import search_source, search_all, get_available_sources, SOURCE_REGISTRY
 from slskd import slskd_enabled, search_slskd
@@ -734,9 +734,11 @@ def test_slskd_connection(http_request: Request, body: TestSlskdRequest = None):
 def test_navidrome_connection(http_request: Request, body: TestNavidromeRequest = None):
     """Test connection to Navidrome server. Uses form values if provided, otherwise saved settings."""
     user_id = http_request.state.user_id
-    url = (body.url if body and body.url else None) or _get_typed_setting("navidrome_url", user_id=user_id)
-    user = (body.username if body and body.username else None) or _get_typed_setting("navidrome_user", user_id=user_id)
-    password = (body.password if body and body.password else None) or _get_typed_setting("navidrome_pass", user_id=user_id)
+    is_admin = http_request.state.is_admin
+    # Non-admins can only test their saved settings, not probe arbitrary URLs
+    url = (body.url if body and body.url and is_admin else None) or _get_typed_setting("navidrome_url", user_id=user_id)
+    user = (body.username if body and body.username and is_admin else None) or _get_typed_setting("navidrome_user", user_id=user_id)
+    password = (body.password if body and body.password and is_admin else None) or _get_typed_setting("navidrome_pass", user_id=user_id)
 
     if not url:
         return {"success": False, "message": "Navidrome URL not configured"}
@@ -827,8 +829,10 @@ def test_navidrome_connection(http_request: Request, body: TestNavidromeRequest 
 def test_jellyfin_connection(http_request: Request, body: TestJellyfinRequest = None):
     """Test connection to Jellyfin server. Uses form values if provided, otherwise saved settings."""
     user_id = http_request.state.user_id
-    url = (body.url if body and body.url else None) or _get_typed_setting("jellyfin_url", user_id=user_id)
-    api_key = (body.api_key if body and body.api_key else None) or _get_typed_setting("jellyfin_api_key", user_id=user_id)
+    is_admin = http_request.state.is_admin
+    # Non-admins can only test their saved settings, not probe arbitrary URLs
+    url = (body.url if body and body.url and is_admin else None) or _get_typed_setting("jellyfin_url", user_id=user_id)
+    api_key = (body.api_key if body and body.api_key and is_admin else None) or _get_typed_setting("jellyfin_api_key", user_id=user_id)
 
     if not url:
         return {"success": False, "message": "Jellyfin URL not configured"}
@@ -860,8 +864,10 @@ def test_jellyfin_connection(http_request: Request, body: TestJellyfinRequest = 
 def test_lidarr_connection(http_request: Request, body: TestLidarrRequest = None):
     """Test connection to Lidarr. Uses form values if provided, otherwise saved settings."""
     user_id = http_request.state.user_id
-    url = (body.url if body and body.url else None) or _get_typed_setting("lidarr_url", user_id=user_id)
-    api_key = (body.api_key if body and body.api_key else None) or _get_typed_setting("lidarr_api_key", user_id=user_id)
+    is_admin = http_request.state.is_admin
+    # Non-admins can only test their saved settings, not probe arbitrary URLs
+    url = (body.url if body and body.url and is_admin else None) or _get_typed_setting("lidarr_url", user_id=user_id)
+    api_key = (body.api_key if body and body.api_key and is_admin else None) or _get_typed_setting("lidarr_api_key", user_id=user_id)
 
     if not url:
         return {"success": False, "message": "Lidarr URL not configured"}
@@ -1416,8 +1422,9 @@ def search(request: SearchRequest, http_request: Request):
     """Search for music across configured sources."""
     try:
         source = request.source
+        album_suggestion = None
         if source == "all":
-            raw_results = search_all(request.query, request.limit)
+            raw_results, album_suggestion = search_all(request.query, request.limit)
         elif source in SOURCE_REGISTRY:
             raw_results = search_source(source, request.query, request.limit)
         else:
@@ -1449,7 +1456,10 @@ def search(request: SearchRequest, http_request: Request):
         except Exception as log_error:
             print(f"search log error: {log_error}")
 
-        return {"results": final_results, "slskd_enabled": slskd_enabled(), "search_token": search_token}
+        resp = {"results": final_results, "slskd_enabled": slskd_enabled(), "search_token": search_token}
+        if album_suggestion:
+            resp["album_suggestion"] = album_suggestion
+        return resp
 
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Search timed out")
@@ -1943,7 +1953,7 @@ def retry_job(job_id: str, http_request: Request):
         if artist_hint or title_hint:
             query = f"{artist_hint} - {title_hint}".strip(" -")
             try:
-                for cand in search_all(query, limit=12):
+                for cand in search_all(query, limit=12)[0]:
                     cand_id = (cand.get("video_id") or "").strip()
                     if cand_id and cand_id not in attempted:
                         new_id = cand_id

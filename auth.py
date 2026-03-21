@@ -9,7 +9,6 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
 
 import bcrypt
 
@@ -113,11 +112,11 @@ def password_hash_for_timing(user: dict | None) -> str:
 
 def create_session(user_id: str) -> str:
     token = str(uuid.uuid4())
-    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_LIFETIME_DAYS)
     with db_conn() as conn:
         conn.execute(
-            "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
-            (token, user_id, expires_at.isoformat()),
+            "INSERT INTO sessions (token, user_id, expires_at) "
+            "VALUES (?, ?, datetime('now', '+' || ? || ' days'))",
+            (token, user_id, str(SESSION_LIFETIME_DAYS)),
         )
         conn.commit()
     return token
@@ -126,11 +125,11 @@ def create_session(user_id: str) -> str:
 def create_download_token(user_id: str, job_id: str, ttl_seconds: int = DOWNLOAD_TOKEN_TTL_SECONDS) -> str:
     token = str(uuid.uuid4())
     ttl = max(5, int(ttl_seconds))
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
     with db_conn() as conn:
         conn.execute(
-            "INSERT INTO download_tokens (token, user_id, job_id, expires_at) VALUES (?, ?, ?, ?)",
-            (token, user_id, job_id, expires_at.isoformat()),
+            "INSERT INTO download_tokens (token, user_id, job_id, expires_at) "
+            "VALUES (?, ?, ?, datetime('now', '+' || ? || ' seconds'))",
+            (token, user_id, job_id, str(ttl)),
         )
         conn.commit()
     return token

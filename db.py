@@ -23,6 +23,7 @@ def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
     conn.execute("PRAGMA busy_timeout=10000")
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 

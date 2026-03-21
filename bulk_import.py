@@ -227,7 +227,7 @@ def process_bulk_import_worker(import_id: str):
             # Search preferred (or all) sources in parallel, ranked by quality score
             try:
                 search_query = f"{artist} - {song}"
-                search_results = search_all(search_query, limit=10, sources=preferred_sources_list)
+                search_results, _ = search_all(search_query, limit=10, sources=preferred_sources_list)
 
                 if not search_results:
                     with db_conn() as conn:

@@ -9,7 +9,6 @@ Receives URL via environment and prints JSON to stdout:
 import json
 import os
 import re
-import sys
 import time
 from typing import Any
 

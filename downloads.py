@@ -7,12 +7,10 @@ Library scan triggers and M3U playlist generation.
 
 import base64
 import json
-import os
 import re
 import sqlite3
 import subprocess
 import tempfile
-import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -24,7 +22,7 @@ import httpx
 from constants import (
     AUDIO_EXTENSIONS,
     MUSIC_DIR,
-    MONOCHROME_API_URL, MONOCHROME_COVER_BASE, TIMEOUT_MONOCHROME_API,
+    MONOCHROME_API_URL, TIMEOUT_MONOCHROME_API,
     TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_SEARCH, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
     TIMEOUT_FFMPEG_CONVERT, TIMEOUT_HTTP_REQUEST,
     YTDLP_403_MAX_RETRIES, YTDLP_403_RETRY_DELAY,
@@ -36,6 +34,7 @@ from constants import (
     SILENCE_DETECT_DURATION, SILENCE_DETECT_NOISE,
     SILENCE_DETECT_MIN_START, SILENCE_DETECT_MAX_END_FRAC,
 )
+from coverart import fetch_cover_art, get_album_art_context, ensure_album_cover_files, cache_cover_art, _fetch_caa_cover
 from db import db_conn, log_match_mismatch
 from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
 from notifications import send_notification
@@ -62,8 +61,6 @@ from youtube import (
 
 _AUDIO_RECHECK_MAX_ATTEMPTS = 2
 _AUDIO_RESEARCH_MAX_ALTERNATES = 2
-_ALBUM_ART_CACHE: dict[str, tuple[bytes, str] | None] = {}
-_ALBUM_ART_CACHE_LOCK = threading.Lock()
 
 
 def _default_metadata_source(source: str) -> str:
@@ -267,104 +264,6 @@ def _get_album_track_tag_context(job_id: str) -> tuple[int | None, int | None]:
         return track_number, track_total
     except Exception:
         return None, None
-
-
-def _get_album_release_mbid(job_id: str) -> str | None:
-    """Return MusicBrainz release MBID for album-mode jobs, if available."""
-    if not job_id:
-        return None
-    job_ctx = _get_job_album_context(job_id)
-    if job_ctx.get("release_mbid"):
-        return job_ctx["release_mbid"]
-    try:
-        with db_conn() as conn:
-            row = conn.execute(
-                """
-                SELECT bi.album_release_mbid
-                FROM bulk_import_tracks bit
-                JOIN bulk_imports bi ON bi.id = bit.import_id
-                WHERE bit.job_id = ?
-                  AND bi.override_dir IS NOT NULL
-                  AND bi.override_dir != ''
-                LIMIT 1
-                """,
-                (job_id,),
-            ).fetchone()
-        if not row:
-            return None
-        mbid = (row[0] or "").strip()
-        return mbid or None
-    except Exception:
-        return None
-
-
-def _guess_cover_mime(data: bytes, content_type: str | None = None) -> str:
-    """Best-effort cover MIME detection for tag embedding."""
-    ct = (content_type or "").split(";")[0].strip().lower()
-    if ct in ("image/jpeg", "image/jpg", "image/png"):
-        return "image/jpeg" if ct == "image/jpg" else ct
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data[:3] == b"\xff\xd8\xff":
-        return "image/jpeg"
-    return "image/jpeg"
-
-
-def _fetch_musicbrainz_cover_art(release_mbid: str) -> tuple[bytes, str] | None:
-    """Fetch album front art from Cover Art Archive for a MusicBrainz release."""
-    mbid = (release_mbid or "").strip()
-    if not mbid:
-        return None
-    urls = (
-        f"https://coverartarchive.org/release/{mbid}/front-500",
-        f"https://coverartarchive.org/release/{mbid}/front",
-    )
-    for url in urls:
-        try:
-            resp = httpx.get(url, timeout=TIMEOUT_HTTP_REQUEST, follow_redirects=True)
-            if resp.status_code == 200 and resp.content:
-                mime = _guess_cover_mime(resp.content, resp.headers.get("content-type"))
-                return resp.content, mime
-        except Exception:
-            continue
-    return None
-
-
-def _get_album_art_context(job_id: str) -> tuple[bytes | None, str | None]:
-    """Return cached (cover_bytes, mime) for album-mode jobs."""
-    release_mbid = _get_album_release_mbid(job_id)
-    if not release_mbid:
-        return None, None
-
-    with _ALBUM_ART_CACHE_LOCK:
-        if release_mbid in _ALBUM_ART_CACHE:
-            cached = _ALBUM_ART_CACHE[release_mbid]
-            return cached if cached else (None, None)
-
-    fetched = _fetch_musicbrainz_cover_art(release_mbid)
-    with _ALBUM_ART_CACHE_LOCK:
-        _ALBUM_ART_CACHE[release_mbid] = fetched
-
-    return fetched if fetched else (None, None)
-
-
-def _ensure_album_cover_files(override_dir: str | None, album_art_bytes: bytes | None, album_art_mime: str | None) -> None:
-    """Write cover files for album-mode folders so library scanners can pick artwork."""
-    if not override_dir or not album_art_bytes:
-        return
-    try:
-        album_dir = Path(override_dir)
-        album_dir.mkdir(parents=True, exist_ok=True)
-        ext = ".png" if (album_art_mime or "").lower() == "image/png" else ".jpg"
-        for stem in ("cover", "folder"):
-            p = album_dir / f"{stem}{ext}"
-            if p.exists() and p.stat().st_size > 0:
-                continue
-            p.write_bytes(album_art_bytes)
-            set_file_permissions(p)
-    except Exception:
-        # Non-fatal; embedded artwork tags are still applied when possible.
-        pass
 
 
 def _find_downloaded_audio_or_raise(artist_dir: Path, sanitized_title: str) -> Path:
@@ -602,7 +501,7 @@ def _find_alternate_search_candidate(query: str, attempted_ids: set[str]) -> dic
     try:
         from search import search_all
 
-        for cand in search_all(query, limit=12):
+        for cand in search_all(query, limit=12)[0]:
             cand_id = (cand.get("video_id") or "").strip()
             if not cand_id or cand_id in attempted_ids:
                 continue
@@ -2381,13 +2280,24 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     failed_tracks += 1
                     continue
 
+                # Cover art: yt-dlp embedded a video thumbnail, try to replace with real album art
+                pl_cover_art_bytes, pl_cover_art_mime = None, None
+                cover = fetch_cover_art(
+                    artist, title,
+                    release_mbid=(mb_metadata or {}).get("release_mbid"),
+                )
+                if cover:
+                    pl_cover_art_bytes, pl_cover_art_mime = cover
+
                 if mb_metadata:
                     mb_artist = mb_metadata.get("artist", artist)
                     mb_title = mb_metadata.get("title", title)
                     apply_metadata_to_file(
                         audio_file, mb_artist, mb_title,
                         mb_metadata.get("album", ""),
-                        mb_metadata.get("year")
+                        mb_metadata.get("year"),
+                        album_art_bytes=pl_cover_art_bytes,
+                        album_art_mime=pl_cover_art_mime,
                     )
                     # Use canonical artist/title from MusicBrainz
                     if mb_artist != artist:
@@ -2400,7 +2310,11 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     if mb_title != title:
                         title = mb_title
                 else:
-                    apply_metadata_to_file(audio_file, artist, title)
+                    apply_metadata_to_file(
+                        audio_file, artist, title,
+                        album_art_bytes=pl_cover_art_bytes,
+                        album_art_mime=pl_cover_art_mime,
+                    )
 
                 # Fetch and save lyrics
                 lyrics = fetch_lyrics(artist, title)
@@ -2508,8 +2422,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
     forced_album_name = album_ctx.get("album_name")
     forced_track_title = album_ctx.get("track_title")
     album_track_number, album_track_total = _get_album_track_tag_context(job_id)
-    album_art_bytes, album_art_mime = _get_album_art_context(job_id)
-    _ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
+    album_art_bytes, album_art_mime = get_album_art_context(job_id)
+    ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
     try:
         _update_job(job_id, status="downloading")
 
@@ -2675,6 +2589,15 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             final_file.unlink(missing_ok=True)
             raise Exception(dur_reason)
 
+        # Cover art: Soulseek files arrive with nothing, so try the full chain
+        if not album_art_bytes:
+            cover = fetch_cover_art(
+                artist, title,
+                release_mbid=(mb_metadata or {}).get("release_mbid"),
+            )
+            if cover:
+                album_art_bytes, album_art_mime = cover
+
         if mb_metadata:
             metadata_source = mb_metadata.get("metadata_source", metadata_source)
             mb_artist = mb_metadata.get("artist", artist)
@@ -2773,13 +2696,6 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             user_id=user_id,
         )
 
-
-
-def _monochrome_cover_url(cover_uuid: str) -> str:
-    """Turn a Tidal cover UUID into a CDN thumbnail URL."""
-    if not cover_uuid:
-        return ""
-    return f"{MONOCHROME_COVER_BASE}/{cover_uuid.replace('-', '/')}/640x640.jpg"
 
 
 class _MonochromeAllTiers403(Exception):
@@ -2901,31 +2817,6 @@ def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
     )
 
 
-def _embed_monochrome_cover(audio_file: Path, cover_uuid: str) -> None:
-    """Download cover art from Tidal CDN and embed it in a FLAC file."""
-    if not cover_uuid:
-        return
-    try:
-        from mutagen.flac import FLAC, Picture
-
-        cover_url = _monochrome_cover_url(cover_uuid)
-        resp = httpx.get(cover_url, timeout=10)
-        resp.raise_for_status()
-
-        pic = Picture()
-        pic.type = 3  # Cover (front)
-        pic.mime = "image/jpeg"
-        pic.data = resp.content
-
-        audio = FLAC(str(audio_file))
-        audio.clear_pictures()
-        audio.add_picture(pic)
-        audio.save()
-    except Exception as e:
-        # Non-critical  -  the track still plays fine without cover art
-        print(f"Monochrome cover embed failed: {e}")
-
-
 def _get_monochrome_track_info(track_id: str) -> dict | None:
     """Fetch track metadata from the Monochrome API info endpoint."""
     try:
@@ -2962,8 +2853,8 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
     forced_album_name = album_ctx.get("album_name")
     forced_track_title = album_ctx.get("track_title")
     album_track_number, album_track_total = _get_album_track_tag_context(job_id)
-    album_art_bytes, album_art_mime = _get_album_art_context(job_id)
-    _ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
+    album_art_bytes, album_art_mime = get_album_art_context(job_id)
+    ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
     attempted_ids = set(attempted_ids or [])
     attempted_ids.add(track_id)
 
@@ -3074,9 +2965,6 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
 
         set_file_permissions(output_path)
 
-        # Embed cover art from Tidal CDN
-        _embed_monochrome_cover(output_path, cover_uuid)
-
         # Probe audio quality  -  this is genuine lossless, no transcode shenanigans
         audio_quality, bitrate_kbps = probe_audio_quality(output_path)
         min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
@@ -3098,6 +2986,17 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             raise Exception(dur_reason)
 
         year = mb_metadata.get("year") if mb_metadata else None
+
+        # Cover art: Tidal CDN first (we have the UUID), then the full fallback chain
+        if not album_art_bytes:
+            cover = fetch_cover_art(
+                artist, title,
+                release_mbid=(mb_metadata or {}).get("release_mbid"),
+                tidal_cover_uuid=cover_uuid,
+            )
+            if cover:
+                album_art_bytes, album_art_mime = cover
+
         apply_metadata_to_file(
             output_path,
             artist,
@@ -3287,8 +3186,8 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
     if forced_track_title:
         title = forced_track_title
     album_track_number, album_track_total = _get_album_track_tag_context(job_id)
-    album_art_bytes, album_art_mime = _get_album_art_context(job_id)
-    _ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
+    album_art_bytes, album_art_mime = get_album_art_context(job_id)
+    ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
     attempted_ids = set(attempted_ids or [])
     if video_id:
         attempted_ids.add(video_id)
@@ -3467,6 +3366,16 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             title = forced_track_title or title
         year  = mb_metadata.get("year") if mb_metadata else None
         album = forced_album_name or (mb_metadata.get("album") if mb_metadata else None)
+
+        # Cover art: MP3Phoenix files arrive naked, so try the full chain
+        if not album_art_bytes:
+            cover = fetch_cover_art(
+                artist, title,
+                release_mbid=(mb_metadata or {}).get("release_mbid"),
+            )
+            if cover:
+                album_art_bytes, album_art_mime = cover
+
         apply_metadata_to_file(
             output_path,
             artist,
@@ -3601,7 +3510,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
     forced_album_name = album_ctx.get("album_name")
     forced_track_title = album_ctx.get("track_title")
     album_track_number, album_track_total = _get_album_track_tag_context(job_id)
-    album_art_bytes, album_art_mime = _get_album_art_context(job_id)
+    album_art_bytes, album_art_mime = get_album_art_context(job_id)
     # For single jobs routed into an album folder via "Add to..." (no bulk_imports row),
     # the DB lookup above finds no MBID. Fall back to the .albuminfo sidecar in that dir.
     if not album_art_bytes and override_dir:
@@ -3611,14 +3520,13 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 sidecar_data = json.loads(sidecar.read_text())
                 sidecar_mbid = (sidecar_data.get("release_mbid") or "").strip()
                 if sidecar_mbid:
-                    fetched = _fetch_musicbrainz_cover_art(sidecar_mbid)
+                    fetched = _fetch_caa_cover(sidecar_mbid)
                     if fetched:
                         album_art_bytes, album_art_mime = fetched
-                        with _ALBUM_ART_CACHE_LOCK:
-                            _ALBUM_ART_CACHE[sidecar_mbid] = fetched
+                        cache_cover_art(sidecar_mbid, fetched)
             except Exception:
                 pass
-    _ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
+    ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
 
     # Monochrome gets its own dedicated download path  -  no yt-dlp needed
     if is_monochrome:
@@ -3916,6 +3824,16 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         skip_dupe_check=skip_dupe_check,
                     )
             raise Exception(dur_reason)
+
+        # Cover art: try the full fallback chain (CAA, iTunes, Deezer)
+        # yt-dlp already embedded a video thumbnail; this replaces it with proper album art
+        if not album_art_bytes:
+            cover = fetch_cover_art(
+                artist, title,
+                release_mbid=(mb_metadata or {}).get("release_mbid"),
+            )
+            if cover:
+                album_art_bytes, album_art_mime = cover
 
         if mb_metadata:
             metadata_source = mb_metadata.get("metadata_source", metadata_source)

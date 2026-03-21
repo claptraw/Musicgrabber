@@ -7,6 +7,62 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.5.0": {
+        title: "What's New in v2.5.0",
+        sections: [
+            {
+                heading: "New: Spotify Liked Songs",
+                items: [
+                    "Paste your Liked Songs URL (open.spotify.com/collection/tracks) into the playlist import or watched playlists field and it works like any other playlist. Requires the sp_dc cookie to be set in Settings, since Spotify considers your likes a private affair.",
+                    "Works as a watched playlist too, so new likes get picked up automatically on the next refresh. If your cookies expire, you'll get a notification and a clear error on the playlist card rather than silent failures.",
+                ]
+            },
+            {
+                heading: "New: Proper Album Cover Art",
+                items: [
+                    "Every download now tries really hard to find proper album artwork instead of relying on YouTube video thumbnails. The fallback chain: Cover Art Archive (MusicBrainz), Tidal CDN (Monochrome tracks), iTunes Search API, then Deezer API. No API keys needed, no configuration required.",
+                    "Soulseek and MP3Phoenix downloads, which previously had zero cover art, now get artwork from the same fallback chain. If all sources come up empty, the yt-dlp thumbnail is kept as a last resort.",
+                    "Monochrome/Tidal cover art now survives format conversion to MP3/Opus. Previously it was embedded into the FLAC but lost when converting to other formats.",
+                ]
+            },
+            {
+                heading: "New: Search to Album Shortcut",
+                items: [
+                    "Search for 'Artist - Title' and MusicGrabber will look up the artist's discography on MusicBrainz in the background. If the track belongs to a known album, an 'Artist and Album' chip appears in the Related Searches box. One click takes you straight to the Albums tab with the full tracklist loaded, ready for download.",
+                    "Monochrome/Tidal results also get a clickable album name in the result line. Spot a track from a good album? Click the album name and you're there.",
+                ]
+            },
+            {
+                heading: "New: Configurable Download Timeouts",
+                items: [
+                    "If you've ever had a long track (DJ mixes, live recordings, symphonies) come out broken or truncated, the download or conversion was probably hitting a hard time limit. Those limits are now configurable via environment variables in your docker-compose: TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_FFMPEG_CONVERT, and TIMEOUT_MP3PHOENIX_DOWNLOAD. Defaults are unchanged, so nothing breaks if you don't touch them.",
+                ]
+            },
+            {
+                heading: "New: Paginated Queue",
+                items: [
+                    "The download queue now shows the last 250 jobs, paginated 10 at a time with prev/next controls. No more scrolling through your entire download history to find that one track that failed. The 'Downloadable to Device' list is similarly paginated at 15 per page.",
+                ]
+            },
+            {
+                heading: "Improvements",
+                items: [
+                    "Spotify music video rows are now parsed correctly. Previously, tracks marked as music videos could be silently dropped if the artist couldn't be extracted from the title. The scraper now finds the artist via Spotify's bullet separator, which handles explicit markers and other row variations without falling over.",
+                    "Artist search in Albums and Watched tabs now respects case sensitivity. Searching for 'SiR' no longer returns every artist named 'Sir'. Exact case match floats to the top.",
+                    "File permissions now apply to artist and album directories too, not just the files inside them. If your NAS could see the files but the folder itself had the wrong permissions, that's sorted.",
+                ]
+            },
+            {
+                heading: "Security Fixes",
+                items: [
+                    "Session tokens and download tokens now expire when they're supposed to. A timestamp format mismatch meant tokens could stay valid a bit longer than intended on their expiry day. Sorted.",
+                    "In multi-user mode, regular users could previously change their music directory to any path on the server. That's now admin-only, as it should be.",
+                    "The 'Test Connection' buttons for Navidrome, Jellyfin, and Lidarr could be used by non-admin users to poke arbitrary URLs from the server. Non-admins can still test their own saved settings, but can no longer supply custom URLs.",
+                    "SQLite foreign key cascades (cleanup of sessions, tokens, and settings when a user is deleted) were declared in the database schema but never actually switched on. They work now, so deleting a user properly cleans up after itself.",
+                ]
+            }
+        ]
+    },
     "2.4.6": {
         title: "What's New in v2.4.6",
         sections: [

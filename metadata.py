@@ -79,9 +79,13 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
                 rg_for_score = dict(rg)
                 if not rg_for_score.get("artist-credit"):
                     rg_for_score["artist-credit"] = rel.get("artist-credit") or []
+                # Stash release date so the scorer can prefer earlier pressings
+                if rel.get("date") and not rg_for_score.get("first-release-date"):
+                    rg_for_score["_date"] = rel["date"]
                 return _score_release_group(rg_for_score, artist)
 
             release = max(recording["releases"], key=_release_score_text)
+            metadata["release_mbid"] = release.get("id")
             metadata["album"] = release.get("title")
             metadata["date"] = release.get("date")
 
@@ -179,8 +183,9 @@ def _score_release_group(rg: dict, expected_artist: str) -> int:
     """Score a MusicBrainz release group for use as the canonical album.
 
     Higher = better. Prefers studio albums by the actual artist; penalises
-    compilations, promos, radio edits, and Various Artists releases so we
-    don't end up tagging everything as 'Promo Only Modern Rock Radio, Vol 47'.
+    compilations, promos, radio edits, deluxe/remaster editions, and Various
+    Artists releases so we don't end up tagging everything as 'Promo Only
+    Modern Rock Radio, Vol 47' or 'Astroworld X (Expanded Anniversary Remix)'.
     """
     score = 0
     primary_type  = (rg.get("type") or rg.get("primary-type") or "").lower()
@@ -206,6 +211,32 @@ def _score_release_group(rg: dict, expected_artist: str) -> int:
                             "best of", "collection", "the very best"]
     if any(frag in title for frag in _bad_title_fragments):
         score -= 10
+
+    # Penalise reissues, deluxe editions, anniversary pressings, etc.
+    # These are almost never the canonical release the user actually wants.
+    _edition_fragments = ["deluxe", "remaster", "anniversary", "expanded",
+                          "bonus track", "special edition", "collector",
+                          "complete edition", "super deluxe"]
+    if any(frag in title for frag in _edition_fragments):
+        score -= 4
+
+    # Slight preference for shorter titles; the original album is usually
+    # "Astroworld" not "Astroworld X (Expanded Anniversary Edition)".
+    # Cap the penalty so absurdly long names don't dominate the score.
+    title_len = len(rg.get("title") or "")
+    if title_len > 30:
+        score -= min((title_len - 30) // 10, 3)  # -1 per 10 chars over 30, max -3
+
+    # Prefer earlier releases; the original pressing is more likely canonical.
+    # Works with both release-group `first-release-date` and individual
+    # release `date` (callers may stash it under `_date` before scoring).
+    date_str = rg.get("first-release-date") or rg.get("_date") or ""
+    year_match = re.match(r'(\d{4})', date_str)
+    if year_match:
+        year = int(year_match.group(1))
+        # Small bonus scaled so earlier years win ties but don't override
+        # type-based scoring. 2000 -> +2, 2010 -> +1, 2020+ -> 0
+        score += max(0, (2025 - year) // 10)
 
     # Check release group artist credits
     rg_artist_credit = rg.get("artist-credit") or []
@@ -352,10 +383,14 @@ def _lookup_musicbrainz_by_id(recording_id: str, expected_artist: str = "") -> O
             rg_for_score = dict(rg)
             if not rg_for_score.get("artist-credit"):
                 rg_for_score["artist-credit"] = rel.get("artist-credit") or []
+            # Stash release date so the scorer can prefer earlier pressings
+            if rel.get("date") and not rg_for_score.get("first-release-date"):
+                rg_for_score["_date"] = rel["date"]
             return _score_release_group(rg_for_score, expected_artist)
 
         release = max(releases, key=_release_score)
         result = {}
+        result["release_mbid"] = release.get("id")
 
         date_str = release.get("date", "")
         if date_str:
@@ -435,6 +470,8 @@ def lookup_metadata(artist: str, title: str, file_path: Path = None) -> Optional
                             acoustid_meta["track_total"] = mb_extra["track_total"]
                         if mb_extra.get("expected_duration_secs") and not acoustid_meta.get("expected_duration_secs"):
                             acoustid_meta["expected_duration_secs"] = mb_extra["expected_duration_secs"]
+                        if mb_extra.get("release_mbid") and not acoustid_meta.get("release_mbid"):
+                            acoustid_meta["release_mbid"] = mb_extra["release_mbid"]
 
                 return acoustid_meta
 
@@ -709,9 +746,15 @@ def search_artist_mbid(name: str) -> list[dict]:
                 "disambiguation": a.get("disambiguation", ""),
                 "score": int(a.get("score", 0)),
             })
-        # Exact match floats to the top
+        # Exact case match first, then case-insensitive, then MB relevance score.
+        # Matters for artists like "SiR" where lowercasing loses the distinction.
         name_lower = name.lower()
-        results.sort(key=lambda r: (0 if r["name"].lower() == name_lower else 1, -r["score"]))
+        results.sort(key=lambda r: (
+            0 if r["name"] == name else
+            1 if r["name"].lower() == name_lower else
+            2,
+            -r["score"]
+        ))
         return results
     except Exception as e:
         print(f"MusicBrainz artist search failed for '{name}': {e}")

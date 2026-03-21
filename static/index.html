@@ -425,6 +425,11 @@
                 <button class="clear-btn" id="clearQueueBtn">Clear Queue</button>
             </div>
             <div id="queueTab" class="results"></div>
+            <div id="queuePager" style="display:none;" class="downloadable-pager">
+                <button class="clear-btn" id="queuePrevBtn" onclick="changeQueuePage(-1)" disabled>&#8592; Prev</button>
+                <span id="queuePagerInfo" class="pager-info"></span>
+                <button class="clear-btn" id="queueNextBtn" onclick="changeQueuePage(1)">Next &#8594;</button>
+            </div>
 
             <div id="downloadableSection" class="section-with-top-margin">
                 <div class="queue-header">

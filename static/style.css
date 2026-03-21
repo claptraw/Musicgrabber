@@ -446,6 +446,23 @@ h1 {
     color: var(--accent);
 }
 
+.album-suggestion-chip {
+    border-color: var(--accent);
+}
+
+.album-suggestion-chip i {
+    margin-right: 4px;
+    opacity: 0.7;
+}
+
+.related-title + .suggestion-chips {
+    margin-bottom: 12px;
+}
+
+.related-title + .suggestion-chips:last-child {
+    margin-bottom: 0;
+}
+
 .search-clear-btn {
     position: absolute;
     right: 100px;
@@ -833,6 +850,19 @@ h1 {
     text-overflow: ellipsis;
 }
 
+.album-link {
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+    transition: color 0.15s;
+}
+
+.album-link:hover {
+    color: var(--accent);
+    text-decoration-style: solid;
+}
+
 .result-duration {
     font-family: 'JetBrains Mono', monospace;
     font-size: 12px;
@@ -1086,6 +1116,7 @@ h1 {
     font-weight: 600;
     border-radius: 10px;
     opacity: 0;
+    pointer-events: none;
     transition: all 0.3s ease;
     z-index: 100;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
@@ -1094,6 +1125,7 @@ h1 {
 .toast.show {
     transform: translateX(-50%) translateY(0);
     opacity: 1;
+    pointer-events: auto;
 }
 
 .toast.error {

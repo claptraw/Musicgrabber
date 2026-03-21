@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.5.0 (2026-03-21)
+
+### Added
+- **Spotify Liked Songs support**: paste `https://open.spotify.com/collection/tracks` into the playlist import or watched playlists field and it just works, provided you've set your `sp_dc` cookie in Settings. Works for one-off imports and watched playlists alike. If your cookies expire while a liked songs playlist is being watched, you'll get a notification and a clear error on the card telling you to update them.
+- **Spotify cookie expiry notifications**: when a watched Spotify playlist (liked songs, private playlists, anything needing `sp_dc`) fails due to expired cookies, a notification fires via your configured channels (Telegram, email, Apprise, etc.) so you don't have to discover it manually.
+- **Proper album cover art for all downloads**: previously, only album-mode downloads got real album artwork from Cover Art Archive. Singles, playlist tracks, Soulseek, and MP3Phoenix downloads were stuck with whatever YouTube video thumbnail yt-dlp could scrounge up (or nothing at all). Now every download runs through a four-source fallback chain: Cover Art Archive (MusicBrainz release), Tidal CDN (Monochrome tracks), iTunes Search API, and Deezer API. No API keys needed. If all four come up empty, the yt-dlp thumbnail is preserved as a last resort rather than leaving the file naked.
+- **Search-to-album shortcut**: when you search for "Artist - Title", MusicGrabber now looks up the artist's discography on MusicBrainz in parallel (no extra wait) and shows an "Artist and Album" chip in the Related Searches box if it finds a matching album. Click it and you're taken straight to the Albums tab with the tracklist loaded, ready to download. Monochrome/Tidal results also get a clickable album name in the result metadata line for the same one-click album browsing.
+- **Configurable download/conversion timeouts**: the yt-dlp download timeout (default 5 min), ffmpeg conversion timeout (default 2 min), and MP3Phoenix download timeout (default 2 min) are now overridable via `TIMEOUT_YTDLP_DOWNLOAD`, `TIMEOUT_FFMPEG_CONVERT`, and `TIMEOUT_MP3PHOENIX_DOWNLOAD` env vars. If long DJ mixes or symphonies were producing broken files, bump these up in your docker-compose.
+
+- **Paginated download queue**: the queue now fetches the last 250 jobs but displays them 10 at a time with prev/next page controls, so it doesn't turn into an endless scroll of regret. The "Downloadable to Device" list is also paginated to 15 per page.
+
+### Improved
+- **Music video artist extraction**: the Playwright browser scraper now properly handles Spotify music video rows by scanning for the bullet (•) separator to find the real artist, instead of relying on fixed array positions that broke when explicit "E" markers shifted things around. Fixes tracks silently dropped from import when all your liked songs happen to be music videos.
+- **Monochrome cover art survives format conversion**: Tidal cover art was being embedded directly into the FLAC via mutagen before any format conversion, but when converting to MP3/Opus, the re-tagging step had no art bytes to work with. Cover art now flows through the same `album_art_bytes` path as every other source, so it persists through transcoding.
+
+### Fixed
+- **Artist search case sensitivity**: searching for "SiR" in the Albums or Watched tabs now correctly floats an exact case match to the top of results, rather than treating it identically to "Sir". Exact case wins, case-insensitive match is second, MusicBrainz relevance score breaks remaining ties.
+- **Invisible toast blocking settings bar buttons**: the toast notification (the little green "Settings saved" popup) was sliding back down to `bottom: 0` when hidden, sitting invisibly on top of the Save Settings, Ko-fi, and Release Notes buttons and swallowing clicks like a polite ghost. Added `pointer-events: none` when hidden so it stops being a nuisance.
+- **File permissions not applied to artist/album directories**: `set_file_permissions` was only fixing the files themselves, leaving parent directories (artist folders, album folders) at the container's default umask (typically `0o755`). On NAS/SMB shares this meant the files inside were fine but the folder they sat in wasn't. The function now walks up and fixes every directory between the file and the music root, and directories always get `0o777` because you need execute bits to actually enter a folder.
+- **Session/download-token expiry could overshoot by up to a day**: `create_session()` and `create_download_token()` were storing expiry timestamps in Python's ISO format (`2026-03-20T01:00:00+00:00`) but comparing against SQLite's `datetime('now')` format (`2026-03-20 01:00:00`). The `T` won the text comparison on expiry day, so tokens stayed valid longer than intended. Now stores timestamps in SQLite's own format so expiry checks are actually chronological.
+- **Non-admin users could set `music_dir` to any path on the server**: in multi-user mode, `music_dir` was in the user-writable settings list, meaning a regular user could redirect their downloads (and file deletions) anywhere the container could write. Removed from user-scoped settings; only admins can change it now.
+- **SQLite foreign key cascades were declared but never enforced**: `PRAGMA foreign_keys` was never enabled, so `ON DELETE CASCADE` constraints on sessions, download tokens, user settings, and watched playlist/artist tracks were decorative. Orphan rows could accumulate silently. Now enabled on every connection.
+- **Integration test endpoints (Navidrome, Jellyfin, Lidarr) accepted arbitrary URLs from non-admin users**: in multi-user mode, any authenticated user could use the test buttons to make the server send HTTP requests to caller-supplied URLs, effectively an SSRF probe. Non-admin users can still test their saved settings, but body-supplied URLs are now ignored unless you're an admin.
+
 ## v2.4.6 (2026-03-18)
 
 ### Added

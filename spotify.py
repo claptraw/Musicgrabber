@@ -89,6 +89,8 @@ def fetch_spotify_playlist_via_browser(
         expected_total = _fetch_spotify_expected_total(spotify_id, spotify_type)
 
     env = {**os.environ, "SPOTIFY_TYPE": spotify_type, "SPOTIFY_ID": spotify_id}
+    if spotify_type == "collection" and spotify_id == "tracks":
+        env["SPOTIFY_IS_LIKED_SONGS"] = "1"
     if expected_total and expected_total > 0:
         env["SPOTIFY_EXPECTED_TOTAL"] = str(expected_total)
     env["SPOTIFY_BROWSER_STALL_SECONDS"] = str(configured_stall_seconds)

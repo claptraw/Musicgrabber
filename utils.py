@@ -221,13 +221,38 @@ def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Opti
 
 
 def set_file_permissions(file_path: Path):
-    """Set file permissions for NAS/SMB compatibility. Defaults to 666; can be bumped to 777 in settings."""
+    """Set file permissions for NAS/SMB compatibility.
+
+    Files get 0o666 or 0o777 depending on the setting.
+    Directories need the execute bit to be traversable, so they always get 0o777.
+    Also fixes permissions on parent directories up to (but not including) the
+    music root, because mkdir() inherits the container's umask, which leaves
+    artist/album folders at 0o755 and upsets NAS shares.
+    """
     mode_str = get_setting("file_permissions", "666")
-    mode = 0o777 if mode_str == "777" else 0o666
+    file_mode = 0o777 if mode_str == "777" else 0o666
+    # Directories always need execute bits or nobody can cd into them
+    dir_mode = 0o777
+
     try:
-        os.chmod(file_path, mode)
+        if file_path.is_file():
+            os.chmod(file_path, file_mode)
+        elif file_path.is_dir():
+            os.chmod(file_path, dir_mode)
     except OSError:
-        pass  # Silently ignore permission errors (may not have rights)
+        pass
+
+    # Walk up and fix parent directories that mkdir may have created with
+    # restrictive umask permissions. Stop at the music root so we don't
+    # go stomping on system directories.
+    try:
+        music_root = Path(get_setting("music_dir", str(Path(os.getenv("MUSIC_DIR", "/music")))))
+        parent = file_path.parent if file_path.is_file() else file_path
+        while parent != music_root and str(parent).startswith(str(music_root)):
+            os.chmod(parent, dir_mode)
+            parent = parent.parent
+    except OSError:
+        pass  # Best effort; we might not own every directory in the chain
 
 
 def subsonic_auth_params(username: str, password: str) -> dict:

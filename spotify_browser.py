@@ -18,6 +18,7 @@ spotify_type = os.environ["SPOTIFY_TYPE"]
 spotify_id = os.environ["SPOTIFY_ID"]
 url = f"https://open.spotify.com/{spotify_type}/{spotify_id}"
 SELECTOR = '[data-testid="tracklist-row"]'
+is_liked_songs = os.environ.get("SPOTIFY_IS_LIKED_SONGS", "") == "1"
 
 tracks = []
 playlist_name = f"Spotify {spotify_type.title()}"
@@ -116,6 +117,10 @@ try:
         except Exception:
             pass
 
+        # Liked songs page uses the same row structure as a regular playlist.
+        if is_liked_songs:
+            playlist_name = "Liked Songs"
+
         # Spotify uses virtualised scrolling — tracks get unloaded as you scroll.
         # Extract tracks incrementally while scrolling.
         seen_tracks_by_index = {}
@@ -152,8 +157,17 @@ try:
                         if not track_name or artist == "E":
                             continue
                         # Music video rows show "Music Video" as the artist.
-                        # Try salvaging the artist from the title (often "Artist - Title").
+                        # The real artist follows a bullet (•) separator in the row parts,
+                        # or may be extractable from the title field ("Artist - Title" pattern).
                         if artist.lower() == "music video":
+                            # Scan parts for the bullet separator; artist is the element after it.
+                            bullet_idx = next((i for i, p in enumerate(parts) if p == "\u2022"), None)
+                            if bullet_idx is not None and bullet_idx + 1 < len(parts):
+                                real_artist = parts[bullet_idx + 1].strip()
+                                if real_artist and real_artist.lower() != "music video":
+                                    seen_tracks_by_index[track_index] = f"{real_artist} - {track_name}"
+                                    continue
+                            # Fallback: try splitting title on a dash
                             dash = re.search(r"\s+[-\u2013\u2014]\s+", track_name)
                             if dash:
                                 salvaged_artist = track_name[:dash.start()].strip()
