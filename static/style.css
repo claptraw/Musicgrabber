@@ -3075,6 +3075,28 @@ h1 {
     word-break: break-all;
 }
 
+.mismatch-accept-btn {
+    margin-top: 8px;
+    padding: 5px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    font-weight: 500;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.mismatch-accept-btn:hover {
+    background: var(--border);
+    color: var(--text-primary);
+}
+.mismatch-accept-btn:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
 .blacklist-content {
     font-size: 13px;
     color: var(--text-secondary);

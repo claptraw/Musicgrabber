@@ -2006,6 +2006,7 @@
                             <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
                                 <button onclick="event.stopPropagation(); redownloadJob('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Re-download</button>
                                 <button class="report-btn" data-job-id="${escapeHtml(job.id || '')}" data-video-id="${escapeHtml(job.video_id || '')}" data-uploader="${escapeHtml(job.uploader || '')}" data-source="${escapeHtml(job.source || 'youtube')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--warning); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Report</button>
+                                ${(job.error || '').includes('mismatch') ? `<button class="force-accept-btn" data-job-id="${escapeHtml(job.id || '')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Force Download</button>` : ''}
                                 ${job.status !== 'failed' ? (fileDeleted
                                     ? `<button disabled style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; cursor: not-allowed; opacity: 0.8;">File Deleted</button>`
                                     : `<button class="delete-file-btn" data-job-id="${escapeHtml(job.id || '')}" data-track-name="${escapeHtml(job.artist ? job.artist + ' - ' + job.title : job.title)}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Delete File</button>
@@ -2033,6 +2034,27 @@
                         btn.dataset.uploader || '',
                         btn.dataset.source || 'youtube'
                     );
+                });
+            });
+
+            queueTab.querySelectorAll('.force-accept-btn').forEach((btn) => {
+                btn.addEventListener('click', async (event) => {
+                    event.stopPropagation();
+                    btn.disabled = true;
+                    btn.textContent = 'Queued...';
+                    try {
+                        const res = await apiFetch(`/api/jobs/${btn.dataset.jobId}/force-accept`, { method: 'POST' });
+                        if (!res.ok) {
+                            const err = await res.json().catch(() => ({}));
+                            throw new Error(err.detail || 'Failed');
+                        }
+                        showToast('Re-queued with mismatch check disabled');
+                        loadJobs();
+                    } catch (e) {
+                        showToast(`Force download failed: ${e.message}`, true);
+                        btn.disabled = false;
+                        btn.textContent = 'Force Download';
+                    }
                 });
             });
 
@@ -4933,8 +4955,35 @@
                             <div class="mismatch-norm-line"><span class="mismatch-tag">Exp</span> ${escapeHtml(m.exp_normalised)}</div>
                             <div class="mismatch-norm-line"><span class="mismatch-tag">Got</span> ${escapeHtml(m.got_normalised)}</div>
                         </details>
+                        <button class="mismatch-accept-btn" data-mismatch-id="${m.id}" title="Re-download this track, ignoring the name mismatch">Force Download</button>
                     </div>
                 `).join('');
+
+                // Wire up force-accept buttons via delegation
+                content.querySelectorAll('.mismatch-accept-btn').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const mid = btn.dataset.mismatchId;
+                        btn.disabled = true;
+                        btn.textContent = 'Queued...';
+                        try {
+                            const res = await apiFetch(`/api/mismatches/${mid}/accept`, { method: 'POST' });
+                            if (!res.ok) {
+                                const err = await res.json().catch(() => ({}));
+                                throw new Error(err.detail || 'Failed');
+                            }
+                            showToast('Re-queued with mismatch check disabled');
+                            btn.closest('.mismatch-row').remove();
+                            // Hide the section if no rows remain
+                            if (!content.querySelector('.mismatch-row')) {
+                                section.style.display = 'none';
+                            }
+                        } catch (e) {
+                            showToast(`Force download failed: ${e.message}`, true);
+                            btn.disabled = false;
+                            btn.textContent = 'Force Download';
+                        }
+                    });
+                });
             } catch {
                 section.style.display = 'none';
             }

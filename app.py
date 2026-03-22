@@ -151,7 +151,10 @@ app.add_middleware(AuthMiddleware)
 def root(request: Request):
     """Serve the main UI"""
     html = Path("static/index.html").read_text(encoding="utf-8")
-    html = html.replace("__ROOT_PATH__", _request_root_path(request))
+    root_path = _request_root_path(request)
+    html = html.replace("__ROOT_PATH__", root_path)
+    # Cache-bust static assets so browser fetches fresh files after an update
+    html = html.replace("__CACHE_BUST__", VERSION)
     return HTMLResponse(content=html)
 
 
@@ -1326,6 +1329,107 @@ def clear_mismatches(http_request: Request):
     return {"deleted": deleted}
 
 
+@app.post("/api/mismatches/{mismatch_id}/accept")
+def accept_mismatch(mismatch_id: int, http_request: Request):
+    """Force-accept a mismatched track: re-download it but skip the name comparison."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        mismatch = conn.execute(
+            "SELECT * FROM watched_match_mismatches WHERE id = ?", (mismatch_id,)
+        ).fetchone()
+        if not mismatch:
+            raise HTTPException(status_code=404, detail="Mismatch not found")
+
+        job_id = mismatch["job_id"]
+        job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        job = dict(job) if job else None
+
+        user_id = (job.get("user_id") if job else None) or http_request.state.user_id
+
+        if job:
+            # Original job still exists, reset it with the skip flag
+            conn.execute(
+                "UPDATE jobs SET status = 'queued', error = NULL, completed_at = NULL, "
+                "file_deleted = 0, skip_mismatch_check = 1 WHERE id = ?",
+                (job_id,)
+            )
+        else:
+            # Job was cleaned up; create a fresh one from the mismatch record
+            job_id = str(uuid.uuid4())[:8]
+            artist = mismatch["expected_artist"] or ""
+            title = mismatch["expected_title"] or ""
+            convert_to_flac = get_setting_bool("default_convert_to_flac", True, user_id=user_id)
+            conn.execute(
+                """INSERT INTO jobs
+                   (id, title, artist, status, download_type, source, convert_to_flac, skip_mismatch_check, user_id)
+                   VALUES (?, ?, ?, 'queued', 'single', 'youtube', ?, 1, ?)""",
+                (job_id, title, artist, int(convert_to_flac), user_id)
+            )
+            # Re-link the watched playlist track to this new job so the mismatch skip works
+            if mismatch["playlist_id"]:
+                track_hash = hash_track(artist, title)
+                conn.execute(
+                    "UPDATE watched_playlist_tracks SET job_id = ?, downloaded_at = NULL "
+                    "WHERE playlist_id = ? AND track_hash = ?",
+                    (job_id, mismatch["playlist_id"], track_hash)
+                )
+            job = dict(conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone())
+
+        # Clean up the mismatch record since we're dealing with it
+        conn.execute("DELETE FROM watched_match_mismatches WHERE id = ?", (mismatch_id,))
+        conn.commit()
+
+    # Re-queue the download
+    convert_to_flac = bool(job.get("convert_to_flac", 1))
+
+    if job.get("source") == "soulseek" and job.get("slskd_username") and job.get("slskd_filename"):
+        spawn_daemon_thread(
+            process_slskd_download,
+            job_id,
+            job["slskd_username"],
+            job["slskd_filename"],
+            job.get("artist", ""),
+            job.get("title", ""),
+            convert_to_flac,
+            user_id=user_id,
+            override_dir=job.get("override_dir"),
+        )
+    else:
+        prior_id = job.get("video_id") or ""
+        attempted = {prior_id} if prior_id else set()
+        new_id = prior_id
+        new_source_url = job.get("source_url")
+        artist_hint = job.get("artist") or ""
+        title_hint = job.get("title") or ""
+        if artist_hint or title_hint:
+            query = f"{artist_hint} - {title_hint}".strip(" -")
+            try:
+                for cand in search_all(query, limit=12)[0]:
+                    cand_id = (cand.get("video_id") or "").strip()
+                    if cand_id and cand_id not in attempted:
+                        new_id = cand_id
+                        new_source_url = cand.get("source_url")
+                        break
+            except Exception as e:
+                print(f"Force-accept alternate search failed for job {job_id}: {e}")
+        spawn_daemon_thread(
+            process_download,
+            job_id,
+            new_id,
+            convert_to_flac,
+            source_url=new_source_url,
+            user_id=user_id,
+            override_dir=job.get("override_dir"),
+            skip_dupe_check=bool(job.get("override_dir")),
+            attempted_ids=attempted,
+        )
+
+    return {"status": "queued", "job_id": job_id}
+
+
 # =============================================================================
 # Search API
 # =============================================================================
@@ -1974,6 +2078,22 @@ def retry_job(job_id: str, http_request: Request):
         )
 
     return {"job_id": job_id, "status": "queued"}
+
+
+@app.post("/api/jobs/{job_id}/force-accept")
+def force_accept_job(job_id: str, http_request: Request):
+    """Set skip_mismatch_check on a job and retry it. Handy shortcut from the queue card."""
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET skip_mismatch_check = 1 WHERE id = ?", (job_id,)
+        )
+        # Tidy up any mismatch log entries for this job while we're at it
+        conn.execute(
+            "DELETE FROM watched_match_mismatches WHERE job_id = ?", (job_id,)
+        )
+        conn.commit()
+    # Delegate to the normal retry flow (which will now honour the skip flag)
+    return retry_job(job_id, http_request)
 
 
 @app.delete("/api/jobs/{job_id}/file")

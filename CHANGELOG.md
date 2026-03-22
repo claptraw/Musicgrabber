@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.5.1 (2026-03-22)
+
+### Added
+- **Force download for mismatched watched tracks**: the mismatch log in the Stats tab now has a "Force Download" button on each row. If YouTube's idea of an artist name doesn't quite match Spotify's but you know it's the right track, hit the button and it'll re-queue the download with the name check disabled. The mismatch record is cleared once accepted, so your log stays tidy. The same button also appears on the queue card itself when a mismatch error is shown, so you don't have to go hunting through the Stats tab.
+
+### Improved
+- **Static asset cache-busting**: CSS and JS files now include the version number in their URL (`style.css?v=2.5.1`), so browsers automatically fetch fresh files after an update. No more Ctrl+Shift+R to see new features.
+
+### Fixed
+- **Opus files not converted to MP3 (or other target format)**: when yt-dlp's built-in format conversion failed mid-stream (ffmpeg post-processor error), the recovery path would salvage the raw Opus file and call it done, ignoring the user's chosen audio format entirely. A new post-download format enforcement step now catches any file that survived in the wrong container and converts it properly. If ffmpeg still refuses, the original file is kept rather than losing the download.
+- **MP3Phoenix ignoring audio format setting**: MP3Phoenix downloads always converted to FLAC regardless of what you'd set in Settings. If your format was MP3, it would pointlessly transcode MP3 to FLAC (lossy-to-lossless, worst of both worlds). Now respects the `audio_format` setting like every other source.
+- **Force Download failing for old mismatches**: if the original download job had been cleaned up (via Stats reset or cleanup), the Force Download button would fail with "Original job not found". Now creates a fresh job from the mismatch record's expected artist/title, re-links the watched playlist track, and queues the download as if nothing happened.
+- **Windows setup script failing on some networks**: the `curl` command downloading Docker Desktop could fail with a certificate revocation check error (`0x80092012`) on Windows 10 machines behind corporate proxies or restrictive networks. Added `--ssl-no-revoke` to skip the CRL check.
+
+
 ## v2.5.0 (2026-03-21)
 
 ### Added

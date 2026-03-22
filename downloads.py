@@ -1170,7 +1170,8 @@ def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = 
         conn.row_factory = sqlite3.Row
         link = conn.execute(
             """SELECT wpt.playlist_id, wpt.artist AS expected_artist, wpt.title AS expected_title,
-                      j.artist AS actual_artist, j.title AS actual_title
+                      j.artist AS actual_artist, j.title AS actual_title,
+                      j.skip_mismatch_check
                FROM watched_playlist_tracks wpt
                LEFT JOIN jobs j ON j.id = wpt.job_id
                WHERE wpt.job_id = ?
@@ -1180,12 +1181,17 @@ def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = 
         if not link:
             return True
 
+        # User said "I know better, just download it"
+        skip_check = bool(link["skip_mismatch_check"])
+        if skip_check:
+            print(f"Mismatch check skipped for job {job_id} (force-accepted)")
+
         exp_artist_raw = link["expected_artist"] or ""
         exp_title_raw = link["expected_title"] or ""
         got_artist_raw = link["actual_artist"] or ""
         got_title_raw = link["actual_title"] or ""
 
-        if not _watched_track_matches_expected(exp_artist_raw, exp_title_raw, got_artist_raw, got_title_raw):
+        if not skip_check and not _watched_track_matches_expected(exp_artist_raw, exp_title_raw, got_artist_raw, got_title_raw):
             msg = (
                 f"Watched track mismatch: expected '{exp_artist_raw} - {exp_title_raw}', "
                 f"got '{got_artist_raw or 'Unknown'} - {got_title_raw or 'Unknown'}'"
@@ -1423,6 +1429,59 @@ def _recover_from_ytdlp_postprocess_failure(artist_dir: Path, sanitized_title: s
         print(f"Recovered from yt-dlp postprocess failure; removed {cleaned} temp file(s)")
     else:
         print("Recovered from yt-dlp postprocess failure using existing valid output file")
+    return audio_file
+
+
+# Format codec map shared by _enforce_target_format and the Monochrome/Soulseek converters
+_FORMAT_CODEC_MAP = {
+    "flac": ("flac", [], ".flac"),
+    "mp3": ("libmp3lame", ["-q:a", "2"], ".mp3"),
+    "opus": ("libopus", ["-b:a", "320k"], ".opus"),
+    "alac": ("alac", [], ".m4a"),
+}
+
+
+def _enforce_target_format(audio_file: Path, convert_to_flac: bool, user_id: str | None = None) -> Path:
+    """If the downloaded file isn't in the target format, convert it.
+
+    yt-dlp usually handles conversion via --audio-format, but if post-processing
+    fails and we recover the raw file (e.g. Opus when user wants MP3), this catches it.
+    Returns the path to the final file (may be different from audio_file).
+    """
+    if not convert_to_flac:
+        return audio_file
+
+    target_fmt = get_setting("audio_format", "flac", user_id=user_id)
+    if target_fmt not in _FORMAT_CODEC_MAP:
+        target_fmt = "flac"
+
+    codec, extra_args, target_ext = _FORMAT_CODEC_MAP[target_fmt]
+    if audio_file.suffix.lower() == target_ext:
+        return audio_file  # Already the right format
+
+    converted_path = audio_file.with_suffix(target_ext)
+    convert_cmd = [
+        "ffmpeg", "-y", "-v", "error",
+        "-i", str(audio_file),
+        "-c:a", codec,
+        *extra_args,
+        str(converted_path),
+    ]
+    try:
+        result = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=TIMEOUT_FFMPEG_CONVERT)
+        if result.returncode == 0 and converted_path.exists():
+            audio_file.unlink(missing_ok=True)
+            print(f"Post-download format fix: {audio_file.suffix} -> {target_ext}")
+            return converted_path
+        print(f"Post-download format conversion failed: {(result.stderr or '').strip()}")
+    except subprocess.TimeoutExpired:
+        print(f"Post-download format conversion timed out ({audio_file.name})")
+        converted_path.unlink(missing_ok=True)
+    except Exception as e:
+        print(f"Post-download format conversion error: {e}")
+        converted_path.unlink(missing_ok=True)
+
+    # Conversion failed; keep the original file rather than losing the download entirely
     return audio_file
 
 
@@ -2265,6 +2324,9 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                         )
                         failed_tracks += 1
                         continue
+
+                # If yt-dlp's post-processor didn't convert, catch it here
+                audio_file = _enforce_target_format(audio_file, convert_to_flac, user_id=user_id)
 
                 # Set permissions for NAS/SMB compatibility
                 set_file_permissions(audio_file)
@@ -3310,20 +3372,29 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
                 return
             raise Exception(f"mp3phoenix download failed integrity checks: {integrity_reason}")
 
-        # Convert to FLAC if requested  -  320k MP3 transcoded to FLAC is technically lossy-to-lossless
-        # but at least it's a consistent container and plays nicely with the rest of the library.
+        # Convert to the user's chosen format if requested. MP3Phoenix always serves MP3,
+        # so if the user wants MP3 there's nothing to do. FLAC/Opus/ALAC get transcoded.
         if convert_to_flac:
-            output_path = mp3_path.with_suffix(".flac")
-            convert_cmd = [
-                "ffmpeg", "-y", "-v", "error",
-                "-i", str(mp3_path),
-                "-c:a", "flac",
-                str(output_path),
-            ]
-            result = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=TIMEOUT_FFMPEG_CONVERT)
-            if result.returncode != 0 or not output_path.exists():
-                raise Exception(f"FLAC conversion failed: {(result.stderr or '').strip()}")
-            mp3_path.unlink(missing_ok=True)
+            audio_fmt = get_setting("audio_format", "flac", user_id=user_id)
+            if audio_fmt not in _FORMAT_CODEC_MAP:
+                audio_fmt = "flac"
+            codec, extra_args, target_ext = _FORMAT_CODEC_MAP[audio_fmt]
+            if target_ext == ".mp3":
+                # Already MP3, no conversion needed
+                output_path = mp3_path
+            else:
+                output_path = mp3_path.with_suffix(target_ext)
+                convert_cmd = [
+                    "ffmpeg", "-y", "-v", "error",
+                    "-i", str(mp3_path),
+                    "-c:a", codec,
+                    *extra_args,
+                    str(output_path),
+                ]
+                result = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=TIMEOUT_FFMPEG_CONVERT)
+                if result.returncode != 0 or not output_path.exists():
+                    raise Exception(f"{audio_fmt.upper()} conversion failed: {(result.stderr or '').strip()}")
+                mp3_path.unlink(missing_ok=True)
         else:
             output_path = mp3_path
 
@@ -3782,6 +3853,10 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         # In album mode with conversion off, yt-dlp often leaves .webm files, which
         # are awkward to tag. Remux to .opus/.ogg (stream copy) so tags/art can land.
         audio_file = _remux_album_webm_for_tagging(audio_file, override_dir)
+
+        # If yt-dlp's post-processor didn't convert (e.g. recovered from a failed conversion),
+        # catch it here and convert ourselves. Stops Opus files sneaking through when MP3 is wanted.
+        audio_file = _enforce_target_format(audio_file, convert_to_flac, user_id=user_id)
 
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(audio_file)

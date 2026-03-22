@@ -7,6 +7,26 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.5.1": {
+        title: "What's New in v2.5.1",
+        sections: [
+            {
+                heading: "Force Download for Mismatched Tracks",
+                items: [
+                    "Watched playlist tracks that fail the name-matching check now have a \"Force Download\" button in the Stats tab mismatch log and on the queue card itself. If you can see the track is correct but the names just don't line up (YouTube vs Spotify naming quirks, non-English characters, etc.), hit the button and it'll re-download without the comparison. The mismatch record is cleaned up automatically.",
+                    "Works even if the original job has been cleaned up (e.g. via Stats reset). A fresh job is created from the expected artist/title and queued with the name check skipped.",
+                    "Static assets (CSS, JS) are now cache-busted with the version number, so you'll always see new features immediately after an update without needing to hard-refresh.",
+                ]
+            },
+            {
+                heading: "Bug Fixes",
+                items: [
+                    "Opus files are now properly converted to your chosen audio format (MP3, FLAC, etc.) even when yt-dlp's built-in converter fails mid-stream. Previously, a failed conversion would leave the raw Opus file in your library.",
+                    "MP3Phoenix downloads now respect your audio format setting instead of always converting to FLAC.",
+                ]
+            },
+        ]
+    },
     "2.5.0": {
         title: "What's New in v2.5.0",
         sections: [

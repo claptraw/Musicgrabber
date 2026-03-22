@@ -30,7 +30,7 @@ if errorlevel 1 (
     set DOCKER_INSTALLER=C:\temp\DockerDesktopInstaller.exe
     if not exist "C:\temp" mkdir "C:\temp"
     echo  This may take a few minutes...
-    curl.exe -L --progress-bar --output "!DOCKER_INSTALLER!" "https://desktop.docker.com/win/main/amd64/Docker%%20Desktop%%20Installer.exe"
+    curl.exe -L --ssl-no-revoke --progress-bar --output "!DOCKER_INSTALLER!" "https://desktop.docker.com/win/main/amd64/Docker%%20Desktop%%20Installer.exe"
     if errorlevel 1 (
         echo  Download failed. Check your internet connection and try again.
         pause
