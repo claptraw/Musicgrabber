@@ -564,6 +564,10 @@ def init_db():
             conn.execute("ALTER TABLE jobs ADD COLUMN skip_mismatch_check INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN progress_stage TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         # Watched track match mismatches  -  persistent audit log so we can spot
         # normalisation gaps without relying on Docker log retention.
@@ -716,7 +720,7 @@ def cleanup_stale_jobs():
     with db_conn() as conn:
         cursor = conn.execute(
             """UPDATE jobs SET status = 'failed', error = 'Timed out (no progress)',
-               completed_at = datetime('now')
+               progress_stage = NULL, completed_at = datetime('now')
                WHERE status IN ('downloading', 'queued')
                AND created_at < datetime('now', ? || ' seconds')""",
             (str(-STALE_JOB_TIMEOUT),)

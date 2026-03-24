@@ -223,6 +223,8 @@ SETTINGS_SCHEMA = {
     },
     # Webhooks
     "webhook_url": {"type": "str", "default": "", "env": "WEBHOOK_URL"},
+    # Downloads
+    "max_concurrent_downloads": {"type": "int", "default": 3, "env": "MAX_CONCURRENT_DOWNLOADS"},
     # Security
     "api_key": {"type": "str", "default": "", "env": "API_KEY", "sensitive": True},
 }

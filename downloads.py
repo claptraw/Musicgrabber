@@ -36,7 +36,7 @@ from constants import (
 )
 from coverart import fetch_cover_art, get_album_art_context, ensure_album_cover_files, cache_cover_art, _fetch_caa_cover
 from db import db_conn, log_match_mismatch
-from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file
+from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file, read_existing_track_number
 from notifications import send_notification
 from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir, get_albums_dir
 from slskd import (
@@ -967,6 +967,45 @@ def _remux_album_webm_for_tagging(audio_file: Path, override_dir: str | None) ->
         return audio_file
 
 
+def _resolve_track_number(
+    audio_file: Path,
+    album_track_number: int | None,
+    album_track_total: int | None,
+    mb_metadata: dict | None,
+) -> tuple[int | None, int | None]:
+    """Pick the best track number/total for tagging, without clobbering existing tags.
+
+    Priority: explicit album context > existing file tags > MusicBrainz lookup.
+    Monochrome/Tidal FLACs often arrive with track info baked in; we don't want
+    a MusicBrainz guess (which might be from a compilation) to overwrite that.
+    """
+    # Album downloads always win, the user picked the album intentionally
+    if album_track_number is not None:
+        return album_track_number, album_track_total
+
+    # Check what the file already has (e.g. Tidal embeds track numbers)
+    existing_num, existing_total = read_existing_track_number(audio_file)
+    if existing_num is not None:
+        return existing_num, existing_total
+
+    # Fall back to MusicBrainz
+    if mb_metadata:
+        mb_num = mb_metadata.get("track_number")
+        mb_total = mb_metadata.get("track_total")
+        try:
+            mb_num = int(mb_num) if mb_num else None
+        except (ValueError, TypeError):
+            mb_num = None
+        try:
+            mb_total = int(mb_total) if mb_total else None
+        except (ValueError, TypeError):
+            mb_total = None
+        if mb_num:
+            return mb_num, mb_total
+
+    return None, None
+
+
 _ALLOWED_JOB_COLS = frozenset({
     "video_id", "title", "artist", "status", "error", "download_type",
     "playlist_name", "total_tracks", "completed_tracks", "failed_tracks",
@@ -974,7 +1013,7 @@ _ALLOWED_JOB_COLS = frozenset({
     "convert_to_flac", "source_url", "file_deleted", "metadata_source",
     "override_dir", "album_release_mbid", "album_name", "album_track_title",
     "album_track_number", "album_track_total", "completed_at", "uploader",
-    "audio_quality",
+    "audio_quality", "progress_stage",
 })
 
 
@@ -1021,11 +1060,13 @@ def _normalise_watched_match_text(text: str) -> str:
     # "Better Now - Acoustic", "Fly - Acoustic", "Forever Young - From NBC’s Parenthood"
     # These are version/context qualifiers Spotify encodes as ‘ - Suffix’ but YouTube
     # puts in brackets or omits entirely. Strip them so both sides normalise to the
-    # bare title. Guard: only strip if the suffix contains a known qualifier word or
-    # looks like a "From <Show>" clause; bare words like artist names must not be eaten.
+    # bare title. Live/session variants are deliberately not stripped here because
+    # watched playlists should treat them as different recordings. Guard: only strip
+    # if the suffix contains a known qualifier word or looks like a "From <Show>"
+    # clause; bare words like artist names must not be eaten.
     t = re.sub(
-        r"\s+-\s+(?:acoustic|live|demo|instrumental|a\s+cappella|unplugged|remix|"
-        r"radio edit|extended|acoustic version|live version|"
+        r"\s+-\s+(?:acoustic|demo|instrumental|a\s+cappella|unplugged|remix|"
+        r"radio edit|extended|acoustic version|"
         r"from\s+.+|anniversary edition|deluxe edition|special edition)\s*$",
         "",
         t,
@@ -1033,8 +1074,14 @@ def _normalise_watched_match_text(text: str) -> str:
     # Strip × / x -separated translation/annotation suffixes that YouTube appends to
     # official titles in non-English markets: "Manly Man × TRADUÇÃO", "Song x Translation"
     t = re.sub(r"\s+x\s+(?:tradu[cç][aã]o|translation|traduzione|traduccion|traducao|letras?)\b.*$", "", t)
-    # Strip pipe-separated session/channel suffixes: "Track | OurVinyl Sessions", "Track | Live on KEXP"
-    t = re.sub(r"\s*\|.*$", "", t)
+    # Strip pipe-separated promo suffixes, but keep live/session markers so watched
+    # playlist mismatch detection can reject performance variants.
+    t = re.sub(
+        r"\s*\|\s*(?:(?:official\s+)?(?:music\s+)?(?:audio|video)|"
+        r"lyric(?:\s+video|s)?|visuali[sz]er|a\s+colors?\s+show|colors?\s+show)\s*$",
+        "",
+        t,
+    )
     # Strip colon-introduced subtitles: "This Land: Theme from Borderlands 4" -> "This Land".
     # Spotify stores these as "(Theme from Borderlands 4)" which gets stripped below, so we
     # need to strip the colon form too before both sides can match. Guard: only strip when
@@ -1046,7 +1093,7 @@ def _normalise_watched_match_text(text: str) -> str:
     t = re.sub(r"\s+(?:feat|ft|featuring)\.?\s+.*$", "", t)
     # Strip trailing junk keywords and everything after them
     t = re.sub(
-        r"\b(remaster(?:ed)?|radio edit|album version|single version|single edit|live|explicit|clean|"
+        r"\b(remaster(?:ed)?|radio edit|album version|single version|single edit|explicit|clean|"
         r"official|(?:music\s+)?(?:video|audio)|lyric(?:\s+video|s)?|visuali[sz]er|"
         r"a\s+colors?\s+show|colors?\s+show)\b.*$",
         "",
@@ -1104,7 +1151,7 @@ def _watched_track_matches_expected(expected_artist: str, expected_title: str, a
     def _strip_version_suffix(t: str) -> str:
         t = re.sub(r"\b\d{4}\s*remaster(?:ed)?\b", "", t)
         t = re.sub(r"\bremaster(?:ed)?\s*\d{4}\b", "", t)
-        t = re.sub(r"\b(remaster(?:ed)?|radio edit|single edit|single version|album version|live)\b$", "", t)
+        t = re.sub(r"\b(remaster(?:ed)?|radio edit|single edit|single version|album version)\b$", "", t)
         t = re.sub(r"\s+", " ", t).strip()
         parts = t.split()
         if len(parts) > 1 and re.fullmatch(r"\d{4}", parts[-1]):
@@ -1155,11 +1202,15 @@ def _watched_track_matches_expected(expected_artist: str, expected_title: str, a
     return got_words.issubset(exp_words) or exp_words.issubset(got_words)
 
 
-def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = None) -> bool:
+def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = None, skip_mismatch: bool = False) -> bool:
     """Mark a watched playlist track as downloaded and rebuild the M3U if enabled.
 
     resolved_path, when provided, is stored on the track record so M3U rebuilds can
     use the actual on-disk path instead of reconstructing it from artist/title metadata.
+
+    skip_mismatch bypasses the title comparison entirely, used when the track was
+    found via duplicate check (already on disk from a different playlist/download)
+    so there is no freshly-downloaded file to verify.
     This matters when Spotify sends non-ASCII names (e.g. '山下達郎') but the file
     lands on disk with a romanised name ('Tatsuro Yamashita').
 
@@ -1181,10 +1232,12 @@ def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = 
         if not link:
             return True
 
-        # User said "I know better, just download it"
-        skip_check = bool(link["skip_mismatch_check"])
+        # User said "I know better, just download it", or the track was found
+        # via duplicate check (already on disk, no fresh file to verify)
+        skip_check = skip_mismatch or bool(link["skip_mismatch_check"])
         if skip_check:
-            print(f"Mismatch check skipped for job {job_id} (force-accepted)")
+            reason = "duplicate-skip" if skip_mismatch else "force-accepted"
+            print(f"Mismatch check skipped for job {job_id} ({reason})")
 
         exp_artist_raw = link["expected_artist"] or ""
         exp_title_raw = link["expected_title"] or ""
@@ -2354,10 +2407,15 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 if mb_metadata:
                     mb_artist = mb_metadata.get("artist", artist)
                     mb_title = mb_metadata.get("title", title)
+                    tag_track_num, tag_track_total = _resolve_track_number(
+                        audio_file, None, None, mb_metadata
+                    )
                     apply_metadata_to_file(
                         audio_file, mb_artist, mb_title,
                         mb_metadata.get("album", ""),
                         mb_metadata.get("year"),
+                        track_number=tag_track_num,
+                        track_total=tag_track_total,
                         album_art_bytes=pl_cover_art_bytes,
                         album_art_mime=pl_cover_art_mime,
                     )
@@ -2372,8 +2430,13 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     if mb_title != title:
                         title = mb_title
                 else:
+                    tag_track_num, tag_track_total = _resolve_track_number(
+                        audio_file, None, None, None
+                    )
                     apply_metadata_to_file(
                         audio_file, artist, title,
+                        track_number=tag_track_num,
+                        track_total=tag_track_total,
                         album_art_bytes=pl_cover_art_bytes,
                         album_art_mime=pl_cover_art_mime,
                     )
@@ -2487,7 +2550,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
     album_art_bytes, album_art_mime = get_album_art_context(job_id)
     ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
     try:
-        _update_job(job_id, status="downloading")
+        _update_job(job_id, status="downloading", progress_stage="Fetching info")
 
         # If artist/title not provided, extract from filename
         if not artist or not title:
@@ -2499,6 +2562,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         _update_job(job_id, title=title, artist=artist, uploader=username)
 
         # Check for duplicates (local filesystem, then Navidrome, then Lidarr)
+        _update_job(job_id, progress_stage="Checking for duplicates")
         existing_file = check_duplicate(artist, title, user_id=user_id)
         if not existing_file:
             existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
@@ -2511,7 +2575,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=f"Already exists: {_display_path(existing_file)}"
             )
-            _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
+            _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None, skip_mismatch=True)
             return
 
         # Create download directory (with or without artist subfolder)
@@ -2519,6 +2583,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download from slskd with retries on common queue/abort failures
+        _update_job(job_id, progress_stage="Downloading audio")
         downloaded_file = None
         attempts = 0
         tried_candidates = set()
@@ -2590,6 +2655,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         needs_convert = convert_to_flac and source_ext != target_ext
 
         if needs_convert:
+            _update_job(job_id, progress_stage="Converting audio")
             # Convert to the target format
             if audio_fmt == "flac":
                 ffmpeg_codec = "flac"
@@ -2623,12 +2689,14 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         set_file_permissions(final_file)
 
         # Probe audio quality (with source info so FLAC-from-lossy is reported honestly)
+        _update_job(job_id, progress_stage="Probing quality")
         audio_quality, bitrate_kbps = probe_audio_quality(final_file, source_info=source_format_info)
         min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             final_file.unlink(missing_ok=True)
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
 
+        _update_job(job_id, progress_stage="Checking integrity")
         valid_audio, invalid_reason, actual_duration_secs = _validate_audio_integrity(final_file)
         if not valid_audio:
             final_file.unlink(missing_ok=True)
@@ -2642,6 +2710,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             raise Exception(f"Soulseek audio integrity check failed: {invalid_reason}")
 
         # Apply metadata (AcoustID fingerprinting first, then text-based MusicBrainz fallback)
+        _update_job(job_id, progress_stage="Looking up metadata")
         metadata_source = _default_metadata_source("soulseek")
         mb_metadata = lookup_metadata(artist, title, final_file)
 
@@ -2652,6 +2721,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             raise Exception(dur_reason)
 
         # Cover art: Soulseek files arrive with nothing, so try the full chain
+        _update_job(job_id, progress_stage="Tagging file")
         if not album_art_bytes:
             cover = fetch_cover_art(
                 artist, title,
@@ -2666,12 +2736,15 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             mb_title = mb_metadata.get("title", title)
             tag_title = forced_track_title or mb_title
             tag_album = forced_album_name or mb_metadata.get("album", "")
+            tag_track_num, tag_track_total = _resolve_track_number(
+                final_file, album_track_number, album_track_total, mb_metadata
+            )
             apply_metadata_to_file(
                 final_file, mb_artist, tag_title,
                 tag_album,
                 mb_metadata.get("year"),
-                track_number=album_track_number,
-                track_total=album_track_total,
+                track_number=tag_track_num,
+                track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
                 album_artist=forced_album_artist,
@@ -2687,13 +2760,16 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 )
             _update_job(job_id, artist=artist, title=title)
         else:
+            tag_track_num, tag_track_total = _resolve_track_number(
+                final_file, album_track_number, album_track_total, None
+            )
             apply_metadata_to_file(
                 final_file,
                 artist,
                 forced_track_title or title,
                 forced_album_name or "",
-                track_number=album_track_number,
-                track_total=album_track_total,
+                track_number=tag_track_num,
+                track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
                 album_artist=forced_album_artist,
@@ -2701,6 +2777,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             title = forced_track_title or title
 
         # Fetch and save lyrics
+        _update_job(job_id, progress_stage="Fetching lyrics")
         lyrics = fetch_lyrics(artist, title)
         if lyrics:
             save_lyrics_file(final_file, lyrics)
@@ -2709,6 +2786,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             print(f"No lyrics found for {artist} - {title}")
 
         # Trigger library rescans if configured
+        _update_job(job_id, progress_stage="Scanning library")
         trigger_navidrome_scan(user_id=user_id)
         trigger_jellyfin_scan(user_id=user_id)
 
@@ -2719,6 +2797,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             error=None,
             audio_quality=audio_quality,
             metadata_source=metadata_source,
+            progress_stage=None,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
         marked = _mark_watched_track_downloaded(job_id, resolved_path=final_file)
@@ -2727,7 +2806,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             # Metadata came back as someone else entirely. Delete and fail so retry can try again.
             final_file.unlink(missing_ok=True)
             final_file.with_suffix(".lrc").unlink(missing_ok=True)
-            _update_job(job_id, status="failed", completed_at=datetime.now(timezone.utc).isoformat())
+            _update_job(job_id, status="failed", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             return
         _refresh_album_m3u_if_present(override_dir)
 
@@ -2745,7 +2824,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
     except Exception as e:
         print(f"slskd download failed: {e}")
-        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
+        _update_job(job_id, status="failed", error=str(e), progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
 
         # Send notification for Soulseek failure
         send_notification(
@@ -2921,7 +3000,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
     attempted_ids.add(track_id)
 
     try:
-        _update_job(job_id, status="downloading")
+        _update_job(job_id, status="downloading", progress_stage="Fetching info")
 
         # Get track metadata from the API  -  artist, title, album, the lot
         info = _get_monochrome_track_info(track_id)
@@ -2943,6 +3022,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         _update_job(job_id, title=title, artist=artist, uploader=artist)
 
         # Duplicate check  -  local filesystem first, then Navidrome, then Lidarr
+        _update_job(job_id, progress_stage="Checking for duplicates")
         if not skip_dupe_check:
             existing_file = check_duplicate(artist, title, user_id=user_id)
             if not existing_file:
@@ -2967,7 +3047,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                     error=error_label
                 )
                 real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
-                marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
+                marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing, skip_mismatch=True)
                 if marked and (existing_file.is_absolute() or existing_file.exists()):
                     _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
                 return
@@ -2978,7 +3058,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                     completed_at=datetime.now(timezone.utc).isoformat(),
                     error=f"Already exists: {_display_path(existing_file)}"
                 )
-                _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
+                _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None, skip_mismatch=True)
                 return
 
         # Create download directory  -  respect playlist routing if requested
@@ -3002,6 +3082,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         output_path = artist_dir / f"{safe_title}.flac"
 
         # Download + integrity recheck loop for occasionally truncated CDN responses.
+        _update_job(job_id, progress_stage="Downloading audio")
         integrity_reason = ""
         actual_duration_secs = 0.0
         for attempt in range(1, _AUDIO_RECHECK_MAX_ATTEMPTS + 1):
@@ -3028,6 +3109,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         set_file_permissions(output_path)
 
         # Probe audio quality  -  this is genuine lossless, no transcode shenanigans
+        _update_job(job_id, progress_stage="Probing quality")
         audio_quality, bitrate_kbps = probe_audio_quality(output_path)
         min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
@@ -3038,6 +3120,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         # We only use MusicBrainz to fill in the year (which Tidal doesn't provide).
         # We deliberately don't let MusicBrainz overwrite artist/title/album here  -  it has
         # a nasty habit of matching a live recording or remaster and silently making things worse.
+        _update_job(job_id, progress_stage="Looking up metadata")
         metadata_source = "monochrome_api"
         mb_metadata = lookup_metadata(artist, title, output_path)
 
@@ -3050,6 +3133,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         year = mb_metadata.get("year") if mb_metadata else None
 
         # Cover art: Tidal CDN first (we have the UUID), then the full fallback chain
+        _update_job(job_id, progress_stage="Tagging file")
         if not album_art_bytes:
             cover = fetch_cover_art(
                 artist, title,
@@ -3059,14 +3143,17 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             if cover:
                 album_art_bytes, album_art_mime = cover
 
+        tag_track_num, tag_track_total = _resolve_track_number(
+            output_path, album_track_number, album_track_total, mb_metadata
+        )
         apply_metadata_to_file(
             output_path,
             artist,
             title,
             album_title,
             year,
-            track_number=album_track_number,
-            track_total=album_track_total,
+            track_number=tag_track_num,
+            track_total=tag_track_total,
             album_art_bytes=album_art_bytes,
             album_art_mime=album_art_mime,
             album_artist=forced_album_artist,
@@ -3076,6 +3163,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         # in the FLAC so it survives the transcode. We do this after integrity checks and
         # MusicBrainz so the conversion is never wasted on a file we'd reject anyway.
         if audio_fmt != "flac":
+            _update_job(job_id, progress_stage="Converting audio")
             if audio_fmt == "alac":
                 ffmpeg_codec = "alac"
                 extra_args = []
@@ -3105,8 +3193,8 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                 title,
                 album_title,
                 year,
-                track_number=album_track_number,
-                track_total=album_track_total,
+                track_number=tag_track_num,
+                track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
                 album_artist=forced_album_artist,
@@ -3124,6 +3212,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             output_path = _auto_route_single_to_album(output_path, artist, title, tidal_meta, job_id, user_id)
 
         # Lyrics
+        _update_job(job_id, progress_stage="Fetching lyrics")
         lyrics = fetch_lyrics(artist, title)
         if lyrics:
             save_lyrics_file(output_path, lyrics)
@@ -3132,6 +3221,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             print(f"No lyrics found for {artist} - {title}")
 
         # Library scans
+        _update_job(job_id, progress_stage="Scanning library")
         trigger_navidrome_scan(user_id=user_id)
         trigger_jellyfin_scan(user_id=user_id)
 
@@ -3142,6 +3232,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             error=None,
             audio_quality=audio_quality,
             metadata_source=metadata_source,
+            progress_stage=None,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
         marked = _mark_watched_track_downloaded(job_id, resolved_path=output_path)
@@ -3153,7 +3244,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             # Tidal served the wrong track (AcoustID disagreed). Clean up and let retry sort it.
             output_path.unlink(missing_ok=True)
             output_path.with_suffix(".lrc").unlink(missing_ok=True)
-            _update_job(job_id, status="failed", completed_at=datetime.now(timezone.utc).isoformat())
+            _update_job(job_id, status="failed", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             return
 
         fmt_label = "lossless FLAC" if audio_fmt == "flac" else audio_fmt.upper()
@@ -3202,7 +3293,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             print(f"Monochrome fallback failed: {fallback_err}")
             _update_job(job_id, status="failed",
                         error=f"Monochrome: all tiers restricted. Cross-source fallback also failed: {fallback_err}",
-                        completed_at=datetime.now(timezone.utc).isoformat())
+                        progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             send_notification(notification_type="error", title=title, artist=artist,
                               source=source_label, status="failed",
                               error="All Monochrome tiers restricted, cross-source fallback failed",
@@ -3210,7 +3301,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
 
     except Exception as e:
         print(f"Monochrome download failed: {e}")
-        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
+        _update_job(job_id, status="failed", error=str(e), progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
 
         send_notification(
             notification_type="error",
@@ -3297,7 +3388,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         return True
 
     try:
-        _update_job(job_id, status="downloading", title=title, artist=artist, uploader=artist)
+        _update_job(job_id, status="downloading", title=title, artist=artist, uploader=artist, progress_stage="Checking for duplicates")
 
         # Duplicate check before touching the network
         if not skip_dupe_check:
@@ -3317,7 +3408,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
                     error=f"Already exists in {src}: {_display_path(existing_file)} (added to playlist)"
                 )
                 real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
-                marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
+                marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing, skip_mismatch=True)
                 if marked and (existing_file.is_absolute() or existing_file.exists()):
                     _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
                 return
@@ -3328,7 +3419,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
                     completed_at=datetime.now(timezone.utc).isoformat(),
                     error=f"Already exists: {_display_path(existing_file)}"
                 )
-                _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
+                _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None, skip_mismatch=True)
                 return
 
         # Resolve output path
@@ -3345,6 +3436,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download as MP3 first  -  we'll convert to FLAC below if requested
+        _update_job(job_id, progress_stage="Downloading audio")
         mp3_path = artist_dir / f"{safe_title}.mp3"
 
         integrity_reason = ""
@@ -3374,6 +3466,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
 
         # Convert to the user's chosen format if requested. MP3Phoenix always serves MP3,
         # so if the user wants MP3 there's nothing to do. FLAC/Opus/ALAC get transcoded.
+        _update_job(job_id, progress_stage="Converting audio")
         if convert_to_flac:
             audio_fmt = get_setting("audio_format", "flac", user_id=user_id)
             if audio_fmt not in _FORMAT_CODEC_MAP:
@@ -3401,6 +3494,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         set_file_permissions(output_path)
 
         # Probe quality for the job record
+        _update_job(job_id, progress_stage="Probing quality")
         audio_quality, bitrate_kbps = probe_audio_quality(output_path)
         min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
@@ -3409,6 +3503,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
 
         # Metadata  -  mp3phoenix gives us artist/title from the search result HTML, which is
         # usually reasonable. MusicBrainz fills in year/album and keeps us honest.
+        _update_job(job_id, progress_stage="Looking up metadata")
         mb_metadata = lookup_metadata(artist, title, output_path)
         metadata_source = _default_metadata_source(source_label)
         if mb_metadata:
@@ -3439,6 +3534,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         album = forced_album_name or (mb_metadata.get("album") if mb_metadata else None)
 
         # Cover art: MP3Phoenix files arrive naked, so try the full chain
+        _update_job(job_id, progress_stage="Tagging file")
         if not album_art_bytes:
             cover = fetch_cover_art(
                 artist, title,
@@ -3447,14 +3543,17 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             if cover:
                 album_art_bytes, album_art_mime = cover
 
+        tag_track_num, tag_track_total = _resolve_track_number(
+            output_path, album_track_number, album_track_total, mb_metadata
+        )
         apply_metadata_to_file(
             output_path,
             artist,
             title,
             album or "Singles",
             year,
-            track_number=album_track_number,
-            track_total=album_track_total,
+            track_number=tag_track_num,
+            track_total=tag_track_total,
             album_art_bytes=album_art_bytes,
             album_art_mime=album_art_mime,
             album_artist=forced_album_artist,
@@ -3465,6 +3564,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
                 output_path, artist, title, mb_metadata, job_id, user_id
             )
 
+        _update_job(job_id, progress_stage="Fetching lyrics")
         lyrics = fetch_lyrics(artist, title)
         if lyrics:
             save_lyrics_file(output_path, lyrics)
@@ -3472,6 +3572,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         else:
             print(f"No lyrics found for {artist} - {title}")
 
+        _update_job(job_id, progress_stage="Scanning library")
         trigger_navidrome_scan(user_id=user_id)
         trigger_jellyfin_scan(user_id=user_id)
 
@@ -3481,6 +3582,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             error=None,
             audio_quality=audio_quality,
             metadata_source=metadata_source,
+            progress_stage=None,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
         marked = _mark_watched_track_downloaded(job_id, resolved_path=output_path)
@@ -3502,7 +3604,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
 
     except Exception as e:
         print(f"mp3phoenix download failed: {e}")
-        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
+        _update_job(job_id, status="failed", error=str(e), progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
         send_notification(
             notification_type="error",
             title=title,
@@ -3648,7 +3750,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         has_cookies = False
 
         # Update status to downloading
-        _update_job(job_id, status="downloading")
+        _update_job(job_id, status="downloading", progress_stage="Fetching info")
 
         # First, get video info for proper metadata
         base_args = _ytdlp_base_args() if not is_url_source else []
@@ -3686,6 +3788,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
         # Duplicate check  -  local filesystem first, then Navidrome, then Lidarr
         # Skipped when override_dir is set (e.g. album mode) and skip_dupe_check is True.
+        _update_job(job_id, progress_stage="Checking for duplicates")
         if not skip_dupe_check:
             existing_file = check_duplicate(artist, title, user_id=user_id)
             if not existing_file:
@@ -3710,7 +3813,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                     error=error_label
                 )
                 real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
-                marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing)
+                marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing, skip_mismatch=True)
                 if marked and (existing_file.is_absolute() or existing_file.exists()):
                     _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
                 return
@@ -3721,7 +3824,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                     completed_at=datetime.now(timezone.utc).isoformat(),
                     error=f"Already exists: {_display_path(existing_file)}"
                 )
-                _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None)
+                _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None, skip_mismatch=True)
                 return
 
         # Create download directory  -  Playlists/Name/, album override dir, or standard Singles layout
@@ -3738,6 +3841,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download with best audio quality
+        _update_job(job_id, progress_stage="Downloading audio")
         output_template = str(artist_dir / f"{safe_title}.%(ext)s")
         download_cmd = _build_ytdlp_download_cmd(
             video_id, output_template, convert_to_flac,
@@ -3790,6 +3894,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
 
         # Integrity gate: if the file is corrupted/truncated, retry once then pivot.
+        _update_job(job_id, progress_stage="Checking integrity")
         valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(audio_file)
         if not valid_audio:
             audio_file.unlink(missing_ok=True)
@@ -3856,12 +3961,14 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
         # If yt-dlp's post-processor didn't convert (e.g. recovered from a failed conversion),
         # catch it here and convert ourselves. Stops Opus files sneaking through when MP3 is wanted.
+        _update_job(job_id, progress_stage="Converting audio")
         audio_file = _enforce_target_format(audio_file, convert_to_flac, user_id=user_id)
 
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(audio_file)
 
         # Probe audio quality (with source info so FLAC-from-lossy is reported honestly)
+        _update_job(job_id, progress_stage="Probing quality")
         audio_quality, bitrate_kbps = probe_audio_quality(audio_file, source_info=source_format_info)
         min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
@@ -3869,6 +3976,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             raise Exception(f"Audio quality too low ({bitrate_kbps}kbps, minimum is {min_bitrate}kbps)")
 
         # Try to enrich metadata with AcoustID fingerprinting, then MusicBrainz
+        _update_job(job_id, progress_stage="Looking up metadata")
         metadata_source = _default_metadata_source(source_label)
         mb_metadata = lookup_metadata(artist, title, audio_file)
 
@@ -3902,6 +4010,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
         # Cover art: try the full fallback chain (CAA, iTunes, Deezer)
         # yt-dlp already embedded a video thumbnail; this replaces it with proper album art
+        _update_job(job_id, progress_stage="Tagging file")
         if not album_art_bytes:
             cover = fetch_cover_art(
                 artist, title,
@@ -3916,12 +4025,15 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             mb_title = mb_metadata.get("title", title)
             tag_title = forced_track_title or mb_title
             tag_album = forced_album_name or mb_metadata.get("album", "")
+            tag_track_num, tag_track_total = _resolve_track_number(
+                audio_file, album_track_number, album_track_total, mb_metadata
+            )
             apply_metadata_to_file(
                 audio_file, mb_artist, tag_title,
                 tag_album,
                 mb_metadata.get("year"),
-                track_number=album_track_number,
-                track_total=album_track_total,
+                track_number=tag_track_num,
+                track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
                 album_artist=forced_album_artist,
@@ -3942,13 +4054,16 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             _update_job(job_id, artist=artist, title=title)
         else:
             tag_title = forced_track_title or title
+            tag_track_num, tag_track_total = _resolve_track_number(
+                audio_file, album_track_number, album_track_total, None
+            )
             apply_metadata_to_file(
                 audio_file,
                 artist,
                 tag_title,
                 forced_album_name or "",
-                track_number=album_track_number,
-                track_total=album_track_total,
+                track_number=tag_track_num,
+                track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
                 album_artist=forced_album_artist,
@@ -3956,6 +4071,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             title = tag_title
 
         # Fetch and save lyrics
+        _update_job(job_id, progress_stage="Fetching lyrics")
         lyrics = fetch_lyrics(artist, title)
         if lyrics:
             save_lyrics_file(audio_file, lyrics)
@@ -3964,6 +4080,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             print(f"No lyrics found for {artist} - {title}")
 
         # Trigger library rescans if configured
+        _update_job(job_id, progress_stage="Scanning library")
         trigger_navidrome_scan(user_id=user_id)
         trigger_jellyfin_scan(user_id=user_id)
 
@@ -3974,6 +4091,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             error=None,
             audio_quality=audio_quality,
             metadata_source=metadata_source,
+            progress_stage=None,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
         marked = _mark_watched_track_downloaded(job_id, resolved_path=audio_file)
@@ -3987,7 +4105,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             # job to failed so the watched playlist retry can have another go.
             audio_file.unlink(missing_ok=True)
             audio_file.with_suffix(".lrc").unlink(missing_ok=True)
-            _update_job(job_id, status="failed", completed_at=datetime.now(timezone.utc).isoformat())
+            _update_job(job_id, status="failed", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             return
 
         # Send notification for single track
@@ -4002,7 +4120,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
     except Exception as e:
         print(f"Download job failed ({job_id}, source={source_label}, id={video_id}): {e}")
-        _update_job(job_id, status="failed", error=str(e), completed_at=datetime.now(timezone.utc).isoformat())
+        _update_job(job_id, status="failed", error=str(e), progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
 
         # Send notification for failure
         send_notification(

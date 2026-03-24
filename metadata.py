@@ -572,6 +572,52 @@ def _is_source_branding(text: str) -> bool:
     )
 
 
+def read_existing_track_number(file_path: Path) -> tuple[int | None, int | None]:
+    """Read existing track number and total from an audio file's tags.
+
+    Returns (track_number, track_total), either or both may be None.
+    Useful for checking whether a source (e.g. Tidal) already baked in
+    track info before we overwrite it with MusicBrainz guesses.
+    """
+    try:
+        suffix = file_path.suffix.lower()
+        if suffix == ".flac":
+            audio = FLAC(str(file_path))
+            tn = audio.get("TRACKNUMBER", [None])[0]
+            tt = audio.get("TRACKTOTAL", audio.get("TOTALTRACKS", [None]))[0]
+        elif suffix == ".mp3":
+            from mutagen.easyid3 import EasyID3
+            audio = EasyID3(str(file_path))
+            raw = (audio.get("tracknumber", [None]) or [None])[0]
+            if raw and "/" in str(raw):
+                parts = str(raw).split("/", 1)
+                tn, tt = parts[0], parts[1]
+            else:
+                tn, tt = raw, None
+        elif suffix in (".m4a", ".mp4"):
+            from mutagen.mp4 import MP4
+            audio = MP4(str(file_path))
+            trkn = audio.get("trkn", [(None, None)])[0]
+            tn, tt = (trkn[0], trkn[1]) if trkn else (None, None)
+            if tt == 0:
+                tt = None
+        elif suffix in (".ogg", ".opus"):
+            from mutagen.oggopus import OggOpus
+            from mutagen.oggvorbis import OggVorbis
+            audio = OggOpus(str(file_path)) if suffix == ".opus" else OggVorbis(str(file_path))
+            tn = audio.get("TRACKNUMBER", [None])[0]
+            tt = audio.get("TRACKTOTAL", audio.get("TOTALTRACKS", [None]))[0]
+        else:
+            return None, None
+
+        tn_int = int(tn) if tn else None
+        tt_int = int(tt) if tt else None
+        return (tn_int if tn_int and tn_int > 0 else None,
+                tt_int if tt_int and tt_int > 0 else None)
+    except Exception:
+        return None, None
+
+
 def apply_metadata_to_file(
     file_path: Path,
     artist: str,

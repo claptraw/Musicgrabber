@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.5.2 (dev)
+
+### Added
+- **Download progress stages**: the queue now shows what each download is actually doing instead of just "downloading" until it finishes. Cycles through stages like "Fetching info", "Downloading audio", "Looking up metadata", "Tagging file", "Fetching lyrics", etc. Updates every 3 seconds via the existing poll, so you can see at a glance whether a track is stuck on MusicBrainz or cheerfully converting to FLAC
+- **Concurrent downloads setting**: configurable in Settings (1-10, default 3) or via `MAX_CONCURRENT_DOWNLOADS` env var. Controls how many bulk import / watched playlist downloads run simultaneously. Previously hardcoded to 3. Careful on bot-rejection though!
+
+### Fixed
+- **Track numbers now tagged on singles**: single track downloads were leaving the TRACKNUMBER tag empty, which made Beets and other library managers grumpy during lookups. MusicBrainz already returned track position data, we just weren't using it. Now resolved with a priority chain: explicit album context wins, then existing file tags (Tidal/Monochrome FLACs arrive with track info baked in), then MusicBrainz lookup as a fallback. Existing tags are never overwritten by a MusicBrainz guess
+- Creating the first user account now forces a browser refresh and clears local storage, so the login page appears immediately instead of leaving you staring at a locked UI
+- User management buttons (Remove, Force reset) and album artist Select button now actually work; `jsStr()` was producing double-quoted strings inside double-quoted HTML attributes, which the browser decoded into a syntax error and silently broke all three buttons
+- **Cross-playlist duplicates no longer trigger false mismatches** (GitLab #38): when a track appeared in two watched playlists, the second playlist's download would find the file via duplicate check (correct) but then run the mismatch comparison against the original download's metadata (incorrect), failing because Spotify and Monochrome disagree on punctuation. Duplicate-skip paths now bypass the mismatch check entirely, since the file was already verified when it was first downloaded
+- **Watched playlists were still getting a bit too excited about live versions**: obvious live uploads were already penalised, but not hard enough, and the regex was still letting a lot of stagey branding stroll past in sunglasses. The shared scorer now hits live/session-style results much harder unless the query explicitly asks for one, catching things like `Tiny Desk`, `KEXP`, `Mahogany`, `COLORS`, `Radio 1`, and `From The Basement` across YouTube, Monochrome, MP3Phoenix, SoundCloud, and Soulseek. Watched-track matching also stops pretending `live` is harmless title fluff, so a concert version no longer gets waved through as the plain studio track
+
 ## v2.5.1 (2026-03-22)
 
 ### Added

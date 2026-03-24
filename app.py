@@ -474,12 +474,13 @@ def create_new_user(request: Request, body: CreateUserRequest):
         user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     if user_count == 0 and body.role != "admin":
         raise HTTPException(status_code=400, detail="The first account must be an admin")
+    first_user = user_count == 0
     try:
         new_id = create_user(body.username, body.password, body.role)
     except ValueError:
         raise HTTPException(status_code=409, detail="Username already exists")
     invalidate_users_cache()
-    return {"ok": True, "user_id": new_id}
+    return {"ok": True, "user_id": new_id, "first_user": first_user}
 
 
 @app.delete("/api/users/{user_id}")

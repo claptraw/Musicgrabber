@@ -622,6 +622,11 @@
                         </div>
                         <span class="settings-hint-sm">Permissions applied to each downloaded file. 666 is fine for most setups. Use 777 if your NAS or media server refuses to write to files owned by root.</span>
                     </div>
+                    <div class="settings-row admin-only">
+                        <label for="settingMaxConcurrentDownloads">Concurrent Downloads</label>
+                        <input type="number" id="settingMaxConcurrentDownloads" placeholder="3" value="3" min="1" max="10" class="settings-input-sm">
+                        <span class="settings-hint-sm">Maximum simultaneous downloads for bulk imports and watched playlist refreshes. Higher values are faster but hammer sources harder. Default: 3, max: 10.</span>
+                    </div>
                 </div>
             </div>
 

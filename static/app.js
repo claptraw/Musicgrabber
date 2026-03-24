@@ -1991,7 +1991,7 @@
                     <div class="job-status ${job.status}"></div>
                     <div class="job-info">
                         <div class="job-title">${escapeHtml(job.artist ? `${job.artist} - ${job.title}` : job.title)}${job.status === 'completed_with_errors' ? '<span class="job-warning-badge">ISSUES</span>' : ''}</div>
-                        <div class="job-meta">${formatJobStatus(job.status)} • ${formatTime(job.created_at)}</div>
+                        <div class="job-meta">${formatJobStatus(job.status)}${job.status === 'downloading' && job.progress_stage ? ` <span class="job-progress-stage">${escapeHtml(job.progress_stage)}</span>` : ''} • ${formatTime(job.created_at)}</div>
                         ${job.error ? `<div class="job-error">${job.error.startsWith('Already exists') ? 'Already in library' : escapeHtml(job.error)}</div>` : ''}
                         ${hasDetails ? `
                         <div class="job-details" style="display:${isExpanded ? 'block' : 'none'};">
@@ -3207,9 +3207,10 @@
             return escapeHtml(String(text)).replace(/'/g, '&#39;').replace(/\\/g, '\\\\');
         }
 
-        // Produce a JS string literal safe for embedding in a double-quoted HTML attribute.
-        // e.g. jsStr("I'm here") => &quot;I&#39;m here&quot;
-        // Usage: onclick="fn(${jsStr(userValue)})"
+        // WARNING: jsStr is NOT safe inside double-quoted onclick attributes!
+        // &quot; decoded by the HTML parser terminates the attribute boundary.
+        // For onclick handlers, use escapeAttr with single-quoted JS strings:
+        //   onclick="fn('${escapeAttr(val)}')"
         function jsStr(text) {
             return escapeHtml(JSON.stringify(String(text)));
         }
@@ -4503,7 +4504,7 @@
                             <span style="font-size:13px;font-weight:600;color:var(--text-primary);">${escapeHtml(a.name)}</span>
                             ${a.disambiguation ? `<span style="font-size:11px;color:var(--text-secondary);margin-left:6px;">${escapeHtml(a.disambiguation)}</span>` : ''}
                         </div>
-                        <button class="action-btn" style="padding:4px 10px;font-size:12px;" onclick="selectArtist(${jsStr(a.mbid)},${jsStr(a.name)})">Select</button>
+                        <button class="action-btn" style="padding:4px 10px;font-size:12px;" onclick="selectArtist('${escapeAttr(a.mbid)}','${escapeAttr(a.name)}')">Select</button>
                     </div>
                 `).join('');
             } catch (e) {
@@ -5224,6 +5225,7 @@
             'spotify_browser_timeout_seconds': 'settingSpotifyBrowserTimeout',
             'spotify_browser_stall_seconds': 'settingSpotifyBrowserStall',
             'file_permissions': 'settingFilePermissions',
+            'max_concurrent_downloads': 'settingMaxConcurrentDownloads',
             'api_key': 'settingApiKey'
         };
 
@@ -6306,8 +6308,8 @@
                         <span style="flex:1; font-weight:${u.id === currentUser?.id ? '600' : '400'};">${escapeHtml(u.username)}</span>
                         <span style="color:var(--text-secondary); font-size:13px;">${u.role}</span>
                         ${u.id !== currentUser?.id
-                            ? `<button class="user-action-btn warning" onclick="forcePasswordReset(${jsStr(u.id)}, ${jsStr(u.username)})">Force reset</button>
-                               <button class="user-action-btn" onclick="deleteUser(${jsStr(u.id)}, ${jsStr(u.username)})">Remove</button>`
+                            ? `<button class="user-action-btn warning" onclick="forcePasswordReset('${escapeAttr(u.id)}', '${escapeAttr(u.username)}')">Force reset</button>
+                               <button class="user-action-btn" onclick="deleteUser('${escapeAttr(u.id)}', '${escapeAttr(u.username)}')">Remove</button>`
                             : `<span style="color:var(--text-secondary); font-size:13px;">(you)</span>`}
                     </div>
                 `).join('') || '<p style="color:var(--text-secondary); font-size:13px;">No users yet.</p>';
@@ -6341,6 +6343,15 @@
                 errorEl.style.display = 'none';
                 document.getElementById('newUserUsername').value = '';
                 document.getElementById('newUserPassword').value = '';
+                // First user switches from single-user to auth mode; clear
+                // session state and bounce to the login page so the user
+                // isn't left staring at a now-locked UI.
+                if (data.first_user) {
+                    localStorage.clear();
+                    sessionStorage.clear();
+                    window.location.reload();
+                    return;
+                }
                 await loadUsers();
             } catch {
                 errorEl.textContent = 'Error creating user.';

@@ -7,6 +7,51 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.5.2": {
+        title: "What's New in v2.5.2",
+        sections: [
+            {
+                heading: "New: Download Progress Stages",
+                items: [
+                    "The queue now shows what each download is doing in real time instead of just sitting on 'downloading' until it finishes. You'll see stages like 'Fetching info', 'Downloading audio', 'Looking up metadata', 'Tagging file', 'Fetching lyrics', and more. Updates every 3 seconds.",
+                    "Works across all sources: YouTube, SoundCloud, Monochrome/Tidal, MP3Phoenix, and Soulseek.",
+                ]
+            },
+            {
+                heading: "New: Concurrent Downloads Setting",
+                items: [
+                    "You can now control how many bulk import and watched playlist downloads run at the same time. Find it in Settings under General (admin-only), or set the MAX_CONCURRENT_DOWNLOADS env var. Range is 1-10, default 3. Higher is faster but increases the risk of bot detection.",
+                ]
+            },
+            {
+                heading: "Fixed: Cross-Playlist Duplicate Mismatches",
+                items: [
+                    "If the same track appeared in two different watched playlists, the second playlist would mark it 'completed with errors' because Spotify and Monochrome/YouTube disagreed on punctuation (brackets vs hyphens, subtitles, etc.). The file was already on disk and perfectly fine, it was just the name check being overzealous. Duplicate-skip paths now bypass the mismatch comparison entirely.",
+                ]
+            },
+            {
+                heading: "Fixed: Watched Playlists Getting Too Into Live Versions",
+                items: [
+                    "Watched playlists are now much less likely to wander off with a live/session recording when what you actually wanted was the normal studio track. Performance-style results get hit with much heavier score penalties unless the query explicitly asks for one.",
+                    "The live detector also learned some new vocabulary. It's no longer just looking for the word 'live' — it now catches the usual suspects like Tiny Desk, KEXP, Mahogany, COLORS, Radio 1, From The Basement, sessions, and other \"this definitely happened in front of people\" uploads across YouTube, Monochrome, MP3Phoenix, SoundCloud, and Soulseek.",
+                    "On top of that, the watched-track matcher stops shrugging and treating 'live' as harmless title fluff, so a concert version no longer gets waved through as if it were the plain studio release.",
+                ]
+            },
+            {
+                heading: "Fixed: Track Numbers on Singles",
+                items: [
+                    "Single track downloads were leaving the TRACKNUMBER tag empty, which upset Beets and other library managers during lookups. MusicBrainz already had the data, we just weren't writing it to the file. Now uses a priority chain: album context first, then existing file tags (Tidal FLACs already have this baked in), then MusicBrainz as a fallback. Existing tags are never overwritten.",
+                ]
+            },
+            {
+                heading: "Fixed: First User Login & Button Breakage",
+                items: [
+                    "Creating the first user account now automatically refreshes the browser and shows the login page. Previously you'd be left on an unresponsive UI until you manually hit F5.",
+                    "User management buttons (Remove, Force reset) and album artist Select button were silently broken by a quoting bug. They work now.",
+                ]
+            },
+        ]
+    },
     "2.5.1": {
         title: "What's New in v2.5.1",
         sections: [

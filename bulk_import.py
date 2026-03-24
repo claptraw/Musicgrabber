@@ -16,11 +16,25 @@ from db import db_conn
 from downloads import process_download, create_bulk_playlist
 from notifications import send_notification
 from search import search_all
+from settings import get_setting_int
 from utils import hash_track, spawn_daemon_thread
 
 # Limits concurrent downloads spawned by bulk imports to avoid overwhelming
 # YouTube with simultaneous requests and starving the DB connection pool.
-_download_pool = ThreadPoolExecutor(max_workers=3)
+_download_pool = None
+_download_pool_size = 0
+
+
+def _get_download_pool() -> ThreadPoolExecutor:
+    """Return the download pool, recreating it if the configured size changed."""
+    global _download_pool, _download_pool_size
+    wanted = max(1, min(get_setting_int("max_concurrent_downloads", 3), 10))
+    if _download_pool is None or wanted != _download_pool_size:
+        if _download_pool is not None:
+            _download_pool.shutdown(wait=False)
+        _download_pool = ThreadPoolExecutor(max_workers=wanted)
+        _download_pool_size = wanted
+    return _download_pool
 
 
 def _normalise_candidate_match_text(text: str) -> str:
@@ -346,7 +360,7 @@ def process_bulk_import_worker(import_id: str):
                                         user_id=user_id, override_dir=override_dir,
                                         skip_dupe_check=_skip_dupes)
                 else:
-                    _download_pool.submit(process_download, job_id, video_id, convert_to_flac,
+                    _get_download_pool().submit(process_download, job_id, video_id, convert_to_flac,
                                           source_url, _pname, use_playlists_dir,
                                           user_id=user_id, override_dir=override_dir,
                                           skip_dupe_check=_skip_dupes)

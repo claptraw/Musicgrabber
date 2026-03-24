@@ -328,6 +328,23 @@ _VARIATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_LIVE_REQUEST_RE = re.compile(
+    r'\b(live|concert|tour|performance|session|sessions|tiny\s+desk|kexp|'
+    r'mahogany|colors?\s+show|radio\s*1|from\s+the\s+basement|'
+    r'la\s+blogotheque|paste\s+studio|stripped|in\s+studio)\b',
+    re.IGNORECASE,
+)
+
+_LIVE_RESULT_RE = re.compile(
+    r'(?:[\(\[]\s*live\b|[-–]\s*live\b|\blive\s+at\b|\blive\s+from\b|'
+    r'\blive\s+version\b|\bin\s+concert\b|\bin\s+session\b|'
+    r'\blive\s+on\b|\brecorded\s+live\b|\bperformed\s+live\b|'
+    r'\btiny\s+desk\b|\bkexp\b|\bmahogany\b|\bcolors?\s+show\b|'
+    r'\bradio\s*1\b|\bfrom\s+the\s+basement\b|\bla\s+blogotheque\b|'
+    r'\bpaste\s+studio\b|\bsession[s]?\b|\bstripped\b)',
+    re.IGNORECASE,
+)
+
 def _query_has_variation(query: str) -> bool:
     """Return True if the query explicitly asks for a non-standard version.
 
@@ -337,6 +354,11 @@ def _query_has_variation(query: str) -> bool:
     the 1:41 DJ medley nonsense.
     """
     return bool(_VARIATION_RE.search(query or ""))
+
+
+def _query_requests_live(query: str | None) -> bool:
+    """Return True when the query explicitly asks for a live/session-style version."""
+    return bool(_LIVE_REQUEST_RE.search(query or ""))
 
 
 def _parse_query_artist_title(query: str) -> tuple[str | None, str | None]:
@@ -375,20 +397,26 @@ def score_search_result(
     channel_lower = channel.lower()
     album_lower = (album or "").lower()
     score = 100  # Start with base score
+    query_lower = (query or "").lower()
+    query_wants_live = _query_requests_live(query)
 
     # Penalties for live performances.
-    # Unambiguous live tags in brackets/parentheses or after a dash get a heavier
-    # hit (-80) than a bare occurrence of the word (-30), so "Live - Artist Name"
-    # or an artist literally called "Live" doesn't get nuked the same way as
-    # "Song Title (Live at Wembley)".
-    if re.search(r'[\(\[]\s*live\b|[-–]\s*live\b|\blive\s+at\b|\blive\s+from\b|\blive\s+version\b', title_lower):
-        score -= 80
-    elif re.search(r'\b(live|concert|tour|performance|unplugged)\b', title_lower):
-        score -= 30
+    # Watched playlists should strongly avoid performance variants unless the
+    # query explicitly asks for one. The broader regex catches common live branding
+    # such as "Tiny Desk", "KEXP", "Mahogany", and "Colors Show", not just "live".
+    live_title = bool(_LIVE_RESULT_RE.search(title))
+    live_album = bool(_LIVE_RESULT_RE.search(album or ""))
+    live_channel = bool(_LIVE_RESULT_RE.search(channel))
+    if live_title or live_album or live_channel:
+        if query_wants_live:
+            score -= 10
+        elif live_title or live_album:
+            score -= 180
+        else:
+            score -= 120
 
     # Absolute disqualifiers: results containing these words are never what anyone wants,
     # regardless of query or context. Scored so low they cannot win even against silence.
-    query_lower = (query or "").lower()
     _never_re = r'\b(karaoke|nightcore|sped[- ]up|slowed|8d audio|bass boosted)\b'
     if re.search(_never_re, title_lower) or re.search(_never_re, album_lower):
         score -= 200
