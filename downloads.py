@@ -499,9 +499,11 @@ def _find_alternate_search_candidate(query: str, attempted_ids: set[str]) -> dic
     if not query.strip():
         return None
     try:
-        from search import search_all
+        from search import search_all, log_ranked_results
 
-        for cand in search_all(query, limit=12)[0]:
+        results = search_all(query, limit=12)[0]
+        log_ranked_results("Alternate candidate search", query, results)
+        for cand in results:
             cand_id = (cand.get("video_id") or "").strip()
             if not cand_id or cand_id in attempted_ids:
                 continue

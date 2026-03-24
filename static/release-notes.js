@@ -24,6 +24,14 @@ const RELEASE_NOTES = {
                 ]
             },
             {
+                heading: "New: \"Why This Result?\" Scoring Rationale",
+                items: [
+                    "When a bulk import or watched playlist download goes wrong, you can now find out exactly why the scorer picked that particular result. Failed and problematic queue items get a 'Why this result?' link in their expanded details.",
+                    "Shows the winning candidate's score with human-readable reasons (e.g. 'Official channel +40', 'Live/session penalty -180'), plus the top 3 runners-up so you can see what it passed over and why.",
+                    "There's a 'Raw scoring' expander for the technically curious, and a clipboard copy button if you want to share the evidence of the scorer's questionable life choices.",
+                ]
+            },
+            {
                 heading: "Fixed: Cross-Playlist Duplicate Mismatches",
                 items: [
                     "If the same track appeared in two different watched playlists, the second playlist would mark it 'completed with errors' because Spotify and Monochrome/YouTube disagreed on punctuation (brackets vs hyphens, subtitles, etc.). The file was already on disk and perfectly fine, it was just the name check being overzealous. Duplicate-skip paths now bypass the mismatch comparison entirely.",

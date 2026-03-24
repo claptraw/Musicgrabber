@@ -3104,6 +3104,141 @@ h1 {
     cursor: not-allowed;
 }
 
+/* --------------------------------------------------------------------------
+   Score Rationale panel (inside job details)
+-------------------------------------------------------------------------- */
+
+.score-rationale {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.score-rationale-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.score-rationale-header .score-rationale-query {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-style: italic;
+}
+
+.score-rationale-candidate {
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+}
+
+.score-rationale-picked {
+    background: rgba(52, 211, 153, 0.08);
+    border: 1px solid rgba(52, 211, 153, 0.25);
+}
+
+.score-rationale-runnerup {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+}
+
+.score-rationale-candidate-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.score-rationale-label {
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    flex-shrink: 0;
+}
+
+.score-rationale-picked .score-rationale-label {
+    color: var(--accent);
+}
+
+.score-rationale-runnerup .score-rationale-label {
+    color: var(--text-secondary);
+}
+
+.score-rationale-title {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.score-rationale-score {
+    color: var(--text-secondary);
+    font-size: 11px;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.score-rationale-reasons {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.score-reason-positive {
+    color: var(--accent);
+}
+
+.score-reason-negative {
+    color: var(--error);
+}
+
+.score-rationale-raw {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.score-rationale-raw summary {
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.score-rationale-raw pre {
+    margin: 4px 0 0;
+    padding: 6px 8px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 10px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.5;
+}
+
+.score-rationale-copy {
+    padding: 3px 8px;
+    font-size: 10px;
+    font-family: inherit;
+    font-weight: 600;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.score-rationale-copy:hover {
+    background: var(--border);
+    color: var(--text-primary);
+}
+
 .blacklist-content {
     font-size: 13px;
     color: var(--text-secondary);

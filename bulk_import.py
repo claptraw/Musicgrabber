@@ -12,10 +12,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from constants import BULK_IMPORT_SEARCH_DELAY
-from db import db_conn
+from db import db_conn, save_search_decision
 from downloads import process_download, create_bulk_playlist
 from notifications import send_notification
-from search import search_all
+from search import search_all, log_ranked_results
 from settings import get_setting_int
 from utils import hash_track, spawn_daemon_thread
 
@@ -242,6 +242,7 @@ def process_bulk_import_worker(import_id: str):
             try:
                 search_query = f"{artist} - {song}"
                 search_results, _ = search_all(search_query, limit=10, sources=preferred_sources_list)
+                log_ranked_results(f"Bulk import {import_id}", search_query, search_results)
 
                 if not search_results:
                     with db_conn() as conn:
@@ -346,6 +347,30 @@ def process_bulk_import_worker(import_id: str):
                         (import_id,)
                     )
                     conn.commit()
+
+                # Record why the scorer picked this candidate over its rivals.
+                # Covers bulk imports, watched playlists, and watched artists
+                # since they all funnel through here.
+                def _candidate_summary(r: dict) -> dict:
+                    return {
+                        "video_id": r.get("video_id", ""),
+                        "title": r.get("title", ""),
+                        "channel": r.get("channel", ""),
+                        "source": r.get("source", "unknown"),
+                        "score": r.get("quality_score"),
+                        "breakdown": r.get("score_breakdown", []),
+                    }
+
+                save_search_decision(
+                    job_id=job_id,
+                    query=search_query,
+                    selected=_candidate_summary(best_match),
+                    runners_up=[
+                        _candidate_summary(r)
+                        for r in search_results[:4]
+                        if r.get("video_id") != best_match.get("video_id")
+                    ],
+                )
 
                 # mp3phoenix is a fast HTTP stream — skip the pool entirely so it
                 # doesn't queue behind slow yt-dlp jobs.  Everything else goes through

@@ -4,6 +4,7 @@ MusicGrabber - Database Layer
 SQLite connection management, schema creation, and job monitoring.
 """
 
+import json
 import sqlite3
 from contextlib import contextmanager
 import queue
@@ -589,6 +590,22 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_mismatches_created ON watched_match_mismatches(created_at)"
         )
 
+        # Search decisions  -  records why the scorer picked a particular candidate
+        # over its rivals for automated downloads (bulk import, watched playlists).
+        # Only populated for automated searches; manual picks don't need justification.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS search_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT,
+            query TEXT,
+            decision_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_search_decisions_job ON search_decisions(job_id)"
+        )
+
         # --- DB version tracking ---
         # Version is stored in settings as 'db_version' (integer string).
         # Increment when table recreations or other irreversible migrations run.
@@ -906,6 +923,34 @@ def log_match_mismatch(
             conn.commit()
     except Exception as e:
         print(f"Failed to log mismatch: {e}")
+
+
+def save_search_decision(
+    job_id: str,
+    query: str,
+    selected: dict,
+    runners_up: list[dict],
+) -> None:
+    """Persist the scoring rationale for an automated search decision.
+
+    Stores the winning candidate and top runners-up so users can later
+    understand why the scorer picked one result over another, without
+    having to tail Docker logs like some sort of animal.
+    """
+    try:
+        blob = json.dumps({
+            "selected": selected,
+            "runners_up": runners_up[:3],
+        })
+        with db_conn() as conn:
+            conn.execute(
+                """INSERT INTO search_decisions (job_id, query, decision_json)
+                   VALUES (?, ?, ?)""",
+                (job_id, query, blob),
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"Failed to save search decision: {e}")
 
 
 def get_blacklisted_video_ids() -> set[str]:

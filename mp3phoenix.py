@@ -19,7 +19,7 @@ from constants import (
     TIMEOUT_MP3PHOENIX_SEARCH,
     TIMEOUT_MP3PHOENIX_DOWNLOAD,
 )
-from youtube import score_search_result, parse_duration
+from youtube import score_search_result_with_breakdown, parse_duration
 
 _BASE_URL = "https://mp3phoenix.net"
 _AJAX_URL = f"{_BASE_URL}/ajax/music/"
@@ -104,7 +104,7 @@ def search_mp3phoenix(query: str, limit: int) -> list[dict]:
             # "Everytime" scores far lower than "Britney Spears - Everytime
             # (Official HD Video)" and phoenix results never surface.
             combined_title = f"{artist} - {title}" if artist else title
-            quality_score = score_search_result(
+            quality_score, score_breakdown = score_search_result_with_breakdown(
                 combined_title, artist, query,
                 duration_seconds=duration_secs or None,
                 view_count=None,
@@ -112,6 +112,7 @@ def search_mp3phoenix(query: str, limit: int) -> list[dict]:
             # 320 kbps MP3 is better than SoundCloud (64-128 kbps) and bare YouTube
             # rips, but it's still lossy  -  lossless should always win.
             quality_score += 30
+            score_breakdown.append("source_quality=+30")
 
             # The full getmp3 URL is stored in source_url for download and preview.
             # video_id gets a short hash  -  the raw token contains slashes which
@@ -131,6 +132,7 @@ def search_mp3phoenix(query: str, limit: int) -> list[dict]:
                 "source_url": download_url,
                 "quality": "320kbps",
                 "quality_score": quality_score,
+                "score_breakdown": score_breakdown,
                 "slskd_username": None,
                 "slskd_filename": None,
             })

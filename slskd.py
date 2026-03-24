@@ -19,7 +19,7 @@ from constants import (
     SLSKD_REQUIRE_FREE_SLOT,
 )
 from settings import get_setting
-from youtube import score_search_result
+from youtube import score_search_result_with_breakdown
 
 
 # slskd auth token cache, keyed by (url, user) so different users
@@ -282,7 +282,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                     # Blend relevance + quality, then apply Soulseek-specific bonuses.
                     duration_secs = file_info.get("length")
                     duration_secs = duration_secs if isinstance(duration_secs, (int, float)) and duration_secs > 0 else None
-                    relevance_score = score_search_result(
+                    relevance_score, score_breakdown = score_search_result_with_breakdown(
                         title,
                         artist,
                         query,
@@ -290,10 +290,14 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                         view_count=None,
                     )
                     adjusted_score = relevance_score + quality_score
+                    if quality_score:
+                        score_breakdown.append(f"source_quality=+{quality_score}")
                     if has_free_slot:
                         adjusted_score += 10
+                        score_breakdown.append("free_slot=+10")
                     if upload_speed > 1000000:  # > 1MB/s
                         adjusted_score += 5
+                        score_breakdown.append("fast_uploader=+5")
 
                     results.append({
                         "id": f"slskd_{uuid.uuid4().hex[:8]}",
@@ -302,6 +306,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                         "channel": username,  # Show username as "channel"
                         "quality": quality_label,
                         "quality_score": adjusted_score,
+                        "score_breakdown": score_breakdown,
                         "source": "soulseek",
                         "duration": str(file_info.get("length", 0)),
                         "size": file_info.get("size", 0),

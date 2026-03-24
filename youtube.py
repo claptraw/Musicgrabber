@@ -345,6 +345,23 @@ _LIVE_RESULT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_PLAIN_TITLE_BENIGN_RE = re.compile(
+    r'\b(official|vevo|explicit|clean|stereo|mono|lyrics?|lyric\s+video|'
+    r'(?:music\s+)?video|audio|visuali[sz]er|hq|hd|4k)\b',
+    re.IGNORECASE,
+)
+
+_PLAIN_TITLE_VARIANT_RE = re.compile(
+    r'\b(live|concert|tour|performance|session|sessions|tiny\s+desk|kexp|'
+    r'mahogany|colors?\s+show|radio\s*1|from\s+the\s+basement|'
+    r'la\s+blogotheque|paste\s+studio|stripped|acoustic|demo|instrumental|'
+    r'remix|edit|mix|version|unplugged|reprise|bootleg|rework|flip|refix|'
+    r'cover|tribute|karaoke|orchestral|piano)\b',
+    re.IGNORECASE,
+)
+
+_UNKNOWN_SUFFIX_RE = re.compile(r'[\(\[].*?[\)\]]|\s[-–:|]\s+.+$')
+
 def _query_has_variation(query: str) -> bool:
     """Return True if the query explicitly asks for a non-standard version.
 
@@ -359,6 +376,43 @@ def _query_has_variation(query: str) -> bool:
 def _query_requests_live(query: str | None) -> bool:
     """Return True when the query explicitly asks for a live/session-style version."""
     return bool(_LIVE_REQUEST_RE.search(query or ""))
+
+
+def _result_has_plain_title_shape(title: str, expected_title_norm: str) -> bool:
+    """Return True when the raw title looks like a plain studio-title presentation."""
+    if not expected_title_norm:
+        return False
+    raw_norm = _normalise_search_title_text(title)
+    if raw_norm != expected_title_norm:
+        return False
+    lower = (title or "").lower()
+    return not _UNKNOWN_SUFFIX_RE.search(lower)
+
+
+def _variant_penalty_from_title(title: str, expected_title_norm: str) -> int:
+    """Return a penalty for extra variant-ish text on a plain-title query."""
+    if not expected_title_norm:
+        return 0
+    lower = (title or "").lower()
+    if _PLAIN_TITLE_BENIGN_RE.search(lower):
+        # Official/promo fluff is handled elsewhere and shouldn't trigger the
+        # "this is probably a different version" penalty by itself.
+        lower = _PLAIN_TITLE_BENIGN_RE.sub(" ", lower)
+    variant_hits = _PLAIN_TITLE_VARIANT_RE.findall(lower)
+    penalty = 0
+    if variant_hits:
+        unique_hits = {re.sub(r"\s+", " ", hit.strip()) for hit in variant_hits if hit.strip()}
+        penalty -= 35
+        if len(unique_hits) >= 2:
+            penalty -= 15
+    elif _UNKNOWN_SUFFIX_RE.search(lower):
+        penalty -= 18
+    return penalty
+
+
+def _format_score_breakdown(parts: list[str]) -> str:
+    """Compact string for logs/debugging."""
+    return ", ".join(parts) if parts else "base=100"
 
 
 def _parse_query_artist_title(query: str) -> tuple[str | None, str | None]:
@@ -379,7 +433,7 @@ def _parse_result_artist_title(text: str) -> tuple[str | None, str]:
     return artist, title or ""
 
 
-def score_search_result(
+def _score_search_result_with_breakdown(
     title: str,
     channel: str,
     query: str | None = None,
@@ -387,7 +441,7 @@ def score_search_result(
     view_count: int | None = None,
     album: str | None = None,
     expected_duration_secs: float | None = None,
-) -> int:
+) -> tuple[int, list[str]]:
     """Score a search result to prioritise official content over live versions
 
     Higher score = better match
@@ -397,8 +451,16 @@ def score_search_result(
     channel_lower = channel.lower()
     album_lower = (album or "").lower()
     score = 100  # Start with base score
+    breakdown = ["base=100"]
     query_lower = (query or "").lower()
     query_wants_live = _query_requests_live(query)
+
+    def _bump(delta: int, reason: str) -> None:
+        nonlocal score
+        if delta == 0:
+            return
+        score += delta
+        breakdown.append(f"{reason}={'+' if delta > 0 else ''}{delta}")
 
     # Penalties for live performances.
     # Watched playlists should strongly avoid performance variants unless the
@@ -409,24 +471,24 @@ def score_search_result(
     live_channel = bool(_LIVE_RESULT_RE.search(channel))
     if live_title or live_album or live_channel:
         if query_wants_live:
-            score -= 10
+            _bump(-10, "live_requested")
         elif live_title or live_album:
-            score -= 180
+            _bump(-180, "live_variant")
         else:
-            score -= 120
+            _bump(-120, "live_channel")
 
     # Absolute disqualifiers: results containing these words are never what anyone wants,
     # regardless of query or context. Scored so low they cannot win even against silence.
     _never_re = r'\b(karaoke|nightcore|sped[- ]up|slowed|8d audio|bass boosted)\b'
     if re.search(_never_re, title_lower) or re.search(_never_re, album_lower):
-        score -= 200
+        _bump(-200, "junk_variant")
 
     # Bootlegs, flips, and refixes are unofficial fan edits  -  never what we want unless
     # the query explicitly names them (which would be unusual but technically possible).
     _bootleg_re = r'\b(bootleg|flip|refix|rework|mashup)\b'
     if re.search(_bootleg_re, title_lower):
         if not re.search(_bootleg_re, query_lower):
-            score -= 100
+            _bump(-100, "bootleg_edit")
 
     # Penalties for covers, remixes, instrumentals  -  check title AND album name.
     # Piano cover albums tag the track artist as the original artist, so the
@@ -436,45 +498,45 @@ def score_search_result(
     if re.search(_cover_re, title_lower) or re.search(_cover_re, album_lower):
         # Don't penalise a remix result when we're explicitly searching for a remix
         if not re.search(r'\b(remix|edit|mix)\b', query_lower):
-            score -= 40
+            _bump(-40, "cover_or_variant")
 
     # Penalties for lyric videos (usually lower quality)
     if re.search(r'\b(lyric|lyrics)\b', title_lower):
-        score -= 20
+        _bump(-20, "lyric_video")
 
     # Penalties for fan uploads or unofficial - no cell phone video, thanks
     if re.search(r'\b(fan|unofficial|tribute)\b', title_lower):
-        score -= 30
+        _bump(-30, "unofficial_title")
     if re.search(r'\b(fan|fanpage|tribute|cover)\b', channel_lower):
-        score -= 25
+        _bump(-25, "unofficial_channel")
 
     # Copyright-filtered uploads: audio muted, pitch-shifted, or otherwise butchered
     # to dodge Content ID. The file is useless. Nuke it from orbit.
     if re.search(r'filter(?:ed)?\s*(?:for\s*)?copyright|copyright\s*filter|pitch\s*shift|freq\s*shift', title_lower):
-        score -= 200
+        _bump(-200, "copyright_dodge")
 
     # Bonuses for official content
     if re.search(r'\b(official|vevo)\b', title_lower):
-        score += 30
+        _bump(30, "official_title")
 
     if re.search(r'\b(official|vevo)\b', channel_lower):
-        score += 40
+        _bump(40, "official_channel")
 
     # Bonus for "Topic" channels (often official audio)
     if channel_lower.endswith(" - topic"):
-        score += 35
+        _bump(35, "topic_channel")
 
     # Bonus for "official music video" or "official video"
     if re.search(r'official\s*(music)?\s*video', title_lower):
-        score += 25
+        _bump(25, "official_video")
 
     # Bonus for official audio (best signal for a music grabber)
     if re.search(r'official\s*audio', title_lower):
-        score += 35
+        _bump(35, "official_audio")
 
     # Bonus when channel name appears in title (often "Artist - Title")
     if channel_lower and channel_lower in title_lower:
-        score += 10
+        _bump(10, "channel_in_title")
 
     # Query-aware matching (helps prefer exact artist/title matches)
     if query:
@@ -495,11 +557,11 @@ def score_search_result(
             matches = sum(1 for t in query_tokens if t in combined_norm)
             coverage = matches / len(query_tokens)
             if coverage == 1:
-                score += 20
+                _bump(20, "query_full_coverage")
             elif coverage >= 0.7:
-                score += 10
+                _bump(10, "query_good_coverage")
             elif coverage < 0.4:
-                score -= 15
+                _bump(-15, "query_poor_coverage")
 
         expected_artist, expected_title = _parse_query_artist_title(query)
         expected_artist_norm = _normalise_search_text(expected_artist or "")
@@ -510,76 +572,84 @@ def score_search_result(
                 _token_overlap_ratio(set(expected_title_norm.split()), set(full_title_match_norm.split())),
             )
             if expected_title_norm in title_match_norm or expected_title_norm in full_title_match_norm:
-                score += 25
+                _bump(25, "title_match")
             elif title_strength >= 1.0:
-                score += 15
+                _bump(15, "title_overlap_full")
             elif title_strength >= 0.75:
-                score += 8
+                _bump(8, "title_overlap_strong")
             else:
-                score -= 20
+                _bump(-20, "title_mismatch")
         if expected_artist_norm:
             artist_strength = _artist_match_strength(expected_artist, parsed_result_artist or "", channel, title)
             if expected_artist_norm in title_norm:
-                score += 15
+                _bump(15, "artist_in_title")
             elif expected_artist_norm in channel_norm:
-                score += 10
+                _bump(10, "artist_in_channel")
             elif artist_strength >= 1.0:
-                score += 18
+                _bump(18, "artist_match")
             elif artist_strength >= 0.6:
-                score += 8
+                _bump(8, "artist_overlap")
             else:
-                score -= 12
+                _bump(-12, "artist_mismatch")
         if expected_artist_norm and expected_title_norm:
             if f"{expected_artist_norm} {expected_title_norm}" in title_norm:
-                score += 20
+                _bump(20, "artist_title_phrase")
+
+        if expected_title_norm and not _query_has_variation(query):
+            plain_bonus_target = parsed_result_title or title
+            if _result_has_plain_title_shape(plain_bonus_target, expected_title_norm):
+                _bump(18, "plain_title")
+            variant_penalty = _variant_penalty_from_title(plain_bonus_target, expected_title_norm)
+            if variant_penalty:
+                _bump(variant_penalty, "variant_suffix")
 
 
     # Penalty for reaction videos, compilations
     if re.search(r'\b(reaction|react|compilation|vs)\b', title_lower):
-        score -= 60
+        _bump(-60, "reaction_or_compilation")
 
     # Penalty for compilation/anthology albums  -  checked on both title and album field.
     # A compilation is still the right song, just not the preferred release context,
     # so the penalty is moderate rather than disqualifying.
     _compilation_album_re = r'\b(anthology|greatest hits|best of|collection|essential|platinum|gold series)\b'
     if re.search(_compilation_album_re, album_lower):
-        score -= 25
+        _bump(-25, "compilation_album")
 
     # Penalty for extended versions (often DJ mixes)
     if re.search(r'\b(extended|extended mix|extended version)\b', title_lower):
-        score -= 15
+        _bump(-15, "extended_version")
 
     # Penalties for non-song results or modified audio
     if re.search(r'\b(full album|album|mix|playlist|soundtrack)\b', title_lower):
-        score -= 40
+        _bump(-40, "non_song_result")
     if re.search(r'\b(reverb)\b', title_lower):
-        score -= 45
+        _bump(-45, "reverb")
 
     # Duration scoring  -  typical songs are 2-6 minutes
     if duration_seconds is not None and duration_seconds > 0:
         if duration_seconds < MIN_SONG_DURATION_SECS:
-            score -= 80   # Previews, intros, clips  -  essentially disqualified
+            _bump(-80, "duration_too_short")   # Previews, intros, clips
         elif duration_seconds < 60:
-            score -= 40   # Very short  -  probably not the full track
+            _bump(-40, "duration_short")
         elif duration_seconds < 90:
-            score -= 15   # Short but could be a genuine interlude
+            _bump(-15, "duration_brief")
         elif duration_seconds <= 420:
-            score += 10   # Sweet spot (1:30 – 7:00)
+            _bump(10, "duration_sweet_spot")
         elif duration_seconds <= 720:
             pass          # 7-12 min  -  could be legit long track
         elif duration_seconds <= 1200:
-            score -= 20   # 12-20 min  -  likely extended mix
+            _bump(-20, "duration_long")
         else:
-            score -= 40   # 20+ min  -  album, mix, or compilation
+            _bump(-40, "duration_very_long")
 
     # View count  -  modest tiebreaker, log-scale to avoid domination
     if view_count is not None and view_count >= 0:
         if view_count < 1_000:
-            score -= 10   # Suspiciously low
+            _bump(-10, "low_views")
         elif view_count >= 100_000:
-            score += 5    # Decent signal of legitimacy
+            _bump(5, "good_views")
             if view_count >= 10_000_000:
-                score += 5  # Very likely official (+10 total)
+                _bump(5, "huge_views")
 
     # MusicBrainz expected duration scoring  -  the canonical yardstick.
     # If we know how long the studio version should be, results that match
@@ -588,17 +658,62 @@ def score_search_result(
     if expected_duration_secs and expected_duration_secs > 0 and duration_seconds and duration_seconds > 0:
         delta_ratio = abs(duration_seconds - expected_duration_secs) / expected_duration_secs
         if delta_ratio <= 0.05:
-            score += 40   # Spot on  -  almost certainly the right version
+            _bump(40, "mb_duration_exact")
         elif delta_ratio <= 0.12:
-            score += 20   # Close enough, minor variation or rounding
+            _bump(20, "mb_duration_close")
         elif delta_ratio <= 0.25:
             pass          # Neutral  -  might be a legit alternate version
         elif delta_ratio <= 0.50:
-            score -= 30   # Noticeably different length
+            _bump(-30, "mb_duration_off")
         else:
-            score -= 60   # That's a completely different track, mate
+            _bump(-60, "mb_duration_way_off")
 
+    return score, breakdown
+
+
+def score_search_result(
+    title: str,
+    channel: str,
+    query: str | None = None,
+    duration_seconds: float | None = None,
+    view_count: int | None = None,
+    album: str | None = None,
+    expected_duration_secs: float | None = None,
+) -> int:
+    score, _ = _score_search_result_with_breakdown(
+        title,
+        channel,
+        query,
+        duration_seconds,
+        view_count,
+        album,
+        expected_duration_secs,
+    )
     return score
+
+
+def score_search_result_with_breakdown(
+    title: str,
+    channel: str,
+    query: str | None = None,
+    duration_seconds: float | None = None,
+    view_count: int | None = None,
+    album: str | None = None,
+    expected_duration_secs: float | None = None,
+) -> tuple[int, list[str]]:
+    return _score_search_result_with_breakdown(
+        title,
+        channel,
+        query,
+        duration_seconds,
+        view_count,
+        album,
+        expected_duration_secs,
+    )
+
+
+def format_score_breakdown(parts: list[str]) -> str:
+    return _format_score_breakdown(parts)
 
 
 def parse_youtube_search_results(stdout: str, query: str | None = None) -> list[dict]:
@@ -615,7 +730,7 @@ def parse_youtube_search_results(stdout: str, query: str | None = None) -> list[
             channel = data.get("channel", data.get("uploader", "Unknown"))
             duration_secs = data.get("duration") or 0
             views = data.get("view_count")
-            quality_score = score_search_result(
+            quality_score, score_breakdown = score_search_result_with_breakdown(
                 title, channel, query,
                 duration_seconds=duration_secs or None,
                 view_count=views,
@@ -635,6 +750,7 @@ def parse_youtube_search_results(stdout: str, query: str | None = None) -> list[
                 ),
                 "quality": None,
                 "quality_score": quality_score,
+                "score_breakdown": score_breakdown,
                 "slskd_username": None,
                 "slskd_filename": None,
             })

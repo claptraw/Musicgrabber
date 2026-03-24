@@ -28,7 +28,7 @@ from metadata import fetch_mb_expected_duration, search_artist_mbid, fetch_artis
 from settings import get_setting, get_setting_bool
 from mp3phoenix import search_mp3phoenix
 from youtube import (
-    search_youtube, score_search_result, parse_duration,
+    search_youtube, score_search_result_with_breakdown, format_score_breakdown, parse_duration,
     _normalise_search_text, _parse_query_artist_title, _query_has_variation,
     _artist_match_strength,
 )
@@ -61,7 +61,7 @@ def parse_soundcloud_search_results(stdout: str, query: str | None = None) -> li
             channel = data.get("uploader", data.get("channel", "Unknown"))
             duration_secs = data.get("duration") or 0
             views = data.get("view_count")
-            quality_score = score_search_result(
+            quality_score, score_breakdown = score_search_result_with_breakdown(
                 title, channel, query,
                 duration_seconds=duration_secs or None,
                 view_count=views,
@@ -79,6 +79,7 @@ def parse_soundcloud_search_results(stdout: str, query: str | None = None) -> li
                 "source_url": data.get("webpage_url", data.get("url", "")),
                 "quality": None,
                 "quality_score": quality_score,
+                "score_breakdown": score_breakdown,
                 "slskd_username": None,
                 "slskd_filename": None,
             })
@@ -144,7 +145,7 @@ def _score_monochrome_result(item: dict, query: str | None = None) -> int:
 
     # Start with the standard relevance scoring  -  pass album title so cover/tribute
     # albums (e.g. "Piano Covers of Taylor Swift") get penalised correctly.
-    score = score_search_result(
+    score, score_breakdown = score_search_result_with_breakdown(
         title, artist_name, query,
         duration_seconds=duration or None,
         view_count=None,
@@ -159,7 +160,10 @@ def _score_monochrome_result(item: dict, query: str | None = None) -> int:
         "LOSSLESS": 80,
         "HIGH": 30,
     }
-    score += quality_bonuses.get(audio_quality, 0)
+    quality_bonus = quality_bonuses.get(audio_quality, 0)
+    if quality_bonus:
+        score += quality_bonus
+        score_breakdown.append(f"source_quality=+{quality_bonus}")
 
     # Title variant penalty: if the query has no parenthetical suffix but the
     # Tidal result does (e.g. "Hey Man Nice Shot (½ oz)" vs "hey man nice shot"),
@@ -173,6 +177,7 @@ def _score_monochrome_result(item: dict, query: str | None = None) -> int:
                 _benign_variant_re = r'\b(remaster(?:ed)?|expanded|deluxe|edition|feat(?:uring)?|ft|bonus|single|stereo|mono|explicit)\b'
                 if not re.search(_benign_variant_re, paren_content):
                     score -= 110  # Neutralise even HI_RES_LOSSLESS for unknown variants
+                    score_breakdown.append("monochrome_title_variant=-110")
 
     # Artist mismatch penalty: if the query specifies an artist and the Tidal
     # result is by a completely different artist, the quality bonus must not
@@ -190,10 +195,15 @@ def _score_monochrome_result(item: dict, query: str | None = None) -> int:
                     expected_norm not in result_norm and result_norm not in expected_norm and \
                     artist_strength < 0.6:
                 score -= 150
+                score_breakdown.append("monochrome_artist_mismatch=-150")
 
     # Popularity tiebreaker (0–15 points, log-ish scale)
-    score += min(popularity // 10, 15)
+    popularity_bonus = min(popularity // 10, 15)
+    if popularity_bonus:
+        score += popularity_bonus
+        score_breakdown.append(f"popularity=+{popularity_bonus}")
 
+    item["_score_breakdown"] = score_breakdown
     return score
 
 
@@ -237,6 +247,7 @@ def _search_monochrome_api(query: str, limit: int) -> list[dict]:
             "source_url": f"https://monochrome.tf/track/{track_id}",
             "quality": audio_quality if audio_quality else None,
             "quality_score": _score_monochrome_result(item, query),
+            "score_breakdown": list(item.get("_score_breakdown") or []),
             "slskd_username": None,
             "slskd_filename": None,
             # Extra Monochrome metadata  -  available for richer tagging at download time
@@ -297,6 +308,11 @@ def _resolve_monochrome_url(query: str, limit: int) -> list[dict]:
                 duration_secs = data.get("duration") or 0
                 source_url = data.get("webpage_url") or data.get("url") or query
                 video_id = data.get("id") or hashlib.md5(source_url.encode()).hexdigest()[:16]
+                _qs, _sb = score_search_result_with_breakdown(
+                    title, channel, query,
+                    duration_seconds=duration_secs or None,
+                    view_count=data.get("view_count"),
+                )
 
                 results.append({
                     "video_id": str(video_id),
@@ -309,11 +325,8 @@ def _resolve_monochrome_url(query: str, limit: int) -> list[dict]:
                     "source": "monochrome",
                     "source_url": source_url,
                     "quality": None,
-                    "quality_score": score_search_result(
-                        title, channel, query,
-                        duration_seconds=duration_secs or None,
-                        view_count=data.get("view_count"),
-                    ),
+                    "quality_score": _qs,
+                    "score_breakdown": _sb,
                     "slskd_username": None,
                     "slskd_filename": None,
                 })
@@ -537,14 +550,33 @@ def _apply_mb_duration_scores(results: list[dict], expected_duration_secs: float
         delta_ratio = abs(secs - expected_duration_secs) / expected_duration_secs
         if delta_ratio <= 0.02:
             r["quality_score"] += 40
+            r.setdefault("score_breakdown", []).append("mb_search_duration=+40")
         elif delta_ratio <= 0.05:
             r["quality_score"] += 20
+            r.setdefault("score_breakdown", []).append("mb_search_duration=+20")
         elif delta_ratio <= 0.10:
             pass
         elif delta_ratio <= 0.25:
             r["quality_score"] -= 30
+            r.setdefault("score_breakdown", []).append("mb_search_duration=-30")
         else:
             r["quality_score"] -= 60
+            r.setdefault("score_breakdown", []).append("mb_search_duration=-60")
+
+
+def log_ranked_results(context: str, query: str, results: list[dict], top_n: int = 3) -> None:
+    """Print the top scored candidates with their main score reasons."""
+    if not results:
+        print(f"{context}: no candidates for '{query}'")
+        return
+    print(f"{context}: top {min(top_n, len(results))} candidates for '{query}'")
+    for idx, r in enumerate(results[:top_n], start=1):
+        title = (r.get("title") or "").strip() or "Unknown"
+        channel = (r.get("channel") or "").strip() or "Unknown"
+        source = r.get("source") or "unknown"
+        score = r.get("quality_score")
+        breakdown = format_score_breakdown(r.get("score_breakdown") or [])
+        print(f"  {idx}. [{source}] {channel} - {title} (score {score}) :: {breakdown}")
 
 
 def _apply_blacklist_filter(results: list[dict], source: str | None = None) -> list[dict]:

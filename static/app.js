@@ -2003,6 +2003,13 @@
                             <div class="job-details-row"><span class="job-details-label">Queued:</span> ${formatTimeFull(job.created_at)}</div>
                             ${job.completed_at ? `<div class="job-details-row"><span class="job-details-label">Completed:</span> ${formatTimeFull(job.completed_at)}</div>` : ''}
                             ${job.completed_at && job.created_at ? `<div class="job-details-row"><span class="job-details-label">Duration:</span> ${formatDuration(job.created_at, job.completed_at)}</div>` : ''}
+                            ${['failed', 'completed_with_errors'].includes(job.status) || (job.error || '').includes('mismatch') ? `
+                            <div id="score-rationale-link-${escapeHtml(job.id || '')}" class="job-details-row" style="margin-top:4px;">
+                                <a href="#" onclick="event.preventDefault(); event.stopPropagation(); loadScoreRationale('${escapeAttr(job.id || '')}')" style="font-size:12px; color:var(--accent); text-decoration:none;">Why this result?</a>
+                                <button class="score-rationale-copy" onclick="event.stopPropagation(); copyScoreRationale('${escapeAttr(job.id || '')}')" style="margin-left:8px;" title="Copy scoring rationale to clipboard"><i class="fa-solid fa-clipboard"></i> Copy</button>
+                            </div>
+                            <div id="score-rationale-${escapeHtml(job.id || '')}" style="display:none;"></div>
+                            ` : ''}
                             <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
                                 <button onclick="event.stopPropagation(); redownloadJob('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Re-download</button>
                                 <button class="report-btn" data-job-id="${escapeHtml(job.id || '')}" data-video-id="${escapeHtml(job.video_id || '')}" data-uploader="${escapeHtml(job.uploader || '')}" data-source="${escapeHtml(job.source || 'youtube')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--warning); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Report</button>
@@ -2110,6 +2117,216 @@
                     else expandedJobIds.add(jobId);
                 }
             }
+        }
+
+        // =============================================================================
+        // Score Rationale (why the scorer picked a particular result)
+        // =============================================================================
+
+        const SCORE_LABELS = {
+            "base": null,
+            "official_title": "Official title tag",
+            "official_channel": "Official channel",
+            "official_video": "Official music video",
+            "official_audio": "Official audio",
+            "topic_channel": "Topic channel",
+            "live_requested": "Live version (requested)",
+            "live_variant": "Live/session penalty",
+            "live_channel": "Live channel penalty",
+            "junk_variant": "Junk variant (karaoke/nightcore/etc.)",
+            "bootleg_edit": "Bootleg/fan edit",
+            "cover_or_variant": "Cover/remix/instrumental",
+            "lyric_video": "Lyric video",
+            "unofficial_title": "Unofficial/fan upload",
+            "unofficial_channel": "Fan/tribute channel",
+            "copyright_dodge": "Copyright-dodging upload",
+            "channel_in_title": "Channel name in title",
+            "query_full_coverage": "All search terms matched",
+            "query_good_coverage": "Most search terms matched",
+            "query_poor_coverage": "Few search terms matched",
+            "title_match": "Exact title match",
+            "title_overlap_full": "Strong title overlap",
+            "title_overlap_strong": "Good title overlap",
+            "title_mismatch": "Title mismatch",
+            "artist_in_title": "Artist in title",
+            "artist_in_channel": "Artist matches channel",
+            "artist_match": "Artist matched",
+            "artist_overlap": "Partial artist match",
+            "artist_mismatch": "Artist mismatch",
+            "artist_title_phrase": "Artist + title phrase match",
+            "plain_title": "Plain studio title",
+            "variant_suffix": "Variant suffix penalty",
+            "reaction_or_compilation": "Reaction/compilation",
+            "compilation_album": "Compilation album",
+            "extended_version": "Extended version",
+            "non_song_result": "Non-song result",
+            "reverb": "Reverb edit",
+            "duration_too_short": "Way too short",
+            "duration_short": "Very short",
+            "duration_brief": "Slightly short",
+            "duration_sweet_spot": "Good duration",
+            "duration_long": "Suspiciously long",
+            "duration_very_long": "Way too long",
+            "low_views": "Low views",
+            "good_views": "Decent view count",
+            "huge_views": "Very popular",
+            "mb_duration_exact": "MusicBrainz duration match",
+            "mb_duration_close": "Close to MusicBrainz duration",
+            "mb_duration_off": "Duration doesn't match MusicBrainz",
+            "mb_duration_way_off": "Duration way off MusicBrainz",
+            "mb_search_duration": "MusicBrainz duration scoring",
+            "source_quality": "Source quality bonus",
+            "free_slot": "Free download slot",
+            "fast_uploader": "Fast uploader",
+            "popularity": "Popularity bonus",
+            "monochrome_title_variant": "Tidal title variant penalty",
+            "monochrome_artist_mismatch": "Tidal artist mismatch",
+        };
+
+        function parseBreakdownEntry(entry) {
+            // "live_variant=-180" → { key: "live_variant", delta: -180, label: "Live/session penalty" }
+            const m = (entry || '').match(/^([a-z_]+)=([+-]?\d+)$/);
+            if (!m) return null;
+            const key = m[1];
+            if (SCORE_LABELS[key] === null) return null;  // hidden (e.g. "base")
+            return {
+                key,
+                delta: parseInt(m[2], 10),
+                label: SCORE_LABELS[key] || key.replace(/_/g, ' '),
+            };
+        }
+
+        function humaniseBreakdown(breakdown, topN) {
+            const parsed = (breakdown || [])
+                .map(parseBreakdownEntry)
+                .filter(Boolean)
+                .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+            const items = topN ? parsed.slice(0, topN) : parsed;
+            return items.map(p => {
+                const cls = p.delta >= 0 ? 'score-reason-positive' : 'score-reason-negative';
+                const sign = p.delta >= 0 ? '+' : '';
+                return `<span class="${cls}">${escapeHtml(p.label)} (${sign}${p.delta})</span>`;
+            }).join(', ');
+        }
+
+        function renderRationalePanel(data) {
+            const d = data.decision || {};
+            const selected = d.selected;
+            const runnersUp = d.runners_up || [];
+            if (!selected) return '';
+
+            let html = '<div class="score-rationale">';
+            html += '<div class="score-rationale-header">';
+            if (data.query) {
+                html += `<span class="score-rationale-query">Search: ${escapeHtml(data.query)}</span>`;
+            }
+            html += '</div>';
+
+            // Winner
+            html += '<div class="score-rationale-candidate score-rationale-picked">';
+            html += '<div class="score-rationale-candidate-header">';
+            html += `<span class="score-rationale-label">Picked</span>`;
+            html += `<span class="source-badge ${escapeHtml(selected.source || 'youtube')}" style="font-size:10px;padding:1px 6px;">${getSourceBadge(selected.source || 'youtube')}</span>`;
+            html += `<span class="score-rationale-title">${escapeHtml(selected.channel || '')}${selected.channel ? ' \u2013 ' : ''}${escapeHtml(selected.title || '')}</span>`;
+            html += `<span class="score-rationale-score">score ${selected.score != null ? selected.score : '?'}</span>`;
+            html += '</div>';
+            const selectedReasons = humaniseBreakdown(selected.breakdown, 5);
+            if (selectedReasons) {
+                html += `<div class="score-rationale-reasons">${selectedReasons}</div>`;
+            }
+            html += '</div>';
+
+            // Runners-up
+            runnersUp.forEach((ru, i) => {
+                html += '<div class="score-rationale-candidate score-rationale-runnerup">';
+                html += '<div class="score-rationale-candidate-header">';
+                html += `<span class="score-rationale-label">#${i + 2}</span>`;
+                html += `<span class="source-badge ${escapeHtml(ru.source || 'youtube')}" style="font-size:10px;padding:1px 6px;">${getSourceBadge(ru.source || 'youtube')}</span>`;
+                html += `<span class="score-rationale-title">${escapeHtml(ru.channel || '')}${ru.channel ? ' \u2013 ' : ''}${escapeHtml(ru.title || '')}</span>`;
+                html += `<span class="score-rationale-score">score ${ru.score != null ? ru.score : '?'}</span>`;
+                html += '</div>';
+                const ruReasons = humaniseBreakdown(ru.breakdown, 3);
+                if (ruReasons) {
+                    html += `<div class="score-rationale-reasons">${ruReasons}</div>`;
+                }
+                html += '</div>';
+            });
+
+            // Raw scoring expander
+            const allBreakdowns = [];
+            allBreakdowns.push(`Picked: ${(selected.breakdown || []).join(', ')}`);
+            runnersUp.forEach((ru, i) => {
+                allBreakdowns.push(`#${i + 2}: ${(ru.breakdown || []).join(', ')}`);
+            });
+            html += '<details class="score-rationale-raw">';
+            html += '<summary>Raw scoring</summary>';
+            html += `<pre>${escapeHtml(allBreakdowns.join('\n'))}</pre>`;
+            html += '</details>';
+
+            html += '</div>';
+            return html;
+        }
+
+        async function loadScoreRationale(jobId) {
+            const container = document.getElementById(`score-rationale-${jobId}`);
+            const link = document.getElementById(`score-rationale-link-${jobId}`);
+            if (!container) return;
+
+            // Already loaded?
+            if (container.dataset.loaded === 'true') {
+                container.style.display = container.style.display === 'none' ? 'block' : 'none';
+                return;
+            }
+
+            try {
+                const res = await apiFetch(`/api/jobs/${jobId}/score-rationale`);
+                if (!res.ok) {
+                    // No data for this job; hide the link entirely
+                    if (link) link.style.display = 'none';
+                    return;
+                }
+                const data = await res.json();
+                container.innerHTML = renderRationalePanel(data);
+                container.dataset.loaded = 'true';
+                container.style.display = 'block';
+            } catch {
+                if (link) link.style.display = 'none';
+            }
+        }
+
+        function copyScoreRationale(jobId) {
+            const container = document.getElementById(`score-rationale-${jobId}`);
+            if (!container || container.dataset.loaded !== 'true') return;
+
+            // Re-fetch the data to build a clean text version
+            apiFetch(`/api/jobs/${jobId}/score-rationale`)
+                .then(res => res.ok ? res.json() : null)
+                .then(data => {
+                    if (!data) return;
+                    const d = data.decision || {};
+                    const sel = d.selected;
+                    if (!sel) return;
+
+                    let text = '';
+                    if (data.query) text += `Search: ${data.query}\n`;
+                    text += `\nPicked: [${sel.source}] ${sel.channel} - ${sel.title}\n`;
+                    text += `Score: ${sel.score}\n`;
+                    text += `Breakdown: ${(sel.breakdown || []).join(', ')}\n`;
+
+                    const runners = d.runners_up || [];
+                    if (runners.length) {
+                        text += `\nRunners-up:\n`;
+                        runners.forEach((ru, i) => {
+                            text += `  #${i + 2}: [${ru.source}] ${ru.channel} - ${ru.title} (score ${ru.score})\n`;
+                            text += `  Breakdown: ${(ru.breakdown || []).join(', ')}\n`;
+                        });
+                    }
+
+                    navigator.clipboard.writeText(text.trim()).then(() => {
+                        showToast('Score rationale copied');
+                    });
+                })
+                .catch(() => {});
         }
 
         async function redownloadJob(jobId) {

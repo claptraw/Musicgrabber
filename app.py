@@ -1294,6 +1294,7 @@ def reset_stats(http_request: Request, confirm: bool = False):
             "DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors', 'failed')"
         ).rowcount
         deleted_searches = conn.execute("DELETE FROM search_logs").rowcount
+        conn.execute("DELETE FROM search_decisions")
         conn.commit()
 
     return {"deleted_jobs": deleted_jobs, "deleted_searches": deleted_searches}
@@ -1429,6 +1430,45 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
         )
 
     return {"status": "queued", "job_id": job_id}
+
+
+@app.get("/api/jobs/{job_id}/score-rationale")
+def get_score_rationale(job_id: str, http_request: Request):
+    """Return the scoring rationale for an automated download decision.
+
+    Shows why the scorer picked one candidate over its rivals, so users
+    can debug bad picks without becoming intimate with Docker logs.
+    """
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        # Verify the job belongs to this user (or they're admin)
+        job = conn.execute("SELECT user_id FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if not is_admin and job["user_id"] and job["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Not your job")
+
+        row = conn.execute(
+            "SELECT query, decision_json, created_at FROM search_decisions WHERE job_id = ? LIMIT 1",
+            (job_id,),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="No scoring data for this job")
+
+    try:
+        decision = json.loads(row["decision_json"])
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=500, detail="Corrupt scoring data")
+
+    return {
+        "query": row["query"],
+        "decision": decision,
+        "created_at": row["created_at"],
+    }
 
 
 # =============================================================================
