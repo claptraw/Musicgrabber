@@ -7,6 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.5.3": {
+        title: "What's New in v2.5.3",
+        sections: [
+            {
+                heading: "Fixed: Database Locking During Bulk Imports",
+                items: [
+                    "The new score rationale feature was accidentally opening a second database connection mid-transaction, which could cause 'database is locked' errors during bulk imports and watched playlist refreshes. Now shares the existing connection properly.",
+                ]
+            },
+        ]
+    },
     "2.5.2": {
         title: "What's New in v2.5.2",
         sections: [

@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.5.3 (dev)
+
+### Fixed
+- **"Database is locked" during bulk imports**: the new search decision recording was opening a second DB connection inside the bulk import loop, fighting the existing connection for the write lock. Moved the insert into the same transaction so everything commits together without contention
+
 ## v2.5.2 (2026-03-24)
 
 ### Added

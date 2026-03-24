@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from constants import BULK_IMPORT_SEARCH_DELAY
-from db import db_conn, save_search_decision
+from db import db_conn
 from downloads import process_download, create_bulk_playlist
 from notifications import send_notification
 from search import search_all, log_ranked_results
@@ -346,31 +346,38 @@ def process_bulk_import_worker(import_id: str):
                         "UPDATE bulk_imports SET searched = searched + 1, queued = queued + 1 WHERE id = ?",
                         (import_id,)
                     )
+
+                    # Record why the scorer picked this candidate over its rivals.
+                    # Done inside the same transaction to avoid "database is locked"
+                    # from a second connection fighting for the write lock.
+                    def _candidate_summary(r: dict) -> dict:
+                        return {
+                            "video_id": r.get("video_id", ""),
+                            "title": r.get("title", ""),
+                            "channel": r.get("channel", ""),
+                            "source": r.get("source", "unknown"),
+                            "score": r.get("quality_score"),
+                            "breakdown": r.get("score_breakdown", []),
+                        }
+
+                    import json as _json
+                    try:
+                        _blob = _json.dumps({
+                            "selected": _candidate_summary(best_match),
+                            "runners_up": [
+                                _candidate_summary(r)
+                                for r in search_results[:4]
+                                if r.get("video_id") != best_match.get("video_id")
+                            ][:3],
+                        })
+                        conn.execute(
+                            "INSERT INTO search_decisions (job_id, query, decision_json) VALUES (?, ?, ?)",
+                            (job_id, search_query, _blob),
+                        )
+                    except Exception as e:
+                        print(f"Failed to save search decision: {e}")
+
                     conn.commit()
-
-                # Record why the scorer picked this candidate over its rivals.
-                # Covers bulk imports, watched playlists, and watched artists
-                # since they all funnel through here.
-                def _candidate_summary(r: dict) -> dict:
-                    return {
-                        "video_id": r.get("video_id", ""),
-                        "title": r.get("title", ""),
-                        "channel": r.get("channel", ""),
-                        "source": r.get("source", "unknown"),
-                        "score": r.get("quality_score"),
-                        "breakdown": r.get("score_breakdown", []),
-                    }
-
-                save_search_decision(
-                    job_id=job_id,
-                    query=search_query,
-                    selected=_candidate_summary(best_match),
-                    runners_up=[
-                        _candidate_summary(r)
-                        for r in search_results[:4]
-                        if r.get("video_id") != best_match.get("video_id")
-                    ],
-                )
 
                 # mp3phoenix is a fast HTTP stream — skip the pool entirely so it
                 # doesn't queue behind slow yt-dlp jobs.  Everything else goes through
