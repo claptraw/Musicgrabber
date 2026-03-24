@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.5.2 (dev)
+## v2.5.2 (2026-03-24)
 
 ### Added
 - **Download progress stages**: the queue now shows what each download is actually doing instead of just "downloading" until it finishes. Cycles through stages like "Fetching info", "Downloading audio", "Looking up metadata", "Tagging file", "Fetching lyrics", etc. Updates every 3 seconds via the existing poll, so you can see at a glance whether a track is stuck on MusicBrainz or cheerfully converting to FLAC
