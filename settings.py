@@ -11,7 +11,7 @@ from pathlib import Path
 from constants import (
     BOT_BACKOFF_MIN_SECONDS, BOT_BACKOFF_MAX_SECONDS,
     TIMEOUT_SPOTIFY_BROWSER, SPOTIFY_BROWSER_STALL_SECONDS,
-    MUSIC_DIR,
+    MUSIC_DIR, DB_PATH,
 )
 from db import db_conn
 
@@ -269,6 +269,15 @@ def get_playlists_dir(user_id: str | None = None) -> Path | None:
     if subdir == ".":
         return music_dir
     return music_dir / subdir
+
+
+def get_trash_dir(user_id: str | None = None) -> Path:
+    """Get the trash directory.
+
+    Lives under /data rather than the music volume to avoid FUSE/mergerfs
+    filesystem quirks that prevent directory listing on some setups.
+    """
+    return DB_PATH.parent / ".trash"
 
 
 def get_albums_dir(user_id: str | None = None) -> Path:

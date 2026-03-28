@@ -1,9 +1,15 @@
 # Changelog
 
-## v2.5.3 (dev)
+## v2.5.3 (2026-03-28)
+
+### Added
+- **Trash bin**: deleting a file now moves it to a trash folder under `/data/` instead of permanently nuking it. Restore files from the bin to skip re-downloading, or empty it to reclaim space. The Queue tab gets a new Trash Bin section at the bottom (hidden when empty) with per-file Restore and Delete buttons, plus an "Empty Trash" button for the brave. Directory structure is preserved in the bin, so restores land exactly where the file came from. Files that fail mismatch or duration checks also land in the trash now, so you can listen and decide before they vanish
+- **Play button on queue cards**: completed downloads now have a play button in their expanded details so you can preview what actually downloaded without hunting for the file. Toggle on/off, uses the same audio player as search previews
+- **Play button on trash items**: listen to trashed files before deciding whether to restore or permanently delete them. Particularly handy for mismatch rejects where the track might actually be fine
 
 ### Fixed
 - **"Database is locked" during bulk imports**: the new search decision recording was opening a second DB connection inside the bulk import loop, fighting the existing connection for the write lock. Moved the insert into the same transaction so everything commits together without contention
+- **Trash bin inaccessible on mergerfs/FUSE music volumes**: the trash directory was created inside the music volume, which on FUSE-based setups (mergerfs being the main culprit) returned EINVAL on directory listing despite correct permissions. Trash now lives under `/data/` alongside the database, well away from temperamental mounted filesystems
 
 ## v2.5.2 (2026-03-24)
 

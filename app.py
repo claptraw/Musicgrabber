@@ -2037,6 +2037,43 @@ def download_job_file(job_id: str, http_request: Request):
     )
 
 
+_AUDIO_MIME_TYPES = {
+    ".flac": "audio/flac", ".opus": "audio/ogg", ".ogg": "audio/ogg",
+    ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".webm": "audio/webm",
+}
+
+
+@app.get("/api/jobs/{job_id}/stream")
+def stream_job_file(job_id: str, http_request: Request):
+    """Stream the audio file for in-browser playback."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        row = conn.execute(
+            f"SELECT * FROM jobs WHERE id = ? AND {_scope_frag}",
+            (job_id, *_scope_params)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = dict(row)
+    artist = job.get("artist", "")
+    title = job.get("title", "")
+    if not title:
+        raise HTTPException(status_code=404, detail="Job has no title")
+
+    from utils import check_duplicate
+
+    file_path = check_duplicate(artist, title, user_id=user_id)
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    mime = _AUDIO_MIME_TYPES.get(file_path.suffix.lower(), "audio/mpeg")
+    return FileResponse(path=str(file_path), media_type=mime)
+
+
 @app.post("/api/jobs/{job_id}/retry")
 def retry_job(job_id: str, http_request: Request):
     """Retry a failed job"""
@@ -2163,46 +2200,38 @@ def delete_job_file(job_id: str, http_request: Request):
     if not artist or not title:
         raise HTTPException(status_code=400, detail="Job has no artist/title metadata")
 
-    from utils import check_duplicate
-    from settings import get_playlists_dir
+    from utils import check_duplicate, move_to_trash
     existing = check_duplicate(artist, title, user_id=user_id)
     if not existing:
-        # File already gone  -  just mark it as deleted and move on
+        # File already gone, just mark it and move on
         with db_conn() as conn:
             conn.execute("UPDATE jobs SET file_deleted = 1 WHERE id = ?", (job_id,))
             conn.commit()
-        return {"deleted": [], "job_id": job_id, "file_kept": False}
+        return {"deleted": [], "job_id": job_id, "trashed": False}
 
-    # Decide whether to actually delete the file.
-    # If it lives inside the playlists directory it was downloaded specifically for a playlist
-    # and is safe to nuke. If it lives in Singles (or anywhere else) it belongs to the broader
-    # library and may be referenced by other playlists  -  remove it from this playlist's M3U
-    # only, leave the file alone.
-    playlists_dir = get_playlists_dir(user_id=user_id)
-    file_is_playlist_owned = False
-    if playlists_dir:
-        try:
-            existing.relative_to(playlists_dir)
-            file_is_playlist_owned = True
-        except ValueError:
-            pass  # File lives outside the playlists dir  -  library file, hands off
-
-    deleted_files = []
-    if file_is_playlist_owned:
+    # Move the file to the trash bin. Covers both playlist-owned and library files;
+    # the whole point of the trash is that nothing gets permanently nuked, so the
+    # user can restore without re-downloading.
+    trashed_files = []
+    trash_result = move_to_trash(existing, user_id=user_id)
+    if trash_result:
+        trashed_files.append(existing.name)
+        lrc_trash = trash_result.with_suffix(".lrc")
+        if lrc_trash.exists():
+            trashed_files.append(lrc_trash.name)
+    else:
+        # Trash failed; fall back to permanent delete so we don't leave the user stuck
         try:
             existing.unlink()
-            deleted_files.append(existing.name)
-
+            trashed_files.append(existing.name)
             lrc_file = existing.with_suffix(".lrc")
             if lrc_file.exists():
                 lrc_file.unlink()
-                deleted_files.append(lrc_file.name)
-
-            # Remove empty playlist subfolder
+                trashed_files.append(lrc_file.name)
+            # Clean up empty parent directory
             track_dir = existing.parent
             if track_dir.exists() and not any(track_dir.iterdir()):
                 track_dir.rmdir()
-
         except OSError as e:
             raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
 
@@ -2229,7 +2258,7 @@ def delete_job_file(job_id: str, http_request: Request):
 
         conn.commit()
 
-    # Rebuild M3U to remove this track (deleted or unlinked) from the playlist file
+    # Rebuild M3U to remove this track from the playlist file
     if playlist_row:
         rebuild_watched_playlist_m3u(
             playlist_row["id"], playlist_row["name"],
@@ -2237,7 +2266,7 @@ def delete_job_file(job_id: str, http_request: Request):
             sync_mode=playlist_row["sync_mode"] or "append",
         )
 
-    return {"deleted": deleted_files, "job_id": job_id, "file_kept": not file_is_playlist_owned}
+    return {"deleted": trashed_files, "job_id": job_id, "trashed": bool(trashed_files)}
 
 
 @app.delete("/api/jobs/cleanup")
@@ -2266,6 +2295,165 @@ def cleanup_jobs(http_request: Request, status: Optional[str] = None):
         conn.commit()
 
     return {"deleted": deleted_count}
+
+
+# =============================================================================
+# Trash Bin API
+# =============================================================================
+
+@app.get("/api/trash")
+def list_trash(http_request: Request):
+    """List all files sitting in the trash bin."""
+    from settings import get_trash_dir
+    user_id = http_request.state.user_id
+    trash_dir = get_trash_dir(user_id=user_id)
+    if not trash_dir.exists():
+        return {"files": [], "total_size": 0}
+
+    files = []
+    total_size = 0
+    walk_errors = []
+
+    def _on_walk_error(err):
+        walk_errors.append(str(err))
+        print(f"[trash] Failed to read {getattr(err, 'filename', trash_dir)}: {err}")
+
+    for dirpath, _dirnames, filenames in os.walk(trash_dir, onerror=_on_walk_error):
+        for fname in filenames:
+            fp = Path(dirpath) / fname
+            if fp.suffix.lower() == ".lrc":
+                continue
+            try:
+                rel = fp.relative_to(trash_dir)
+                stat = fp.stat()
+                size = stat.st_size
+                total_size += size
+                files.append({
+                    "path": str(rel),
+                    "name": fp.stem,
+                    "ext": fp.suffix,
+                    "size": size,
+                    "modified": stat.st_mtime,
+                })
+            except OSError as e:
+                print(f"[trash] Failed to inspect {fp}: {e}")
+                continue
+
+    if walk_errors and not files:
+        raise HTTPException(status_code=500, detail="Trash exists but could not be read")
+
+    # Sort newest first so the most recently trashed files appear at the top
+    files.sort(key=lambda f: f["modified"], reverse=True)
+    return {"files": files, "total_size": total_size}
+
+
+@app.get("/api/trash/stream")
+def stream_trash_file(http_request: Request, path: str = ""):
+    """Stream a trashed audio file for in-browser playback. Have a listen before you decide."""
+    from settings import get_trash_dir
+    user_id = http_request.state.user_id
+    if not path:
+        raise HTTPException(status_code=400, detail="No path specified")
+
+    trash_dir = get_trash_dir(user_id=user_id)
+    trash_path = trash_dir / path
+
+    try:
+        trash_path.resolve().relative_to(trash_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not trash_path.exists():
+        raise HTTPException(status_code=404, detail="File not found in trash")
+
+    mime = _AUDIO_MIME_TYPES.get(trash_path.suffix.lower(), "audio/mpeg")
+    return FileResponse(path=str(trash_path), media_type=mime)
+
+
+@app.post("/api/trash/restore")
+def restore_trash_file(http_request: Request, path: str = ""):
+    """Restore a specific file from the trash to its original library location."""
+    from utils import restore_from_trash
+    from settings import get_trash_dir
+    user_id = http_request.state.user_id
+    if not path:
+        raise HTTPException(status_code=400, detail="No path specified")
+
+    trash_dir = get_trash_dir(user_id=user_id)
+    trash_path = trash_dir / path
+
+    # Safety: make sure the resolved path is actually inside the trash dir
+    try:
+        trash_path.resolve().relative_to(trash_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not trash_path.exists():
+        raise HTTPException(status_code=404, detail="File not found in trash")
+
+    restored = restore_from_trash(trash_path, user_id=user_id)
+    if not restored:
+        raise HTTPException(status_code=500, detail="Failed to restore file")
+
+    return {"restored": str(restored.name), "path": str(restored)}
+
+
+@app.delete("/api/trash")
+def empty_trash(http_request: Request):
+    """Permanently delete everything in the trash bin. No coming back from this one."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from settings import get_trash_dir
+    import shutil
+    user_id = http_request.state.user_id
+    trash_dir = get_trash_dir(user_id=user_id)
+    if not trash_dir.exists():
+        return {"deleted": 0}
+
+    count = sum(1 for _ in trash_dir.rglob("*") if _.is_file())
+    shutil.rmtree(trash_dir, ignore_errors=True)
+    return {"deleted": count}
+
+
+@app.delete("/api/trash/file")
+def delete_trash_file(http_request: Request, path: str = ""):
+    """Permanently delete a single file from the trash. Truly gone this time."""
+    from settings import get_trash_dir
+    user_id = http_request.state.user_id
+    if not path:
+        raise HTTPException(status_code=400, detail="No path specified")
+
+    trash_dir = get_trash_dir(user_id=user_id)
+    trash_path = trash_dir / path
+
+    try:
+        trash_path.resolve().relative_to(trash_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not trash_path.exists():
+        raise HTTPException(status_code=404, detail="File not found in trash")
+
+    try:
+        trash_path.unlink()
+        # Also remove the lyrics sidecar if present
+        lrc = trash_path.with_suffix(".lrc")
+        if lrc.exists():
+            lrc.unlink()
+        # Clean up empty directories
+        parent = trash_path.parent
+        while parent != trash_dir and str(parent).startswith(str(trash_dir)):
+            try:
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
+
+    return {"deleted": trash_path.name}
 
 
 # =============================================================================

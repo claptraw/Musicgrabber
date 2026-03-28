@@ -1163,6 +1163,7 @@
                 if (currentTab === 'queue') {
                     loadJobs();
                     loadDownloadable();
+                    loadTrash();
                     if (queuePollInterval) clearInterval(queuePollInterval);
                     queuePollInterval = setInterval(() => loadJobs(false), 3000);
                 } else {
@@ -1170,6 +1171,7 @@
                         clearInterval(queuePollInterval);
                         queuePollInterval = null;
                     }
+                    stopLibraryPlayback();
                 }
 
                 if (currentTab === 'watched') {
@@ -2011,12 +2013,13 @@
                             <div id="score-rationale-${escapeHtml(job.id || '')}" style="display:none;"></div>
                             ` : ''}
                             <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
+                                ${job.status !== 'failed' && !fileDeleted ? `<button class="library-play-btn" onclick="event.stopPropagation(); playJobAudio('${escapeAttr(job.id || '')}', this)" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;"><i class="fa-solid fa-play"></i></button>` : ''}
                                 <button onclick="event.stopPropagation(); redownloadJob('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Re-download</button>
                                 <button class="report-btn" data-job-id="${escapeHtml(job.id || '')}" data-video-id="${escapeHtml(job.video_id || '')}" data-uploader="${escapeHtml(job.uploader || '')}" data-source="${escapeHtml(job.source || 'youtube')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--warning); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Report</button>
                                 ${(job.error || '').includes('mismatch') ? `<button class="force-accept-btn" data-job-id="${escapeHtml(job.id || '')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Force Download</button>` : ''}
                                 ${job.status !== 'failed' ? (fileDeleted
-                                    ? `<button disabled style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; cursor: not-allowed; opacity: 0.8;">File Deleted</button>`
-                                    : `<button class="delete-file-btn" data-job-id="${escapeHtml(job.id || '')}" data-track-name="${escapeHtml(job.artist ? job.artist + ' - ' + job.title : job.title)}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Delete File</button>
+                                    ? `<button disabled style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; cursor: not-allowed; opacity: 0.8;">Trashed</button>`
+                                    : `<button class="delete-file-btn" data-job-id="${escapeHtml(job.id || '')}" data-track-name="${escapeHtml(job.artist ? job.artist + ' - ' + job.title : job.title)}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;"><i class="fa-solid fa-trash-can"></i> Trash</button>
                                       <button onclick="event.stopPropagation(); saveJobToDevice('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;"><i class="fa-solid fa-download"></i> Save to device</button>`) : ''}
                             </div>
                         </div>` : ''}
@@ -2345,7 +2348,7 @@
         }
 
         async function deleteJobFile(jobId, trackName) {
-            if (!confirm(`Delete "${trackName}" from your library?`)) return;
+            if (!confirm(`Move "${trackName}" to trash?`)) return;
 
             try {
                 const response = await apiFetch(`/api/jobs/${jobId}/file`, { method: 'DELETE' });
@@ -2354,16 +2357,180 @@
                     throw new Error(data.detail || 'Delete failed');
                 }
                 const data = await response.json();
-                if (data.deleted.length > 0) {
+                if (data.trashed) {
+                    showToast(`Moved to trash (${data.deleted.length} file(s))`);
+                } else if (data.deleted.length > 0) {
                     showToast(`Deleted ${data.deleted.length} file(s)`);
                 } else {
-                    showToast('File was already missing - marked as deleted');
+                    showToast('File was already missing, marked as deleted');
                 }
                 loadJobs();
+                loadTrash();
             } catch (error) {
                 showToast(error.message || 'Delete failed', true);
-                loadJobs(); // Refresh anyway so buttons reflect current state
+                loadJobs();
             }
+        }
+
+        // =============================================================================
+        // Trash Bin
+        // =============================================================================
+
+        async function loadTrash() {
+            const section = document.getElementById('trashSection');
+            const list = document.getElementById('trashList');
+            try {
+                const response = await apiFetch('/api/trash');
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Failed to load trash');
+                }
+
+                if (!data.files.length) {
+                    section.style.display = 'none';
+                    list.innerHTML = '';
+                    return;
+                }
+
+                section.style.display = 'block';
+                const sizeLabel = formatFileSize(data.total_size);
+
+                list.innerHTML = `
+                    <div style="margin-bottom: 8px; font-size: 12px; color: var(--text-muted);">
+                        ${data.files.length} file(s), ${sizeLabel} total
+                    </div>
+                    ${data.files.map(f => `
+                        <div class="job-item" style="cursor: default;">
+                            <div class="job-status completed"></div>
+                            <div class="job-info">
+                                <div class="job-title">${escapeHtml(f.name)}</div>
+                                <div class="job-meta">${escapeHtml(f.path)} &middot; ${formatFileSize(f.size)}</div>
+                            </div>
+                            <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
+                                <button class="library-play-btn" onclick="playTrashAudio('${escapeAttr(f.path)}', this)" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;"><i class="fa-solid fa-play"></i></button>
+                                <button onclick="restoreTrashFile('${escapeAttr(f.path)}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Restore</button>
+                                <button onclick="deleteTrashFile('${escapeAttr(f.path)}', '${escapeAttr(f.name)}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Delete</button>
+                            </div>
+                        </div>
+                    `).join('')}
+                `;
+            } catch (e) {
+                console.error('Failed to load trash', e);
+                section.style.display = 'block';
+                list.innerHTML = `
+                    <div class="job-item" style="cursor: default;">
+                        <div class="job-info">
+                            <div class="job-title">Trash unavailable</div>
+                            <div class="job-meta">${escapeHtml(e?.message || 'Failed to load trash')}</div>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+            return (bytes / 1073741824).toFixed(2) + ' GB';
+        }
+
+        async function restoreTrashFile(path) {
+            try {
+                const response = await apiFetch(`/api/trash/restore?path=${encodeURIComponent(path)}`, { method: 'POST' });
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.detail || 'Restore failed');
+                }
+                const data = await response.json();
+                showToast(`Restored: ${data.restored}`);
+                loadTrash();
+            } catch (error) {
+                showToast(error.message || 'Restore failed', true);
+            }
+        }
+
+        async function deleteTrashFile(path, name) {
+            if (!confirm(`Permanently delete "${name}"? This cannot be undone.`)) return;
+            try {
+                const response = await apiFetch(`/api/trash/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.detail || 'Delete failed');
+                }
+                showToast('Permanently deleted');
+                loadTrash();
+            } catch (error) {
+                showToast(error.message || 'Delete failed', true);
+            }
+        }
+
+        async function emptyTrash() {
+            if (!confirm('Permanently delete everything in the trash? This cannot be undone.')) return;
+            try {
+                const response = await apiFetch('/api/trash', { method: 'DELETE' });
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.detail || 'Failed to empty trash');
+                }
+                const data = await response.json();
+                showToast(`Trash emptied (${data.deleted} file(s) removed)`);
+                loadTrash();
+            } catch (error) {
+                showToast(error.message || 'Failed to empty trash', true);
+            }
+        }
+
+        // =============================================================================
+        // Library / Trash Playback
+        // =============================================================================
+
+        let _libraryPlayingId = null;
+
+        function _startLibraryStream(id, url, btn) {
+            stopPreview();
+            stopLibraryPlayback();
+            _libraryPlayingId = id;
+            if (btn) btn.innerHTML = '<i class="fa-solid fa-stop"></i>';
+            previewAudio.oncanplay = () => {
+                previewAudio.oncanplay = null;
+                previewAudio.play().catch(() => {});
+            };
+            previewAudio.onended = () => stopLibraryPlayback();
+            previewAudio.onerror = (e) => {
+                // Ignore aborted loads (caused by stopLibraryPlayback clearing src)
+                if (previewAudio.error && previewAudio.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+                    stopLibraryPlayback();
+                    showToast('Could not play file', true);
+                }
+            };
+            previewAudio.volume = previewVolume;
+            previewAudio.src = url;
+            previewAudio.load();
+        }
+
+        function playJobAudio(jobId, btn) {
+            if (_libraryPlayingId === jobId) { stopLibraryPlayback(); return; }
+            _startLibraryStream(jobId, `/api/jobs/${jobId}/stream`, btn);
+        }
+
+        function playTrashAudio(path, btn) {
+            if (_libraryPlayingId === 'trash:' + path) { stopLibraryPlayback(); return; }
+            _startLibraryStream('trash:' + path, `/api/trash/stream?path=${encodeURIComponent(path)}`, btn);
+        }
+
+        function stopLibraryPlayback() {
+            if (!_libraryPlayingId) return;
+            previewAudio.oncanplay = null;
+            previewAudio.onended = null;
+            previewAudio.onerror = null;
+            previewAudio.pause();
+            previewAudio.src = '';
+            // Reset all play buttons back to the play icon
+            document.querySelectorAll('.library-play-btn').forEach(b => {
+                b.innerHTML = '<i class="fa-solid fa-play"></i>';
+            });
+            _libraryPlayingId = null;
         }
 
         // =============================================================================
@@ -3635,6 +3802,7 @@
         });
         bulkImportBtn.addEventListener('click', bulkImport);
         clearQueueBtn.addEventListener('click', clearQueue);
+        document.getElementById('emptyTrashBtn').addEventListener('click', emptyTrash);
         resetStatsBtn.addEventListener('click', resetStats);
 
         // Spotify playlist/album fetch handler
@@ -4471,19 +4639,15 @@
         async function replaceTrack(playlistId, playlistName, artist, title, jobId, rowId) {
             const row = document.getElementById(rowId);
             const btn = row?.querySelector('.track-replace-btn');
-            if (btn) { btn.disabled = true; btn.textContent = 'Deleting...'; }
+            if (btn) { btn.disabled = true; btn.textContent = 'Trashing...'; }
 
             try {
-                // Delete (or unlink from playlist) the bad file and clear downloaded_at
+                // Trash (or unlink from playlist) the bad file and clear downloaded_at
                 const resp = await apiFetch(`/api/jobs/${jobId}/file`, { method: 'DELETE' });
-                if (!resp.ok) throw new Error('Delete failed');
+                if (!resp.ok) throw new Error('Trash failed');
                 const data = await resp.json();
 
-                if (data.file_kept) {
-                    showToast(`${artist} - ${title} removed from playlist. Library file kept. Pick the correct version below.`);
-                } else {
-                    showToast(`Deleted bad file for ${artist} - ${title}. Pick the correct version below.`);
-                }
+                showToast(`Trashed ${artist} - ${title}. Pick the correct version below.`);
 
                 // Update the row to show missing state with retry/search options
                 if (row) {
@@ -4510,7 +4674,7 @@
                 // Route to search tab pre-filled with this track + playlist selected
                 searchMissingTrack(playlistId, playlistName, artist, title);
             } catch (e) {
-                showToast('Failed to delete file', true);
+                showToast('Failed to trash file', true);
                 if (btn) { btn.disabled = false; btn.textContent = 'Replace'; }
             }
         }

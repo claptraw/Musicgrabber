@@ -12,8 +12,10 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+import shutil
+
 from constants import AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH
-from settings import get_singles_dir, get_download_dir, get_playlists_dir, get_setting
+from settings import get_singles_dir, get_download_dir, get_playlists_dir, get_trash_dir, get_setting
 
 
 def sanitize_filename(name: str) -> str:
@@ -214,6 +216,108 @@ def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Opti
                 match = _find_audio_match_in_dir(playlist_dir, stems)
                 if match:
                     return match
+
+        return None
+    except Exception:
+        return None
+
+
+def move_to_trash(file_path: Path, user_id: str | None = None) -> Path | None:
+    """Move a file to the trash directory, preserving its relative path.
+
+    Returns the trash path on success, None on failure. Also moves the
+    matching .lrc sidecar if one exists.
+    """
+    try:
+        music_dir = Path(get_setting("music_dir", str(Path(os.getenv("MUSIC_DIR", "/music"))), user_id=user_id))
+        trash_dir = get_trash_dir(user_id=user_id)
+        rel = file_path.relative_to(music_dir)
+        dest = trash_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(file_path), str(dest))
+        set_file_permissions(dest)
+
+        # Drag the lyrics along for the ride
+        lrc = file_path.with_suffix(".lrc")
+        if lrc.exists():
+            lrc_dest = dest.with_suffix(".lrc")
+            shutil.move(str(lrc), str(lrc_dest))
+            set_file_permissions(lrc_dest)
+
+        # Tidy up empty parent directories back to music_dir
+        parent = file_path.parent
+        while parent != music_dir and str(parent).startswith(str(music_dir)):
+            try:
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+        return dest
+    except Exception as e:
+        print(f"[trash] Failed to move {file_path} to trash: {e}")
+        return None
+
+
+def restore_from_trash(trash_path: Path, user_id: str | None = None) -> Path | None:
+    """Restore a file from trash back to its original library location.
+
+    Returns the restored path on success, None on failure.
+    """
+    try:
+        trash_dir = get_trash_dir(user_id=user_id)
+        music_dir = Path(get_setting("music_dir", str(Path(os.getenv("MUSIC_DIR", "/music"))), user_id=user_id))
+        rel = trash_path.relative_to(trash_dir)
+        dest = music_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(trash_path), str(dest))
+        set_file_permissions(dest)
+
+        # Restore lyrics sidecar too
+        lrc_trash = trash_path.with_suffix(".lrc")
+        if lrc_trash.exists():
+            lrc_dest = dest.with_suffix(".lrc")
+            shutil.move(str(lrc_trash), str(lrc_dest))
+            set_file_permissions(lrc_dest)
+
+        # Tidy up empty trash subdirectories
+        parent = trash_path.parent
+        while parent != trash_dir and str(parent).startswith(str(trash_dir)):
+            try:
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+        return dest
+    except Exception as e:
+        print(f"[trash] Failed to restore {trash_path}: {e}")
+        return None
+
+
+def check_trash_duplicate(artist: str, title: str, user_id: str | None = None) -> Path | None:
+    """Check if a trashed copy of this track exists and can be restored.
+
+    Scans .trash/ mirroring the same directory structure as the library.
+    Returns the trash path if found, None otherwise.
+    """
+    try:
+        trash_dir = get_trash_dir(user_id=user_id)
+        if not trash_dir.exists():
+            return None
+
+        sanitized_title = sanitize_filename(title)
+        sanitized_artist = sanitize_filename(artist or "")
+        artist_title_stem = f"{sanitized_artist} - {sanitized_title}" if sanitized_artist else sanitized_title
+        stems = [s for s in (sanitized_title, artist_title_stem) if s]
+
+        # Walk every directory under .trash/ looking for a match
+        for dirpath, _dirnames, _filenames in os.walk(trash_dir):
+            match = _find_audio_match_in_dir(Path(dirpath), stems)
+            if match:
+                return match
 
         return None
     except Exception:

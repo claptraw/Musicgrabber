@@ -47,6 +47,7 @@ from utils import (
     sanitize_filename,
     extract_artist_title,
     check_duplicate,
+    move_to_trash,
     is_valid_youtube_id,
     set_file_permissions,
     subsonic_auth_params,
@@ -2392,7 +2393,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 # Duration sanity check against MusicBrainz expected length
                 dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
                 if not dur_ok:
-                    audio_file.unlink(missing_ok=True)
+                    move_to_trash(audio_file, user_id=user_id)
                     print(dur_reason)
                     failed_tracks += 1
                     continue
@@ -2719,7 +2720,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         # Duration sanity check against MusicBrainz expected length
         dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
         if not dur_ok:
-            final_file.unlink(missing_ok=True)
+            move_to_trash(final_file, user_id=user_id)
             raise Exception(dur_reason)
 
         # Cover art: Soulseek files arrive with nothing, so try the full chain
@@ -2805,9 +2806,9 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         marked = _mark_watched_track_downloaded(job_id, resolved_path=final_file)
         _mark_watched_artist_track_downloaded(job_id, resolved_path=final_file)
         if not marked:
-            # Metadata came back as someone else entirely. Delete and fail so retry can try again.
-            final_file.unlink(missing_ok=True)
-            final_file.with_suffix(".lrc").unlink(missing_ok=True)
+            # Metadata came back as someone else entirely. Trash it so the user can listen
+            # and decide, then fail so retry can have another go.
+            move_to_trash(final_file, user_id=user_id)
             _update_job(job_id, status="failed", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             return
         _refresh_album_m3u_if_present(override_dir)
@@ -3129,7 +3130,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         # Duration sanity check  -  Tidal should never serve the wrong track, but worth a nudge.
         dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
         if not dur_ok:
-            output_path.unlink(missing_ok=True)
+            move_to_trash(output_path, user_id=user_id)
             raise Exception(dur_reason)
 
         year = mb_metadata.get("year") if mb_metadata else None
@@ -3243,9 +3244,9 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
             _refresh_album_m3u_if_present(override_dir)
         else:
-            # Tidal served the wrong track (AcoustID disagreed). Clean up and let retry sort it.
-            output_path.unlink(missing_ok=True)
-            output_path.with_suffix(".lrc").unlink(missing_ok=True)
+            # Tidal served the wrong track (AcoustID disagreed). Trash it so the user can
+            # have a listen before it's gone forever, then fail so retry can try again.
+            move_to_trash(output_path, user_id=user_id)
             _update_job(job_id, status="failed", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             return
 
@@ -3392,7 +3393,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
     try:
         _update_job(job_id, status="downloading", title=title, artist=artist, uploader=artist, progress_stage="Checking for duplicates")
 
-        # Duplicate check before touching the network
+        # Duplicate check before touching the network (filesystem, Navidrome, Lidarr)
         if not skip_dupe_check:
             existing_file = check_duplicate(artist, title, user_id=user_id)
             if not existing_file:
@@ -3513,7 +3514,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
 
         dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
         if not dur_ok:
-            output_path.unlink(missing_ok=True)
+            move_to_trash(output_path, user_id=user_id)
             _note_blacklist_entry(
                 source=source_label,
                 reason="wrong_duration",
@@ -3788,7 +3789,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         # Update job with extracted info (store raw uploader for blacklist reporting)
         _update_job(job_id, title=title, artist=artist, uploader=channel)
 
-        # Duplicate check  -  local filesystem first, then Navidrome, then Lidarr
+        # Duplicate check  -  local filesystem first, then Navidrome, then Lidarr.
         # Skipped when override_dir is set (e.g. album mode) and skip_dupe_check is True.
         _update_job(job_id, progress_stage="Checking for duplicates")
         if not skip_dupe_check:
@@ -3986,7 +3987,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         # Catches wrong tracks that passed the corruption check but are wildly the wrong length.
         dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
         if not dur_ok:
-            audio_file.unlink(missing_ok=True)
+            move_to_trash(audio_file, user_id=user_id)
             print(dur_reason)
             if len(attempted_ids) < _AUDIO_RESEARCH_MAX_ALTERNATES + 1:
                 query = f"{artist} - {title}".strip(" -")
@@ -4103,10 +4104,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             _refresh_album_m3u_if_present(override_dir)
         else:
             # Wrong track downloaded (AcoustID/MusicBrainz identified it as something else).
-            # Delete the file (and any lyrics) so the library isn't polluted, and flip the
-            # job to failed so the watched playlist retry can have another go.
-            audio_file.unlink(missing_ok=True)
-            audio_file.with_suffix(".lrc").unlink(missing_ok=True)
+            # Trash the file so the user can listen and decide; fail the job so watched
+            # playlist retry can have another go.
+            move_to_trash(audio_file, user_id=user_id)
             _update_job(job_id, status="failed", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             return
 

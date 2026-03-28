@@ -11,6 +11,22 @@ const RELEASE_NOTES = {
         title: "What's New in v2.5.3",
         sections: [
             {
+                heading: "New: Trash Bin",
+                items: [
+                    "Deleting a track now moves it to a trash folder instead of wiping it forever. Think of it as a recycling bin for your ears.",
+                    "Changed your mind? Hit Restore in the Trash Bin to put it back exactly where it came from, no re-download needed.",
+                    "The Queue tab now has a Trash Bin section at the bottom (only appears when there's something in it) with Restore and permanent Delete buttons per file, plus an 'Empty Trash' button for the brave.",
+                    "Files that fail mismatch or duration checks now land in the trash too, so you can listen before the evidence disappears.",
+                ]
+            },
+            {
+                heading: "New: Play Button on Queue and Trash",
+                items: [
+                    "Completed downloads now have a play button in their expanded details. Quick way to check what actually got downloaded without leaving the tab.",
+                    "Trashed files get a play button too, so you can listen before deciding whether to restore or permanently bin them. Especially useful for mismatch rejects that might be perfectly fine.",
+                ]
+            },
+            {
                 heading: "Fixed: Database Locking During Bulk Imports",
                 items: [
                     "The new score rationale feature was accidentally opening a second database connection mid-transaction, which could cause 'database is locked' errors during bulk imports and watched playlist refreshes. Now shares the existing connection properly.",

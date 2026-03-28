@@ -443,6 +443,15 @@
                     <button class="clear-btn" id="downloadableNextBtn" onclick="loadDownloadable(1)">Next &#8594;</button>
                 </div>
             </div>
+
+            <div id="trashSection" class="section-with-top-margin" style="display:none;">
+                <div class="queue-header">
+                    <h2 class="queue-section-heading"><i class="fa-solid fa-trash-can"></i> Trash Bin</h2>
+                    <button class="clear-btn" id="emptyTrashBtn" style="color: var(--error);">Empty Trash</button>
+                </div>
+                <p class="downloadable-intro-text">Deleted files waiting in the bin. Restore them to skip re-downloading, or empty the bin to reclaim space.</p>
+                <div id="trashList" class="results"></div>
+            </div>
         </div>
 
         <div id="statsTabContainer" class="tab-panel">

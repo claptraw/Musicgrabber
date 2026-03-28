@@ -40,6 +40,8 @@ If your use case is "I heard a song, I want that song in my library fast," this 
 - **Synced lyrics:** automatic lyrics fetching from LRClib, saved as `.lrc` files
 - **Auto-organise:** `Singles/Artist/Title.flac` (or flat `Singles/Artist - Title.flac` with "Organise by Artist" off)
 - **Duplicate detection:** local filesystem check plus optional Navidrome Subsonic API check
+- **Trash bin:** deleted files move to `.trash/` instead of being permanently removed; restore with one click to skip re-downloading. Files that fail mismatch or duration checks also land in the trash so you can listen before they vanish
+- **In-queue playback:** play button on completed queue cards and trashed files for instant preview without leaving the tab
 - **Job queue:** track progress, retry failures, re-download or delete files, see metadata provenance
 - **Statistics dashboard:** download counts, success rate, daily chart, top artists, search analytics
 - **Release notes modal:** shows once after each update; also accessible from the Settings tab
@@ -550,9 +552,11 @@ Supports various dash formats: `-`, `–`, `--`
 
 - **View progress:** see queued, in-progress, completed, and failed jobs
 - **Job details:** click completed/failed jobs to see source, timestamps, download duration, and audio quality
+- **Play:** completed downloads have a play/stop button for instant in-browser preview
 - **Re-download:** re-queue any completed or failed download (overwrites existing file)
 - **Report bad tracks:** flag wrong tracks, ContentID dodges, or poor quality from the queue. Blacklisted videos are excluded from future searches
-- **Delete from library:** remove the audio file and lyrics directly from the queue. If the file is already missing, the job is marked as deleted. Artist folders are removed only when empty
+- **Trash:** move audio files (and lyrics) to `.trash/` inside your music directory instead of permanently deleting them. Trashed files can be played and restored from the Trash Bin section at the bottom of the Queue tab
+- **Trash bin:** lists all trashed files with per-file Play, Restore, and permanent Delete buttons. "Empty Trash" clears the lot (admin only). Files that fail mismatch or duration checks during download also land here automatically
 - **Retry failed:** click retry on individual failed downloads
 - **Clear queue:** remove all remembered jobs with the "Clear Queue" button
 
@@ -706,8 +710,9 @@ music.yourdomain.com {
 | `GET` | `/api/jobs/downloadable` | Paginated list of completed jobs available to save to device (`?page=1&per_page=50`) |
 | `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |
 | `GET` | `/api/jobs/{id}/download` | Download the audio file to browser (completed jobs only; accepts `?api_key=` for browser-native downloads) |
+| `GET` | `/api/jobs/{id}/stream` | Stream audio file for in-browser playback (completed jobs only) |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
-| `DELETE` | `/api/jobs/{id}/file` | Delete downloaded file and lyrics from library |
+| `DELETE` | `/api/jobs/{id}/file` | Move downloaded file to trash bin (was permanent delete before v2.5.3) |
 | `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`), admin only |
 
 ### Bulk Import
@@ -782,6 +787,16 @@ music.yourdomain.com {
 | `GET` | `/api/albums/dirs/{artist}` | List album folders within an artist directory |
 | `GET` | `/api/albums/dirs/{artist}/{album}/info` | Read `.albuminfo` sidecar and return MB tracklist |
 | `POST` | `/api/albums/download` | Queue a full album for download with MusicBrainz routing |
+
+### Trash Bin
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/trash` | List all files in the trash bin (with sizes and modification times) |
+| `GET` | `/api/trash/stream` | Stream a trashed audio file for in-browser playback (`?path=relative/path.flac`) |
+| `POST` | `/api/trash/restore` | Restore a file from trash to its original library location (`?path=relative/path.flac`) |
+| `DELETE` | `/api/trash` | Permanently empty the entire trash bin (admin only) |
+| `DELETE` | `/api/trash/file` | Permanently delete a single file from trash (`?path=relative/path.flac`) |
 
 ## Updating yt-dlp
 
