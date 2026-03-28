@@ -32,6 +32,12 @@ const RELEASE_NOTES = {
                     "The new score rationale feature was accidentally opening a second database connection mid-transaction, which could cause 'database is locked' errors during bulk imports and watched playlist refreshes. Now shares the existing connection properly.",
                 ]
             },
+            {
+                heading: "Fixed: ListenBrainz Weekly Playlists Stuck After Rotation",
+                items: [
+                    "If your ListenBrainz 'Created for You' playlists were added before the auto-rotation feature existed, they had no username stored and would get stuck showing 'playlist not found' every week after rotation. The refresh now self-heals by pulling the username out of the playlist name and updating the record, so it silently picks up the new week's playlist as intended.",
+                ]
+            },
         ]
     },
     "2.5.2": {

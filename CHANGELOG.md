@@ -10,6 +10,7 @@
 ### Fixed
 - **"Database is locked" during bulk imports**: the new search decision recording was opening a second DB connection inside the bulk import loop, fighting the existing connection for the write lock. Moved the insert into the same transaction so everything commits together without contention
 - **Trash bin inaccessible on mergerfs/FUSE music volumes**: the trash directory was created inside the music volume, which on FUSE-based setups (mergerfs being the main culprit) returned EINVAL on directory listing despite correct permissions. Trash now lives under `/data/` alongside the database, well away from temperamental mounted filesystems
+- **ListenBrainz "Created for You" playlists stuck on old UUID after rotation**: playlists added before the auto-re-resolution feature was introduced had no username stored, so the rotation logic was silently skipped and the playlist errored on every refresh. The refresh now self-heals by extracting the username from the playlist name and persisting it, then immediately re-resolves to the current week's playlist
 
 ## v2.5.2 (2026-03-24)
 

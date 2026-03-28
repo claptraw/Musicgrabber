@@ -789,6 +789,21 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             # ListenBrainz "Created for You" playlists rotate every Monday — check the date stamp in
             # the playlist name ("week of YYYY-MM-DD") and proactively re-resolve if it's ≥6 days old.
             # Also re-resolves reactively on 404 in case the name date wasn't parseable.
+
+            # Self-heal: playlists added before lb_username was introduced have NULL stored.
+            # Extract the username from the name ("Weekly Exploration for USERNAME, week of ...") and
+            # persist it so the re-resolution logic can do its job.
+            if playlist["platform"] == "listenbrainz" and not playlist.get("lb_username"):
+                _name_for_heal = playlist.get("name") or ""
+                _heal_m = re.search(r'.+ for ([^,]+), week of \d{4}-\d{2}-\d{2}', _name_for_heal)
+                if _heal_m:
+                    _healed_username = _heal_m.group(1).strip()
+                    conn.execute("UPDATE watched_playlists SET lb_username = ? WHERE id = ?",
+                                 (_healed_username, playlist_id))
+                    conn.commit()
+                    playlist["lb_username"] = _healed_username
+                    print(f"[lb] Self-healed lb_username='{_healed_username}' for '{_name_for_heal}'")
+
             if playlist["platform"] == "listenbrainz" and playlist.get("lb_username"):
                 playlist_name = playlist["name"] or ""
 
