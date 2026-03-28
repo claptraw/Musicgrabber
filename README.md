@@ -1,9 +1,7 @@
 # Music Grabber
 **v2.5.3**
 
-A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio as FLAC straight into your music library.
-
-> **Work in progress.** Bugs exist and are being fixed. If something breaks, check the [issue tracker](https://gitlab.com/g33kphr33k/musicgrabber/-/issues) before raising a duplicate.
+A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
 If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 
@@ -20,8 +18,6 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **A streaming server/player** (it acquires files; it does not serve or stream your library)
 - **A DJ/pro-audio workflow tool** (no Atmos/spatial-audio specialist pipeline)
 - **A custom library templating engine** (no advanced token-based naming/structure rules)
-
-If your use case is "I heard a song, I want that song in my library fast," this is the project for you.
 
 ## Features
 
