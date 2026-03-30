@@ -287,17 +287,34 @@ def process_bulk_import_worker(import_id: str):
                         time.sleep(base_delay)
                         continue
                 elif (watch_playlist_id or watch_artist_id) and artist:
-                    # Watched imports: looser artist preference is fine.
+                    # Watched imports: prefer a result that mentions the expected artist.
+                    # If nothing matches, fail rather than downloading a random top result
+                    # that could be a completely different song.
                     for candidate in search_results:
                         if _candidate_mentions_expected_artist(candidate, artist):
                             best_match = candidate
                             break
                     else:
                         wid = watch_playlist_id or watch_artist_id
+                        top_title = search_results[0].get("title", "?")
+                        top_channel = search_results[0].get("channel", "?")
                         print(
                             f"Watched import {wid}: no candidate matched "
-                            f"expected artist '{artist}', using top result"
+                            f"expected artist '{artist}' for '{song}', "
+                            f"refusing top result '{top_title}' by {top_channel}"
                         )
+                        with db_conn() as conn:
+                            conn.execute(
+                                "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
+                                (f"No artist match (top result was '{top_title}' by {top_channel})", track_id)
+                            )
+                            conn.execute(
+                                "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                                (import_id,)
+                            )
+                            conn.commit()
+                        time.sleep(base_delay)
+                        continue
 
                 video_id = best_match["video_id"]
                 source = best_match.get("source", "youtube")

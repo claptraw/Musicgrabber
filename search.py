@@ -13,8 +13,6 @@ import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import base64
-
 import httpx
 
 from constants import (
@@ -27,6 +25,7 @@ from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration, search_artist_mbid, fetch_artist_albums
 from settings import get_setting, get_setting_bool
 from mp3phoenix import search_mp3phoenix
+from utils import fetch_monochrome_track_manifest
 from youtube import (
     search_youtube, score_search_result_with_breakdown, format_score_breakdown, parse_duration,
     _normalise_search_text, _parse_query_artist_title, _query_has_variation,
@@ -357,32 +356,25 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
 def get_monochrome_stream_url(track_id: str, quality: str = "LOSSLESS") -> dict:
     """Fetch the stream manifest for a Monochrome/Tidal track.
 
-    Returns a dict with 'url' (direct CDN link), 'mime_type', 'codec',
-    'bit_depth', and 'sample_rate'. Raises on failure.
+    Returns a dict with 'url' (signed DASH MPD URL), 'mime_type', and the
+    selected Monochrome format list. Raises on failure.
     """
-    resp = httpx.get(
-        f"{MONOCHROME_API_URL}/track/",
-        params={"id": track_id, "quality": quality},
-        timeout=TIMEOUT_MONOCHROME_API,
-    )
-    resp.raise_for_status()
-    data = resp.json().get("data") or {}
-    if not data.get("manifest"):
-        raise ValueError(f"No manifest returned for track {track_id}")
-
-    manifest = json.loads(base64.b64decode(data["manifest"]))
-    urls = manifest.get("urls") or []
-    if not urls:
-        raise ValueError(f"Empty URL list in manifest for track {track_id}")
+    format_map = {
+        "HI_RES_LOSSLESS": ["FLAC_HIRES"],
+        "LOSSLESS": ["FLAC"],
+        "HIGH": ["AACLC"],
+        "LOW": ["HEAACV1"],
+    }
+    manifest = fetch_monochrome_track_manifest(track_id, format_map.get(quality, ["FLAC"]))
 
     return {
-        "url": urls[0],
-        "mime_type": manifest.get("mimeType", "audio/flac"),
-        "codec": manifest.get("codecs", "flac"),
-        "encryption": manifest.get("encryptionType", "NONE"),
-        "bit_depth": data.get("bitDepth"),
-        "sample_rate": data.get("sampleRate"),
-        "audio_quality": data.get("audioQuality", quality),
+        "url": manifest["uri"],
+        "mime_type": "application/dash+xml",
+        "codec": ",".join(manifest.get("formats") or []),
+        "encryption": "NONE",
+        "bit_depth": None,
+        "sample_rate": None,
+        "audio_quality": quality,
     }
 
 

@@ -40,5 +40,8 @@ Thumbs.db
 # Claude AI code reviews
 .claude/
 
+# Codex code reviews
+.codex
+
 # Working docs (project notes, plans, code reviews)
 docs/

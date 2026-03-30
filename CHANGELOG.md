@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.5.4 (2026-03-30)
+
+### Fixed
+- **Monochrome downloads broke after the playback endpoint changed**: search and info still worked, but the legacy `/track/` API path now returned `403 {"detail":"Upstream API error"}` for many tracks. MusicGrabber now uses Monochrome's newer `/trackManifests/` playback endpoint with instance rotation and signed DASH manifests, matching how the website itself fetches streams. Regional instance hosts are tried automatically, so a rate-limited instance no longer takes the whole source down
+- **Monochrome hover preview broke after the same playback change**: the new Monochrome API returns signed DASH MPD manifests, which browsers cannot play directly in a plain `<audio>` element. Preview now runs through a short server-side ffmpeg transcode to an MP3 preview stream, so hover-to-play works again
+- **Watched playlist source chips forgetting their state**: the per-playlist source toggles (YT, PX, SC, MO) were saved to the database correctly, but on first page load the UI forgot which ones you'd turned off and showed everything as enabled. The cached source list wasn't ready when the chips first rendered, so the re-population step read an empty DOM and cheerfully defaulted to "all on". Chips now carry their saved preference as a data attribute, so the re-render uses the real value instead of optimistically guessing
+- **Watched playlists occasionally downloading the wrong song**: when no search result mentioned the expected artist, the watched playlist importer shrugged and grabbed the top-scoring result anyway, which could be a completely different track. About 2% of a large playlist could end up as strangers. Now fails the track with a descriptive error (including what it nearly downloaded) so you can retry from the Missing panel with a manual search, rather than discovering months later that your chill playlist has a death metal interloper
+- **Monochrome/Tidal CDN 403 errors killing downloads instantly**: once a valid Monochrome manifest is fetched, the downstream Tidal CDN can still throw the occasional 403/429 (rate limit, geo hiccup, or expired edge token). The DASH download path now retries with backoff before giving up instead of dying on the first wobble
+
 ## v2.5.3 (2026-03-28)
 
 ### Added

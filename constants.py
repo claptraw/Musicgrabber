@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.5.3"
+VERSION = "2.5.4"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -33,6 +33,8 @@ SPOTIFY_BROWSER_STALL_SECONDS = 30  # No-progress cutoff while scrolling long Sp
 TIMEOUT_AMAZON_BROWSER = 180     # Amazon Music playlist scraping (3 minutes)
 TIMEOUT_FPCALC = 30              # Audio fingerprinting via fpcalc
 TIMEOUT_MONOCHROME_API = 15      # Monochrome/Tidal API calls (search + manifest)
+MONOCHROME_CDN_MAX_RETRIES = 2   # Retry attempts on CDN 403 (rate limit / geo hiccup)
+MONOCHROME_CDN_RETRY_DELAY = 3   # Seconds between CDN retries (multiplied by attempt)
 TIMEOUT_MP3PHOENIX_SEARCH = 15   # mp3phoenix AJAX search
 TIMEOUT_MP3PHOENIX_DOWNLOAD = int(os.getenv("TIMEOUT_MP3PHOENIX_DOWNLOAD", "120"))  # mp3phoenix direct MP3 stream
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
@@ -127,6 +129,16 @@ TIMEOUT_LISTENBRAINZ_PLAYLIST = 15   # Per-playlist JSPF fetch
 # Points at the official instance by default; users can override to use
 # community mirrors listed at github.com/monochrome-music/monochrome/blob/main/INSTANCES.md
 MONOCHROME_API_URL = os.getenv("MONOCHROME_API_URL", "https://api.monochrome.tf")
+_MONOCHROME_MANIFEST_DEFAULTS = [
+    MONOCHROME_API_URL,
+    "https://frankfurt-1.monochrome.tf",
+    "https://singapore-1.monochrome.tf",
+    "https://hifi.geeked.wtf",
+]
+_manifest_urls = os.getenv("MONOCHROME_MANIFEST_URLS", ",".join(_MONOCHROME_MANIFEST_DEFAULTS)).split(",")
+MONOCHROME_MANIFEST_URLS = list(dict.fromkeys(
+    url.strip().rstrip("/") for url in _manifest_urls if url.strip()
+))
 MONOCHROME_COVER_BASE = "https://resources.tidal.com/images"
 
 # Cover art fallback chain  -  we try really hard to get proper album art

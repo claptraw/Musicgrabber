@@ -4072,7 +4072,7 @@
                             </label>
                             <label class="watched-card-toggle" title="Which search sources to use when downloading new tracks for this playlist. Deselect all to search everything.">
                                 Sources
-                                <div class="watched-sources-chips" data-playlist-id="${p.id}">
+                                <div class="watched-sources-chips" data-playlist-id="${p.id}" data-preferred="${escapeAttr(p.preferred_sources || 'all')}">
                                     ${renderSourceChips(p.id, p.preferred_sources || 'all')}
                                 </div>
                             </label>
@@ -4724,13 +4724,8 @@
             // Re-render any chips containers that used stale/empty data
             document.querySelectorAll('.watched-sources-chips[data-playlist-id]').forEach(el => {
                 const pid = el.dataset.playlistId;
-                // Read current chip state before replacing
-                const existing = [...el.querySelectorAll('.source-chip')];
-                let pref = 'all';
-                if (existing.length > 0) {
-                    const on = existing.filter(c => c.classList.contains('on')).map(c => c.dataset.source);
-                    pref = on.length === existing.length ? 'all' : on.join(',');
-                }
+                // Use the authoritative preferred_sources from the API, not the DOM chip state
+                const pref = el.dataset.preferred || 'all';
                 el.innerHTML = renderSourceChips(pid, pref);
             });
             // Populate the add-form selector (only globally-enabled sources, all on by default)
@@ -4754,6 +4749,7 @@
             const on = chips.filter(c => c.classList.contains('on')).map(c => c.dataset.source);
             // "all on" = send "all"; partial = comma list; none = "all" (fallback, don't allow locking out)
             const preferred = (on.length === 0 || on.length === chips.length) ? 'all' : on.join(',');
+            container.dataset.preferred = preferred;
             updateWatchedPlaylistPreferredSources(playlistId, preferred);
         }
 

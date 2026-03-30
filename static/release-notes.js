@@ -7,6 +7,43 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.5.4": {
+        title: "What's New in v2.5.4",
+        sections: [
+            {
+                heading: "Fixed: Monochrome Playback Endpoint Change",
+                items: [
+                    "Monochrome changed how its website fetches playable tracks. Search and info still worked, but the old `/track/` endpoint MusicGrabber used for downloads started returning `403 Upstream API error` for lots of perfectly normal tracks.",
+                    "MusicGrabber now uses Monochrome's newer `/trackManifests/` playback endpoint with the same signed DASH manifest flow the website uses. It also rotates across multiple Monochrome instance hosts automatically, so one rate-limited instance no longer sinks the whole source.",
+                ]
+            },
+            {
+                heading: "Fixed: Monochrome Hover Preview",
+                items: [
+                    "The new Monochrome playback API returns a DASH manifest, which browsers will not play directly in a normal audio element. Hover preview now runs through a tiny server-side ffmpeg transcode to a short MP3 preview stream, so Monochrome previews work again.",
+                ]
+            },
+            {
+                heading: "Fixed: Watched Playlist Source Toggles Forgetting Their State",
+                items: [
+                    "The per-playlist source toggles (YT, PX, SC, MO) were saving correctly to the database, but the UI forgot your choices on every page load and cheerfully turned everything back on. Turns out the source list wasn't cached yet when the chips first rendered, so the re-population step saw an empty page and assumed you wanted all of them. Your preferences now survive page loads as intended.",
+                ]
+            },
+            {
+                heading: "Fixed: Watched Playlists Occasionally Grabbing the Wrong Song",
+                items: [
+                    "When searching for a watched playlist track, if no result mentioned the expected artist at all, the importer used to shrug and download the highest-scoring result anyway. This meant roughly 2% of a large playlist could end up as completely wrong tracks, which is a fun surprise if you like musical roulette, less so if you don't.",
+                    "Now fails the track with a clear error explaining what it nearly downloaded, so you can retry it manually from the Missing panel instead of discovering the interloper six months later.",
+                ]
+            },
+            {
+                heading: "Fixed: Monochrome/Tidal CDN Wobbles",
+                items: [
+                    "Even after Monochrome hands back a valid playback manifest, the downstream Tidal CDN can still wobble with the occasional 403 or 429. The download path now retries with backoff before giving up, which makes transient edge failures much less fatal.",
+                ]
+            },
+        ]
+    },
     "2.5.3": {
         title: "What's New in v2.5.3",
         sections: [

@@ -17,15 +17,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
 
-import base64
-
 from constants import (
     VERSION, MUSIC_DIR, DB_PATH, COOKIES_FILE, ROOT_PATH,
-    MONOCHROME_API_URL, TIMEOUT_MONOCHROME_API,
     TIMEOUT_LISTENBRAINZ,
     TIMEOUT_YTDLP_INFO,
     TIMEOUT_YTDLP_PREVIEW,
@@ -66,7 +63,7 @@ from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, parse_duration,
     get_cookies_expiry,
 )
-from search import search_source, search_all, get_available_sources, SOURCE_REGISTRY
+from search import search_source, search_all, get_available_sources, SOURCE_REGISTRY, get_monochrome_stream_url
 from slskd import slskd_enabled, search_slskd
 from downloads import (
     process_download, process_playlist_download, process_slskd_download,
@@ -1479,23 +1476,11 @@ def get_score_rationale(job_id: str, http_request: Request):
 def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
     """Get a streamable audio URL for preview playback."""
     try:
-        # Monochrome: fetch an AAC stream URL from the API  -  no yt-dlp needed,
-        # and browsers play MP4/AAC natively without any fuss
+        # Monochrome now returns signed DASH MPD manifests, which browsers can't
+        # play directly in a plain <audio> element. Route preview through a
+        # short-lived server-side transcode endpoint instead.
         if source == "monochrome":
-            with httpx.Client(timeout=TIMEOUT_MONOCHROME_API) as client:
-                resp = client.get(
-                    f"{MONOCHROME_API_URL}/track/",
-                    params={"id": video_id, "quality": "HIGH"},
-                )
-            resp.raise_for_status()
-            data = resp.json().get("data") or {}
-            if not data.get("manifest"):
-                raise HTTPException(status_code=404, detail="No stream available for this track")
-            manifest = json.loads(base64.b64decode(data["manifest"]))
-            urls = manifest.get("urls") or []
-            if not urls:
-                raise HTTPException(status_code=404, detail="No audio stream found")
-            return {"url": urls[0], "video_id": video_id}
+            return {"url": _app_path(f"/api/preview/monochrome/{video_id}/stream"), "video_id": video_id}
 
         # mp3phoenix: the source_url is already a direct MP3 stream  -  hand it
         # straight to the browser, no yt-dlp round-trip needed.
@@ -1554,6 +1539,62 @@ def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
     except Exception as e:
         print(f"preview error: {e}")
         raise HTTPException(status_code=500, detail="Failed to get preview URL")
+
+
+@app.get("/api/preview/monochrome/{video_id}/stream")
+def stream_monochrome_preview(video_id: str):
+    """Proxy a short Monochrome preview as browser-playable MP3."""
+    try:
+        stream = get_monochrome_stream_url(video_id, quality="HIGH")
+        mpd_url = stream["url"]
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"No preview stream available for this track: {e}")
+
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-v", "error",
+        "-protocol_whitelist", "file,https,tls,tcp,http,crypto",
+        "-i", mpd_url,
+        "-map", "0:a:0",
+        "-t", "30",
+        "-c:a", "libmp3lame",
+        "-b:a", "128k",
+        "-f", "mp3",
+        "-",
+    ]
+
+    try:
+        proc = subprocess.Popen(
+            ffmpeg_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="ffmpeg is not installed")
+
+    def generate():
+        try:
+            assert proc.stdout is not None
+            while True:
+                chunk = proc.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            with contextlib.suppress(Exception):
+                if proc.poll() is None:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+            with contextlib.suppress(Exception):
+                if proc.poll() is None:
+                    proc.kill()
+
+    return StreamingResponse(
+        generate(),
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/sources")
