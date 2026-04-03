@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.5.5 (2026-04-03)
+
+### Fixed
+- **Duplicate detection missed auto-routed album folders**: when a single had already been auto-filed into `Singles/Artist/Album/` or `Albums/Artist/Album/`, a later duplicate check only looked in the flat artist folders and failed to see it. Re-downloads could then slip through and create a second copy. Duplicate scanning now checks one level deeper in those artist folders so auto-routed tracks are found properly
+- **Soulseek "Add to playlist" didn’t actually finish the playlist job**: Soulseek downloads were not receiving `playlist_name` or `use_playlists_dir` from the API layer, so the duplicate-skip path could not mark the track as "added to playlist" and successful downloads never appended to the physical `.m3u`. Soulseek now follows the same playlist-aware flow as the other sources
+- **Per-user playlist M3Us ignored custom playlist folders**: `_append_to_physical_m3u()` looked up the playlists directory without `user_id`, so user-specific `playlists_subdir` settings were invisible and M3U updates could land in the wrong place. All call sites now pass `user_id`, and the helper resolves the correct per-user playlists directory consistently across sources
+- **Bulk-created playlist M3Us could still use the global folder in multi-user setups**: the bulk playlist builder still resolved `playlists_subdir`, `singles` paths, and duplicate checks without `user_id`, so rebuilt/import-generated `.m3u` files could be written against the wrong user's library even after the per-track append path was fixed. Bulk playlist generation now stays in the owning user's directory scope all the way through
+
 ## v2.5.4 (2026-03-30)
 
 ### Fixed
