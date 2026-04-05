@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.5.4**
+**v2.5.6**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 

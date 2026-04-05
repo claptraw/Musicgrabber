@@ -1855,6 +1855,8 @@ def download(body: DownloadRequest, http_request: Request):
             body.convert_to_flac,
             user_id=user_id,
             override_dir=override_dir,
+            playlist_name=body.playlist_name,
+            use_playlists_dir=body.use_playlists_dir,
         )
     elif source in URL_BASED_SOURCES:
         spawn_daemon_thread(
@@ -2762,7 +2764,7 @@ def fetch_playlist(request: Request, body: PlaylistFetchRequest):
     user_id = request.state.user_id
     tracks_tuples, playlist_name = fetch_playlist_tracks(url, platform, user_id=user_id)
     tracks = [f"{artist} - {title}" for artist, title in tracks_tuples]
-    return {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks)}
+    return {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks), "platform": platform}
 
 
 # =============================================================================
@@ -2873,7 +2875,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
         """, (playlist_id, body.url, playlist_name, platform,
               body.refresh_interval_hours, int(body.convert_to_flac),
               int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(tracks), user_id,
-              body.preferred_sources or "all"))
+              "soundcloud" if platform == "soundcloud" and (not body.preferred_sources or body.preferred_sources == "all") else (body.preferred_sources or "all")))
 
         # Insert all current tracks as "seen"
         for artist, title in tracks:

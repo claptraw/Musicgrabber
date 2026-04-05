@@ -823,7 +823,7 @@
         }
 
         const versionLabel = document.getElementById('versionLabel');
-        const PLAYLIST_SERVICES = ["Spotify", "YouTube", "Apple Music", "Amazon Music", "Tidal"];
+        const PLAYLIST_SERVICES = ["Spotify", "YouTube", "Apple Music", "Amazon Music", "Tidal", "SoundCloud"];
 
         function renderPlaylistServicesText() {
             const text = PLAYLIST_SERVICES.join(", ");
@@ -3814,14 +3814,15 @@
                 return;
             }
 
-            // URL validation - Spotify playlists/albums, Amazon Music playlists, Tidal, Apple Music, and YouTube/YT Music playlists
+            // URL validation - Spotify playlists/albums, Amazon Music playlists, Tidal, Apple Music, YouTube/YT Music playlists, and SoundCloud sets/likes
             const isSpotify = url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//);
             const isAmazon = url.match(/^https?:\/\/music\.amazon\.[a-z.]+\/(user-playlists|playlists)\//);
             const isTidal = url.match(/^https?:\/\/(www\.)?tidal\.com\/(browse\/)?playlist\/[0-9a-f-]{36}/i);
             const isApple = url.match(/^https?:\/\/music\.apple\.com\/[a-z]{2}\/(playlist|album)\//i);
             const isYouTube = url.match(/^https?:\/\/(www\.|music\.)?youtube\.com\/(playlist|watch)\?[^"]*list=/i);
-            if (!isSpotify && !isAmazon && !isTidal && !isApple && !isYouTube) {
-                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, or Tidal playlist link.';
+            const isSoundCloud = url.match(/^https?:\/\/soundcloud\.com\/[^/]+\/(sets\/[^/?]+|likes)/i);
+            if (!isSpotify && !isAmazon && !isTidal && !isApple && !isYouTube && !isSoundCloud) {
+                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, Tidal, or SoundCloud sets/likes link.';
                 spotifyError.style.display = 'block';
                 return;
             }
@@ -3860,6 +3861,12 @@
                     // Auto-fill playlist name if checkbox is checked
                     if (createPlaylistCheckbox.checked && data.playlist_name) {
                         playlistNameInput.value = data.playlist_name;
+                    }
+
+                    // For SoundCloud playlists, default source chips to SC only - the tracks
+                    // are already on SoundCloud, so there's no reason to go hunting elsewhere
+                    if (data.platform === 'soundcloud') {
+                        setWatchedPreferredSource('soundcloud');
                     }
 
                     // Show toast with result (include warning if present)
@@ -4007,7 +4014,8 @@
                     apple: '<i class="fa-brands fa-apple" title="Apple Music"></i>',
                     amazon: '<i class="fa-brands fa-amazon" title="Amazon Music"></i>',
                     tidal: '<i class="fa-solid fa-water" title="Tidal"></i>',
-                    listenbrainz: '<i class="fa-solid fa-music" title="ListenBrainz"></i>'
+                    listenbrainz: '<i class="fa-solid fa-music" title="ListenBrainz"></i>',
+                    soundcloud: '<i class="fa-brands fa-soundcloud" title="SoundCloud"></i>'
                 };
                 const platformIcon = platformIcons[p.platform] || '<i class="fa-solid fa-list"></i>';
                 const lastChecked = p.last_checked ? formatTimeAgo(p.last_checked) : 'Never';
@@ -4758,6 +4766,16 @@
             if (chips.length === 0) return 'all';
             const on = chips.filter(c => c.classList.contains('on')).map(c => c.dataset.source);
             return (on.length === 0 || on.length === chips.length) ? 'all' : on.join(',');
+        }
+
+        function setWatchedPreferredSource(sourceId) {
+            // Flip the add-form source chips to a single source, leaving others off
+            const chips = [...document.querySelectorAll('#watchedSourcesSelector .source-chip')];
+            chips.forEach(c => {
+                const match = c.dataset.source === sourceId;
+                c.classList.toggle('on', match);
+                c.classList.toggle('off', !match);
+            });
         }
 
         async function updateWatchedPlaylistPreferredSources(playlistId, preferred) {

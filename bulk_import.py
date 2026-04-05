@@ -477,7 +477,8 @@ def process_bulk_import_worker(import_id: str):
                 import_id,
                 playlist_name or f"Playlist {import_id}",
                 final_queued,
-                use_playlists_dir
+                use_playlists_dir,
+                user_id,
             )
 
     except Exception as e:

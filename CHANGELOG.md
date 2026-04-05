@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.5.6 (2026-04-05)
+
+### Added
+- **SoundCloud playlists**: paste a SoundCloud sets URL (`soundcloud.com/username/sets/playlist-name`) or likes page (`soundcloud.com/username/likes`) into the watched playlists form and it works like any other platform. Fetches via yt-dlp, same as YouTube playlists. Full append/mirror sync, M3U generation, and per-playlist source selection all included, because it seemed rude to add a platform and leave bits of it out. Importing a SoundCloud playlist automatically pre-selects SoundCloud as the download source, since the tracks are already right there and there is no good reason to go rummaging through Monochrome instead
+
 ## v2.5.5 (2026-04-03)
 
 ### Fixed

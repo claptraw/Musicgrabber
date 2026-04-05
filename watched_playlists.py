@@ -169,9 +169,18 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if re.match(r'^[a-zA-Z0-9_-]+$', url) and '.' not in url:
         return "listenbrainz_user", url
 
+    # SoundCloud sets (user playlists) and likes
+    soundcloud_sets = re.match(r'https?://soundcloud\.com/[^/]+/sets/[^/?]+', url, re.IGNORECASE)
+    if soundcloud_sets:
+        return "soundcloud", url
+
+    soundcloud_likes = re.match(r'https?://soundcloud\.com/[^/]+/likes', url, re.IGNORECASE)
+    if soundcloud_likes:
+        return "soundcloud", url
+
     raise HTTPException(
         status_code=400,
-        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, Tidal public playlists, ListenBrainz playlists or usernames."
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, Tidal public playlists, ListenBrainz playlists or usernames, SoundCloud sets/likes."
     )
 
 
@@ -534,6 +543,54 @@ def _fetch_listenbrainz_playlist(playlist_uuid: str) -> tuple[list[tuple[str, st
     return tracks, name
 
 
+def _fetch_soundcloud_playlist(url: str) -> tuple[list[tuple[str, str]], str]:
+    """Fetch tracks from a SoundCloud set or likes URL via yt-dlp.
+
+    Unlike YouTube, SoundCloud's flat-playlist mode returns stub entries with
+    no title or uploader. --dump-single-json fetches the full playlist object
+    including complete track metadata in one shot.
+    """
+    cmd = [
+        "yt-dlp",
+        "--dump-single-json",
+        "--no-warnings",
+        url,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_PLAYLIST)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Timeout fetching SoundCloud playlist")
+
+    # yt-dlp may exit non-zero if individual tracks are geo-restricted, but
+    # still return valid playlist JSON on stdout.  Parse first, fail later.
+    try:
+        data = json.loads(result.stdout.strip())
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=502, detail="Failed to fetch SoundCloud playlist")
+
+    playlist_name = data.get("title") or "SoundCloud Playlist"
+    entries = data.get("entries") or []
+
+    tracks = []
+    seen: set[tuple[str, str]] = set()
+
+    for entry in entries:
+        if not entry or not entry.get("id"):
+            continue
+        title = entry.get("title") or "Unknown"
+        channel = entry.get("uploader") or entry.get("channel") or "Unknown"
+        artist, clean_title = extract_artist_title(title, channel)
+        key = (artist.lower(), clean_title.lower())
+        if key not in seen:
+            seen.add(key)
+            tracks.append((artist, clean_title))
+
+    if not tracks:
+        raise HTTPException(status_code=422, detail="No tracks found in SoundCloud playlist")
+
+    return tracks, playlist_name
+
+
 def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -> tuple[list[tuple[str, str]], str]:
     """Fetch tracks from a playlist URL
 
@@ -687,6 +744,9 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             status_code=400,
             detail="ListenBrainz user URLs are only valid when adding a watched playlist. Individual playlist URLs are stored for refresh."
         )
+
+    elif platform == "soundcloud":
+        return _fetch_soundcloud_playlist(url)
 
     raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
 

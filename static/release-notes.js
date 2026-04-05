@@ -7,6 +7,44 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.5.6": {
+        title: "What's New in v2.5.6",
+        sections: [
+            {
+                heading: "SoundCloud Playlists",
+                items: [
+                    "You can now paste a SoundCloud sets URL or likes page into the watched playlists form and it works like any other platform. Full append/mirror sync, M3U generation, and per-playlist source selection all included.",
+                    "Importing a SoundCloud playlist automatically pre-selects SoundCloud as the download source, since the tracks are already right there.",
+                ]
+            },
+        ]
+    },
+    "2.5.5": {
+        title: "What's New in v2.5.5",
+        sections: [
+            {
+                heading: "Fixed: Duplicate Detection Missing Auto-Routed Album Folders",
+                items: [
+                    "If a single had already been auto-filed into an album subfolder, duplicate detection could still miss it because it only checked the flat artist folders. That meant a second download could sneak through and create another copy in the wrong place.",
+                    "MusicGrabber now scans one level deeper inside artist folders when checking for duplicates, so tracks already routed into `Artist/Album/` are found properly before anything gets downloaded again.",
+                ]
+            },
+            {
+                heading: "Fixed: Soulseek 'Add to Playlist' Was Incomplete",
+                items: [
+                    "Soulseek downloads were not receiving the playlist parameters from the API layer, so 'Add to playlist' did not behave like the other sources. Duplicate-skip jobs could not finish as 'added to playlist', and successful Soulseek downloads were not appended to the physical `.m3u` file.",
+                    "That path now receives the same playlist context as YouTube, Monochrome, and the rest, so Soulseek tracks can be added to playlist folders and M3Us correctly.",
+                ]
+            },
+            {
+                heading: "Fixed: Per-User Playlist M3Us Using the Wrong Folder",
+                items: [
+                    "Physical playlist updates were resolving the playlists directory without `user_id`, which meant user-specific playlist subfolder settings could be ignored in multi-user setups.",
+                    "All playlist M3U writes now resolve the correct per-user playlists directory consistently across every source.",
+                ]
+            },
+        ]
+    },
     "2.5.4": {
         title: "What's New in v2.5.4",
         sections: [

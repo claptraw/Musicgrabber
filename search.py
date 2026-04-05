@@ -22,7 +22,7 @@ from constants import (
     SEARCH_MAX_PER_SOURCE,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
-from metadata import fetch_mb_expected_duration, search_artist_mbid, fetch_artist_albums
+from metadata import fetch_mb_expected_duration, search_artist_mbid, lookup_musicbrainz
 from settings import get_setting, get_setting_bool
 from mp3phoenix import search_mp3phoenix
 from utils import fetch_monochrome_track_manifest
@@ -449,10 +449,12 @@ def _mb_duration_lookup(query: str) -> float | None:
 def _mb_album_lookup(query: str) -> dict | None:
     """Find the MusicBrainz album a track belongs to, if we can figure it out.
 
-    Parses "Artist - Title" from the query, searches MB for the artist, then
-    scans their discography for an album whose title fuzzy-matches the track
-    title. Returns {artist_name, artist_mbid, album_title, release_mbid} or
-    None if the stars don't align.
+    Parses "Artist - Title" from the query, then does a proper recording search
+    via MusicBrainz (artist + title) and picks the best-scored release using the
+    same release-group heuristics as post-download tagging. Much more reliable
+    than fuzzy-matching a track title against an artist's album discography.
+
+    Returns {artist_name, artist_mbid, album_title, release_mbid} or None.
     """
     if _query_has_variation(query):
         return None
@@ -460,61 +462,21 @@ def _mb_album_lookup(query: str) -> dict | None:
     if not artist or not title:
         return None
 
+    mb = lookup_musicbrainz(artist, title)
+    if not mb or not mb.get("album") or not mb.get("release_mbid"):
+        return None
+
+    # Get the artist MBID for the frontend album browser
     artists = search_artist_mbid(artist)
-    if not artists:
-        return None
-    best = artists[0]
-
-    albums = fetch_artist_albums(best["mbid"])
-    if not albums:
-        return None
-
-    matched = _fuzzy_match_album(albums, title)
-    if not matched:
-        return None
+    artist_mbid = artists[0]["mbid"] if artists else None
+    artist_name = artists[0]["name"] if artists else (mb.get("artist") or artist)
 
     return {
-        "artist_name": best["name"],
-        "artist_mbid": best["mbid"],
-        "album_title": matched["title"],
-        "release_mbid": matched["release_mbid"],
+        "artist_name": artist_name,
+        "artist_mbid": artist_mbid,
+        "album_title": mb["album"],
+        "release_mbid": mb["release_mbid"],
     }
-
-
-def _fuzzy_match_album(albums: list[dict], track_title: str) -> dict | None:
-    """Try to find which album a track belongs to by title similarity.
-
-    Not bulletproof, but catches the common case where the track title
-    contains the album name (or vice versa). Three passes: exact,
-    normalised, then containment.
-    """
-    import unicodedata
-
-    def _norm(s: str) -> str:
-        s = unicodedata.normalize("NFKD", s)
-        s = s.lower()
-        s = re.sub(r"\s*\(.*?\)\s*", " ", s)   # (Deluxe Edition) etc.
-        s = re.sub(r"\s*\[.*?\]\s*", " ", s)   # [Remastered] etc.
-        s = re.sub(r"[^\w\s]", "", s)
-        return re.sub(r"\s+", " ", s).strip()
-
-    title_lower = track_title.lower()
-    title_norm = _norm(track_title)
-
-    # Pass 1: exact case-insensitive
-    for a in albums:
-        if a["title"].lower() == title_lower:
-            return a
-    # Pass 2: normalised
-    for a in albums:
-        if _norm(a["title"]) == title_norm:
-            return a
-    # Pass 3: one contains the other
-    for a in albums:
-        na = _norm(a["title"])
-        if na and title_norm and (na in title_norm or title_norm in na):
-            return a
-    return None
 
 
 def _apply_mb_duration_scores(results: list[dict], expected_duration_secs: float) -> None:

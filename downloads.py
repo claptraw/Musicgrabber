@@ -1780,7 +1780,13 @@ def _refresh_album_m3u_if_present(override_dir: str | None) -> None:
         print(f"Warning: failed to refresh album M3U(s) in {override_dir}: {e}")
 
 
-def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count: int, use_playlists_dir: bool = False):
+def create_bulk_playlist(
+    bulk_import_id: str,
+    playlist_name: str,
+    expected_count: int,
+    use_playlists_dir: bool = False,
+    user_id: str | None = None,
+):
     """Create an M3U playlist from a bulk import after all downloads complete
 
     Waits for all jobs with the matching playlist_name to complete, then generates the M3U file.
@@ -1833,7 +1839,7 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
         return  # No successful downloads
 
     # Determine whether to write into the Playlists folder
-    playlists_dir = get_playlists_dir() if use_playlists_dir else None
+    playlists_dir = get_playlists_dir(user_id=user_id) if use_playlists_dir else None
     safe_playlist = sanitize_filename(playlist_name)
 
     # Build M3U playlist
@@ -1856,13 +1862,13 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
                     break
             if not found:
                 # Track already existed in Singles (duplicate skip)  -  include it from wherever it lives
-                audio_file = check_duplicate(artist, title)
+                audio_file = check_duplicate(artist, title, user_id=user_id)
                 if audio_file:
                     playlist_files.append(str(audio_file))
         else:
-            audio_file = check_duplicate(artist, title)
+            audio_file = check_duplicate(artist, title, user_id=user_id)
             if audio_file:
-                rel_path = audio_file.relative_to(get_singles_dir())
+                rel_path = audio_file.relative_to(get_singles_dir(user_id=user_id))
                 playlist_files.append(str(rel_path))
 
     if playlist_files:
@@ -1870,7 +1876,7 @@ def create_bulk_playlist(bulk_import_id: str, playlist_name: str, expected_count
             m3u_path = playlists_dir / f"{safe_playlist}.m3u"
             playlists_dir.mkdir(parents=True, exist_ok=True)
         else:
-            m3u_path = get_singles_dir() / f"{safe_playlist}.m3u"
+            m3u_path = get_singles_dir(user_id=user_id) / f"{safe_playlist}.m3u"
         with open(m3u_path, 'w', encoding='utf-8') as f:
             f.write("#EXTM3U\n")
             for file_path in playlist_files:
@@ -2541,7 +2547,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
 
 
-def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_to_flac: bool = True, user_id: str | None = None, override_dir: str | None = None):
+def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_to_flac: bool = True, user_id: str | None = None, override_dir: str | None = None, playlist_name: str = None, use_playlists_dir: bool = False):
     """Process a Soulseek download job via slskd"""
     album_ctx = _get_job_album_context(job_id)
     if not override_dir and album_ctx.get("override_dir"):
@@ -2571,7 +2577,23 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
         if not existing_file:
             existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
-        if existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
+        # Sentinel Navidrome paths are unusable for playlist M3U entries
+        if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
+            existing_file = None
+        if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
+            source_label = "library" if existing_file.exists() else "Navidrome"
+            _update_job(
+                job_id,
+                status="completed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error=f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
+            )
+            real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
+            marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing, skip_mismatch=True)
+            if marked and (existing_file.is_absolute() or existing_file.exists()):
+                _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir, user_id=user_id)
+            return
+        elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
             _update_job(
                 job_id,
                 status="completed",
@@ -2805,13 +2827,15 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         )
         marked = _mark_watched_track_downloaded(job_id, resolved_path=final_file)
         _mark_watched_artist_track_downloaded(job_id, resolved_path=final_file)
-        if not marked:
+        if marked:
+            _append_to_physical_m3u(final_file, playlist_name, use_playlists_dir, user_id=user_id)
+            _refresh_album_m3u_if_present(override_dir)
+        else:
             # Metadata came back as someone else entirely. Trash it so the user can listen
             # and decide, then fail so retry can have another go.
             move_to_trash(final_file, user_id=user_id)
             _update_job(job_id, status="failed", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             return
-        _refresh_album_m3u_if_present(override_dir)
 
         print(f"slskd: Successfully downloaded {artist} - {title}")
 
@@ -3034,7 +3058,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                 real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
                 marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing, skip_mismatch=True)
                 if marked and (existing_file.is_absolute() or existing_file.exists()):
-                    _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+                    _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir, user_id=user_id)
                 return
             elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
                 _update_job(
@@ -3223,7 +3247,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         marked = _mark_watched_track_downloaded(job_id, resolved_path=output_path)
         _mark_watched_artist_track_downloaded(job_id, resolved_path=output_path)
         if marked:
-            _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
+            _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir, user_id=user_id)
             _refresh_album_m3u_if_present(override_dir)
         else:
             # Tidal served the wrong track (AcoustID disagreed). Trash it so the user can
@@ -3395,7 +3419,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
                 real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
                 marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing, skip_mismatch=True)
                 if marked and (existing_file.is_absolute() or existing_file.exists()):
-                    _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+                    _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir, user_id=user_id)
                 return
             elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
                 _update_job(
@@ -3573,7 +3597,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         marked = _mark_watched_track_downloaded(job_id, resolved_path=output_path)
         _mark_watched_artist_track_downloaded(job_id, resolved_path=output_path)
         if marked:
-            _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir)
+            _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir, user_id=user_id)
             _refresh_album_m3u_if_present(override_dir)
 
         print(f"mp3phoenix: Downloaded {artist} - {title}")
@@ -3601,7 +3625,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
         )
 
 
-def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_dir: bool) -> None:
+def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_dir: bool, user_id: str | None = None) -> None:
     """Append a downloaded track's path to a physical .m3u file.
 
     Only runs when use_playlists_dir is True and playlist_name is set.
@@ -3611,7 +3635,7 @@ def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_
     if not (use_playlists_dir and playlist_name):
         return
 
-    playlists_dir = get_playlists_dir()
+    playlists_dir = get_playlists_dir(user_id=user_id)
     if not playlists_dir:
         return
 
@@ -3800,7 +3824,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
                 marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing, skip_mismatch=True)
                 if marked and (existing_file.is_absolute() or existing_file.exists()):
-                    _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir)
+                    _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir, user_id=user_id)
                 return
             elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
                 _update_job(
@@ -4082,7 +4106,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         marked = _mark_watched_track_downloaded(job_id, resolved_path=audio_file)
         _mark_watched_artist_track_downloaded(job_id, resolved_path=audio_file)
         if marked:
-            _append_to_physical_m3u(audio_file, playlist_name, use_playlists_dir)
+            _append_to_physical_m3u(audio_file, playlist_name, use_playlists_dir, user_id=user_id)
             _refresh_album_m3u_if_present(override_dir)
         else:
             # Wrong track downloaded (AcoustID/MusicBrainz identified it as something else).

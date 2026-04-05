@@ -19,7 +19,7 @@ from constants import (
     AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH,
     MONOCHROME_MANIFEST_URLS, TIMEOUT_MONOCHROME_API,
 )
-from settings import get_singles_dir, get_download_dir, get_playlists_dir, get_trash_dir, get_setting
+from settings import get_singles_dir, get_albums_dir, get_download_dir, get_playlists_dir, get_trash_dir, get_setting
 
 
 def sanitize_filename(name: str) -> str:
@@ -281,6 +281,30 @@ def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Opti
             match = _find_audio_match_in_dir(directory, stems)
             if match:
                 return match
+
+        # Auto-album routing moves singles into Artist/Album/ subfolders.
+        # Scan one level deeper so re-downloads find the routed copy.
+        artist_dirs_to_scan = []
+        singles_artist = get_singles_dir(user_id=user_id) / sanitize_filename(artist or "")
+        if singles_artist.exists():
+            artist_dirs_to_scan.append(singles_artist)
+        albums_artist = get_albums_dir(user_id=user_id) / sanitize_filename(artist or "")
+        if albums_artist.exists():
+            artist_dirs_to_scan.append(albums_artist)
+        for artist_dir in artist_dirs_to_scan:
+            try:
+                for subdir in artist_dir.iterdir():
+                    if not subdir.is_dir():
+                        continue
+                    d_str = str(subdir)
+                    if d_str in seen:
+                        continue
+                    seen.add(d_str)
+                    match = _find_audio_match_in_dir(subdir, stems)
+                    if match:
+                        return match
+            except OSError:
+                pass
 
         playlists_dir = get_playlists_dir(user_id=user_id)
         if playlists_dir and playlists_dir.exists():
