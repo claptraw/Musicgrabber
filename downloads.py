@@ -1069,8 +1069,8 @@ def _normalise_watched_match_text(text: str) -> str:
     # clause; bare words like artist names must not be eaten.
     t = re.sub(
         r"\s+-\s+(?:acoustic|demo|instrumental|a\s+cappella|unplugged|remix|"
-        r"radio edit|extended|acoustic version|"
-        r"from\s+.+|anniversary edition|deluxe edition|special edition)\s*$",
+        r"radio edit|extended|extended mix|original mix|club mix|vip mix|vip|"
+        r"acoustic version|from\s+.+|anniversary edition|deluxe edition|special edition)\s*$",
         "",
         t,
     )
@@ -1107,7 +1107,7 @@ def _normalise_watched_match_text(text: str) -> str:
 
 
 _REMIX_INDICATOR_WORDS = frozenset({
-    "remix", "mix", "edit", "version", "bootleg", "rework", "flip", "refix",
+    "remix", "mix", "edit", "version", "bootleg", "rework", "flip", "refix", "vip",
 })
 
 _ARTIST_NOISE_WORDS = frozenset({"feat", "ft", "featuring", "with", "vs", "x", "and", "the"})
@@ -1185,7 +1185,14 @@ def _watched_track_matches_expected(expected_artist: str, expected_title: str, a
         # remix as a match for a plain original.
         if et.startswith(gt) and et[len(gt):len(gt)+1] in (" ", ""):
             extra = et[len(gt):].strip()
-            if extra and _has_remix_suffix(extra):
+            if extra and (
+                _has_remix_suffix(extra)
+                # Spotify writes "Title - VariantLabel" with a dash; Tidal/YouTube store
+                # the same thing as "Title (VariantLabel)" which the normaliser strips.
+                # Accept when the extra is a single compound word (e.g. "TechnoBack",
+                # "Hardstyle") since it can only be a variant label, not a whole extra track.
+                or len(extra.split()) == 1
+            ):
                 title_ok = True
 
     if not title_ok:
@@ -2874,6 +2881,15 @@ class _MonochromeAllTiers403(Exception):
     """
 
 
+class _MonochromeDurationMismatch(Exception):
+    """Raised when the downloaded Monochrome track fails the MusicBrainz duration check.
+
+    This means Tidal served a different edit (radio cut, extended, alternate version)
+    than what Spotify/the playlist expects. Caught to trigger a cross-source fallback
+    so we can try YouTube/mp3phoenix for the right version instead of just failing.
+    """
+
+
 def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
     """Download a FLAC directly from the Monochrome/Tidal API.
 
@@ -3137,7 +3153,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         dur_ok, dur_reason = _check_duration_against_mb(actual_duration_secs, mb_metadata, artist, title, job_id=job_id)
         if not dur_ok:
             move_to_trash(output_path, user_id=user_id)
-            raise Exception(dur_reason)
+            raise _MonochromeDurationMismatch(dur_reason)
 
         year = mb_metadata.get("year") if mb_metadata else None
 
@@ -3268,13 +3284,15 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
             user_id=user_id,
         )
 
-    except _MonochromeAllTiers403:
-        # Track is geo-restricted or unlicensed on every Tidal quality tier.
-        # Retry with the next best untried candidate across all enabled sources.
-        print(f"Monochrome: all tiers 403 for '{artist} - {title}', searching all sources for fallback")
+    except (_MonochromeAllTiers403, _MonochromeDurationMismatch) as fallback_trigger:
+        # Track is either geo-restricted on every tier, or the Tidal version is a different
+        # edit than expected (duration mismatch). Either way, try the next best source.
+        is_duration = isinstance(fallback_trigger, _MonochromeDurationMismatch)
+        reason_short = "duration mismatch" if is_duration else "all tiers 403"
+        print(f"Monochrome: {reason_short} for '{artist} - {title}', searching all sources for fallback")
         try:
             query = f"{artist} - {title}" if artist and artist != "Unknown" else title
-            _update_job(job_id, error="Monochrome all tiers returned 403, trying next best source")
+            _update_job(job_id, error=f"Monochrome {reason_short}, trying next best source")
             best = _find_alternate_search_candidate(query, attempted_ids)
             if not best:
                 raise Exception("No alternate source candidates available")
@@ -3290,7 +3308,7 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
                 source=fallback_source,
                 video_id=fallback_video_id,
                 source_url=fallback_source_url,
-                error=f"Monochrome all tiers returned 403, switched to {fallback_source} fallback",
+                error=f"Monochrome {reason_short}, switched to {fallback_source} fallback",
             )
             # Re-use the same job, now routed through the next best candidate.
             process_download(job_id, fallback_video_id, convert_to_flac,
@@ -3301,11 +3319,11 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         except Exception as fallback_err:
             print(f"Monochrome fallback failed: {fallback_err}")
             _update_job(job_id, status="failed",
-                        error=f"Monochrome: all tiers restricted. Cross-source fallback also failed: {fallback_err}",
+                        error=f"Monochrome: {reason_short}. Cross-source fallback also failed: {fallback_err}",
                         progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             send_notification(notification_type="error", title=title, artist=artist,
                               source=source_label, status="failed",
-                              error="All Monochrome tiers restricted, cross-source fallback failed",
+                              error=f"Monochrome {reason_short}, cross-source fallback also failed",
                               user_id=user_id)
 
     except Exception as e:

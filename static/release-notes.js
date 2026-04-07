@@ -7,6 +7,51 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.6.0": {
+        title: "What's New in v2.6.0",
+        sections: [
+            {
+                heading: "Tag Editor Modal",
+                items: [
+                    "Queue items no longer open an inline tag form inside the constantly-refreshing queue card. 'Edit Tags' now opens a proper modal with artist, title, album, album artist, year, and track number fields, a filename preview, and reset/save actions. Your edits survive the queue refreshing underneath.",
+                    "The tag editor also has a 'Guess from MusicBrainz' button that fills in album, album artist, year, and track numbering for completed downloads. If the first guess is close-but-wrong, 'Guess Again' walks through the next available candidate instead of giving you the same answer twice.",
+                ]
+            },
+            {
+                heading: "Search: Better Lossless Results",
+                items: [
+                    "All-source searches now give Monochrome/Tidal up to 10 scored candidates in the merged ranking (was a small fixed cap shared with all sources). Lossless results have more room to compete without every source flooding the list.",
+                ]
+            },
+            {
+                heading: "Fixed: Watched Playlist Mismatch Checker Too Strict",
+                items: [
+                    "Several patterns that should match were being incorrectly rejected. 'Paro House - Luciid VIP' (Spotify dash-form) now matches 'Paro House (Luciid VIP)' (Tidal bracket-form). 'NO DRAMA - Original Mix' matches 'NO DRAMA'. Single-word variant labels like 'TechnoBack' are now accepted as bracket equivalents.",
+                    "The artist check for multi-artist credits (e.g. 'OGUZ, Nyctonian') now passes if any individual artist is mentioned in the result, rather than requiring the whole comma-joined string verbatim. Tidal typically credits only the primary artist, so the old check was silently failing good matches.",
+                ]
+            },
+            {
+                heading: "Fixed: Monochrome Duration Mismatch Now Falls Back",
+                items: [
+                    "When Tidal serves a shorter radio edit or different version that fails the MusicBrainz duration check, MusicGrabber now falls back to YouTube or mp3phoenix to find the right version, rather than just failing the download outright.",
+                ]
+            },
+            {
+                heading: "Fixed: Various Trash Bin Causes",
+                items: [
+                    "Monochrome scoring was penalising correct VIP/remix results when the variant was written with dashes in the query but brackets in the Tidal title. The -110 penalty is now skipped when the bracketed content is already present in the search query.",
+                    "AcoustID now requires an artist match to accept a metadata override. Previously, a title-only match (score 9) was enough, which let cover versions overwrite the correct artist field and trigger a mismatch failure.",
+                    "Channel names with distributor prefixes like 'Premiere Eczko' are now stripped to just 'Eczko' when used as the artist fallback.",
+                ]
+            },
+            {
+                heading: "Fixed: Large Playlist Import Crashes",
+                items: [
+                    "The database connection pool was exhausted under heavy concurrent load, causing 'database is locked' crashes mid-import. The pool now blocks briefly on checkout instead of spawning unlimited competing connections. Pool size also bumped from 5 to 8.",
+                ]
+            },
+        ]
+    },
     "2.5.6": {
         title: "What's New in v2.5.6",
         sections: [

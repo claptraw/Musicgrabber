@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.6.0 (2026-04-07)
+
+### Added
+- **Dedicated track tag editor modal**: queue items no longer open an inline tag form inside the constantly-refreshing queue card. `Edit Tags` now opens a proper modal with artist, title, album, album artist, year, and track number fields, plus a filename preview and reset/save actions. This keeps focus stable while the queue continues updating underneath
+- **MusicBrainz-assisted tag guessing**: the tag editor now has a `Guess from MusicBrainz` button that can fill in album, album artist, year, and track numbering for completed downloads before saving
+- **`Guess Again` candidate cycling**: repeated MusicBrainz guesses now walk through the next available candidate release instead of returning the same first match every time. Useful when MusicBrainz has multiple plausible releases and the first one is close-but-wrong
+
+### Changed
+- **All-source search now uses per-source merge caps**: merged searches no longer give every source the same tiny contribution limit. Monochrome/Tidal can now contribute up to 10 scored candidates into an `All` search, YouTube up to 6, and the noisier sources stay tighter. This gives lossless results more room to compete without letting every source flood the merged ranking
+
+### Fixed
+- **Queue refresh could kick you out of tag editing**: the original inline queue editor was being destroyed on each poll/render cycle, which closed the form and stole focus mid-edit. Moving editing into a detached modal fixes that properly instead of playing DOM whack-a-mole
+- **MusicBrainz guesses could prefer promo/sampler releases over the real album**: release scoring now penalises titles like `Extracts from ...`, `sampler`, `advance`, and similar promo-style junk, so tracks are less likely to land on teaser releases with bogus track counts instead of the proper album
+- **Monochrome scoring wrongly penalised correct VIP/remix results**: when a Spotify track has a dash-separated variant in the title (e.g. "Paro House - Luciid VIP"), the Tidal result with the same content in parentheses ("Paro House (Luciid VIP)") was getting a -110 variant penalty, leaving a completely different wrong track to win. The penalty is now skipped when the bracketed content is already present in the query
+- **Multi-artist watched imports refused perfectly good Monochrome results**: for tracks credited to multiple artists ("OGUZ, Nyctonian"), the artist check was normalising the whole comma-separated string and requiring it verbatim in the result. Tidal/Monochrome typically credits only the primary artist, so it never matched. The check now splits on commas and passes if any individual artist is mentioned
+- **AcoustID could overwrite correct metadata with a low-confidence cover version**: a recording with only a title match (score 9/18) was enough to override the downloaded file's artist field. "Killing in the Name" would match any cover version, including an obscure German band, which then caused the mismatch check to trash the file. The minimum acceptable AcoustID match score is now 10, requiring at least an artist match to accept a metadata override
+- **Label/distributor channel names leaking into the artist field**: channels named "Premiere Eczko" or "Monstercat Silk" were being used verbatim as the artist when no "Artist - Title" pattern could be found in the video title. Common distributor prefixes are now stripped from channel names before using them as the artist fallback
+- **Database lock crashes during large playlist imports**: the DB connection pool was exhausted under heavy concurrent load (bulk import worker + multiple download threads), causing new connections to pile up and fight over SQLite's single write lock. The pool now blocks briefly on checkout instead of spawning unbounded connections, and the pool size is bumped from 5 to 8
+- **Watched playlist mismatch checker rejected valid VIP/variant tracks**: `Paro House - Luciid VIP` (Spotify dash-form) vs `Paro House (Luciid VIP)` (Tidal bracket-form) failed the title match because `vip` was not a recognised remix suffix word, and single-word variant labels like `TechnoBack` had no path to acceptance at all. `vip` is now a recognised suffix, and any single-word trailing variant is accepted as a bracket equivalent
+- **Watched playlist mismatch checker rejected tracks with "Original Mix" suffix**: Spotify often appends `- Original Mix` to track titles; Tidal omits it. The normaliser now strips `original mix`, `extended mix`, `club mix`, and `vip mix` dash-suffixes before comparing
+- **Monochrome duration mismatch now falls back to another source**: when Tidal serves a shorter radio edit or alternate version that fails the MusicBrainz duration check, the download was just marked failed and trashed. It now triggers the same cross-source fallback as a geo-restricted track, so YouTube or mp3phoenix get a chance to find the right version
+
 ## v2.5.6 (2026-04-05)
 
 ### Added

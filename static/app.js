@@ -954,6 +954,7 @@
         let currentSource = 'all'; // Always search all sources
         const expandedJobIds = new Set();
         const watchedRefreshPending = new Map();
+        let activeTagEditor = null;
 
         // Source selector - restore saved preference and wire up clicks
         (function initSourceSelector() {
@@ -981,6 +982,20 @@
         let queuePollInterval = null;
         let watchedRefreshPollInterval = null;
         let watchedLoadInFlight = false;
+        const tagEditorOverlay = document.getElementById('tagEditorOverlay');
+        const tagEditorArtist = document.getElementById('tagEditorArtist');
+        const tagEditorTitle = document.getElementById('tagEditorTitle');
+        const tagEditorAlbum = document.getElementById('tagEditorAlbum');
+        const tagEditorAlbumArtist = document.getElementById('tagEditorAlbumArtist');
+        const tagEditorYear = document.getElementById('tagEditorYear');
+        const tagEditorTrackNumber = document.getElementById('tagEditorTrackNumber');
+        const tagEditorTrackTotal = document.getElementById('tagEditorTrackTotal');
+        const tagEditorMeta = document.getElementById('tagEditorMeta');
+        const tagEditorPreview = document.getElementById('tagEditorPreview');
+        const tagEditorError = document.getElementById('tagEditorError');
+        const tagEditorGuessBtn = document.getElementById('tagEditorGuessBtn');
+        const tagEditorResetBtn = document.getElementById('tagEditorResetBtn');
+        const tagEditorSaveBtn = document.getElementById('tagEditorSaveBtn');
 
         // Preview state
         const previewAudio = document.getElementById('previewAudio');
@@ -2017,6 +2032,7 @@
                                 <button onclick="event.stopPropagation(); redownloadJob('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Re-download</button>
                                 <button class="report-btn" data-job-id="${escapeHtml(job.id || '')}" data-video-id="${escapeHtml(job.video_id || '')}" data-uploader="${escapeHtml(job.uploader || '')}" data-source="${escapeHtml(job.source || 'youtube')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--warning); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Report</button>
                                 ${(job.error || '').includes('mismatch') ? `<button class="force-accept-btn" data-job-id="${escapeHtml(job.id || '')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Force Download</button>` : ''}
+                                ${(job.status === 'completed' || job.status === 'completed_with_errors') && !fileDeleted ? `<button class="edit-tags-btn" data-job-id="${escapeHtml(job.id || '')}" data-artist="${escapeAttr(job.artist || '')}" data-title="${escapeAttr(job.title || '')}" data-album="${escapeAttr(job.album_name || '')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Edit Tags</button>` : ''}
                                 ${job.status !== 'failed' ? (fileDeleted
                                     ? `<button disabled style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-secondary); color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; cursor: not-allowed; opacity: 0.8;">Trashed</button>`
                                     : `<button class="delete-file-btn" data-job-id="${escapeHtml(job.id || '')}" data-track-name="${escapeHtml(job.artist ? job.artist + ' - ' + job.title : job.title)}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--error); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;"><i class="fa-solid fa-trash-can"></i> Trash</button>
@@ -2065,6 +2081,18 @@
                         btn.disabled = false;
                         btn.textContent = 'Force Download';
                     }
+                });
+            });
+
+            queueTab.querySelectorAll('.edit-tags-btn').forEach((btn) => {
+                btn.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    openTagEditor({
+                        jobId: btn.dataset.jobId || '',
+                        artist: btn.dataset.artist || '',
+                        title: btn.dataset.title || '',
+                        album: btn.dataset.album || '',
+                    });
                 });
             });
 
@@ -2332,6 +2360,214 @@
                 .catch(() => {});
         }
 
+        function escapeHtmlText(value) {
+            return escapeHtml(value == null ? '' : String(value));
+        }
+
+        function renderTagEditorPreview() {
+            if (!activeTagEditor) return;
+            const artist = (tagEditorArtist.value || '').trim();
+            const title = (tagEditorTitle.value || '').trim();
+            const album = (tagEditorAlbum.value || '').trim();
+            const albumArtist = (tagEditorAlbumArtist.value || '').trim();
+            const year = (tagEditorYear.value || '').trim();
+            const trackNumber = (tagEditorTrackNumber.value || '').trim();
+            const trackTotal = (tagEditorTrackTotal.value || '').trim();
+            const filename = [artist, title].filter(Boolean).join(' - ') || 'Untitled track';
+            tagEditorPreview.innerHTML = `
+                <div><strong>Filename preview:</strong> ${escapeHtmlText(filename)}${escapeHtmlText(activeTagEditor.extension || '')}</div>
+                <div><strong>Album tag:</strong> ${album ? escapeHtmlText(album) : '<em>empty</em>'}</div>
+                <div><strong>Album artist:</strong> ${albumArtist ? escapeHtmlText(albumArtist) : '<em>empty</em>'}</div>
+                <div><strong>Track:</strong> ${trackNumber ? `${escapeHtmlText(trackNumber)}${trackTotal ? ` / ${escapeHtmlText(trackTotal)}` : ''}` : '<em>empty</em>'}</div>
+                <div><strong>Year:</strong> ${year ? escapeHtmlText(year) : '<em>empty</em>'}</div>
+            `;
+        }
+
+        function resetTagEditorDraft() {
+            if (!activeTagEditor) return;
+            tagEditorArtist.value = activeTagEditor.original.artist || '';
+            tagEditorTitle.value = activeTagEditor.original.title || '';
+            tagEditorAlbum.value = activeTagEditor.original.album || '';
+            tagEditorAlbumArtist.value = activeTagEditor.original.album_artist || '';
+            tagEditorYear.value = activeTagEditor.original.year || '';
+            tagEditorTrackNumber.value = activeTagEditor.original.track_number || '';
+            tagEditorTrackTotal.value = activeTagEditor.original.track_total || '';
+            tagEditorError.style.display = 'none';
+            tagEditorError.textContent = '';
+            renderTagEditorPreview();
+        }
+
+        function openTagEditor({ jobId, artist, title, album, albumArtist = '', year = '', trackNumber = '', trackTotal = '' }) {
+            const job = allQueueJobs.find(j => String(j.id) === String(jobId));
+            activeTagEditor = {
+                jobId: String(jobId || ''),
+                extension: job?.file_path ? (job.file_path.match(/\.[^.\/\\]+$/)?.[0] || '') : '',
+                sourceLabel: getSourceLabel(job?.source || 'youtube'),
+                guessArtistSeed: (artist || '').trim(),
+                guessTitleSeed: (title || '').trim(),
+                guessOffset: 0,
+                original: {
+                    artist: artist || '',
+                    title: title || '',
+                    album: album || '',
+                    album_artist: albumArtist || '',
+                    year: year || '',
+                    track_number: trackNumber || '',
+                    track_total: trackTotal || '',
+                },
+            };
+            tagEditorMeta.textContent = [activeTagEditor.sourceLabel, activeTagEditor.jobId].filter(Boolean).join(' • ');
+            resetTagEditorDraft();
+            tagEditorOverlay.style.display = 'flex';
+            setTimeout(() => tagEditorArtist.focus(), 0);
+        }
+
+        function closeTagEditor() {
+            activeTagEditor = null;
+            tagEditorOverlay.style.display = 'none';
+            tagEditorError.style.display = 'none';
+            tagEditorError.textContent = '';
+            tagEditorGuessBtn.disabled = false;
+            tagEditorGuessBtn.textContent = 'Guess from MusicBrainz';
+            tagEditorSaveBtn.disabled = false;
+            tagEditorSaveBtn.textContent = 'Save Tags';
+        }
+
+        async function saveTagEditor() {
+            if (!activeTagEditor) return;
+
+            const artist = (tagEditorArtist.value || '').trim();
+            const title = (tagEditorTitle.value || '').trim();
+            const album = (tagEditorAlbum.value || '').trim();
+            const albumArtist = (tagEditorAlbumArtist.value || '').trim();
+            const year = (tagEditorYear.value || '').trim();
+            const rawTrackNumber = tagEditorTrackNumber.value ? parseInt(tagEditorTrackNumber.value, 10) : null;
+            const rawTrackTotal = tagEditorTrackTotal.value ? parseInt(tagEditorTrackTotal.value, 10) : null;
+            const trackNumber = Number.isFinite(rawTrackNumber) ? rawTrackNumber : null;
+            const trackTotal = Number.isFinite(rawTrackTotal) ? rawTrackTotal : null;
+
+            if (!artist || !title) {
+                tagEditorError.textContent = 'Artist and title are required.';
+                tagEditorError.style.display = 'block';
+                return;
+            }
+            if (year && !/^\d{4}$/.test(year)) {
+                tagEditorError.textContent = 'Year must be four digits.';
+                tagEditorError.style.display = 'block';
+                return;
+            }
+            if (trackNumber && trackTotal && trackNumber > trackTotal) {
+                tagEditorError.textContent = 'Track number cannot be greater than total tracks.';
+                tagEditorError.style.display = 'block';
+                return;
+            }
+
+            const originalText = tagEditorSaveBtn.textContent;
+            tagEditorSaveBtn.disabled = true;
+            tagEditorSaveBtn.textContent = 'Saving...';
+            tagEditorError.style.display = 'none';
+
+            try {
+                const res = await apiFetch(`/api/jobs/${activeTagEditor.jobId}/tags`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        artist,
+                        title,
+                        album,
+                        album_artist: albumArtist,
+                        year,
+                        track_number: trackNumber,
+                        track_total: trackTotal,
+                    }),
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Failed to save tags');
+                }
+
+                const card = queueTab.querySelector(`.job-item[data-job-id="${activeTagEditor.jobId}"]`);
+                if (card) {
+                    const titleEl = card.querySelector('.job-title');
+                    if (titleEl) titleEl.firstChild.textContent = artist ? `${artist} - ${title}` : title;
+                    const editBtn = card.querySelector('.edit-tags-btn');
+                    if (editBtn) {
+                        editBtn.dataset.artist = artist;
+                        editBtn.dataset.title = title;
+                        editBtn.dataset.album = album;
+                    }
+                }
+                const queueJob = allQueueJobs.find(j => String(j.id) === String(activeTagEditor.jobId));
+                if (queueJob) {
+                    queueJob.artist = artist;
+                    queueJob.title = title;
+                    queueJob.album_name = album;
+                }
+
+                showToast('Tags updated');
+                closeTagEditor();
+            } catch (e) {
+                tagEditorError.textContent = e.message || 'Failed to save tags.';
+                tagEditorError.style.display = 'block';
+                tagEditorSaveBtn.disabled = false;
+                tagEditorSaveBtn.textContent = originalText;
+            }
+        }
+
+        async function guessTagEditorFromMusicBrainz() {
+            if (!activeTagEditor) return;
+            const artist = (tagEditorArtist.value || '').trim();
+            const title = (tagEditorTitle.value || '').trim();
+            if (!artist || !title) {
+                tagEditorError.textContent = 'Enter artist and title before guessing.';
+                tagEditorError.style.display = 'block';
+                return;
+            }
+
+            const originalText = tagEditorGuessBtn.textContent;
+            tagEditorGuessBtn.disabled = true;
+            tagEditorGuessBtn.textContent = 'Guessing...';
+            tagEditorError.style.display = 'none';
+
+            try {
+                if (artist !== activeTagEditor.guessArtistSeed || title !== activeTagEditor.guessTitleSeed) {
+                    activeTagEditor.guessArtistSeed = artist;
+                    activeTagEditor.guessTitleSeed = title;
+                    activeTagEditor.guessOffset = 0;
+                }
+                const res = await apiFetch(`/api/jobs/${activeTagEditor.jobId}/musicbrainz-guess?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}&offset=${activeTagEditor.guessOffset}`);
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || 'No more suitable MusicBrainz matches found');
+                }
+                const guess = await res.json();
+                tagEditorArtist.value = guess.artist || artist;
+                tagEditorTitle.value = guess.title || title;
+                tagEditorAlbum.value = guess.album || '';
+                tagEditorAlbumArtist.value = guess.album_artist || '';
+                tagEditorYear.value = guess.year || '';
+                tagEditorTrackNumber.value = guess.track_number || '';
+                tagEditorTrackTotal.value = guess.track_total || '';
+                activeTagEditor.guessOffset = (guess.candidate_index || 0) + 1;
+                renderTagEditorPreview();
+                if ((guess.candidate_count || 0) > 1) {
+                    tagEditorGuessBtn.textContent = activeTagEditor.guessOffset < guess.candidate_count ? 'Guess Again' : 'No More Guesses';
+                } else {
+                    tagEditorGuessBtn.textContent = 'Guess Again';
+                }
+                showToast(`MusicBrainz metadata applied${guess.candidate_count ? ` (${(guess.candidate_index || 0) + 1}/${guess.candidate_count})` : ''}`);
+            } catch (e) {
+                tagEditorError.textContent = e.message || 'MusicBrainz lookup failed.';
+                tagEditorError.style.display = 'block';
+                tagEditorGuessBtn.textContent = 'Guess Again';
+            } finally {
+                tagEditorGuessBtn.disabled = false;
+                if (tagEditorGuessBtn.textContent === 'Guessing...') {
+                    tagEditorGuessBtn.textContent = originalText;
+                }
+            }
+        }
+
         async function redownloadJob(jobId) {
             try {
                 showToast('Re-downloading...');
@@ -2562,6 +2798,31 @@
         function closeReportDialog() {
             document.getElementById('reportOverlay').style.display = 'none';
         }
+
+        tagEditorOverlay.addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closeTagEditor();
+        });
+        tagEditorGuessBtn.addEventListener('click', guessTagEditorFromMusicBrainz);
+        tagEditorResetBtn.addEventListener('click', resetTagEditorDraft);
+        tagEditorSaveBtn.addEventListener('click', saveTagEditor);
+        [tagEditorArtist, tagEditorTitle, tagEditorAlbum, tagEditorAlbumArtist, tagEditorYear, tagEditorTrackNumber, tagEditorTrackTotal].forEach((input) => {
+            input.addEventListener('input', () => {
+                if (tagEditorError.style.display !== 'none') {
+                    tagEditorError.style.display = 'none';
+                    tagEditorError.textContent = '';
+                }
+                renderTagEditorPreview();
+            });
+            input.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    saveTagEditor();
+                } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeTagEditor();
+                }
+            });
+        });
 
         // Close on overlay click (not the dialog itself)
         document.getElementById('reportOverlay').addEventListener('click', (e) => {

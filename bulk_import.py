@@ -44,21 +44,35 @@ def _normalise_candidate_match_text(text: str) -> str:
 
 
 def _candidate_mentions_expected_artist(candidate: dict, expected_artist: str) -> bool:
-    """Return True when candidate title/channel appears to include expected artist."""
-    artist_norm = _normalise_candidate_match_text(expected_artist)
-    if not artist_norm:
+    """Return True when candidate title/channel appears to include expected artist.
+
+    For multi-artist credits like 'OGUZ, Nyctonian', passes if ANY of the
+    comma-separated artists is mentioned. Tidal/Monochrome often credits only the
+    primary artist, so requiring the full combined string fails perfectly good results.
+    """
+    if not expected_artist:
         return False
 
     title_norm = _normalise_candidate_match_text(candidate.get("title", ""))
     channel_norm = _normalise_candidate_match_text(candidate.get("channel", ""))
     combined = f"{title_norm} {channel_norm}".strip()
 
-    if artist_norm in combined:
-        return True
+    # Split comma-separated multi-artist credits and check each one separately.
+    # 'OGUZ, Nyctonian' becomes ['OGUZ', 'Nyctonian']; single-artist strings
+    # become a one-element list, so the behaviour is identical for the common case.
+    artists = [a.strip() for a in expected_artist.split(",") if a.strip()]
+    for artist in artists:
+        artist_norm = _normalise_candidate_match_text(artist)
+        if not artist_norm:
+            continue
+        if artist_norm in combined:
+            return True
+        # Fallback: all significant tokens must appear for multi-word artist names.
+        tokens = [t for t in artist_norm.split() if len(t) > 1]
+        if len(tokens) > 1 and all(t in combined for t in tokens):
+            return True
 
-    # Fallback: require all artist tokens to appear for multi-word artist names.
-    tokens = [t for t in artist_norm.split() if len(t) > 1]
-    return len(tokens) > 1 and all(t in combined for t in tokens)
+    return False
 
 
 def _candidate_looks_like_cover(candidate: dict) -> bool:

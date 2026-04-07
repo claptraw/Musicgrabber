@@ -112,6 +112,200 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
         return None
 
 
+def _build_musicbrainz_guess_for_release(
+    recording: dict,
+    release: dict | None,
+    artist: str,
+    title: str,
+    headers: dict,
+) -> dict:
+    credited_artist = " ".join(
+        (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
+        for ac in (recording.get("artist-credit") or [])
+        if isinstance(ac, dict)
+    ).strip() or artist
+
+    metadata = {
+        "artist": credited_artist,
+        "title": recording.get("title") or title,
+        "album": "",
+        "album_artist": credited_artist,
+        "year": "",
+        "track_number": None,
+        "track_total": None,
+        "release_mbid": None,
+        "recording_mbid": recording.get("id"),
+        "metadata_source": "musicbrainz_text",
+    }
+
+    if not release:
+        return metadata
+
+    release_id = release.get("id")
+    metadata["release_mbid"] = release_id
+    metadata["album"] = release.get("title") or ""
+    release_artist = " ".join(
+        (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
+        for ac in (release.get("artist-credit") or [])
+        if isinstance(ac, dict)
+    ).strip()
+    if release_artist:
+        metadata["album_artist"] = release_artist
+
+    release_date = release.get("date") or ""
+    year_match = re.match(r"(\d{4})", release_date)
+    if year_match:
+        metadata["year"] = year_match.group(1)
+
+    if not release_id:
+        return metadata
+
+    with httpx.Client(timeout=TIMEOUT_MUSICBRAINZ_ARTIST) as client:
+        release_resp = client.get(
+            f"https://musicbrainz.org/ws/2/release/{release_id}",
+            params={"inc": "recordings artists", "fmt": "json"},
+            headers=headers,
+        )
+    if release_resp.status_code != 200:
+        return metadata
+
+    release_data = release_resp.json()
+    release_artist_credit = release_data.get("artist-credit") or []
+    release_artist_name = " ".join(
+        (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
+        for ac in release_artist_credit
+        if isinstance(ac, dict)
+    ).strip()
+    if release_artist_name:
+        metadata["album_artist"] = release_artist_name
+    if not metadata["album"]:
+        metadata["album"] = release_data.get("title") or ""
+    if not metadata["year"]:
+        release_year_match = re.match(r"(\d{4})", release_data.get("date") or "")
+        if release_year_match:
+            metadata["year"] = release_year_match.group(1)
+
+    recording_id = recording.get("id")
+    fallback_track = None
+    for medium in release_data.get("media") or []:
+        track_total = medium.get("track-count")
+        for track in medium.get("tracks") or []:
+            track_recording = track.get("recording") or {}
+            track_title = track_recording.get("title") or track.get("title") or ""
+            matches_recording = recording_id and track_recording.get("id") == recording_id
+            matches_title = (
+                not fallback_track
+                and track_title
+                and track_title.strip().lower() == (metadata["title"] or "").strip().lower()
+            )
+            if matches_recording or matches_title:
+                fallback_track = {
+                    "track_number": track.get("position") or track.get("number"),
+                    "track_total": track_total,
+                }
+                if matches_recording:
+                    break
+        if fallback_track and fallback_track.get("track_number"):
+            break
+
+    if fallback_track:
+        try:
+            metadata["track_number"] = int(fallback_track.get("track_number")) if fallback_track.get("track_number") else None
+        except (TypeError, ValueError):
+            metadata["track_number"] = None
+        try:
+            metadata["track_total"] = int(fallback_track.get("track_total")) if fallback_track.get("track_total") else None
+        except (TypeError, ValueError):
+            metadata["track_total"] = None
+
+    return metadata
+
+
+def guess_musicbrainz_tag_candidates(artist: str, title: str) -> list[dict]:
+    """Return ordered MusicBrainz tag candidates for a track."""
+    if not get_setting_bool("enable_musicbrainz", True):
+        return []
+
+    artist = (artist or "").strip()
+    title = (title or "").strip()
+    if not artist or not title:
+        return []
+
+    try:
+        headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+        params = {
+            "query": f'artist:"{artist}" AND recording:"{title}"',
+            "fmt": "json",
+            "limit": 5,
+            "inc": "releases release-groups artist-credits",
+        }
+
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
+            response = client.get("https://musicbrainz.org/ws/2/recording/", params=params, headers=headers)
+        if response.status_code != 200:
+            return []
+
+        recordings = response.json().get("recordings") or []
+        if not recordings:
+            return []
+
+        def _recording_score(rec: dict) -> tuple[int, int]:
+            raw_score = int(rec.get("score", 0))
+            release_bonus = 1 if rec.get("releases") else 0
+            return (raw_score, release_bonus)
+
+        def _release_score_text(rel: dict) -> int:
+            rg = rel.get("release-group") or {}
+            rg_for_score = dict(rg)
+            if not rg_for_score.get("artist-credit"):
+                rg_for_score["artist-credit"] = rel.get("artist-credit") or []
+            if rel.get("date") and not rg_for_score.get("first-release-date"):
+                rg_for_score["_date"] = rel["date"]
+            return _score_release_group(rg_for_score, artist)
+
+        candidates = []
+        seen_release_ids = set()
+        seen_album_keys = set()
+        sorted_recordings = sorted(recordings, key=_recording_score, reverse=True)
+        for recording in sorted_recordings:
+            mb_score = int(recording.get("score", 0))
+            if mb_score < 85:
+                continue
+            releases = sorted(recording.get("releases") or [], key=_release_score_text, reverse=True)
+            if not releases:
+                candidates.append(_build_musicbrainz_guess_for_release(recording, None, artist, title, headers))
+                continue
+            for release in releases:
+                release_id = release.get("id")
+                album_key = ((release.get("title") or "").strip().lower(), (release.get("date") or "")[:4])
+                if release_id and release_id in seen_release_ids:
+                    continue
+                if album_key in seen_album_keys:
+                    continue
+                if release_id:
+                    seen_release_ids.add(release_id)
+                seen_album_keys.add(album_key)
+                candidates.append(_build_musicbrainz_guess_for_release(recording, release, artist, title, headers))
+
+        return candidates
+    except Exception as e:
+        print(f"MusicBrainz tag guess failed for '{artist} - {title}': {e}")
+        return []
+
+
+def guess_musicbrainz_tags(artist: str, title: str, offset: int = 0) -> Optional[dict]:
+    """Return one MusicBrainz tag guess for a track, by ordered candidate index."""
+    candidates = guess_musicbrainz_tag_candidates(artist, title)
+    if not candidates:
+        return None
+    if offset < 0 or offset >= len(candidates):
+        return None
+    guess = dict(candidates[offset])
+    guess["candidate_index"] = offset
+    guess["candidate_count"] = len(candidates)
+    return guess
+
+
 def _run_fpcalc(file_path: Path) -> Optional[tuple[int, str]]:
     """Run fpcalc on an audio file and return (duration, fingerprint).
 
@@ -208,7 +402,8 @@ def _score_release_group(rg: dict, expected_artist: str) -> int:
     # Penalise "Promo Only", "Radio", "Now That's What I Call Music", etc.
     _bad_title_fragments = ["promo only", "promo-only", "various artist", "radio edit",
                             "now that's what i call", "now that's what", "hits ", "greatest hits",
-                            "best of", "collection", "the very best"]
+                            "best of", "collection", "the very best", "extracts from",
+                            "extracts", "sampler", "advance", "promo sampler", "album sampler"]
     if any(frag in title for frag in _bad_title_fragments):
         score -= 10
 
@@ -336,9 +531,12 @@ def _lookup_acoustid(duration: int, fingerprint: str,
         fp_score, recording = best_rec
         match_score = _score_recording(recording, expected_artist, expected_title)
 
-        # Require at least some positive signal  -  a negative score means nothing
-        # matched our expected artist or title, and we'd just be making things worse.
-        if match_score < 0:
+        # Require a meaningful positive signal. Score breakdown: artist match=+10,
+        # exact title=+8, partial title=+5, release groups=+1. A score of 0-9 means
+        # the title matched but the artist didn't — that's not enough to trust, since
+        # "Killing in the Name" will match any cover version. Require at least artist
+        # OR (title + release group), i.e. a minimum of 10 to accept.
+        if match_score < 10:
             print(f"AcoustID: best recording match score {match_score} is too low, skipping")
             return None
 

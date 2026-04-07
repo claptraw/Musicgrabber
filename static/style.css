@@ -3491,6 +3491,162 @@ h1 {
 }
 
 /* --------------------------------------------------------------------------
+   Tag editor modal
+-------------------------------------------------------------------------- */
+
+.tag-editor-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    width: min(560px, 92vw);
+    max-width: 92vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+}
+
+.tag-editor-meta {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.tag-editor-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    overflow-y: auto;
+}
+
+.tag-editor-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.tag-editor-label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.tag-editor-label-full {
+    grid-column: 1 / -1;
+}
+
+.tag-editor-input {
+    width: 100%;
+    padding: 11px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    outline: none;
+}
+
+.tag-editor-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.tag-editor-preview {
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--bg-tertiary) 92%, white 8%), var(--bg-tertiary));
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.tag-editor-preview strong {
+    color: var(--text-primary);
+}
+
+.tag-editor-error {
+    font-size: 12px;
+    color: var(--error);
+}
+
+.tag-editor-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.tag-editor-actions-left,
+.tag-editor-actions-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.tag-editor-actions-right {
+    margin-left: auto;
+}
+
+.tag-editor-secondary-btn,
+.tag-editor-primary-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 9px 16px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.tag-editor-secondary-btn {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+}
+
+.tag-editor-primary-btn {
+    background: var(--accent);
+    color: #000;
+    border: none;
+}
+
+@media (max-width: 640px) {
+    .tag-editor-card {
+        width: min(100vw - 20px, 100vw);
+        padding: 18px;
+        border-radius: 14px;
+    }
+
+    .tag-editor-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .tag-editor-actions {
+        align-items: stretch;
+    }
+
+    .tag-editor-actions-right {
+        width: 100%;
+        margin-left: 0;
+    }
+
+    .tag-editor-secondary-btn,
+    .tag-editor-primary-btn {
+        flex: 1;
+        justify-content: center;
+    }
+}
+
+/* --------------------------------------------------------------------------
    Report / blacklist modal
 -------------------------------------------------------------------------- */
 

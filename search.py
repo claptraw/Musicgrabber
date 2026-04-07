@@ -20,6 +20,8 @@ from constants import (
     SOUNDCLOUD_SEARCH_MULTIPLIER, SOUNDCLOUD_SEARCH_MIN_FETCH,
     MONOCHROME_API_URL, MONOCHROME_COVER_BASE, TIMEOUT_MONOCHROME_API,
     SEARCH_MAX_PER_SOURCE,
+    SEARCH_MAX_PER_SOURCE_YOUTUBE, SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
+    SEARCH_MAX_PER_SOURCE_SOUNDCLOUD, SEARCH_MAX_PER_SOURCE_MONOCHROME,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration, search_artist_mbid, lookup_musicbrainz
@@ -168,13 +170,22 @@ def _score_monochrome_result(item: dict, query: str | None = None) -> int:
     # Tidal result does (e.g. "Hey Man Nice Shot (½ oz)" vs "hey man nice shot"),
     # it's a non-standard variant.  Benign remaster/edition tags get a light touch;
     # opaque suffixes get enough of a penalty to neutralise the quality bonus.
+    # Exception: if the parenthetical content is already present in the query
+    # (just written with dashes instead of brackets, e.g. query "Paro House - Luciid VIP"
+    # matching Tidal "Paro House (Luciid VIP)"), skip the penalty.
     if query:
         _, expected_title = _parse_query_artist_title(query)
         if expected_title and not re.search(r'[\(\[]', expected_title):
             if re.search(r'[\(\[]', title):
                 paren_content = " ".join(re.findall(r'[\(\[]([^\)\]]*)[\)\]]', title.lower()))
                 _benign_variant_re = r'\b(remaster(?:ed)?|expanded|deluxe|edition|feat(?:uring)?|ft|bonus|single|stereo|mono|explicit)\b'
-                if not re.search(_benign_variant_re, paren_content):
+                # Check if the variant words are already in the query (dash-separated form)
+                query_norm = re.sub(r"[^a-z0-9]+", " ", query.lower()).strip()
+                paren_norm = re.sub(r"[^a-z0-9]+", " ", paren_content).strip()
+                variant_in_query = paren_norm and all(
+                    tok in query_norm for tok in paren_norm.split() if len(tok) > 1
+                )
+                if not re.search(_benign_variant_re, paren_content) and not variant_in_query:
                     score -= 110  # Neutralise even HI_RES_LOSSLESS for unknown variants
                     score_breakdown.append("monochrome_title_variant=-110")
 
@@ -431,6 +442,13 @@ SOURCE_REGISTRY = {
     },
 }
 
+SEARCH_MAX_PER_SOURCE_BY_SOURCE = {
+    "youtube": SEARCH_MAX_PER_SOURCE_YOUTUBE,
+    "mp3phoenix": SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
+    "soundcloud": SEARCH_MAX_PER_SOURCE_SOUNDCLOUD,
+    "monochrome": SEARCH_MAX_PER_SOURCE_MONOCHROME,
+}
+
 
 def _mb_duration_lookup(query: str) -> float | None:
     """Return the MusicBrainz canonical duration for an artist/title query, or None.
@@ -619,7 +637,8 @@ def search_all(query: str, limit: int, sources: list[str] | None = None) -> tupl
             source_results = future.result(timeout=TIMEOUT_YTDLP_SEARCH + 5)
             # Cap per-source contribution so one prolific source can't drown out the rest.
             # Each source gets its best N results; scoring decides the final order.
-            all_results.extend(source_results[:SEARCH_MAX_PER_SOURCE])
+            per_source_cap = SEARCH_MAX_PER_SOURCE_BY_SOURCE.get(source_name, SEARCH_MAX_PER_SOURCE)
+            all_results.extend(source_results[:per_source_cap])
         except Exception as e:
             print(f"search_all: {source_name} failed: {e}")
 

@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.5.6"
+VERSION = "2.6.0"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -55,6 +55,10 @@ SOUNDCLOUD_SEARCH_MULTIPLIER = 2 # Less noise on SoundCloud, so fewer extras nee
 SOUNDCLOUD_SEARCH_MIN_FETCH = 15 # Minimum results to fetch for scoring
 SLSKD_MAX_RESULTS = 20           # Max Soulseek results to return
 SEARCH_MAX_PER_SOURCE = 4        # Max results any single source can contribute to an "All" search
+SEARCH_MAX_PER_SOURCE_YOUTUBE = 6
+SEARCH_MAX_PER_SOURCE_MP3PHOENIX = 4
+SEARCH_MAX_PER_SOURCE_SOUNDCLOUD = 4
+SEARCH_MAX_PER_SOURCE_MONOCHROME = 10
 SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 MAX_SEARCH_QUERY_LENGTH = 512    # Max characters allowed in search input
 SEARCH_LOG_RETENTION_DAYS = 90   # Keep search analytics for N days

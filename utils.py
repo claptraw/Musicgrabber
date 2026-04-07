@@ -146,6 +146,9 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
     # Remove common channel suffixes like "VEVO", "Official", "- Topic"
     artist = re.sub(r'\s*[-–—]\s*Topic$', '', channel, flags=re.IGNORECASE)
     artist = re.sub(r'\s*(VEVO|Official|Music)$', '', artist, flags=re.IGNORECASE)
+    # Strip common label/distributor prefixes used in channel names:
+    # "Premiere Eczko" → "Eczko", "Monstercat Silk" → "Silk", etc.
+    artist = re.sub(r'^(?:Premiere|Monstercat|NCS|UKF|Proximity|Majestic|Trap Nation|Bass Nation)\s+', '', artist, flags=re.IGNORECASE)
     fallback_title = clean_title(full_title)
     if not fallback_title:
         fallback_title = full_title.strip() or "Unknown Title"

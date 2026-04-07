@@ -970,6 +970,65 @@
     </div>
 
     <!-- Report / Blacklist modal -->
+    <div id="tagEditorOverlay" style="display:none;" class="modal-overlay">
+        <div class="tag-editor-card" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <div>
+                    <h3 class="modal-title">Edit Track Tags</h3>
+                    <div id="tagEditorMeta" class="tag-editor-meta"></div>
+                </div>
+                <button onclick="closeTagEditor()" class="modal-close-btn" title="Close">&#x2715;</button>
+            </div>
+
+            <div class="tag-editor-body">
+                <div class="tag-editor-grid">
+                    <label class="tag-editor-label">
+                        <span>Artist</span>
+                        <input type="text" id="tagEditorArtist" class="tag-editor-input" autocomplete="off">
+                    </label>
+                    <label class="tag-editor-label">
+                        <span>Title</span>
+                        <input type="text" id="tagEditorTitle" class="tag-editor-input" autocomplete="off">
+                    </label>
+                    <label class="tag-editor-label tag-editor-label-full">
+                        <span>Album</span>
+                        <input type="text" id="tagEditorAlbum" class="tag-editor-input" autocomplete="off">
+                    </label>
+                    <label class="tag-editor-label">
+                        <span>Album Artist</span>
+                        <input type="text" id="tagEditorAlbumArtist" class="tag-editor-input" autocomplete="off">
+                    </label>
+                    <label class="tag-editor-label">
+                        <span>Year</span>
+                        <input type="text" id="tagEditorYear" class="tag-editor-input" inputmode="numeric" maxlength="4" autocomplete="off">
+                    </label>
+                    <label class="tag-editor-label">
+                        <span>Track Number</span>
+                        <input type="number" id="tagEditorTrackNumber" class="tag-editor-input" min="1" max="999">
+                    </label>
+                    <label class="tag-editor-label">
+                        <span>Total Tracks</span>
+                        <input type="number" id="tagEditorTrackTotal" class="tag-editor-input" min="1" max="999">
+                    </label>
+                </div>
+
+                <div id="tagEditorPreview" class="tag-editor-preview"></div>
+                <div id="tagEditorError" class="tag-editor-error" style="display:none;"></div>
+            </div>
+
+            <div class="tag-editor-actions">
+                <div class="tag-editor-actions-left">
+                    <button type="button" id="tagEditorGuessBtn" class="tag-editor-secondary-btn">Guess from MusicBrainz</button>
+                    <button type="button" id="tagEditorResetBtn" class="tag-editor-secondary-btn">Reset</button>
+                </div>
+                <div class="tag-editor-actions-right">
+                    <button type="button" onclick="closeTagEditor()" class="tag-editor-secondary-btn">Cancel</button>
+                    <button type="button" id="tagEditorSaveBtn" class="tag-editor-primary-btn">Save Tags</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="reportOverlay" style="display:none;" class="modal-overlay">
         <div class="report-card">
             <h3 class="report-title">Report Bad Track</h3>

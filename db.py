@@ -28,14 +28,26 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
-_DB_POOL_SIZE = 5
+_DB_POOL_SIZE = 8
 _db_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(maxsize=_DB_POOL_SIZE)
 
 
 def _get_pooled_conn() -> sqlite3.Connection:
     try:
+        # Try to grab an idle connection first.
         return _db_pool.get_nowait()
     except queue.Empty:
+        pass
+    # Pool is exhausted — either wait for one to come back (up to 15s) or
+    # open a fresh connection as a safety valve. Under heavy concurrent load
+    # (bulk import + multiple download threads) spawning unlimited connections
+    # causes them to queue up and fight over the single WAL write lock, which
+    # is what produces "database is locked" crashes. Blocking here serialises
+    # checkout instead of flooding sqlite with competing writers.
+    try:
+        return _db_pool.get(timeout=15)
+    except queue.Empty:
+        # Genuinely exhausted after 15s — open a new one rather than hang forever.
         return get_db()
 
 

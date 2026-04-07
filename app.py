@@ -46,7 +46,7 @@ from models import (
     SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestLidarrRequest, TestYouTubeCookiesRequest,
     TestAppriseRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest,
-    AlbumDownloadRequest, ExploreRequest,
+    AlbumDownloadRequest, ExploreRequest, PatchTagsRequest,
     LoginRequest, ChangePasswordRequest, CreateUserRequest,
     SetUserPasswordRequest, SetUserRoleRequest,
     DownloadTokenRequest,
@@ -68,6 +68,7 @@ from slskd import slskd_enabled, search_slskd
 from downloads import (
     process_download, process_playlist_download, process_slskd_download,
     rebuild_watched_playlist_m3u, rebuild_album_m3u,
+    trigger_navidrome_scan, trigger_jellyfin_scan,
 )
 from bulk_import import clean_bulk_import_line, start_bulk_import_for_tracks, process_bulk_import_worker
 from watched_playlists import (
@@ -75,7 +76,7 @@ from watched_playlists import (
     fetch_listenbrainz_createdfor, start_scheduler,
 )
 from watched_artists import refresh_watched_artist, start_artist_scheduler
-from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks
+from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks, apply_metadata_to_file, guess_musicbrainz_tags
 from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 
 URL_BASED_SOURCES = {"soundcloud", "monochrome", "mp3phoenix"}
@@ -2310,6 +2311,181 @@ def delete_job_file(job_id: str, http_request: Request):
         )
 
     return {"deleted": trashed_files, "job_id": job_id, "trashed": bool(trashed_files)}
+
+
+@app.patch("/api/jobs/{job_id}/tags")
+def patch_job_tags(job_id: str, body: PatchTagsRequest, http_request: Request):
+    """Correct the artist, title, and/or album tags on a completed download."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+
+    new_artist = body.artist.strip()
+    new_title  = body.title.strip()
+    new_album  = body.album.strip()
+    new_album_artist = body.album_artist.strip()
+    new_year = body.year.strip()
+    new_track_number = body.track_number if body.track_number and body.track_number > 0 else None
+    new_track_total = body.track_total if body.track_total and body.track_total > 0 else None
+    if not new_artist or not new_title:
+        raise HTTPException(status_code=422, detail="Artist and title are required")
+    if new_track_number and new_track_total and new_track_number > new_track_total:
+        raise HTTPException(status_code=422, detail="Track number cannot be greater than total tracks")
+
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        row = conn.execute(
+            f"SELECT * FROM jobs WHERE id = ? AND {_scope_frag}",
+            (job_id, *_scope_params)
+        ).fetchone()
+        rp_playlist = conn.execute(
+            "SELECT resolved_path FROM watched_playlist_tracks WHERE job_id = ? AND resolved_path IS NOT NULL LIMIT 1",
+            (job_id,)
+        ).fetchone()
+        rp_artist = conn.execute(
+            "SELECT resolved_path FROM watched_artist_tracks WHERE job_id = ? AND resolved_path IS NOT NULL LIMIT 1",
+            (job_id,)
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = dict(row)
+    if job["status"] not in ("completed", "completed_with_errors"):
+        raise HTTPException(status_code=400, detail="Only completed jobs can be edited")
+    if job.get("file_deleted"):
+        raise HTTPException(status_code=400, detail="File has been deleted")
+
+    old_artist = job.get("artist") or ""
+    old_title  = job.get("title") or ""
+    if not old_artist or not old_title:
+        raise HTTPException(status_code=400, detail="Job has no artist/title metadata")
+
+    # Resolve the file on disk — same priority order as delete_job_file
+    from utils import check_duplicate
+    file_path = None
+    for rp_row in (rp_playlist, rp_artist):
+        if rp_row and rp_row["resolved_path"]:
+            candidate = Path(rp_row["resolved_path"])
+            if candidate.is_absolute() and candidate.exists():
+                file_path = candidate
+                break
+    if file_path is None:
+        file_path = check_duplicate(old_artist, old_title, user_id=user_id)
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    # Work out whether we need to rename (artist or title changed)
+    needs_rename = (new_artist != old_artist) or (new_title != old_title)
+    new_file_path = file_path
+    if needs_rename:
+        new_stem = f"{sanitize_filename(new_artist)} - {sanitize_filename(new_title)}"
+        new_file_path = file_path.parent / (new_stem + file_path.suffix)
+        if new_file_path != file_path and new_file_path.exists():
+            raise HTTPException(status_code=409, detail="A file with that artist and title already exists")
+
+    # Write tags first (in-place, file stays at old path)
+    try:
+        apply_metadata_to_file(
+            file_path,
+            artist=new_artist,
+            title=new_title,
+            album=new_album,
+            year=new_year or None,
+            track_number=new_track_number,
+            track_total=new_track_total,
+            album_artist=new_album_artist or None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write tags: {e}")
+
+    # Rename the file and sidecar if needed
+    if needs_rename and new_file_path != file_path:
+        try:
+            file_path.rename(new_file_path)
+            set_file_permissions(new_file_path)
+            old_lrc = file_path.with_suffix(".lrc")
+            if old_lrc.exists():
+                try:
+                    old_lrc.rename(new_file_path.with_suffix(".lrc"))
+                    set_file_permissions(new_file_path.with_suffix(".lrc"))
+                except OSError:
+                    pass  # Stranded .lrc is a minor nuisance, not worth failing the whole request
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Tags written but rename failed: {e}")
+
+    # Update the database now that disk is consistent
+    resolved_str = str(new_file_path)
+    with db_conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET artist = ?, title = ?, album_name = ? WHERE id = ?",
+            (new_artist, new_title, new_album, job_id)
+        )
+        if rp_playlist:
+            conn.execute(
+                "UPDATE watched_playlist_tracks SET resolved_path = ? WHERE job_id = ?",
+                (resolved_str, job_id)
+            )
+        if rp_artist:
+            conn.execute(
+                "UPDATE watched_artist_tracks SET resolved_path = ? WHERE job_id = ?",
+                (resolved_str, job_id)
+            )
+        conn.commit()
+
+    # Fire-and-forget rescan so library managers pick up the rename/retag
+    spawn_daemon_thread(trigger_navidrome_scan, user_id=user_id)
+    spawn_daemon_thread(trigger_jellyfin_scan, user_id=user_id)
+
+    return {
+        "success": True,
+        "artist": new_artist,
+        "title": new_title,
+        "album": new_album,
+        "album_artist": new_album_artist,
+        "year": new_year,
+        "track_number": new_track_number,
+        "track_total": new_track_total,
+    }
+
+
+@app.get("/api/jobs/{job_id}/musicbrainz-guess")
+def get_job_musicbrainz_guess(job_id: str, artist: str, title: str, http_request: Request):
+    """Return a best-effort MusicBrainz tag guess for a queue item."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    artist = (artist or "").strip()
+    title = (title or "").strip()
+    offset_raw = (http_request.query_params.get("offset") or "0").strip()
+    if not artist or not title:
+        raise HTTPException(status_code=422, detail="Artist and title are required")
+    try:
+        offset = int(offset_raw)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid guess offset")
+    if offset < 0:
+        raise HTTPException(status_code=422, detail="Invalid guess offset")
+
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        row = conn.execute(
+            f"SELECT id, status, file_deleted FROM jobs WHERE id = ? AND {_scope_frag}",
+            (job_id, *_scope_params)
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if row["status"] not in ("completed", "completed_with_errors"):
+        raise HTTPException(status_code=400, detail="Only completed jobs can be edited")
+    if row["file_deleted"]:
+        raise HTTPException(status_code=400, detail="File has been deleted")
+
+    guess = guess_musicbrainz_tags(artist, title, offset=offset)
+    if not guess:
+        raise HTTPException(status_code=404, detail="No more suitable MusicBrainz matches found")
+
+    return guess
 
 
 @app.delete("/api/jobs/cleanup")

@@ -227,6 +227,15 @@ class RetryMissingTrackRequest(BaseModel):
     artist: str
     title: str
 
+class PatchTagsRequest(BaseModel):
+    artist: str = Field(..., min_length=1, max_length=200)
+    title: str = Field(..., min_length=1, max_length=200)
+    album: str = Field("", max_length=200)
+    album_artist: str = Field("", max_length=200)
+    year: str = Field("", max_length=4)
+    track_number: Optional[int] = Field(None, ge=1, le=999)
+    track_total: Optional[int] = Field(None, ge=1, le=999)
+
 class ExploreRequest(BaseModel):
     artist: str
     mode: str = "easy"   # easy / medium / hard
