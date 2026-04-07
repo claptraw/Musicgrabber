@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Music Grabber - A self-hosted music acquisition service
-Searches YouTube, downloads best quality audio with optional conversion to FLAC, drops into Navidrome library
+Searches music sources, downloads best quality audio with optional conversion to FLAC/Opus/MP3, drops into Navidrome/Jellyfin library
 """
 
 import contextlib
