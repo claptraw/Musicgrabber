@@ -7,6 +7,25 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.6.1": {
+        title: "What's New in v2.6.1",
+        sections: [
+            {
+                heading: "MP3 and Opus Quality Settings",
+                items: [
+                    "When MP3 or Opus is selected as the audio format, a quality sub-row now appears in Settings. MP3 offers LAME VBR V2 (~192k, the previous default), V0 (~245k), and fixed CBR 320k/256k/192k/128k. Opus offers 320k down to 96k.",
+                    "Defaults are unchanged, so nothing gets quietly resampled on you. Lockable via MP3_BITRATE and OPUS_BITRATE env vars if you want to enforce a setting across all users.",
+                ]
+            },
+            {
+                heading: "Fixed: Apple Music Playlists Cut Off at ~300 Tracks",
+                items: [
+                    "Apple Music only server-renders around 300 tracks into the initial page HTML, so large playlists were getting silently chopped off.",
+                    "MusicGrabber now fetches the public Apple Music page, extracts the current web bundle URL, pulls the web MusicKit bearer token from that bundle, and walks Apple's paginated `amp-api` track endpoint directly. If that API path fails, it still falls back to the old server-rendered HTML scrape instead of just giving up.",
+                ]
+            },
+        ]
+    },
     "2.6.0": {
         title: "What's New in v2.6.0",
         sections: [

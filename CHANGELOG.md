@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.6.1 (2026-04-07)
+
+### Added
+- **Configurable MP3 and Opus quality**: the Settings tab now shows a quality sub-row when MP3 or Opus is selected. MP3 can be set to LAME VBR V2 (~192k, default), V0 (~245k), or fixed CBR 320k/256k/192k/128k. Opus can be set to 320k (default), 256k, 192k, 128k, or 96k. Both settings respect `MP3_BITRATE` and `OPUS_BITRATE` env vars, which lock the UI field in the usual way. Default behaviour is unchanged, so nobody gets a surprise downgrade
+
+### Fixed
+- **Apple Music playlists truncated at ~300 tracks**: the old HTML scraping path only saw the tracks Apple server-renders into the initial page, so large playlists were silently chopped off. MusicGrabber now loads the public Apple Music page, extracts the current web bundle URL, pulls the web MusicKit bearer token from that bundle, and paginates through Apple's `amp-api` track endpoint directly. Falls back to the server-rendered HTML scrape if the API path fails, so short public playlists still work instead of erroring out.
+
 ## v2.6.0 (2026-04-07)
 
 ### Added

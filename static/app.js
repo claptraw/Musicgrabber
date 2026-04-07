@@ -815,11 +815,45 @@
             const mp3Note = document.getElementById('mp3FormatNote');
             if (mp3Note) mp3Note.style.display = audioFormat === 'mp3' ? 'block' : 'none';
 
+            // Show quality sub-rows only for the relevant format
+            const mp3QualityRow = document.getElementById('mp3QualityRow');
+            if (mp3QualityRow) mp3QualityRow.style.display = audioFormat === 'mp3' ? '' : 'none';
+            const opusQualityRow = document.getElementById('opusQualityRow');
+            if (opusQualityRow) opusQualityRow.style.display = audioFormat === 'opus' ? '' : 'none';
+
             // Keep hidden input in sync so settings save picks it up
             const hiddenInput = document.getElementById('settingAudioFormat');
             if (hiddenInput) hiddenInput.value = audioFormat;
 
             localStorage.setItem(userStorageKey('audioFormat'), audioFormat);
+        }
+
+        function setMp3Bitrate(val) {
+            const valid = ['v2', 'v0', '320k', '256k', '192k', '128k'];
+            if (!valid.includes(val)) val = 'v2';
+            const ids = { v2: 'mp3QualityBtnV2', v0: 'mp3QualityBtnV0', '320k': 'mp3QualityBtn320',
+                          '256k': 'mp3QualityBtn256', '192k': 'mp3QualityBtn192', '128k': 'mp3QualityBtn128' };
+            for (const [k, id] of Object.entries(ids)) {
+                const btn = document.getElementById(id);
+                if (btn) btn.classList.toggle('active', k === val);
+            }
+            const input = document.getElementById('settingMp3Bitrate');
+            if (input) input.value = val;
+            localStorage.setItem(userStorageKey('mp3Bitrate'), val);
+        }
+
+        function setOpusBitrate(val) {
+            const valid = ['320k', '256k', '192k', '128k', '96k'];
+            if (!valid.includes(val)) val = '320k';
+            const ids = { '320k': 'opusQualityBtn320', '256k': 'opusQualityBtn256',
+                          '192k': 'opusQualityBtn192', '128k': 'opusQualityBtn128', '96k': 'opusQualityBtn96' };
+            for (const [k, id] of Object.entries(ids)) {
+                const btn = document.getElementById(id);
+                if (btn) btn.classList.toggle('active', k === val);
+            }
+            const input = document.getElementById('settingOpusBitrate');
+            if (input) input.value = val;
+            localStorage.setItem(userStorageKey('opusBitrate'), val);
         }
 
         const versionLabel = document.getElementById('versionLabel');
@@ -5843,6 +5877,8 @@
             'acoustid_api_key': 'settingAcoustidKey',
             'default_convert_to_flac': 'settingDefaultFlac',
             'audio_format': 'settingAudioFormat',
+            'mp3_bitrate': 'settingMp3Bitrate',
+            'opus_bitrate': 'settingOpusBitrate',
             'min_audio_bitrate': 'settingMinBitrate',
             'singles_subdir': 'settingSinglesSubdir',
             'playlists_subdir': 'settingPlaylistsSubdir',
@@ -5934,10 +5970,10 @@
                         } else {
                             element.value = value || '';
                         }
-                        // Sync format picker buttons when audio_format loads
-                        if (key === 'audio_format') {
-                            setAudioFormat(value);
-                        }
+                        // Sync format and quality picker buttons when their settings load
+                        if (key === 'audio_format') setAudioFormat(value);
+                        if (key === 'mp3_bitrate')  setMp3Bitrate(value);
+                        if (key === 'opus_bitrate') setOpusBitrate(value);
                     }
 
                     // Mark fields locked by env vars

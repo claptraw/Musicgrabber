@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.6.0**
+**v2.6.1**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -405,11 +405,12 @@ slskd organises downloads as `{downloads}/{username}/{filename}`, which MusicGra
 
 ### Playlist Import (Spotify, Amazon Music, Tidal)
 
-MusicGrabber can import tracks from Spotify, Amazon Music, and Tidal playlists. Paste a supported URL in the Bulk Import tab to fetch the track list, then import them via YouTube/Monochrome/SoundCloud.
+MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, and Tidal playlists. Paste a supported URL in the Bulk Import tab to fetch the track list, then import them via YouTube/Monochrome/SoundCloud.
 
 **How it works by source:**
 
 - **Tidal**: One API call to the Monochrome API (`/playlist/`). Returns the full track list instantly; no browser, no auth, no fuss. Public playlists only
+- **Apple Music**: Fetches the public page, extracts Apple's current web MusicKit token from the site bundle, then paginates their `amp-api` track endpoint directly. Falls back to the server-rendered HTML when needed
 - **Amazon Music**: Headless browser scraping via Playwright. Slower but reliable for most public playlists
 - **Spotify small playlists (under ~100 tracks)**: Uses Spotify's embed endpoint to quickly fetch track data
 - **Spotify large playlists (100+ tracks)**: Automatically falls back to headless browser scraping

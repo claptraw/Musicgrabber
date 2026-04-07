@@ -542,9 +542,33 @@
                         </div>
                         <span class="settings-hint settings-hint-full">The format all downloads are converted to. FLAC and ALAC are lossless. Opus is high-quality lossy (smaller files). MP3 for maximum compatibility.</span>
                         <span id="alacFormatNote" style="display:none;" class="mp3-format-note">ALAC is lossless, saved as .m4a. Good for modded iPods and Apple devices.</span>
-                        <span id="mp3FormatNote" style="display:none;" class="mp3-format-note">MP3 is encoded at ~192 kbps variable bitrate. May cause quality loss if the source is already lossy (e.g. from YouTube).</span>
+                        <span id="mp3FormatNote" style="display:none;" class="mp3-format-note">MP3 may cause quality loss if the source is already lossy (e.g. from YouTube).</span>
+                        <div id="mp3QualityRow" style="display:none;margin-top:6px;">
+                            <span class="settings-label-sub">MP3 Quality</span>
+                            <div class="format-btn-group">
+                                <button type="button" id="mp3QualityBtnV2"  class="format-option active" onclick="setMp3Bitrate('v2');  saveSettings();">V2 ~192k</button>
+                                <button type="button" id="mp3QualityBtnV0"  class="format-option"        onclick="setMp3Bitrate('v0');  saveSettings();">V0 ~245k</button>
+                                <button type="button" id="mp3QualityBtn320" class="format-option"        onclick="setMp3Bitrate('320k'); saveSettings();">320k</button>
+                                <button type="button" id="mp3QualityBtn256" class="format-option"        onclick="setMp3Bitrate('256k'); saveSettings();">256k</button>
+                                <button type="button" id="mp3QualityBtn192" class="format-option"        onclick="setMp3Bitrate('192k'); saveSettings();">192k</button>
+                                <button type="button" id="mp3QualityBtn128" class="format-option"        onclick="setMp3Bitrate('128k'); saveSettings();">128k</button>
+                            </div>
+                            <span class="settings-hint settings-hint-full">V0 and V2 are variable bitrate (VBR); the rest are constant bitrate (CBR). VBR is generally better quality per byte.</span>
+                        </div>
+                        <div id="opusQualityRow" style="display:none;margin-top:6px;">
+                            <span class="settings-label-sub">Opus Bitrate</span>
+                            <div class="format-btn-group">
+                                <button type="button" id="opusQualityBtn320" class="format-option active" onclick="setOpusBitrate('320k'); saveSettings();">320k</button>
+                                <button type="button" id="opusQualityBtn256" class="format-option"        onclick="setOpusBitrate('256k'); saveSettings();">256k</button>
+                                <button type="button" id="opusQualityBtn192" class="format-option"        onclick="setOpusBitrate('192k'); saveSettings();">192k</button>
+                                <button type="button" id="opusQualityBtn128" class="format-option"        onclick="setOpusBitrate('128k'); saveSettings();">128k</button>
+                                <button type="button" id="opusQualityBtn96"  class="format-option"        onclick="setOpusBitrate('96k');  saveSettings();">96k</button>
+                            </div>
+                        </div>
                         <input type="checkbox" id="settingDefaultFlac" checked style="display:none;">
                         <input type="text" id="settingAudioFormat" value="flac" style="display:none;">
+                        <input type="hidden" id="settingMp3Bitrate" value="v2">
+                        <input type="hidden" id="settingOpusBitrate" value="320k">
                     </label>
                     <label class="settings-label settings-label-wrap">
                         <span>Organise by Artist</span>

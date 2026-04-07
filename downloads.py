@@ -879,9 +879,16 @@ def _build_ytdlp_download_cmd(
     else:
         fmt = None
         format_args = []  # Keep original format from source
-    # MP3 VBR ~192k (LAME -V 2)  -  good trade-off between size and quality.
-    # For FLAC/Opus/ALAC, quality 0 = best (lossless / highest bitrate).
-    audio_quality = "2" if fmt == "mp3" else "0"
+    # yt-dlp passes --audio-quality straight to ffmpeg: a digit (0-9) for VBR,
+    # or a bitrate like "320K" for CBR. We read the user's setting and translate accordingly.
+    if fmt == "mp3":
+        q = get_setting("mp3_bitrate", "v2")
+        audio_quality = q[1] if q.startswith("v") else q.upper()  # "v2"->"2", "320k"->"320K"
+    elif fmt == "opus":
+        q = get_setting("opus_bitrate", "320k")
+        audio_quality = q.upper()  # "320k" -> "320K"
+    else:
+        audio_quality = "0"  # best for FLAC/ALAC
     base_args = _ytdlp_base_args() if use_cookies else []
     url = source_url or f"https://www.youtube.com/watch?v={video_id}"
     return [
@@ -1495,13 +1502,33 @@ def _recover_from_ytdlp_postprocess_failure(artist_dir: Path, sanitized_title: s
     return audio_file
 
 
-# Format codec map shared by _enforce_target_format and the Monochrome/Soulseek converters
+# Format codec map for validation and lossless formats. MP3/Opus use _get_lossy_codec_args
+# so their quality is read from settings at runtime rather than baked in here.
 _FORMAT_CODEC_MAP = {
     "flac": ("flac", [], ".flac"),
-    "mp3": ("libmp3lame", ["-q:a", "2"], ".mp3"),
-    "opus": ("libopus", ["-b:a", "320k"], ".opus"),
+    "mp3": ("libmp3lame", ["-q:a", "2"], ".mp3"),   # default; overridden by _get_lossy_codec_args
+    "opus": ("libopus", ["-b:a", "320k"], ".opus"),  # default; overridden by _get_lossy_codec_args
     "alac": ("alac", [], ".m4a"),
 }
+
+
+def _get_lossy_codec_args(fmt: str, user_id: str | None = None) -> tuple[str, list, str]:
+    """Return (ffmpeg_codec, extra_args, file_extension) for the given audio format.
+
+    For MP3 and Opus, reads the quality/bitrate setting so the user's preference is
+    respected at every conversion site. Falls back to _FORMAT_CODEC_MAP for lossless.
+    """
+    if fmt == "mp3":
+        q = get_setting("mp3_bitrate", "v2", user_id=user_id)
+        if q.startswith("v"):
+            extra = ["-q:a", q[1]]   # "v2" -> ["-q:a", "2"] (VBR)
+        else:
+            extra = ["-b:a", q]       # "320k" -> ["-b:a", "320k"] (CBR)
+        return "libmp3lame", extra, ".mp3"
+    if fmt == "opus":
+        q = get_setting("opus_bitrate", "320k", user_id=user_id)
+        return "libopus", ["-b:a", q], ".opus"
+    return _FORMAT_CODEC_MAP[fmt]
 
 
 def _enforce_target_format(audio_file: Path, convert_to_flac: bool, user_id: str | None = None) -> Path:
@@ -1518,7 +1545,7 @@ def _enforce_target_format(audio_file: Path, convert_to_flac: bool, user_id: str
     if target_fmt not in _FORMAT_CODEC_MAP:
         target_fmt = "flac"
 
-    codec, extra_args, target_ext = _FORMAT_CODEC_MAP[target_fmt]
+    codec, extra_args, target_ext = _get_lossy_codec_args(target_fmt, user_id=user_id)
     if audio_file.suffix.lower() == target_ext:
         return audio_file  # Already the right format
 
@@ -2688,19 +2715,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
         if needs_convert:
             _update_job(job_id, progress_stage="Converting audio")
-            # Convert to the target format
-            if audio_fmt == "flac":
-                ffmpeg_codec = "flac"
-                extra_args = []
-            elif audio_fmt == "alac":
-                ffmpeg_codec = "alac"
-                extra_args = []
-            elif audio_fmt == "opus":
-                ffmpeg_codec = "libopus"
-                extra_args = ["-b:a", "320k"]
-            else:  # mp3  -  VBR ~192k
-                ffmpeg_codec = "libmp3lame"
-                extra_args = ["-q:a", "2"]
+            ffmpeg_codec, extra_args, _ = _get_lossy_codec_args(audio_fmt, user_id=user_id)
             final_file = artist_dir / f"{sanitized_title}{target_ext}"
             convert_cmd = ["ffmpeg", "-y", "-i", str(downloaded_file), "-c:a", ffmpeg_codec, *extra_args]
             convert_cmd.append(str(final_file))
@@ -3189,18 +3204,8 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         # MusicBrainz so the conversion is never wasted on a file we'd reject anyway.
         if audio_fmt != "flac":
             _update_job(job_id, progress_stage="Converting audio")
-            if audio_fmt == "alac":
-                ffmpeg_codec = "alac"
-                extra_args = []
-                converted_path = output_path.with_suffix(".m4a")
-            elif audio_fmt == "opus":
-                ffmpeg_codec = "libopus"
-                extra_args = ["-b:a", "320k"]
-                converted_path = output_path.with_suffix(f".{audio_fmt}")
-            else:  # mp3
-                ffmpeg_codec = "libmp3lame"
-                extra_args = ["-q:a", "2"]
-                converted_path = output_path.with_suffix(f".{audio_fmt}")
+            ffmpeg_codec, extra_args, target_ext = _get_lossy_codec_args(audio_fmt, user_id=user_id)
+            converted_path = output_path.with_suffix(target_ext)
             convert_cmd = ["ffmpeg", "-y", "-i", str(output_path), "-c:a", ffmpeg_codec, *extra_args, str(converted_path)]
             conv_result = subprocess.run(convert_cmd, capture_output=True, timeout=TIMEOUT_FFMPEG_CONVERT)
             if conv_result.returncode == 0:
@@ -3498,7 +3503,7 @@ def _process_mp3phoenix_download(job_id: str, download_url: str, artist_hint: st
             audio_fmt = get_setting("audio_format", "flac", user_id=user_id)
             if audio_fmt not in _FORMAT_CODEC_MAP:
                 audio_fmt = "flac"
-            codec, extra_args, target_ext = _FORMAT_CODEC_MAP[audio_fmt]
+            codec, extra_args, target_ext = _get_lossy_codec_args(audio_fmt, user_id=user_id)
             if target_ext == ".mp3":
                 # Already MP3, no conversion needed
                 output_path = mp3_path
