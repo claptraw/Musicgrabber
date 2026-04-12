@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.6.2 (2026-04-12)
+
+### Fixed
+- **Album downloads could wrongly fail retried tracks as duplicates**: when an album track failed and was retried, the transient `skip_dupe_check` flag was lost, so the retry could find the artist/title in your Singles folder and bail out instead of downloading the album version. Album track state is now persisted in a new `album_track_locks` table: the lock is created when the track is queued and cleared only when the file lands on disk. Any retry, regardless of how it was triggered, consults the lock and skips dupe checking for the duration
+
 ## v2.6.1 (2026-04-07)
 
 ### Added

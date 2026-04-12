@@ -618,6 +618,27 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_search_decisions_job ON search_decisions(job_id)"
         )
 
+        # Album track locks  -  records which artist/title combinations are actively
+        # being processed for album downloads.  Persists across failures so retries
+        # still bypass dupe check.  Cleared only on success or by the stale monitor.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS album_track_locks (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            release_mbid TEXT,
+            album_name   TEXT NOT NULL,
+            album_artist TEXT NOT NULL,
+            track_title  TEXT NOT NULL COLLATE NOCASE,
+            status       TEXT NOT NULL DEFAULT 'pending',
+            job_id       TEXT,
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_atl_track "
+            "ON album_track_locks (album_artist, track_title)"
+        )
+
         # --- DB version tracking ---
         # Version is stored in settings as 'db_version' (integer string).
         # Increment when table recreations or other irreversible migrations run.
@@ -731,6 +752,100 @@ def init_db():
         conn.commit()
 
 
+def upsert_album_track_lock(
+    release_mbid: str | None,
+    album_name: str,
+    album_artist: str,
+    track_title: str,
+    job_id: str,
+) -> None:
+    """Insert or update an album track lock to mark a track as in-flight.
+
+    Safe to call multiple times for the same track; subsequent calls just update
+    the job_id and bump status to 'downloading'.
+    """
+    with db_conn() as conn:
+        if release_mbid:
+            conn.execute(
+                """INSERT INTO album_track_locks
+                   (release_mbid, album_name, album_artist, track_title, status, job_id)
+                   VALUES (?, ?, ?, ?, 'downloading', ?)
+                   ON CONFLICT(release_mbid, track_title)
+                   DO UPDATE SET status = 'downloading', job_id = excluded.job_id""",
+                (release_mbid, album_name, album_artist, track_title, job_id),
+            )
+        else:
+            # No MBID — folder-only routing.  Check for an existing pending row first
+            # to avoid stacking up duplicates from rapid retries.
+            existing = conn.execute(
+                "SELECT id FROM album_track_locks "
+                "WHERE release_mbid IS NULL AND album_name = ? AND track_title = ?",
+                (album_name, track_title),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE album_track_locks SET status = 'downloading', job_id = ? "
+                    "WHERE id = ?",
+                    (job_id, existing[0]),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO album_track_locks
+                       (release_mbid, album_name, album_artist, track_title, status, job_id)
+                       VALUES (NULL, ?, ?, ?, 'downloading', ?)""",
+                    (album_name, album_artist, track_title, job_id),
+                )
+        conn.commit()
+
+
+def complete_album_track_lock(
+    release_mbid: str | None,
+    track_title: str,
+    album_name: str,
+) -> None:
+    """Mark an album track lock as completed once the file is safely on disk."""
+    with db_conn() as conn:
+        if release_mbid:
+            conn.execute(
+                "UPDATE album_track_locks SET status = 'completed', completed_at = datetime('now') "
+                "WHERE release_mbid = ? AND track_title = ?",
+                (release_mbid, track_title),
+            )
+        else:
+            conn.execute(
+                "UPDATE album_track_locks SET status = 'completed', completed_at = datetime('now') "
+                "WHERE release_mbid IS NULL AND album_name = ? AND track_title = ?",
+                (album_name, track_title),
+            )
+        conn.commit()
+
+
+def get_album_track_lock(
+    release_mbid: str | None,
+    track_title: str | None,
+    album_name: str | None,
+) -> dict | None:
+    """Return the lock row for an album track, or None if no active lock exists."""
+    if not track_title:
+        return None
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        if release_mbid:
+            row = conn.execute(
+                "SELECT * FROM album_track_locks WHERE release_mbid = ? AND track_title = ?",
+                (release_mbid, track_title),
+            ).fetchone()
+        elif album_name:
+            row = conn.execute(
+                "SELECT * FROM album_track_locks "
+                "WHERE release_mbid IS NULL AND album_name = ? AND track_title = ?",
+                (album_name, track_title),
+            ).fetchone()
+        else:
+            return None
+    return dict(row) if row else None
+
+
 def cleanup_old_search_logs(retention_days: int = SEARCH_LOG_RETENTION_DAYS) -> int:
     """Delete search log rows older than retention window. Returns deleted row count."""
     with db_conn() as conn:
@@ -756,6 +871,17 @@ def cleanup_stale_jobs():
         )
         if cursor.rowcount > 0:
             print(f"Cleaned up {cursor.rowcount} stale job(s)")
+
+        # Evict album track locks that never reached completed status  -  these are
+        # orphans from crashed workers or abandoned imports.  24-hour threshold gives
+        # plenty of headroom for slow downloads without leaving ghosts forever.
+        lock_cursor = conn.execute(
+            "DELETE FROM album_track_locks "
+            "WHERE status != 'completed' AND created_at < datetime('now', '-24 hours')"
+        )
+        if lock_cursor.rowcount > 0:
+            print(f"Evicted {lock_cursor.rowcount} stale album track lock(s)")
+
         conn.commit()
 
 

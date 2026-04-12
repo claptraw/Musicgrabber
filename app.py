@@ -33,7 +33,7 @@ from constants import (
     DOWNLOAD_TOKEN_TTL_SECONDS,
     AUDIO_EXTENSIONS,
 )
-from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs, cleanup_old_search_logs
+from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs, cleanup_old_search_logs, upsert_album_track_lock
 from settings import (
     get_setting, get_setting_bool, set_setting, set_user_setting, get_singles_dir, get_playlists_dir,
     get_albums_dir,
@@ -45,7 +45,7 @@ from models import (
     WatchedArtistRequest, WatchedArtistUpdate,
     SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestLidarrRequest, TestYouTubeCookiesRequest,
-    TestAppriseRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest,
+    TestAppriseRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest, QueueMissingTrackCandidateRequest,
     AlbumDownloadRequest, ExploreRequest, PatchTagsRequest,
     LoginRequest, ChangePasswordRequest, CreateUserRequest,
     SetUserPasswordRequest, SetUserRoleRequest,
@@ -1841,6 +1841,12 @@ def download(body: DownloadRequest, http_request: Request):
             )
         conn.commit()
 
+    # If this is an album-routed single track, register a lock so any retry
+    # can skip dupe check without relying on the transient skip_dupe_check flag.
+    if override_dir and album_track_title:
+        _route_artist = album_artist or (artist or "").strip()
+        upsert_album_track_lock(album_release_mbid, album_name or "", _route_artist, album_track_title, job_id)
+
     # Queue the download based on source
     if body.download_type == "playlist":
         spawn_daemon_thread(process_playlist_download, job_id, body.video_id, title, body.convert_to_flac, True,
@@ -3356,6 +3362,158 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
     )
 
     return {"import_id": import_id, "status": "queued", "message": f"Searching for {request.artist} - {request.title}"}
+
+
+@app.get("/api/watched-playlists/{playlist_id}/track-candidates")
+def get_watched_playlist_track_candidates(
+    playlist_id: str,
+    artist: str,
+    title: str,
+    http_request: Request,
+    limit: int = 4,
+):
+    """Return top manual-pick candidates for a missing watched-playlist track."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    artist = (artist or "").strip()
+    title = (title or "").strip()
+    if not artist or not title:
+        raise HTTPException(status_code=400, detail="artist and title are required")
+
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        playlist = conn.execute(
+            f"""SELECT id, preferred_sources
+                FROM watched_playlists
+                WHERE id = ? AND {_scope_frag}""",
+            (playlist_id, *_scope_params)
+        ).fetchone()
+
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Watched playlist not found")
+
+    preferred_sources = playlist["preferred_sources"] or "all"
+    sources = None if preferred_sources == "all" else [s.strip() for s in preferred_sources.split(",") if s.strip()]
+    query = f"{artist} - {title}".strip(" -")
+    fetch_limit = max(1, min(limit, 10))
+    results, _ = search_all(query, limit=fetch_limit, sources=sources)
+
+    return {
+        "query": query,
+        "results": results[:fetch_limit],
+    }
+
+
+@app.post("/api/watched-playlists/{playlist_id}/queue-track-candidate")
+def queue_watched_playlist_track_candidate(
+    playlist_id: str,
+    request: QueueMissingTrackCandidateRequest,
+    http_request: Request,
+):
+    """Queue a specific candidate for a missing watched-playlist track."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    source = (request.source or "youtube").strip().lower()
+    artist = (request.artist or "").strip()
+    title = (request.title or "").strip()
+    if not artist or not title:
+        raise HTTPException(status_code=400, detail="artist and title are required")
+
+    if source == "youtube":
+        if not request.video_id or not is_valid_youtube_id(request.video_id):
+            raise HTTPException(status_code=400, detail="Invalid YouTube video ID")
+    elif source in URL_BASED_SOURCES:
+        if not request.source_url:
+            raise HTTPException(status_code=400, detail=f"{source.capitalize()} candidate requires source_url")
+    elif source == "soulseek":
+        if not (request.slskd_username and request.slskd_filename):
+            raise HTTPException(status_code=400, detail="Soulseek candidate requires username and filename")
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported source: {source}")
+
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        playlist = conn.execute(
+            f"""SELECT id, name, convert_to_flac, use_playlists_dir
+                FROM watched_playlists
+                WHERE id = ? AND {_scope_frag}""",
+            (playlist_id, *_scope_params)
+        ).fetchone()
+        if not playlist:
+            raise HTTPException(status_code=404, detail="Watched playlist not found")
+
+        track_hash = hash_track(artist, title)
+        track = conn.execute(
+            "SELECT playlist_id FROM watched_playlist_tracks WHERE playlist_id = ? AND track_hash = ?",
+            (playlist_id, track_hash),
+        ).fetchone()
+        if not track:
+            raise HTTPException(status_code=404, detail="Watched playlist track not found")
+
+        job_id = str(uuid.uuid4())[:8]
+        if source == "soulseek":
+            source_url = f"soulseek://{request.slskd_username}/{request.slskd_filename}"
+        elif source in URL_BASED_SOURCES:
+            source_url = request.source_url
+        else:
+            source_url = f"https://www.youtube.com/watch?v={request.video_id}"
+
+        conn.execute(
+            """INSERT INTO jobs
+               (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename,
+                convert_to_flac, source_url, user_id)
+               VALUES (?, ?, ?, ?, 'queued', 'single', ?, ?, ?, ?, ?, ?)""",
+            (
+                job_id,
+                request.video_id,
+                title,
+                artist,
+                source,
+                request.slskd_username,
+                request.slskd_filename,
+                int(bool(playlist["convert_to_flac"])),
+                source_url,
+                user_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE watched_playlist_tracks SET job_id = ?, downloaded_at = NULL WHERE playlist_id = ? AND track_hash = ?",
+            (job_id, playlist_id, track_hash),
+        )
+        conn.commit()
+
+    convert_to_flac = bool(playlist["convert_to_flac"])
+    playlist_name = playlist["name"] if playlist["use_playlists_dir"] else None
+    use_playlists_dir = bool(playlist["use_playlists_dir"])
+
+    if source == "soulseek":
+        spawn_daemon_thread(
+            process_slskd_download,
+            job_id,
+            request.slskd_username,
+            request.slskd_filename,
+            artist,
+            title,
+            convert_to_flac,
+            user_id=user_id,
+            playlist_name=playlist_name,
+            use_playlists_dir=use_playlists_dir,
+        )
+    else:
+        spawn_daemon_thread(
+            process_download,
+            job_id,
+            request.video_id,
+            convert_to_flac,
+            source_url=source_url,
+            playlist_name=playlist_name,
+            use_playlists_dir=use_playlists_dir,
+            user_id=user_id,
+        )
+
+    return {"job_id": job_id, "status": "queued", "message": f"Queued {artist} - {title}"}
 
 
 @app.post("/api/watched-playlists/{playlist_id}/refresh")

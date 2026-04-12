@@ -9,10 +9,11 @@ import sqlite3
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Optional
 
 from constants import BULK_IMPORT_SEARCH_DELAY
-from db import db_conn
+from db import db_conn, upsert_album_track_lock
 from downloads import process_download, create_bulk_playlist
 from notifications import send_notification
 from search import search_all, log_ranked_results
@@ -207,6 +208,7 @@ def process_bulk_import_worker(import_id: str):
         use_playlists_dir = bool(import_row["use_playlists_dir"])
         user_id = import_row["user_id"]
         override_dir = import_row["override_dir"]  # absolute path string or None
+        album_release_mbid = (import_row["album_release_mbid"] or "").strip() or None
         _preferred_sources_raw = import_row["preferred_sources"] or "all"
         # Parse "youtube,soundcloud" into ["youtube", "soundcloud"], or None for "all"
         preferred_sources_list = (
@@ -417,6 +419,16 @@ def process_bulk_import_worker(import_id: str):
                 # Album downloads (override_dir set) bypass dupe checks — you picked the album
                 # intentionally, and the track lives in Albums/ not Singles/ anyway.
                 _skip_dupes = bool(override_dir)
+
+                # Register the album track lock so retries stay dupe-check-free
+                # even if the thread that spawned them lost the skip_dupe_check flag.
+                if override_dir:
+                    _od = Path(override_dir)
+                    _album_name_lock = _od.name or ""
+                    _album_artist_lock = _od.parent.name or ""
+                    upsert_album_track_lock(
+                        album_release_mbid, _album_name_lock, _album_artist_lock, song, job_id
+                    )
                 if source == "mp3phoenix":
                     spawn_daemon_thread(process_download, job_id, video_id, convert_to_flac,
                                         source_url, _pname, use_playlists_dir,

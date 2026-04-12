@@ -3661,6 +3661,99 @@ h1 {
 
 /* Report overlay uses the shared .modal-overlay class */
 
+.missing-track-modal-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    width: min(760px, 94vw);
+    max-width: 94vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+}
+
+.missing-track-modal-toolbar {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.missing-track-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+    min-height: 180px;
+}
+
+.missing-track-modal-empty {
+    padding: 18px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.missing-track-candidate {
+    position: relative;
+}
+
+.missing-track-candidate .result-item {
+    padding-right: 148px;
+}
+
+.missing-track-candidate-actions {
+    position: absolute;
+    top: 50%;
+    right: 14px;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 2;
+}
+
+.missing-track-candidate-btn {
+    padding: 9px 14px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    background: var(--accent);
+    color: #000;
+}
+
+.missing-track-candidate-btn:disabled {
+    opacity: 0.65;
+    cursor: default;
+}
+
+@media (max-width: 640px) {
+    .missing-track-modal-card {
+        width: min(100vw - 16px, 100vw);
+        padding: 18px;
+        border-radius: 14px;
+    }
+
+    .missing-track-candidate .result-item {
+        padding-right: 16px;
+        padding-bottom: 62px;
+    }
+
+    .missing-track-candidate-actions {
+        top: auto;
+        bottom: 12px;
+        right: 12px;
+        transform: none;
+    }
+}
+
 .report-card {
     background: var(--bg-secondary);
     border: 1px solid var(--border);

@@ -7,6 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.6.2": {
+        title: "What's New in v2.6.2",
+        sections: [
+            {
+                heading: "Fixed: Album Retries Blocked by Dupe Check",
+                items: [
+                    "When an album track failed and was retried, it could get blocked by the duplicate checker finding the same artist/title in your Singles folder and refusing to download again. The album download intent is now stored in the database as a lock that persists through failures, so any retry skips dupe checking until the file is safely on disk, then releases the lock.",
+                ]
+            },
+        ]
+    },
     "2.6.1": {
         title: "What's New in v2.6.1",
         sections: [

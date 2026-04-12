@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.6.1**
+**v2.6.2**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -752,7 +752,9 @@ music.yourdomain.com {
 | `POST` | `/api/watched-playlists/{id}/refresh` | Check playlist for new tracks |
 | `GET` | `/api/watched-playlists/{id}/missing` | List tracks with no successful download |
 | `GET` | `/api/watched-playlists/{id}/tracks` | List all tracks with per-track status |
-| `POST` | `/api/watched-playlists/{id}/retry-track` | Retry a specific missing track |
+| `GET` | `/api/watched-playlists/{id}/track-candidates` | Search top candidate matches for a missing watched-playlist track (`?artist=...&title=...&limit=4`) |
+| `POST` | `/api/watched-playlists/{id}/queue-track-candidate` | Queue a specific watched-playlist candidate (`{artist, title, video_id, source, source_url?, slskd_username?, slskd_filename?}`) |
+| `POST` | `/api/watched-playlists/{id}/retry-track` | Retry a specific missing track with the automatic watched-playlist search (`{artist, title}`) |
 | `POST` | `/api/watched-playlists/check-all` | Check all watched playlists |
 
 ### Watched Artists

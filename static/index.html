@@ -1091,6 +1091,24 @@
         </div>
     </div>
 
+    <div id="missingTrackVersionsOverlay" style="display:none;" class="modal-overlay">
+        <div class="missing-track-modal-card" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <div>
+                    <h3 class="modal-title">Find Versions</h3>
+                    <div id="missingTrackVersionsMeta" class="tag-editor-meta"></div>
+                </div>
+                <button onclick="closeMissingTrackVersionsModal()" class="modal-close-btn" title="Close">&#x2715;</button>
+            </div>
+
+            <div class="missing-track-modal-toolbar">
+                <button type="button" id="missingTrackVersionsRefreshBtn" class="tag-editor-secondary-btn">Refresh Results</button>
+            </div>
+
+            <div id="missingTrackVersionsBody" class="missing-track-modal-body"></div>
+        </div>
+    </div>
+
     <div class="toast" id="toast"></div>
     <audio id="previewAudio" preload="none"></audio>
 

@@ -227,6 +227,15 @@ class RetryMissingTrackRequest(BaseModel):
     artist: str
     title: str
 
+class QueueMissingTrackCandidateRequest(BaseModel):
+    artist: str
+    title: str
+    video_id: str
+    source: str = "youtube"
+    source_url: Optional[str] = None
+    slskd_username: Optional[str] = None
+    slskd_filename: Optional[str] = None
+
 class PatchTagsRequest(BaseModel):
     artist: str = Field(..., min_length=1, max_length=200)
     title: str = Field(..., min_length=1, max_length=200)

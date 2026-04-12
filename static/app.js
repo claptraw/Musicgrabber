@@ -140,6 +140,15 @@
             return APP_ROOT_PATH ? `${APP_ROOT_PATH}/${value.replace(/^\/+/, '')}` : `/${value.replace(/^\/+/, '')}`;
         }
 
+        const missingTrackVersionsState = {
+            playlistId: '',
+            playlistName: '',
+            artist: '',
+            title: '',
+            rowId: '',
+            results: [],
+        };
+
         function getSessionToken() {
             return localStorage.getItem('sessionToken') || '';
         }
@@ -1669,6 +1678,54 @@
             }
         }
 
+        function _renderMissingTrackCandidate(result, index) {
+            return `
+                <div class="missing-track-candidate">
+                    ${_renderOneResult(result, index)}
+                    <div class="missing-track-candidate-actions">
+                        <button type="button"
+                            class="missing-track-candidate-btn"
+                            data-action="queue-missing-track-candidate"
+                            data-index="${index}">Use This</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function _attachMissingTrackCandidateHandlers(wrapper, result, index) {
+            const item = wrapper.querySelector('.result-item');
+            if (item) {
+                const videoId = item.dataset.videoId;
+                item.addEventListener('mouseenter', () => {
+                    if (result.source !== 'soulseek') {
+                        startHoverTimer(videoId, item, result);
+                    }
+                });
+                item.addEventListener('mouseleave', () => stopPreview());
+
+                const previewBtn = item.querySelector('.preview-btn');
+                if (previewBtn) {
+                    previewBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (currentPreviewId === videoId) {
+                            stopPreview();
+                        } else {
+                            startPreview(videoId, item, result);
+                        }
+                    });
+                }
+            }
+
+            const btn = wrapper.querySelector('[data-action="queue-missing-track-candidate"]');
+            if (btn) {
+                btn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    queueMissingTrackCandidate(index, btn);
+                });
+            }
+        }
+
         function getSourceBadge(source) {
             const badges = { youtube: 'YT', mp3phoenix: 'PX', soundcloud: 'SC', monochrome: 'MO', soulseek: 'SLK' };
             return badges[source] || source.toUpperCase().slice(0, 3);
@@ -1825,6 +1882,115 @@
                     });
                 }
             });
+        }
+
+        async function loadMissingTrackVersions() {
+            const body = document.getElementById('missingTrackVersionsBody');
+            const meta = document.getElementById('missingTrackVersionsMeta');
+            if (!body || !meta) return;
+
+            meta.textContent = `${missingTrackVersionsState.playlistName || 'Watched playlist'} • ${missingTrackVersionsState.artist} - ${missingTrackVersionsState.title}`;
+            body.innerHTML = '<div class="missing-track-modal-empty">Searching for alternatives...</div>';
+
+            try {
+                const params = new URLSearchParams({
+                    artist: missingTrackVersionsState.artist,
+                    title: missingTrackVersionsState.title,
+                    limit: '4',
+                });
+                const resp = await apiFetch(`/api/watched-playlists/${encodeURIComponent(missingTrackVersionsState.playlistId)}/track-candidates?${params.toString()}`);
+                if (!resp.ok) throw new Error('Search failed');
+                const data = await resp.json();
+                const results = Array.isArray(data.results) ? data.results : [];
+                missingTrackVersionsState.results = results;
+
+                if (!results.length) {
+                    body.innerHTML = '<div class="missing-track-modal-empty">No alternatives found. Retry will still run the automatic watched-playlist search, or Search will open the full Results tab.</div>';
+                    return;
+                }
+
+                body.innerHTML = results.map((result, index) => _renderMissingTrackCandidate(result, index)).join('');
+                body.querySelectorAll('.missing-track-candidate').forEach((wrapper, index) => {
+                    _attachMissingTrackCandidateHandlers(wrapper, results[index], index);
+                });
+            } catch (error) {
+                body.innerHTML = '<div class="missing-track-modal-empty">Could not load alternatives right now.</div>';
+            }
+        }
+
+        async function openMissingTrackVersionsModal(playlistId, playlistName, artist, title, rowId) {
+            missingTrackVersionsState.playlistId = playlistId;
+            missingTrackVersionsState.playlistName = playlistName;
+            missingTrackVersionsState.artist = artist;
+            missingTrackVersionsState.title = title;
+            missingTrackVersionsState.rowId = rowId || '';
+            missingTrackVersionsState.results = [];
+            document.getElementById('missingTrackVersionsOverlay').style.display = 'flex';
+            await loadMissingTrackVersions();
+        }
+
+        function closeMissingTrackVersionsModal() {
+            stopPreview();
+            missingTrackVersionsState.playlistId = '';
+            missingTrackVersionsState.playlistName = '';
+            missingTrackVersionsState.artist = '';
+            missingTrackVersionsState.title = '';
+            missingTrackVersionsState.rowId = '';
+            missingTrackVersionsState.results = [];
+            document.getElementById('missingTrackVersionsOverlay').style.display = 'none';
+        }
+
+        async function queueMissingTrackCandidate(index, btn) {
+            const result = missingTrackVersionsState.results[index];
+            if (!result) return;
+
+            const originalText = btn ? btn.textContent : '';
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Queueing...';
+            }
+
+            try {
+                const payload = {
+                    artist: missingTrackVersionsState.artist,
+                    title: missingTrackVersionsState.title,
+                    video_id: result.video_id || '',
+                    source: result.source || 'youtube',
+                    source_url: result.source_url || null,
+                    slskd_username: result.slskd_username || null,
+                    slskd_filename: result.slskd_filename || null,
+                };
+                const resp = await apiFetch(`/api/watched-playlists/${encodeURIComponent(missingTrackVersionsState.playlistId)}/queue-track-candidate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Failed to queue candidate');
+                }
+
+                const row = missingTrackVersionsState.rowId ? document.getElementById(missingTrackVersionsState.rowId) : null;
+                if (row) {
+                    const retryBtn = row.querySelector('[data-action="retry-missing-track"]');
+                    if (retryBtn) {
+                        retryBtn.disabled = true;
+                        retryBtn.textContent = 'Queued';
+                    }
+                }
+
+                showToast(`Queued ${missingTrackVersionsState.artist} - ${missingTrackVersionsState.title}`);
+                closeMissingTrackVersionsModal();
+                if (document.querySelector('.tab.active[data-tab="queue"]')) {
+                    loadJobs(false);
+                }
+            } catch (error) {
+                showToast(error?.message || 'Failed to queue candidate', true);
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = originalText || 'Use This';
+                }
+            }
         }
 
         async function downloadTrack(result, element) {
@@ -2861,6 +3027,12 @@
         // Close on overlay click (not the dialog itself)
         document.getElementById('reportOverlay').addEventListener('click', (e) => {
             if (e.target === e.currentTarget) closeReportDialog();
+        });
+        document.getElementById('missingTrackVersionsOverlay').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closeMissingTrackVersionsModal();
+        });
+        document.getElementById('missingTrackVersionsRefreshBtn').addEventListener('click', () => {
+            loadMissingTrackVersions();
         });
 
         async function submitReport() {
@@ -3984,6 +4156,17 @@
                 return;
             }
 
+            if (action === 'find-missing-track-versions') {
+                openMissingTrackVersionsModal(
+                    btn.dataset.playlistId || '',
+                    btn.dataset.playlistName || '',
+                    btn.dataset.artist || '',
+                    btn.dataset.title || '',
+                    btn.dataset.rowId || ''
+                );
+                return;
+            }
+
             if (action === 'replace-watched-track') {
                 replaceTrack(
                     btn.dataset.playlistId || '',
@@ -4905,10 +5088,19 @@
                          <button type="button"
                              data-action="retry-missing-track"
                              data-playlist-id="${escapeAttr(playlistId)}"
+                             data-playlist-name="${escapeAttr(data.playlist_name)}"
                              data-artist="${escapeAttr(t.artist)}"
                              data-title="${escapeAttr(t.title)}"
                              data-row-id="${escapeAttr(rowId)}"
                              class="track-action-btn" title="Auto-search and re-queue">Retry</button>
+                         <button type="button"
+                             data-action="find-missing-track-versions"
+                             data-playlist-id="${escapeAttr(playlistId)}"
+                             data-playlist-name="${escapeAttr(data.playlist_name)}"
+                             data-artist="${escapeAttr(t.artist)}"
+                             data-title="${escapeAttr(t.title)}"
+                             data-row-id="${escapeAttr(rowId)}"
+                             class="track-action-btn" title="Preview and pick from the top alternatives">Find Versions</button>
                          <button type="button"
                              data-action="search-missing-track"
                              data-playlist-id="${escapeAttr(playlistId)}"
@@ -4960,10 +5152,19 @@
                             <button type="button"
                                 data-action="retry-missing-track"
                                 data-playlist-id="${escapeAttr(playlistId)}"
+                                data-playlist-name="${escapeAttr(playlistName)}"
                                 data-artist="${escapeAttr(artist)}"
                                 data-title="${escapeAttr(title)}"
                                 data-row-id="${escapeAttr(rowId)}"
                                 class="track-action-btn">Retry</button>
+                            <button type="button"
+                                data-action="find-missing-track-versions"
+                                data-playlist-id="${escapeAttr(playlistId)}"
+                                data-playlist-name="${escapeAttr(playlistName)}"
+                                data-artist="${escapeAttr(artist)}"
+                                data-title="${escapeAttr(title)}"
+                                data-row-id="${escapeAttr(rowId)}"
+                                class="track-action-btn">Find Versions</button>
                             <button type="button"
                                 data-action="search-missing-track"
                                 data-playlist-id="${escapeAttr(playlistId)}"

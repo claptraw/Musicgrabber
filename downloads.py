@@ -34,7 +34,7 @@ from constants import (
     SILENCE_DETECT_MIN_START, SILENCE_DETECT_MAX_END_FRAC,
 )
 from coverart import fetch_cover_art, get_album_art_context, ensure_album_cover_files, cache_cover_art, _fetch_caa_cover
-from db import db_conn, log_match_mismatch
+from db import db_conn, log_match_mismatch, get_album_track_lock, complete_album_track_lock
 from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file, read_existing_track_number
 from notifications import send_notification
 from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir, get_albums_dir
@@ -3820,7 +3820,17 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
         # Duplicate check  -  local filesystem first, then Navidrome, then Lidarr.
         # Skipped when override_dir is set (e.g. album mode) and skip_dupe_check is True.
+        # Also skipped when an active album track lock exists  -  this covers retries that
+        # were spawned without the skip_dupe_check flag (e.g. manual re-queue).
         _update_job(job_id, progress_stage="Checking for duplicates")
+        if not skip_dupe_check:
+            _lock = get_album_track_lock(
+                album_ctx.get("release_mbid"),
+                album_ctx.get("track_title") or title,
+                album_ctx.get("album_name"),
+            )
+            if _lock and _lock["status"] != "completed":
+                skip_dupe_check = True
         if not skip_dupe_check:
             existing_file = check_duplicate(artist, title, user_id=user_id)
             if not existing_file:
@@ -4126,6 +4136,16 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             progress_stage=None,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
+
+        # Release the album track lock now the file is safely on disk.
+        # Future dupe checks for this track will find the real file instead.
+        if album_ctx.get("release_mbid") or album_ctx.get("album_name"):
+            complete_album_track_lock(
+                album_ctx.get("release_mbid"),
+                album_ctx.get("track_title") or title,
+                album_ctx.get("album_name") or "",
+            )
+
         marked = _mark_watched_track_downloaded(job_id, resolved_path=audio_file)
         _mark_watched_artist_track_downloaded(job_id, resolved_path=audio_file)
         if marked:
