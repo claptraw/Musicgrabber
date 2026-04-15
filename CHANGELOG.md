@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.6.3 (2026-04-15)
+
+### Fixed
+- **Retried watched-playlist jobs landing in Singles instead of the playlist folder**: when a job belonging to a watched playlist was retried via the queue Retry button, Force Accept, or accepting a mismatch, the playlist routing context (`playlist_name`, `use_playlists_dir`) was never restored. The job row doesn't store these, so the retry went to Singles, the next refresh found the file there and stopped trying to re-download, but the M3U never included it because it was looking in the wrong folder. The retry path now looks up the playlist context via `watched_playlist_tracks` (for manually-queued candidates) or `bulk_import_tracks` (for normal refresh jobs) and passes it through correctly
+
 ## v2.6.2 (2026-04-12)
 
 ### Fixed

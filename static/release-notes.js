@@ -7,6 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.6.3": {
+        title: "What's New in v2.6.3",
+        sections: [
+            {
+                heading: "Fixed: Retried playlist jobs landing in Singles",
+                items: [
+                    "When a watched-playlist track was retried from the queue, or a mismatch was force-accepted, the file ended up in your Singles folder instead of the playlist folder. The next refresh would find it there and stop trying to re-download, but the M3U never included it. Routing context is now restored correctly on retry.",
+                ]
+            },
+        ]
+    },
     "2.6.2": {
         title: "What's New in v2.6.2",
         sections: [

@@ -1385,6 +1385,19 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
     # Re-queue the download
     convert_to_flac = bool(job.get("convert_to_flac", 1))
 
+    # Restore watched-playlist routing so the file lands in the right folder, not Singles.
+    _pl_name, _use_pl_dir = None, False
+    if mismatch.get("playlist_id"):
+        with db_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            pl_row = conn.execute(
+                "SELECT name, use_playlists_dir FROM watched_playlists WHERE id = ?",
+                (mismatch["playlist_id"],)
+            ).fetchone()
+            if pl_row and pl_row["use_playlists_dir"]:
+                _pl_name = pl_row["name"]
+                _use_pl_dir = True
+
     if job.get("source") == "soulseek" and job.get("slskd_username") and job.get("slskd_filename"):
         spawn_daemon_thread(
             process_slskd_download,
@@ -1396,6 +1409,8 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
             convert_to_flac,
             user_id=user_id,
             override_dir=job.get("override_dir"),
+            playlist_name=_pl_name,
+            use_playlists_dir=_use_pl_dir,
         )
     else:
         prior_id = job.get("video_id") or ""
@@ -1421,6 +1436,8 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
             new_id,
             convert_to_flac,
             source_url=new_source_url,
+            playlist_name=_pl_name,
+            use_playlists_dir=_use_pl_dir,
             user_id=user_id,
             override_dir=job.get("override_dir"),
             skip_dupe_check=bool(job.get("override_dir")),
@@ -2157,6 +2174,31 @@ def retry_job(job_id: str, http_request: Request):
     # Re-queue the job based on source type
     convert_to_flac = bool(job.get("convert_to_flac", 1))
 
+    # Restore watched-playlist routing so retried jobs land in Playlists, not Singles.
+    # The routing flags are not stored on the job row itself, so we look them up via
+    # watched_playlist_tracks (queue-track-candidate path) or bulk_import_tracks (refresh path).
+    _pl_name, _use_pl_dir = None, False
+    if job["download_type"] != "playlist":
+        with db_conn() as conn:
+            conn.row_factory = sqlite3.Row
+            pl_row = conn.execute("""
+                SELECT wp.name, wp.use_playlists_dir
+                FROM watched_playlist_tracks wpt
+                JOIN watched_playlists wp ON wp.id = wpt.playlist_id
+                WHERE wpt.job_id = ?
+            """, (job_id,)).fetchone()
+            if not pl_row:
+                pl_row = conn.execute("""
+                    SELECT wp.name, wp.use_playlists_dir
+                    FROM bulk_import_tracks bit
+                    JOIN bulk_imports bi ON bi.id = bit.import_id
+                    JOIN watched_playlists wp ON wp.id = bi.watch_playlist_id
+                    WHERE bit.job_id = ?
+                """, (job_id,)).fetchone()
+            if pl_row and pl_row["use_playlists_dir"]:
+                _pl_name = pl_row["name"]
+                _use_pl_dir = True
+
     if job["download_type"] == "playlist":
         spawn_daemon_thread(process_playlist_download, job_id, job["video_id"], job["playlist_name"], convert_to_flac, True,
                             user_id=user_id)
@@ -2171,6 +2213,8 @@ def retry_job(job_id: str, http_request: Request):
             convert_to_flac,
             user_id=user_id,
             override_dir=job.get("override_dir"),
+            playlist_name=_pl_name,
+            use_playlists_dir=_use_pl_dir,
         )
     else:
         # For both YouTube and URL-based sources (Monochrome, SoundCloud, mp3phoenix):
@@ -2199,6 +2243,8 @@ def retry_job(job_id: str, http_request: Request):
             new_id,
             convert_to_flac,
             source_url=new_source_url,
+            playlist_name=_pl_name,
+            use_playlists_dir=_use_pl_dir,
             user_id=user_id,
             override_dir=job.get("override_dir"),
             skip_dupe_check=bool(job.get("override_dir")),
