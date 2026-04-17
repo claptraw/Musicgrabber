@@ -20,7 +20,6 @@ import httpx
 from constants import (
     AUDIO_EXTENSIONS,
     MUSIC_DIR,
-    MONOCHROME_API_URL, TIMEOUT_MONOCHROME_API,
     MONOCHROME_CDN_MAX_RETRIES, MONOCHROME_CDN_RETRY_DELAY,
     TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_SEARCH, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
     TIMEOUT_FFMPEG_CONVERT, TIMEOUT_HTTP_REQUEST,
@@ -50,6 +49,7 @@ from utils import (
     is_valid_youtube_id,
     set_file_permissions,
     subsonic_auth_params,
+    fetch_monochrome_api_json,
     fetch_monochrome_track_manifest,
 )
 from mp3phoenix import download_mp3phoenix_track
@@ -2905,12 +2905,71 @@ class _MonochromeDurationMismatch(Exception):
     """
 
 
-def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
+def _is_monochrome_dash_transient_error(stderr: str) -> bool:
+    """Return True for DASH/CDN failures worth retrying with a fresh manifest."""
+    text = (stderr or "").lower()
+    transient_markers = (
+        "403", "404", "429", "500", "502", "503", "504",
+        "timed out", "timeout", "connection reset", "connection refused",
+        "server returned", "tls", "http error", "temporarily unavailable",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def _run_monochrome_ffmpeg(cmd: list[str]) -> tuple[int, str]:
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_FFMPEG_CONVERT,
+        )
+        return result.returncode, result.stderr or ""
+    except subprocess.TimeoutExpired:
+        return 124, f"ffmpeg timed out after {TIMEOUT_FFMPEG_CONVERT}s"
+
+
+def _fetch_monochrome_download_manifest(
+    track_id: str,
+    quality_attempts: list[tuple[str, list[str]]],
+    excluded_instances: set[str],
+) -> tuple[str, dict]:
+    last_error = None
+    for quality_label, formats in quality_attempts:
+        try:
+            manifest_info = fetch_monochrome_track_manifest(
+                track_id,
+                formats,
+                adaptive=True,
+                exclude_instance_urls=excluded_instances,
+            )
+            print(
+                f"Monochrome: using {quality_label} via {manifest_info['instance_url']} "
+                f"for track {track_id}"
+            )
+            return quality_label, manifest_info
+        except Exception as e:
+            last_error = e
+            print(f"Monochrome: {quality_label} manifest fetch failed for track {track_id}: {e}")
+
+    raise _MonochromeAllTiers403(
+        f"All Monochrome manifest formats failed for track {track_id}: {last_error or 'unknown error'}"
+    )
+
+
+def _download_monochrome_direct(
+    track_id: str,
+    output_path: Path,
+    *,
+    avoid_instances: set[str] | None = None,
+) -> str | None:
     """Download a FLAC directly from the Monochrome/Tidal API.
 
     No yt-dlp, no messing about  -  just a straight stream off the CDN.
     Tries HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW in order; if all tiers 403, raises
     _MonochromeAllTiers403 so the caller can try another candidate/source.
+    If a signed DASH URL fails transiently, fetches a fresh manifest from another
+    instance before falling back to another source.
     """
     quality_attempts = [
         ("HI_RES_LOSSLESS", ["FLAC_HIRES"]),
@@ -2918,96 +2977,82 @@ def _download_monochrome_direct(track_id: str, output_path: Path) -> None:
         ("HIGH", ["AACLC"]),
         ("LOW", ["HEAACV1"]),
     ]
-    manifest_uri = None
-    all_failed = True
-    last_error = None
-
-    for quality_label, formats in quality_attempts:
-        try:
-            manifest_info = fetch_monochrome_track_manifest(track_id, formats, adaptive=True)
-            manifest_uri = manifest_info["uri"]
-            all_failed = False
-            print(
-                f"Monochrome: using {quality_label} via {manifest_info['instance_url']} "
-                f"for track {track_id}"
-            )
-            break
-        except Exception as e:
-            last_error = e
-            print(f"Monochrome: {quality_label} manifest fetch failed for track {track_id}: {e}")
-
-    if all_failed or not manifest_uri:
-        raise _MonochromeAllTiers403(
-            f"All Monochrome manifest formats failed for track {track_id}: {last_error or 'unknown error'}"
-        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    for cdn_attempt in range(1 + MONOCHROME_CDN_MAX_RETRIES):
-        # Prefer stream copy first; if container/codec combo complains, fall back
-        # to explicit FLAC encode for robustness.
-        ffmpeg_copy_cmd = [
-            "ffmpeg",
-            "-y",
-            "-v", "error",
-            "-protocol_whitelist", "file,https,tls,tcp,http,crypto",
-            "-i", str(manifest_uri),
-            "-map", "0:a:0",
-            "-c:a", "copy",
-            str(output_path),
-        ]
-        copy_result = subprocess.run(
-            ffmpeg_copy_cmd,
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT_FFMPEG_CONVERT,
-        )
-        if copy_result.returncode == 0 and output_path.exists():
-            return
+    excluded_instances = {url.rstrip("/") for url in (avoid_instances or set())}
+    last_error = "unknown ffmpeg error"
 
-        ffmpeg_encode_cmd = [
-            "ffmpeg",
-            "-y",
-            "-v", "error",
-            "-protocol_whitelist", "file,https,tls,tcp,http,crypto",
-            "-i", str(manifest_uri),
-            "-map", "0:a:0",
-            "-c:a", "flac",
-            str(output_path),
-        ]
-        encode_result = subprocess.run(
-            ffmpeg_encode_cmd,
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT_FFMPEG_CONVERT,
+    while True:
+        _quality_label, manifest_info = _fetch_monochrome_download_manifest(
+            track_id,
+            quality_attempts,
+            excluded_instances,
         )
-        if encode_result.returncode == 0 and output_path.exists():
-            return
+        manifest_uri = manifest_info["uri"]
+        instance_url = manifest_info["instance_url"].rstrip("/")
 
-        stderr = (encode_result.stderr or copy_result.stderr or "").strip()
-        # If ffmpeg hit a CDN 403/429, retry with backoff before giving up
-        if any(code in stderr for code in ("403", "429")) and cdn_attempt < MONOCHROME_CDN_MAX_RETRIES:
-            delay = MONOCHROME_CDN_RETRY_DELAY * (cdn_attempt + 1)
-            print(
-                f"Monochrome DASH CDN throttle for track {track_id}, retrying in {delay}s "
-                f"(attempt {cdn_attempt + 1})..."
-            )
-            time.sleep(delay)
+        for cdn_attempt in range(1 + MONOCHROME_CDN_MAX_RETRIES):
+            # Prefer stream copy first; if container/codec combo complains, fall back
+            # to explicit FLAC encode for robustness.
+            ffmpeg_copy_cmd = [
+                "ffmpeg",
+                "-y",
+                "-v", "error",
+                "-protocol_whitelist", "file,https,tls,tcp,http,crypto",
+                "-i", str(manifest_uri),
+                "-map", "0:a:0",
+                "-c:a", "copy",
+                str(output_path),
+            ]
+            copy_code, copy_stderr = _run_monochrome_ffmpeg(ffmpeg_copy_cmd)
+            if copy_code == 0 and output_path.exists():
+                return instance_url
+
+            ffmpeg_encode_cmd = [
+                "ffmpeg",
+                "-y",
+                "-v", "error",
+                "-protocol_whitelist", "file,https,tls,tcp,http,crypto",
+                "-i", str(manifest_uri),
+                "-map", "0:a:0",
+                "-c:a", "flac",
+                str(output_path),
+            ]
+            encode_code, encode_stderr = _run_monochrome_ffmpeg(ffmpeg_encode_cmd)
+            if encode_code == 0 and output_path.exists():
+                return instance_url
+
+            last_error = (encode_stderr or copy_stderr or "").strip() or last_error
             output_path.unlink(missing_ok=True)
-            continue
 
-        raise Exception(f"DASH manifest download failed: {stderr or 'unknown ffmpeg error'}")
+            if _is_monochrome_dash_transient_error(last_error) and cdn_attempt < MONOCHROME_CDN_MAX_RETRIES:
+                delay = MONOCHROME_CDN_RETRY_DELAY * (cdn_attempt + 1)
+                print(
+                    f"Monochrome DASH CDN transient failure for track {track_id} via {instance_url}, "
+                    f"retrying same manifest in {delay}s (attempt {cdn_attempt + 1})..."
+                )
+                time.sleep(delay)
+                continue
+
+            break
+
+        if not _is_monochrome_dash_transient_error(last_error):
+            raise Exception(f"DASH manifest download failed: {last_error}")
+
+        excluded_instances.add(instance_url)
+        print(
+            f"Monochrome DASH URL failed for track {track_id} via {instance_url}; "
+            "fetching a fresh manifest from another instance..."
+        )
 
 
 def _get_monochrome_track_info(track_id: str) -> dict | None:
     """Fetch track metadata from the Monochrome API info endpoint."""
     try:
-        resp = httpx.get(
-            f"{MONOCHROME_API_URL}/info/",
-            params={"id": track_id},
-            timeout=TIMEOUT_MONOCHROME_API,
-        )
-        resp.raise_for_status()
-        return resp.json().get("data")
+        response, instance_url = fetch_monochrome_api_json("info", params={"id": track_id})
+        if instance_url:
+            print(f"Monochrome download metadata served by {instance_url}")
+        return response.get("data")
     except Exception as e:
         print(f"Monochrome track info lookup failed: {e}")
         return None
@@ -3125,15 +3170,23 @@ def _process_monochrome_download(job_id: str, track_id: str, convert_to_flac: bo
         _update_job(job_id, progress_stage="Downloading audio")
         integrity_reason = ""
         actual_duration_secs = 0.0
+        avoid_manifest_instances: set[str] = set()
         for attempt in range(1, _AUDIO_RECHECK_MAX_ATTEMPTS + 1):
-            _download_monochrome_direct(track_id, output_path)
+            used_instance = _download_monochrome_direct(
+                track_id,
+                output_path,
+                avoid_instances=avoid_manifest_instances,
+            )
             valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(output_path)
             if valid_audio:
                 break
+            if used_instance:
+                avoid_manifest_instances.add(used_instance.rstrip("/"))
             output_path.unlink(missing_ok=True)
             print(
                 f"Monochrome integrity check failed for '{artist} - {title}' "
-                f"(attempt {attempt}/{_AUDIO_RECHECK_MAX_ATTEMPTS}): {integrity_reason}"
+                f"(attempt {attempt}/{_AUDIO_RECHECK_MAX_ATTEMPTS}): {integrity_reason}. "
+                "Trying a fresh Monochrome manifest next."
             )
         else:
             _note_blacklist_entry(

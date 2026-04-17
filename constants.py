@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.6.3"
+VERSION = "2.6.4"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -133,13 +133,23 @@ TIMEOUT_LISTENBRAINZ_PLAYLIST = 15   # Per-playlist JSPF fetch
 # Points at the official instance by default; users can override to use
 # community mirrors listed at github.com/monochrome-music/monochrome/blob/main/INSTANCES.md
 MONOCHROME_API_URL = os.getenv("MONOCHROME_API_URL", "https://api.monochrome.tf")
-_MONOCHROME_MANIFEST_DEFAULTS = [
+_MONOCHROME_API_DEFAULTS = [
     MONOCHROME_API_URL,
     "https://frankfurt-1.monochrome.tf",
     "https://singapore-1.monochrome.tf",
+    "https://triton.squid.wtf",
+    "https://wolf.qqdl.site",
+    "https://maus.qqdl.site",
     "https://hifi.geeked.wtf",
+    "https://katze.qqdl.site",
+    "https://hund.qqdl.site",
+    "https://hifi-two.spotisaver.net",
 ]
-_manifest_urls = os.getenv("MONOCHROME_MANIFEST_URLS", ",".join(_MONOCHROME_MANIFEST_DEFAULTS)).split(",")
+_api_urls = os.getenv("MONOCHROME_API_URLS", ",".join(_MONOCHROME_API_DEFAULTS)).split(",")
+MONOCHROME_API_URLS = list(dict.fromkeys(
+    url.strip().rstrip("/") for url in _api_urls if url.strip()
+))
+_manifest_urls = os.getenv("MONOCHROME_MANIFEST_URLS", ",".join(MONOCHROME_API_URLS)).split(",")
 MONOCHROME_MANIFEST_URLS = list(dict.fromkeys(
     url.strip().rstrip("/") for url in _manifest_urls if url.strip()
 ))

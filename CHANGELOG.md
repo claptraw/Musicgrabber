@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.6.4 (2026-04-17)
+
+### Changed
+- **Monochrome mirror pool**: search, track info, Tidal playlist import, and playback manifest fetches now use a rotating pool of currently healthy Monochrome-compatible instances instead of relying on a single API host. `MONOCHROME_API_URLS` can override the full pool, while `MONOCHROME_MANIFEST_URLS` can override just playback manifests
+- **Monochrome DASH retry path**: when a Monochrome manifest is fetched successfully but the signed DASH URL fails in ffmpeg with a transient CDN-style error, MusicGrabber now retries briefly, then fetches a fresh manifest from another instance before falling back to other sources. Corrupt/truncated Monochrome downloads also retry with a different manifest instance
+
 ## v2.6.3 (2026-04-15)
 
 ### Fixed

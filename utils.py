@@ -17,7 +17,7 @@ import shutil
 
 from constants import (
     AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH,
-    MONOCHROME_MANIFEST_URLS, TIMEOUT_MONOCHROME_API,
+    MONOCHROME_API_URLS, MONOCHROME_MANIFEST_URLS, TIMEOUT_MONOCHROME_API,
 )
 from settings import get_singles_dir, get_albums_dir, get_download_dir, get_playlists_dir, get_trash_dir, get_setting
 
@@ -32,6 +32,40 @@ def sanitize_filename(name: str) -> str:
 def is_valid_youtube_id(video_id: str) -> bool:
     """Basic validation for YouTube video/playlist IDs."""
     return bool(re.match(r'^[A-Za-z0-9_-]+$', video_id or ""))
+
+
+def fetch_monochrome_api_json(
+    path: str,
+    *,
+    params: dict | list[tuple[str, str]] | None = None,
+    expected_statuses: tuple[int, ...] = (200,),
+) -> tuple[dict, str]:
+    """Fetch JSON from the first healthy Monochrome-compatible API instance."""
+    endpoint = "/" + path.strip("/")
+    last_status = None
+    last_body = ""
+
+    with httpx.Client(timeout=TIMEOUT_MONOCHROME_API, follow_redirects=True) as client:
+        for base_url in MONOCHROME_API_URLS:
+            try:
+                resp = client.get(f"{base_url}{endpoint}/", params=params)
+            except Exception as e:
+                print(f"Monochrome API request failed on {base_url}{endpoint}: {e}")
+                continue
+
+            if resp.status_code in expected_statuses:
+                return resp.json(), base_url
+
+            last_status = resp.status_code
+            last_body = resp.text[:200]
+            print(
+                f"Monochrome API request returned {resp.status_code} on {base_url}{endpoint}, "
+                "trying next instance..."
+            )
+
+    status_msg = f"status={last_status}" if last_status is not None else "no_response"
+    detail = f": {last_body}" if last_body else ""
+    raise RuntimeError(f"Monochrome API request failed for {endpoint} ({status_msg}){detail}")
 
 
 def clean_title(title: str) -> str:
@@ -163,6 +197,7 @@ def fetch_monochrome_track_manifest(
     manifest_type: str = "MPEG_DASH",
     uri_scheme: str = "HTTPS",
     usage: str = "PLAYBACK",
+    exclude_instance_urls: set[str] | None = None,
 ) -> dict:
     """Fetch a Monochrome playback manifest from one of the active instances.
 
@@ -181,8 +216,11 @@ def fetch_monochrome_track_manifest(
 
     last_status = None
     last_body = ""
+    excluded = {url.rstrip("/") for url in (exclude_instance_urls or set())}
     with httpx.Client(timeout=TIMEOUT_MONOCHROME_API, follow_redirects=True) as client:
         for base_url in MONOCHROME_MANIFEST_URLS:
+            if base_url in excluded:
+                continue
             try:
                 resp = client.get(f"{base_url}/trackManifests/", params=params)
             except Exception as e:

@@ -7,6 +7,18 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.6.4": {
+        title: "What's New in v2.6.4",
+        sections: [
+            {
+                heading: "Changed: New mirror pool",
+                items: [
+                    "Some more sources for high quality audio have been added.",
+                    "If a Monochrome stream URL fails during download, MusicGrabber now tries a fresh stream URL from another mirror before falling back to another source.",
+                ]
+            },
+        ]
+    },
     "2.6.3": {
         title: "What's New in v2.6.3",
         sections: [

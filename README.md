@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.6.3**
+**v2.6.4**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -120,8 +120,9 @@ For YouTube and SoundCloud, FLAC conversion is primarily for standardisation and
          # - SMTP_USER=user@example.com
          # - SMTP_PASS=password
          # - SMTP_TO=you@example.com
-         # Optional: Use a Monochrome mirror instead of the default instance
+         # Optional: Override Monochrome instances
          # - MONOCHROME_API_URL=https://api.monochrome.tf
+         # - MONOCHROME_API_URLS=https://api.monochrome.tf,https://triton.squid.wtf
    ```
 
 2. **Run**
@@ -249,7 +250,9 @@ Settings are stored in the database and persist across container restarts.
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
 | `ORGANISE_BY_ARTIST` | `true` | Create artist subfolders under Singles. Set to `false` for a flat directory |
 | `WEBHOOK_URL` | - | Generic webhook URL; receives JSON POST on download completion/failure |
-| `MONOCHROME_API_URL` | `https://api.monochrome.tf` | Monochrome API URL; override to use a community mirror instance |
+| `MONOCHROME_API_URL` | `https://api.monochrome.tf` | Preferred Monochrome API URL; kept first in the default rotation pool |
+| `MONOCHROME_API_URLS` | built-in healthy instance pool | Comma-separated Monochrome-compatible API instances for search, track info, playlist import, and manifest fallback |
+| `MONOCHROME_MANIFEST_URLS` | same as `MONOCHROME_API_URLS` | Comma-separated instance pool just for `/trackManifests/` playback requests |
 | `YTDLP_PLAYER_CLIENT` | *(empty)* | Override yt-dlp YouTube player client (expert-only, e.g. `android`, `web,android`) |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
 | `NAVIDROME_USER` | - | Navidrome username for API |

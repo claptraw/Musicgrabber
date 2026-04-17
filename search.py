@@ -13,12 +13,10 @@ import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import httpx
-
 from constants import (
     TIMEOUT_YTDLP_SEARCH,
     SOUNDCLOUD_SEARCH_MULTIPLIER, SOUNDCLOUD_SEARCH_MIN_FETCH,
-    MONOCHROME_API_URL, MONOCHROME_COVER_BASE, TIMEOUT_MONOCHROME_API,
+    MONOCHROME_COVER_BASE,
     SEARCH_MAX_PER_SOURCE,
     SEARCH_MAX_PER_SOURCE_YOUTUBE, SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
     SEARCH_MAX_PER_SOURCE_SOUNDCLOUD, SEARCH_MAX_PER_SOURCE_MONOCHROME,
@@ -27,7 +25,7 @@ from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration, search_artist_mbid, lookup_musicbrainz
 from settings import get_setting, get_setting_bool
 from mp3phoenix import search_mp3phoenix
-from utils import fetch_monochrome_track_manifest
+from utils import fetch_monochrome_api_json, fetch_monochrome_track_manifest
 from youtube import (
     search_youtube, score_search_result_with_breakdown, format_score_breakdown, parse_duration,
     _normalise_search_text, _parse_query_artist_title, _query_has_variation,
@@ -220,14 +218,11 @@ def _score_monochrome_result(item: dict, query: str | None = None) -> int:
 def _search_monochrome_api(query: str, limit: int) -> list[dict]:
     """Search the Monochrome API for tracks matching a free-text query."""
     try:
-        resp = httpx.get(
-            f"{MONOCHROME_API_URL}/search/",
-            params={"s": query},
-            timeout=TIMEOUT_MONOCHROME_API,
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data") or {}
+        response, instance_url = fetch_monochrome_api_json("search", params={"s": query})
+        data = response.get("data") or {}
         items = data.get("items") or []
+        if instance_url:
+            print(f"Monochrome search served by {instance_url}")
     except Exception as e:
         print(f"Monochrome API search error: {e}")
         return []
@@ -395,13 +390,10 @@ def get_monochrome_track_info(track_id: str) -> dict | None:
     Returns the raw API response data dict, or None on failure.
     """
     try:
-        resp = httpx.get(
-            f"{MONOCHROME_API_URL}/info/",
-            params={"id": track_id},
-            timeout=TIMEOUT_MONOCHROME_API,
-        )
-        resp.raise_for_status()
-        return resp.json().get("data")
+        response, instance_url = fetch_monochrome_api_json("info", params={"id": track_id})
+        if instance_url:
+            print(f"Monochrome track info served by {instance_url}")
+        return response.get("data")
     except Exception as e:
         print(f"Monochrome track info error: {e}")
         return None

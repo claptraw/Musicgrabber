@@ -17,8 +17,8 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 
 from constants import (
-    TIMEOUT_YTDLP_PLAYLIST, TIMEOUT_HTTP_SPOTIFY, TIMEOUT_MONOCHROME_API,
-    MONOCHROME_API_URL, WATCHED_PLAYLIST_CHECK_HOURS, WATCHED_REFRESH_STALE_SECONDS,
+    TIMEOUT_YTDLP_PLAYLIST, TIMEOUT_HTTP_SPOTIFY,
+    WATCHED_PLAYLIST_CHECK_HOURS, WATCHED_REFRESH_STALE_SECONDS,
     LISTENBRAINZ_API_URL, TIMEOUT_LISTENBRAINZ, TIMEOUT_LISTENBRAINZ_PLAYLIST,
     AUDIO_EXTENSIONS,
 )
@@ -29,7 +29,10 @@ from apple import fetch_apple_music_playlist
 from downloads import rebuild_watched_playlist_m3u
 from settings import get_playlists_dir, get_setting
 from spotify import fetch_spotify_playlist_via_browser
-from utils import extract_artist_title, hash_track, spawn_daemon_thread, sanitize_filename, check_duplicate
+from utils import (
+    extract_artist_title, hash_track, spawn_daemon_thread, sanitize_filename,
+    check_duplicate, fetch_monochrome_api_json,
+)
 from downloads import check_navidrome_duplicate
 from youtube import _ytdlp_base_args
 
@@ -392,19 +395,17 @@ def _fetch_tidal_playlist(playlist_uuid: str) -> dict:
     track list in one shot  -  no pagination, no headless browser required.
     Each item has artist.name and title at the top level. Simple.
     """
-    api_url = f"{MONOCHROME_API_URL}/playlist/?id={playlist_uuid}"
     try:
-        with httpx.Client(timeout=TIMEOUT_MONOCHROME_API) as client:
-            response = client.get(api_url)
-            response.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
+        data, instance_url = fetch_monochrome_api_json("playlist", params={"id": playlist_uuid})
+        if instance_url:
+            print(f"Tidal playlist served by Monochrome instance {instance_url}")
+    except RuntimeError as e:
+        if "status=404" in str(e):
             raise HTTPException(status_code=404, detail="Tidal playlist not found or is private")
-        raise HTTPException(status_code=502, detail=f"Monochrome API error: {e.response.status_code}")
-    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail="Monochrome API error while fetching Tidal playlist")
+    except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to connect to Monochrome API: {e}")
 
-    data = response.json()
     playlist_info = data.get("playlist", {})
     playlist_name = playlist_info.get("title", "Tidal Playlist")
     items = data.get("items", [])
