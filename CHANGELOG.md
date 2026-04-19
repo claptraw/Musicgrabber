@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.6.5 (2026-04-19)
+
+### Fixed
+- **Monochrome instances serving 30-second preview clips**: some instances in the mirror pool have degraded Tidal subscriptions and hand out `trackPresentation: PREVIEW` manifests instead of full tracks. MusicGrabber now checks this field on every manifest response and skips any instance that returns a preview, trying the next healthy instance. If no instance can provide a full track, it falls back to YouTube as usual, rather than quietly saving a 30-second clip to your library.
+
 ## v2.6.4 (2026-04-17)
 
 ### Changed

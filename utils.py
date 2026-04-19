@@ -251,11 +251,20 @@ def fetch_monochrome_track_manifest(
                 print(f"Monochrome manifest response from {base_url} had no uri, trying next instance...")
                 continue
 
+            presentation = attrs.get("trackPresentation")
+            if presentation == "PREVIEW":
+                # This instance's subscription has expired or degraded; it's handing out
+                # 30-second clips instead of full tracks. Try another instance.
+                last_status = resp.status_code
+                last_body = "trackPresentation=PREVIEW"
+                print(f"Monochrome instance {base_url} returned a PREVIEW manifest, skipping...")
+                continue
+
             return {
                 "instance_url": base_url,
                 "uri": uri,
                 "formats": list(attrs.get("formats") or []),
-                "track_presentation": attrs.get("trackPresentation"),
+                "track_presentation": presentation,
                 "hash": attrs.get("hash"),
                 "track_normalization": attrs.get("trackAudioNormalizationData") or {},
                 "album_normalization": attrs.get("albumAudioNormalizationData") or {},

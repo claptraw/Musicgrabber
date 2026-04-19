@@ -7,6 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.6.5": {
+        title: "What's New in v2.6.5",
+        sections: [
+            {
+                heading: "Fixed: Monochrome serving 30-second clips",
+                items: [
+                    "Some Monochrome mirror instances have degraded Tidal subscriptions and were handing out 30-second preview clips instead of full tracks. MusicGrabber now checks the trackPresentation field in every manifest response and skips any instance that returns a preview. If no instance can deliver the full track, it falls back to YouTube as usual, rather than quietly saving a clip to your library.",
+                ]
+            },
+        ]
+    },
     "2.6.4": {
         title: "What's New in v2.6.4",
         sections: [
