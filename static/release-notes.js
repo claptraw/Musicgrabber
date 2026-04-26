@@ -7,6 +7,35 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.6.6": {
+        title: "What's New in v2.6.6",
+        sections: [
+            {
+                heading: "Removed: Monochrome/Tidal source",
+                items: [
+                    "Monochrome shut down on 25 April 2026. It was a genuinely excellent source, giving us real lossless FLAC straight off the Tidal CDN. All Monochrome code has been removed: the API client, mirror pool, DASH manifest fetching, Tidal playlist import, preview proxy, and the Tidal CDN cover art fallback. The MO button is gone from the search bar. YouTube, SoundCloud, MP3Phoenix, zvu4no, and Soulseek remain. RIP.",
+                ]
+            },
+            {
+                heading: "Added: zvu4no source",
+                items: [
+                    "zvu4no.org is now a first-class search source, shown with a ZV badge. It scrapes the Russian MP3 portal's search pages and returns direct download URLs, so preview playback and downloads happen without yt-dlp. Results go through the same scoring, integrity checking, metadata lookup, and format conversion as any other source. Toggle it in Settings under Search Sources, or set SOURCE_ZVU4NO_ENABLED=false to disable it entirely.",
+                ]
+            },
+            {
+                heading: "Fixed: ListenBrainz weekly playlists duplicating",
+                items: [
+                    "Re-adding a ListenBrainz username after a new week had rolled over was creating duplicate watched playlist entries instead of recognising the ones already being watched. It now also checks by username and playlist name prefix, so re-adding your username won't stack up duplicates.",
+                ]
+            },
+            {
+                heading: "Fixed: Retried downloads losing playlist folder routing",
+                items: [
+                    "When a download retried due to an integrity failure or duration mismatch, the custom subfolder routing was dropped, so the file ended up in the wrong place. The retry paths now carry the folder context through correctly.",
+                ]
+            },
+        ]
+    },
     "2.6.5": {
         title: "What's New in v2.6.5",
         sections: [

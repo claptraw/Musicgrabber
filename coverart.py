@@ -2,8 +2,8 @@
 MusicGrabber - Cover Art Sourcing
 
 Tries really hard to find proper album artwork for every downloaded track.
-Fallback chain: Cover Art Archive, Tidal CDN, iTunes, Deezer.
-If all four strike out, the yt-dlp video thumbnail is preserved as a
+Fallback chain: Cover Art Archive, iTunes, Deezer.
+If all three strike out, the yt-dlp video thumbnail is preserved as a
 silent last resort (apply_metadata_to_file leaves existing pictures
 alone when album_art_bytes is None).
 """
@@ -17,7 +17,6 @@ from constants import (
     COVER_ART_TIMEOUT,
     ITUNES_SEARCH_URL,
     DEEZER_SEARCH_URL,
-    MONOCHROME_COVER_BASE,
     TIMEOUT_HTTP_REQUEST,
 )
 from utils import set_file_permissions
@@ -47,13 +46,6 @@ def _guess_cover_mime(data: bytes, content_type: str | None = None) -> str:
     return "image/jpeg"
 
 
-def _monochrome_cover_url(cover_uuid: str) -> str:
-    """Turn a Tidal cover UUID into a CDN URL (640x640)."""
-    if not cover_uuid:
-        return ""
-    return f"{MONOCHROME_COVER_BASE}/{cover_uuid.replace('-', '/')}/640x640.jpg"
-
-
 # ── Individual sources ──────────────────────────────────────────────────
 
 def _fetch_caa_cover(release_mbid: str) -> tuple[bytes, str] | None:
@@ -77,24 +69,6 @@ def _fetch_caa_cover(release_mbid: str) -> tuple[bytes, str] | None:
                 return resp.content, mime
         except Exception:
             continue
-    return None
-
-
-def _fetch_tidal_cover(cover_uuid: str) -> tuple[bytes, str] | None:
-    """Fetch cover art from Tidal CDN using a cover UUID.
-
-    High quality and fast, but only available for Monochrome-sourced tracks.
-    """
-    url = _monochrome_cover_url(cover_uuid)
-    if not url:
-        return None
-    try:
-        resp = httpx.get(url, timeout=COVER_ART_TIMEOUT, follow_redirects=True)
-        if resp.status_code == 200 and resp.content:
-            mime = _guess_cover_mime(resp.content, resp.headers.get("content-type"))
-            return resp.content, mime
-    except Exception:
-        pass
     return None
 
 
@@ -164,11 +138,10 @@ def fetch_cover_art(
     artist: str,
     title: str,
     release_mbid: str | None = None,
-    tidal_cover_uuid: str | None = None,
 ) -> tuple[bytes, str] | None:
     """Try really hard to find cover art for a track.
 
-    Fallback chain: Cover Art Archive, Tidal CDN, iTunes, Deezer.
+    Fallback chain: Cover Art Archive, iTunes, Deezer.
     Returns (image_bytes, mime_type) or None if everything strikes out.
     Results are cached so repeated calls for the same track are cheap.
     """
@@ -190,14 +163,7 @@ def fetch_cover_art(
                 print(f"Cover art: found via Cover Art Archive for release {mbid}")
                 return result
 
-    # ── 2. Tidal CDN (only when we have a UUID from Monochrome) ──
-    if tidal_cover_uuid:
-        result = _fetch_tidal_cover(tidal_cover_uuid)
-        if result:
-            print(f"Cover art: found via Tidal CDN for {artist} - {title}")
-            return result
-
-    # ── 3 & 4. Search-based fallback (iTunes, then Deezer) ──
+    # ── 2 & 3. Search-based fallback (iTunes, then Deezer) ──
     cache_key = (artist.lower().strip(), title.lower().strip())
     with _SEARCH_CACHE_LOCK:
         if cache_key in _SEARCH_CACHE:

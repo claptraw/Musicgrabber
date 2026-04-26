@@ -1,7 +1,7 @@
 # Music Grabber
-**v2.6.5**
+**v2.6.6**
 
-A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, MP3Phoenix and Monochrome (Tidal lossless), tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
+A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, and MP3Phoenix, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
 If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 
@@ -21,10 +21,8 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 ## Features
 
-- **Multi-source search:** YouTube, SoundCloud, MP3Phoenix, and Monochrome (Tidal lossless) searched in parallel; quality-ranked results with "Lossless" and "Hi-Res" badges. Lossless Monochrome results float to the top; YouTube, SoundCloud, and MP3Phoenix fill in the gaps
-- **Direct FLAC downloads from Monochrome:** bypasses yt-dlp entirely; FLAC streams from the Tidal CDN with embedded cover art and accurate catalogue metadata
-- **Automatic Monochrome fallback:** if Monochrome returns 403 on all quality tiers, MusicGrabber automatically retries on YouTube under the same job ID
-- **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Tidal, and ListenBrainz playlists; auto-downloads new tracks and grabs the best quality available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
+- **Multi-source search:** YouTube, SoundCloud, MP3Phoenix, and Soulseek searched in parallel; quality-ranked results with source badges and score explanations
+- **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
 - **Watched Artists:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles only: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Tracks already on disk are recognised immediately. Per-artist check interval, convert-to-FLAC toggle, pause/resume, missing and track list panels
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
 - **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches all sources in parallel and grabs the best result for each
@@ -41,7 +39,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Job queue:** track progress, retry failures, re-download or delete files, see metadata provenance
 - **Statistics dashboard:** download counts, success rate, daily chart, top artists, search analytics
 - **Release notes modal:** shows once after each update; also accessible from the Settings tab
-- **Preview:** hover a result for 2 seconds on desktop, or tap Preview on mobile (YouTube, SoundCloud, Monochrome)
+- **Preview:** hover a result for 2 seconds on desktop, or tap Preview on mobile
 - **Dark/light theme:** toggle in the header; preference saved per browser
 - **Mobile-friendly UI:** designed for quick searches from your phone
 - **Settings tab:** configure all integrations via UI; no docker-compose editing required
@@ -57,7 +55,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 ## Why FLAC?
 
-For YouTube and SoundCloud, FLAC conversion is primarily for standardisation and consistent tagging. It does not improve audio quality beyond the source; it only preserves what is already there. **Monochrome downloads are genuine lossless:** the FLAC comes directly from the Tidal CDN, so you get the real deal. If you prefer to keep the original format from YouTube/SoundCloud, disable FLAC conversion and files will be saved as-is.
+For YouTube, SoundCloud, and MP3Phoenix, FLAC conversion is primarily for standardisation and consistent tagging. It does not improve audio quality beyond the source; it only preserves what is already there. If you prefer to keep the original format where possible, disable FLAC conversion and files will be saved as-is.
 
 ## Screenshots
 
@@ -120,9 +118,6 @@ For YouTube and SoundCloud, FLAC conversion is primarily for standardisation and
          # - SMTP_USER=user@example.com
          # - SMTP_PASS=password
          # - SMTP_TO=you@example.com
-         # Optional: Override Monochrome instances
-         # - MONOCHROME_API_URL=https://api.monochrome.tf
-         # - MONOCHROME_API_URLS=https://api.monochrome.tf,https://triton.squid.wtf
    ```
 
 2. **Run**
@@ -250,9 +245,6 @@ Settings are stored in the database and persist across container restarts.
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
 | `ORGANISE_BY_ARTIST` | `true` | Create artist subfolders under Singles. Set to `false` for a flat directory |
 | `WEBHOOK_URL` | - | Generic webhook URL; receives JSON POST on download completion/failure |
-| `MONOCHROME_API_URL` | `https://api.monochrome.tf` | Preferred Monochrome API URL; kept first in the default rotation pool |
-| `MONOCHROME_API_URLS` | built-in healthy instance pool | Comma-separated Monochrome-compatible API instances for search, track info, playlist import, and manifest fallback |
-| `MONOCHROME_MANIFEST_URLS` | same as `MONOCHROME_API_URLS` | Comma-separated instance pool just for `/trackManifests/` playback requests |
 | `YTDLP_PLAYER_CLIENT` | *(empty)* | Override yt-dlp YouTube player client (expert-only, e.g. `android`, `web,android`) |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
 | `NAVIDROME_USER` | - | Navidrome username for API |
@@ -406,13 +398,12 @@ slskd organises downloads as `{downloads}/{username}/{filename}`, which MusicGra
 
 **Status:** Soulseek integration is in progress and needs testing. New Soulseek users may experience rejected downloads until they build reputation by sharing files.
 
-### Playlist Import (Spotify, Amazon Music, Tidal)
+### Playlist Import
 
-MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, and Tidal playlists. Paste a supported URL in the Bulk Import tab to fetch the track list, then import them via YouTube/Monochrome/SoundCloud.
+MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, YouTube, SoundCloud, and ListenBrainz playlists. Paste a supported URL in the Bulk Import tab to fetch the track list, then import them via the enabled search sources.
 
 **How it works by source:**
 
-- **Tidal**: One API call to the Monochrome API (`/playlist/`). Returns the full track list instantly; no browser, no auth, no fuss. Public playlists only
 - **Apple Music**: Fetches the public page, extracts Apple's current web MusicKit token from the site bundle, then paginates their `amp-api` track endpoint directly. Falls back to the server-rendered HTML when needed
 - **Amazon Music**: Headless browser scraping via Playwright. Slower but reliable for most public playlists
 - **Spotify small playlists (under ~100 tracks)**: Uses Spotify's embed endpoint to quickly fetch track data
@@ -453,7 +444,7 @@ shm_size: '2gb'  # Required for Chromium
 
 ### Watched Playlists
 
-Automatically monitor Spotify, YouTube, Amazon Music, or Tidal playlists for new tracks. When new songs are added to a watched playlist, MusicGrabber will detect them and queue them for download.
+Automatically monitor Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, or ListenBrainz playlists for new tracks. When new songs are added to a watched playlist, MusicGrabber will detect them and queue them for download.
 
 **How it works:**
 
@@ -526,7 +517,7 @@ Notes:
 
 ### Search and Download
 
-1. **Single tracks:** search for a song, tap/click the result to download. Searches YouTube, SoundCloud, and Monochrome in parallel; lossless results rank highest
+1. **Single tracks:** search for a song, tap/click the result to download. Searches all enabled sources in parallel
 2. **Preview:** on desktop, hover over a result for 2 seconds to hear a preview (works for all sources)
 3. **Playlists:** search for a playlist URL or name, tap the playlist result to download all tracks (YouTube playlists only)
 4. **Processing feedback:** shows "Processing..." immediately when tapped, then "Added to queue"
@@ -576,15 +567,13 @@ Downloads are organised as:
 - Disable "Organise by Artist" in Settings to put all tracks directly in `Singles/` with `Artist - Title` filenames
 - Playlist downloads generate `.m3u` files with relative paths
 - Watched playlists with M3U enabled keep their `.m3u` file updated on every refresh cycle
-- Artist and title are extracted from source metadata (Monochrome provides accurate Tidal metadata; YouTube/SoundCloud are parsed from titles)
+- Artist and title are extracted from source metadata, with YouTube and SoundCloud titles parsed when needed
 - Common patterns like "Artist - Title" are parsed automatically
 - YouTube annotations (Official Audio, Lyrics, etc.) are cleaned from titles
 
 ### Metadata
 
-**Monochrome/Tidal downloads** come with accurate metadata directly from the Tidal catalogue; artist, title, album, and cover art are embedded without needing any lookups.
-
-**YouTube/SoundCloud downloads** with `ENABLE_MUSICBRAINZ=true`:
+With `ENABLE_MUSICBRAINZ=true`:
 1. Fingerprints the downloaded audio with AcoustID/Chromaprint to identify the actual recording
 2. If AcoustID matches confidently, uses the correct artist, title, album, and year from MusicBrainz
 3. Falls back to a text-based MusicBrainz search if fingerprinting fails or scores too low
@@ -696,16 +685,16 @@ music.yourdomain.com {
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/sources` | List available search sources (for source selector UI) |
-| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "youtube/soundcloud/monochrome/all"}`) |
+| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "youtube/soundcloud/mp3phoenix/all"}`) |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
-| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for URL-based sources like SoundCloud/Monochrome) |
+| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for URL-based sources like SoundCloud/MP3Phoenix) |
 | `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
 
 ### Downloads
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/monochrome/mp3phoenix", "download_type": "single/playlist"}`) |
+| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/mp3phoenix", "download_type": "single/playlist"}`) |
 | `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` for provenance) |
 | `GET` | `/api/jobs/downloadable` | Paginated list of completed jobs available to save to device (`?page=1&per_page=50`) |
 | `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |
@@ -727,7 +716,7 @@ music.yourdomain.com {
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/fetch-playlist` | Fetch tracks from playlist URL (Spotify, YouTube, Apple Music, Amazon Music, Tidal, ListenBrainz) |
+| `POST` | `/api/fetch-playlist` | Fetch tracks from playlist URL (Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, ListenBrainz) |
 | `POST` | `/api/spotify-playlist` | Backwards-compat alias for `/api/fetch-playlist` |
 
 ### Statistics and Reporting
@@ -903,10 +892,6 @@ docker compose up -d
 - The app detects the change within 30 seconds — no restart needed. All your jobs, watched playlists, and settings are preserved.
 - To go back fully from scratch, stop the container, delete `/data/music_grabber.db`, and start it again.
 
-**A track with a common name can't be found via Monochrome?**
-- Tidal's search returns a hard cap of 25 results and ranks by keyword popularity across all fields. If your track has a generic title (e.g. "2 Much"), more popular songs by other artists will completely drown it out — even if you include the artist name in the query. This is a Tidal search limitation, not a MusicGrabber bug (Tidal's own website has the same problem).
-- Workaround: find the track on [monochrome.tf](https://monochrome.tf) directly, then paste the track URL into MusicGrabber's search box. The URL resolver bypasses search entirely.
-
 **Metadata quality issues?**
 - Ensure `ENABLE_MUSICBRAINZ=true` in environment variables (or enable it in the Settings tab)
 - AcoustID fingerprinting identifies most well-known tracks automatically; MusicBrainz text search is the fallback
@@ -914,7 +899,6 @@ docker compose up -d
 - Very short clips (under ~5 seconds) may not fingerprint reliably
 - Obscure or newly released tracks may not be in AcoustID or MusicBrainz yet; metadata will come from YouTube/SoundCloud channel info instead
 - If fingerprinting stops working, the shared built-in AcoustID key may have hit its rate limit. Register a free personal key at [acoustid.org](https://acoustid.org/login) and enter it in Settings > General > AcoustID API Key (or set `ACOUSTID_API_KEY` env var)
-- Monochrome (Tidal) downloads always use Tidal's own metadata for artist/title/album; MusicBrainz is only consulted for the release year
 
 ## Contributors
 

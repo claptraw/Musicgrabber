@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.6.6 (2026-04-26)
+
+### Removed
+- **Monochrome/Tidal source**: Monochrome shut down on 25 April 2026. Pour one out, it was genuinely the best source we had, giving us real lossless FLAC from the Tidal CDN. All associated code has been removed, including the API client, mirror pool, DASH manifest fetching, preview proxy, Tidal playlist import, and the cover art fallback that hit the Tidal image CDN. YouTube, SoundCloud, MP3Phoenix, and Soulseek remain.
+
+### Added
+- **zvu4no search source**: `zvu4no.org` is now wired in as a first-class source with `ZV` result badges, per-source settings, watched-playlist source chips, and `SOURCE_ZVU4NO_ENABLED` env override support. It scrapes the server-rendered `/tracks/<query>` pages, scores results through the existing matcher, and contributes up to four candidates to merged "All" searches. Direct `data.zvu4no.org` MP3 URLs mean hover/mobile preview works without yt-dlp, and downloads go through the same integrity, metadata, lyrics, duplicate, fallback, and format-conversion flow as MP3Phoenix. `TIMEOUT_ZVU4NO_DOWNLOAD` controls the stream timeout.
+
+### Fixed
+- **ListenBrainz "Created for You" playlists duplicating each week**: re-adding a ListenBrainz username after LB had rotated to a new week created fresh watched playlist rows for every playlist instead of recognising the ones already being watched. The dedup check only compared URLs, and LB issues a brand-new UUID each week, so the old URL never matched. It now falls back to a name-prefix + username check ("Weekly Exploration for karl%"), which catches the rotation and skips the duplicate.
+- **Retry/alternate paths losing custom subfolder routing**: when a download retried due to an integrity failure, duration mismatch, or source alternation, the `custom_subdir` playlist folder was silently dropped, so retried tracks landed in the wrong place. The three retry branches in `process_download` now carry it through. The "Retry missing track" and "Queue candidate" endpoints for watched playlists also now read and forward `custom_subdir` from the playlist row.
+
+
 ## v2.6.5 (2026-04-19)
 
 ### Fixed

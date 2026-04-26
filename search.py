@@ -1,14 +1,11 @@
 """
 MusicGrabber - Search Source Registry
 
-Extensible source architecture. YouTube and SoundCloud use yt-dlp with
-different search prefixes; Monochrome hits the Tidal API directly for
-proper lossless results. Adding a new source is one function and one
-registry entry.
+Extensible source architecture. YouTube, SoundCloud, and MP3Phoenix are supported.
+Adding a new source is one function and one registry entry.
 """
 
 import json
-import hashlib
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16,16 +13,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from constants import (
     TIMEOUT_YTDLP_SEARCH,
     SOUNDCLOUD_SEARCH_MULTIPLIER, SOUNDCLOUD_SEARCH_MIN_FETCH,
-    MONOCHROME_COVER_BASE,
     SEARCH_MAX_PER_SOURCE,
     SEARCH_MAX_PER_SOURCE_YOUTUBE, SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
-    SEARCH_MAX_PER_SOURCE_SOUNDCLOUD, SEARCH_MAX_PER_SOURCE_MONOCHROME,
+    SEARCH_MAX_PER_SOURCE_SOUNDCLOUD, SEARCH_MAX_PER_SOURCE_ZVU4NO,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration, search_artist_mbid, lookup_musicbrainz
 from settings import get_setting, get_setting_bool
 from mp3phoenix import search_mp3phoenix
-from utils import fetch_monochrome_api_json, fetch_monochrome_track_manifest
+from zvu4no import search_zvu4no
 from youtube import (
     search_youtube, score_search_result_with_breakdown, format_score_breakdown, parse_duration,
     _normalise_search_text, _parse_query_artist_title, _query_has_variation,
@@ -35,7 +31,6 @@ from youtube import (
 # Penalty large enough to push blacklisted uploaders to the bottom of results
 # without hiding them entirely  -  the user might still want to see them
 _BLACKLIST_UPLOADER_PENALTY = 500
-_MONOCHROME_URL_RE = re.compile(r"^https?://(?:www\.)?monochrome\.tf/", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -115,291 +110,6 @@ def search_soundcloud(query: str, limit: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Monochrome  -  full search via the Monochrome/Tidal API, plus URL resolution
-# ---------------------------------------------------------------------------
-
-def _monochrome_cover_url(cover_uuid: str) -> str:
-    """Turn a Tidal cover UUID into a CDN thumbnail URL.
-
-    UUIDs come as 'ccc50c5e-b347-4faa-9524-924dc8f071fc' and need
-    splitting into path segments for the Tidal image CDN.
-    """
-    if not cover_uuid:
-        return ""
-    return f"{MONOCHROME_COVER_BASE}/{cover_uuid.replace('-', '/')}/320x320.jpg"
-
-
-def _score_monochrome_result(item: dict, query: str | None = None) -> int:
-    """Score a Monochrome/Tidal search result.
-
-    Lossless gets a genuine quality bonus  -  unlike YouTube where 'FLAC'
-    is just a lossy-to-lossless transcode, this is the real deal.
-    """
-    title = item.get("title", "")
-    artist_name = (item.get("artist") or {}).get("name", "")
-    album_title = (item.get("album") or {}).get("title", "")
-    audio_quality = item.get("audioQuality", "")
-    popularity = item.get("popularity") or 0
-    duration = item.get("duration") or 0
-
-    # Start with the standard relevance scoring  -  pass album title so cover/tribute
-    # albums (e.g. "Piano Covers of Taylor Swift") get penalised correctly.
-    score, score_breakdown = score_search_result_with_breakdown(
-        title, artist_name, query,
-        duration_seconds=duration or None,
-        view_count=None,
-        album=album_title,
-    )
-
-    # Quality bonus  -  the whole point of Monochrome.  50-point gap over MP3Phoenix
-    # (320 kbps = +30) ensures lossless always wins on equal relevance.  Still loses
-    # to a stacked official YouTube result (Topic + official audio = ~70 pts).
-    quality_bonuses = {
-        "HI_RES_LOSSLESS": 100,
-        "LOSSLESS": 80,
-        "HIGH": 30,
-    }
-    quality_bonus = quality_bonuses.get(audio_quality, 0)
-    if quality_bonus:
-        score += quality_bonus
-        score_breakdown.append(f"source_quality=+{quality_bonus}")
-
-    # Title variant penalty: if the query has no parenthetical suffix but the
-    # Tidal result does (e.g. "Hey Man Nice Shot (½ oz)" vs "hey man nice shot"),
-    # it's a non-standard variant.  Benign remaster/edition tags get a light touch;
-    # opaque suffixes get enough of a penalty to neutralise the quality bonus.
-    # Exception: if the parenthetical content is already present in the query
-    # (just written with dashes instead of brackets, e.g. query "Paro House - Luciid VIP"
-    # matching Tidal "Paro House (Luciid VIP)"), skip the penalty.
-    if query:
-        _, expected_title = _parse_query_artist_title(query)
-        if expected_title and not re.search(r'[\(\[]', expected_title):
-            if re.search(r'[\(\[]', title):
-                paren_content = " ".join(re.findall(r'[\(\[]([^\)\]]*)[\)\]]', title.lower()))
-                _benign_variant_re = r'\b(remaster(?:ed)?|expanded|deluxe|edition|feat(?:uring)?|ft|bonus|single|stereo|mono|explicit)\b'
-                # Check if the variant words are already in the query (dash-separated form)
-                query_norm = re.sub(r"[^a-z0-9]+", " ", query.lower()).strip()
-                paren_norm = re.sub(r"[^a-z0-9]+", " ", paren_content).strip()
-                variant_in_query = paren_norm and all(
-                    tok in query_norm for tok in paren_norm.split() if len(tok) > 1
-                )
-                if not re.search(_benign_variant_re, paren_content) and not variant_in_query:
-                    score -= 110  # Neutralise even HI_RES_LOSSLESS for unknown variants
-                    score_breakdown.append("monochrome_title_variant=-110")
-
-    # Artist mismatch penalty: if the query specifies an artist and the Tidal
-    # result is by a completely different artist, the quality bonus must not
-    # override a correct-artist YouTube result.  "Venjent - Who Are Ya" should
-    # not match "Wolf Parade - Who Are Ya" just because Tidal has it lossless.
-    if query:
-        expected_artist, _ = _parse_query_artist_title(query)
-        if expected_artist:
-            expected_norm = _normalise_search_text(expected_artist)
-            result_norm = _normalise_search_text(artist_name)
-            artist_strength = _artist_match_strength(expected_artist, artist_name)
-            # Completely different artist: no substring relationship and weak token overlap.
-            # Subtract enough to neutralise even Hi-Res lossless bonus.
-            if expected_norm and result_norm and \
-                    expected_norm not in result_norm and result_norm not in expected_norm and \
-                    artist_strength < 0.6:
-                score -= 150
-                score_breakdown.append("monochrome_artist_mismatch=-150")
-
-    # Popularity tiebreaker (0–15 points, log-ish scale)
-    popularity_bonus = min(popularity // 10, 15)
-    if popularity_bonus:
-        score += popularity_bonus
-        score_breakdown.append(f"popularity=+{popularity_bonus}")
-
-    item["_score_breakdown"] = score_breakdown
-    return score
-
-
-def _search_monochrome_api(query: str, limit: int) -> list[dict]:
-    """Search the Monochrome API for tracks matching a free-text query."""
-    try:
-        response, instance_url = fetch_monochrome_api_json("search", params={"s": query})
-        data = response.get("data") or {}
-        items = data.get("items") or []
-        if instance_url:
-            print(f"Monochrome search served by {instance_url}")
-    except Exception as e:
-        print(f"Monochrome API search error: {e}")
-        return []
-
-    results = []
-    for item in items:
-        if not item.get("streamReady"):
-            continue
-
-        track_id = str(item.get("id", ""))
-        title = item.get("title", "Unknown")
-        artist_obj = item.get("artist") or {}
-        artist_name = artist_obj.get("name", "Unknown")
-        album_obj = item.get("album") or {}
-        duration_secs = item.get("duration") or 0
-        audio_quality = item.get("audioQuality", "")
-
-        results.append({
-            "video_id": track_id,
-            "title": title,
-            "channel": artist_name,
-            "duration": parse_duration(duration_secs) if duration_secs else "",
-            "thumbnail": _monochrome_cover_url(album_obj.get("cover", "")),
-            "is_playlist": False,
-            "video_count": None,
-            "source": "monochrome",
-            "source_url": f"https://monochrome.tf/track/{track_id}",
-            "quality": audio_quality if audio_quality else None,
-            "quality_score": _score_monochrome_result(item, query),
-            "score_breakdown": list(item.get("_score_breakdown") or []),
-            "slskd_username": None,
-            "slskd_filename": None,
-            # Extra Monochrome metadata  -  available for richer tagging at download time
-            "monochrome_album": album_obj.get("title"),
-            "monochrome_album_cover": album_obj.get("cover"),
-            "monochrome_isrc": item.get("isrc"),
-            "monochrome_explicit": item.get("explicit", False),
-        })
-
-    results.sort(key=lambda x: x["quality_score"], reverse=True)
-
-    # Deduplicate by ISRC: same recording listed at multiple quality tiers shows
-    # up as separate Tidal tracks. Keep only the highest-scoring entry per ISRC
-    # (that's the HI_RES one if it exists), then give it a +20 bonus — the download
-    # path always tries HI_RES first anyway, so showing duplicates is just noise.
-    seen_isrc: dict[str, int] = {}  # isrc -> index in deduped list
-    deduped = []
-    for r in results:
-        isrc = r.get("monochrome_isrc") or ""
-        if not isrc:
-            deduped.append(r)
-            continue
-        if isrc not in seen_isrc:
-            r["quality_score"] += 20
-            seen_isrc[isrc] = len(deduped)
-            deduped.append(r)
-        # Lower-quality duplicate for the same ISRC — discard it silently
-
-    deduped.sort(key=lambda x: x["quality_score"], reverse=True)
-    return deduped[:limit]
-
-
-def _resolve_monochrome_url(query: str, limit: int) -> list[dict]:
-    """Resolve a pasted monochrome.tf URL via yt-dlp (legacy path)."""
-    try:
-        cmd = [
-            "yt-dlp",
-            "--dump-json",
-            "--flat-playlist",
-            "--no-warnings",
-            query,
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_SEARCH)
-        if result.returncode != 0:
-            return []
-
-        results = []
-        for line in result.stdout.strip().split("\n"):
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                if data.get("_type") == "playlist":
-                    continue
-
-                title = data.get("title", "Unknown")
-                channel = data.get("uploader", data.get("channel", "Monochrome"))
-                duration_secs = data.get("duration") or 0
-                source_url = data.get("webpage_url") or data.get("url") or query
-                video_id = data.get("id") or hashlib.md5(source_url.encode()).hexdigest()[:16]
-                _qs, _sb = score_search_result_with_breakdown(
-                    title, channel, query,
-                    duration_seconds=duration_secs or None,
-                    view_count=data.get("view_count"),
-                )
-
-                results.append({
-                    "video_id": str(video_id),
-                    "title": title,
-                    "channel": channel,
-                    "duration": parse_duration(duration_secs) if duration_secs else "",
-                    "thumbnail": data.get("thumbnail", ""),
-                    "is_playlist": False,
-                    "video_count": None,
-                    "source": "monochrome",
-                    "source_url": source_url,
-                    "quality": None,
-                    "quality_score": _qs,
-                    "score_breakdown": _sb,
-                    "slskd_username": None,
-                    "slskd_filename": None,
-                })
-            except json.JSONDecodeError:
-                continue
-
-        results.sort(key=lambda x: x["quality_score"], reverse=True)
-        return results[:limit]
-    except Exception as e:
-        print(f"Monochrome URL resolve error: {e}")
-        return []
-
-
-def search_monochrome(query: str, limit: int) -> list[dict]:
-    """Search Monochrome for tracks, or resolve a pasted URL."""
-    query = (query or "").strip()
-    if not query:
-        return []
-
-    # Pasted URL  -  resolve via yt-dlp (handles edge cases the API can't)
-    if _MONOCHROME_URL_RE.match(query):
-        return _resolve_monochrome_url(query, limit)
-
-    # Free-text search via the Monochrome API
-    return _search_monochrome_api(query, limit)
-
-
-def get_monochrome_stream_url(track_id: str, quality: str = "LOSSLESS") -> dict:
-    """Fetch the stream manifest for a Monochrome/Tidal track.
-
-    Returns a dict with 'url' (signed DASH MPD URL), 'mime_type', and the
-    selected Monochrome format list. Raises on failure.
-    """
-    format_map = {
-        "HI_RES_LOSSLESS": ["FLAC_HIRES"],
-        "LOSSLESS": ["FLAC"],
-        "HIGH": ["AACLC"],
-        "LOW": ["HEAACV1"],
-    }
-    manifest = fetch_monochrome_track_manifest(track_id, format_map.get(quality, ["FLAC"]))
-
-    return {
-        "url": manifest["uri"],
-        "mime_type": "application/dash+xml",
-        "codec": ",".join(manifest.get("formats") or []),
-        "encryption": "NONE",
-        "bit_depth": None,
-        "sample_rate": None,
-        "audio_quality": quality,
-    }
-
-
-def get_monochrome_track_info(track_id: str) -> dict | None:
-    """Fetch full track metadata from the Monochrome API.
-
-    Returns the raw API response data dict, or None on failure.
-    """
-    try:
-        response, instance_url = fetch_monochrome_api_json("info", params={"id": track_id})
-        if instance_url:
-            print(f"Monochrome track info served by {instance_url}")
-        return response.get("data")
-    except Exception as e:
-        print(f"Monochrome track info error: {e}")
-        return None
-
-
-# ---------------------------------------------------------------------------
 # Source registry  -  add new sources here
 # ---------------------------------------------------------------------------
 
@@ -425,11 +135,11 @@ SOURCE_REGISTRY = {
         "search_fn": search_soundcloud,
         "has_preview": True,
     },
-    "monochrome": {
-        "label": "Monochrome",
-        "badge": "MO",
-        "colour": "#111111",
-        "search_fn": search_monochrome,
+    "zvu4no": {
+        "label": "zvu4no",
+        "badge": "ZV",
+        "colour": "#7a6aee",
+        "search_fn": search_zvu4no,
         "has_preview": True,
     },
 }
@@ -438,7 +148,7 @@ SEARCH_MAX_PER_SOURCE_BY_SOURCE = {
     "youtube": SEARCH_MAX_PER_SOURCE_YOUTUBE,
     "mp3phoenix": SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
     "soundcloud": SEARCH_MAX_PER_SOURCE_SOUNDCLOUD,
-    "monochrome": SEARCH_MAX_PER_SOURCE_MONOCHROME,
+    "zvu4no": SEARCH_MAX_PER_SOURCE_ZVU4NO,
 }
 
 

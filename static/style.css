@@ -898,13 +898,13 @@ h1 {
     color: white;
 }
 
-.source-badge.monochrome {
-    background: #111111;
+.source-badge.mp3phoenix {
+    background: #e05c00;
     color: white;
 }
 
-.source-badge.mp3phoenix {
-    background: #e05c00;
+.source-badge.zvu4no {
+    background: #7a6aee;
     color: white;
 }
 
@@ -1244,6 +1244,212 @@ h1 {
     padding: 6px 10px;
     font-size: 13px;
     font-family: inherit;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+}
+
+/* "Set Destination" row in the add-watched-playlist panel */
+.watched-dest-add-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.watched-dest-hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.watched-dest-set-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+}
+
+.watched-dest-set-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.watched-dest-display {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-family: monospace;
+}
+
+.watched-dest-clear {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 2px 4px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+}
+
+.watched-dest-clear:hover { color: var(--text-primary); }
+
+/* Destination row inside a watched playlist card */
+.watched-card-dest-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.watched-card-dest-label {
+    white-space: nowrap;
+}
+
+.watched-card-dest-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-family: inherit;
+    font-weight: 600;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: border-color 0.15s;
+}
+
+.watched-card-dest-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.watched-card-dest-path {
+    font-family: monospace;
+    font-weight: normal;
+    font-size: 11px;
+}
+
+/* --------------------------------------------------------------------------
+   Destination folder picker modal
+-------------------------------------------------------------------------- */
+
+.dest-picker-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    width: min(480px, 92vw);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.dest-picker-breadcrumb {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+}
+
+.dest-crumb {
+    cursor: pointer;
+    color: var(--accent);
+}
+
+.dest-crumb:hover { text-decoration: underline; }
+
+.dest-crumb-root { font-weight: 600; }
+
+.dest-crumb-sep { color: var(--text-secondary); }
+
+.dest-picker-body {
+    overflow-y: auto;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 120px;
+    max-height: 280px;
+}
+
+.dest-picker-loading,
+.dest-picker-empty {
+    padding: 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.dest-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    padding: 7px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.dest-picker-item:hover { background: var(--bg-tertiary); border-color: var(--border); }
+
+.dest-picker-up { color: var(--text-secondary); font-size: 12px; }
+
+.dest-picker-self {
+    color: var(--accent);
+    border-color: var(--border);
+    background: var(--bg-tertiary);
+    margin-bottom: 4px;
+    font-size: 12px;
+}
+
+.dest-picker-self:hover { border-color: var(--accent); }
+
+.dest-picker-custom-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+}
+
+.dest-picker-custom-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.dest-picker-custom-input {
+    flex: 1;
+    padding: 6px 10px;
+    font-size: 13px;
+    font-family: monospace;
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
     border-radius: 6px;

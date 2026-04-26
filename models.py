@@ -19,7 +19,7 @@ def _validate_mbid(v: str | None) -> str | None:
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: int = 15
-    source: str = "all"  # "youtube", "soundcloud", "monochrome", or "all"
+    source: str = "all"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", or "all"
 
 class DownloadRequest(BaseModel):
     video_id: str
@@ -29,8 +29,8 @@ class DownloadRequest(BaseModel):
     download_type: str = "single"  # "single" or "playlist"
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
     # Source routing
-    source: str = "youtube"  # "youtube", "soundcloud", "monochrome", or "soulseek"
-    source_url: Optional[str] = None  # Full URL for non-YouTube sources (e.g. SoundCloud/Monochrome)
+    source: str = "youtube"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", or "soulseek"
+    source_url: Optional[str] = None  # Full URL for non-YouTube sources (e.g. SoundCloud/MP3Phoenix)
     # Soulseek-specific fields
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
@@ -47,7 +47,7 @@ class DownloadRequest(BaseModel):
     album_track_total: Optional[int] = None
 
 class PlaylistFetchRequest(BaseModel):
-    url: str  # Spotify, Amazon Music, etc. playlist URL
+    url: str  # Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, etc. playlist URL
 
 
 class AsyncBulkImportRequest(BaseModel):
@@ -58,13 +58,14 @@ class AsyncBulkImportRequest(BaseModel):
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
 
 class WatchedPlaylistRequest(BaseModel):
-    url: str  # Spotify, YouTube, or Amazon Music playlist URL
+    url: str  # Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, etc. playlist URL
     refresh_interval_hours: float = 24
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
     make_m3u: bool = False
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
     sync_mode: str = "append"  # "append" = grow forever; "mirror" = track upstream removals in M3U
     preferred_sources: str = "all"  # Comma-separated source IDs or "all"
+    custom_subdir: Optional[str] = None  # Override destination folder (relative to music_dir)
 
 class WatchedPlaylistUpdate(BaseModel):
     refresh_interval_hours: Optional[float] = None
@@ -74,6 +75,7 @@ class WatchedPlaylistUpdate(BaseModel):
     use_playlists_dir: Optional[bool] = None
     sync_mode: Optional[str] = None  # "append" or "mirror"
     preferred_sources: Optional[str] = None  # Comma-separated source IDs or "all"
+    custom_subdir: Optional[str] = None  # Override destination folder (relative to music_dir)
 
 class SettingsUpdate(BaseModel):
     """Settings that can be updated via the UI"""
@@ -103,7 +105,7 @@ class SettingsUpdate(BaseModel):
     source_youtube_enabled: Optional[bool] = None
     source_mp3phoenix_enabled: Optional[bool] = None
     source_soundcloud_enabled: Optional[bool] = None
-    source_monochrome_enabled: Optional[bool] = None
+    source_zvu4no_enabled: Optional[bool] = None
     # Soulseek/slskd
     slskd_url: Optional[str] = None
     slskd_user: Optional[str] = None
@@ -153,21 +155,20 @@ class SearchResult(BaseModel):
     is_playlist: bool = False
     video_count: Optional[int] = None
     # Multi-source support
-    source: str = "youtube"  # "youtube", "soundcloud", "monochrome", or "soulseek"
+    source: str = "youtube"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", or "soulseek"
     source_url: Optional[str] = None  # Full URL for non-YouTube sources
-    quality: Optional[str] = None  # e.g., "LOSSLESS", "HI_RES_LOSSLESS", None for YouTube
+    quality: Optional[str] = None  # e.g., None for YouTube, format string for others
     quality_score: int = 40  # For sorting (higher = better)
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
-    # Monochrome-specific extras (available when source == "monochrome")
-    album: Optional[str] = None  # Album title from Tidal metadata
+    album: Optional[str] = None
 
 class BlacklistRequest(BaseModel):
     """Report a bad track / block an uploader."""
     job_id: Optional[str] = None
     video_id: Optional[str] = None
     uploader: Optional[str] = None
-    source: str = "youtube"  # "youtube", "soundcloud", "monochrome", or "soulseek"
+    source: str = "youtube"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", or "soulseek"
     reason: str = "other"  # wrong_track, poor_quality, slowed_pitched, contentid, other
     note: Optional[str] = None  # Optional free-text detail
     block_uploader: bool = False  # Also blacklist the uploader

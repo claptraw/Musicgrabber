@@ -205,7 +205,7 @@ SETTINGS_SCHEMA = {
     "source_youtube_enabled": {"type": "bool", "default": True, "env": "SOURCE_YOUTUBE_ENABLED"},
     "source_mp3phoenix_enabled": {"type": "bool", "default": True, "env": "SOURCE_MP3PHOENIX_ENABLED"},
     "source_soundcloud_enabled": {"type": "bool", "default": True, "env": "SOURCE_SOUNDCLOUD_ENABLED"},
-    "source_monochrome_enabled": {"type": "bool", "default": True, "env": "SOURCE_MONOCHROME_ENABLED"},
+    "source_zvu4no_enabled": {"type": "bool", "default": True, "env": "SOURCE_ZVU4NO_ENABLED"},
     # YouTube
     "youtube_cookies": {"type": "str", "default": "", "env": "YOUTUBE_COOKIES", "sensitive": True},
     "youtube_bot_backoff_min": {"type": "int", "default": BOT_BACKOFF_MIN_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MIN"},
@@ -260,6 +260,13 @@ def get_singles_dir(user_id: str | None = None) -> Path:
     if subdir == ".":
         return music_dir
     return music_dir / subdir
+
+
+def resolve_custom_subdir(custom_subdir: str, user_id: str | None = None) -> Path:
+    """Resolve a per-playlist custom subdir string to an absolute path under music_dir."""
+    music_dir = Path(get_setting("music_dir", str(MUSIC_DIR), user_id=user_id))
+    subdir = custom_subdir.strip()
+    return music_dir if subdir == "." else music_dir / subdir
 
 
 def get_playlists_dir(user_id: str | None = None) -> Path | None:

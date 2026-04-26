@@ -12,12 +12,10 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-import httpx
 import shutil
 
 from constants import (
     AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH,
-    MONOCHROME_API_URLS, MONOCHROME_MANIFEST_URLS, TIMEOUT_MONOCHROME_API,
 )
 from settings import get_singles_dir, get_albums_dir, get_download_dir, get_playlists_dir, get_trash_dir, get_setting
 
@@ -32,40 +30,6 @@ def sanitize_filename(name: str) -> str:
 def is_valid_youtube_id(video_id: str) -> bool:
     """Basic validation for YouTube video/playlist IDs."""
     return bool(re.match(r'^[A-Za-z0-9_-]+$', video_id or ""))
-
-
-def fetch_monochrome_api_json(
-    path: str,
-    *,
-    params: dict | list[tuple[str, str]] | None = None,
-    expected_statuses: tuple[int, ...] = (200,),
-) -> tuple[dict, str]:
-    """Fetch JSON from the first healthy Monochrome-compatible API instance."""
-    endpoint = "/" + path.strip("/")
-    last_status = None
-    last_body = ""
-
-    with httpx.Client(timeout=TIMEOUT_MONOCHROME_API, follow_redirects=True) as client:
-        for base_url in MONOCHROME_API_URLS:
-            try:
-                resp = client.get(f"{base_url}{endpoint}/", params=params)
-            except Exception as e:
-                print(f"Monochrome API request failed on {base_url}{endpoint}: {e}")
-                continue
-
-            if resp.status_code in expected_statuses:
-                return resp.json(), base_url
-
-            last_status = resp.status_code
-            last_body = resp.text[:200]
-            print(
-                f"Monochrome API request returned {resp.status_code} on {base_url}{endpoint}, "
-                "trying next instance..."
-            )
-
-    status_msg = f"status={last_status}" if last_status is not None else "no_response"
-    detail = f": {last_body}" if last_body else ""
-    raise RuntimeError(f"Monochrome API request failed for {endpoint} ({status_msg}){detail}")
 
 
 def clean_title(title: str) -> str:
@@ -187,93 +151,6 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
     if not fallback_title:
         fallback_title = full_title.strip() or "Unknown Title"
     return artist.strip() or "Unknown Artist", fallback_title
-
-
-def fetch_monochrome_track_manifest(
-    track_id: str,
-    formats: list[str],
-    *,
-    adaptive: bool = True,
-    manifest_type: str = "MPEG_DASH",
-    uri_scheme: str = "HTTPS",
-    usage: str = "PLAYBACK",
-    exclude_instance_urls: set[str] | None = None,
-) -> dict:
-    """Fetch a Monochrome playback manifest from one of the active instances.
-
-    The legacy `/track/` endpoint now fails on the official API host for many
-    tracks. The website uses `/trackManifests/` against regional instances and
-    rotates on 429s, so we mirror that behaviour here.
-    """
-    params = [
-        ("id", str(track_id)),
-        *[("formats", fmt) for fmt in formats],
-        ("adaptive", str(bool(adaptive)).lower()),
-        ("manifestType", manifest_type),
-        ("uriScheme", uri_scheme),
-        ("usage", usage),
-    ]
-
-    last_status = None
-    last_body = ""
-    excluded = {url.rstrip("/") for url in (exclude_instance_urls or set())}
-    with httpx.Client(timeout=TIMEOUT_MONOCHROME_API, follow_redirects=True) as client:
-        for base_url in MONOCHROME_MANIFEST_URLS:
-            if base_url in excluded:
-                continue
-            try:
-                resp = client.get(f"{base_url}/trackManifests/", params=params)
-            except Exception as e:
-                print(f"Monochrome manifest request failed on {base_url}: {e}")
-                continue
-
-            if resp.status_code == 429:
-                print(f"Monochrome rate limit hit on {base_url}, trying next instance...")
-                last_status = resp.status_code
-                last_body = resp.text[:200]
-                continue
-
-            if resp.status_code >= 400:
-                print(
-                    f"Monochrome manifest request returned {resp.status_code} on {base_url}, "
-                    "trying next instance..."
-                )
-                last_status = resp.status_code
-                last_body = resp.text[:200]
-                continue
-
-            data = resp.json()
-            attrs = (((data.get("data") or {}).get("data") or {}).get("attributes") or {})
-            uri = attrs.get("uri")
-            if not uri:
-                last_status = resp.status_code
-                last_body = resp.text[:200]
-                print(f"Monochrome manifest response from {base_url} had no uri, trying next instance...")
-                continue
-
-            presentation = attrs.get("trackPresentation")
-            if presentation == "PREVIEW":
-                # This instance's subscription has expired or degraded; it's handing out
-                # 30-second clips instead of full tracks. Try another instance.
-                last_status = resp.status_code
-                last_body = "trackPresentation=PREVIEW"
-                print(f"Monochrome instance {base_url} returned a PREVIEW manifest, skipping...")
-                continue
-
-            return {
-                "instance_url": base_url,
-                "uri": uri,
-                "formats": list(attrs.get("formats") or []),
-                "track_presentation": presentation,
-                "hash": attrs.get("hash"),
-                "track_normalization": attrs.get("trackAudioNormalizationData") or {},
-                "album_normalization": attrs.get("albumAudioNormalizationData") or {},
-                "raw": data,
-            }
-
-    status_msg = f"status={last_status}" if last_status is not None else "no_response"
-    detail = f": {last_body}" if last_body else ""
-    raise RuntimeError(f"Monochrome trackManifests failed ({status_msg}){detail}")
 
 
 def _find_audio_match_in_dir(directory: Path, stems: list[str]) -> Optional[Path]:

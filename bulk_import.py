@@ -48,8 +48,8 @@ def _candidate_mentions_expected_artist(candidate: dict, expected_artist: str) -
     """Return True when candidate title/channel appears to include expected artist.
 
     For multi-artist credits like 'OGUZ, Nyctonian', passes if ANY of the
-    comma-separated artists is mentioned. Tidal/Monochrome often credits only the
-    primary artist, so requiring the full combined string fails perfectly good results.
+    comma-separated artists is mentioned. Requiring the full combined string
+    rejects otherwise good results from sources that only show a primary artist.
     """
     if not expected_artist:
         return False
@@ -157,6 +157,7 @@ def start_bulk_import_for_tracks(
     override_dir: Optional[str] = None,
     album_release_mbid: Optional[str] = None,
     album_total_tracks: Optional[int] = None,
+    custom_subdir: Optional[str] = None,
 ) -> str:
     """Create a bulk import job from a list of (artist, title) tuples."""
     import_id = str(uuid.uuid4())[:8]
@@ -166,11 +167,11 @@ def start_bulk_import_for_tracks(
             """INSERT INTO bulk_imports
                (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac,
                 watch_playlist_id, use_playlists_dir, watch_artist_id, user_id, preferred_sources,
-                override_dir, album_release_mbid, album_total_tracks)
-               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                override_dir, album_release_mbid, album_total_tracks, custom_subdir)
+               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (import_id, len(tracks), int(convert_to_flac), watch_playlist_id,
              int(use_playlists_dir), watch_artist_id, user_id, preferred_sources or "all",
-             override_dir, album_release_mbid, album_total_tracks)
+             override_dir, album_release_mbid, album_total_tracks, custom_subdir or None)
         )
 
         for line_num, (artist, song) in enumerate(tracks, 1):
@@ -189,7 +190,7 @@ def start_bulk_import_for_tracks(
 def process_bulk_import_worker(import_id: str):
     """Background worker to process bulk import tracks one by one
 
-    Searches all available sources (YouTube, SoundCloud, Monochrome) in parallel
+    Searches all available sources in parallel
     via search_all() and picks the best result by quality score.
     """
     # Load import details
@@ -208,6 +209,7 @@ def process_bulk_import_worker(import_id: str):
         use_playlists_dir = bool(import_row["use_playlists_dir"])
         user_id = import_row["user_id"]
         override_dir = import_row["override_dir"]  # absolute path string or None
+        custom_subdir = (import_row["custom_subdir"] or "").strip() or None
         album_release_mbid = (import_row["album_release_mbid"] or "").strip() or None
         _preferred_sources_raw = import_row["preferred_sources"] or "all"
         # Parse "youtube,soundcloud" into ["youtube", "soundcloud"], or None for "all"
@@ -433,12 +435,12 @@ def process_bulk_import_worker(import_id: str):
                     spawn_daemon_thread(process_download, job_id, video_id, convert_to_flac,
                                         source_url, _pname, use_playlists_dir,
                                         user_id=user_id, override_dir=override_dir,
-                                        skip_dupe_check=_skip_dupes)
+                                        skip_dupe_check=_skip_dupes, custom_subdir=custom_subdir)
                 else:
                     _get_download_pool().submit(process_download, job_id, video_id, convert_to_flac,
                                           source_url, _pname, use_playlists_dir,
                                           user_id=user_id, override_dir=override_dir,
-                                          skip_dupe_check=_skip_dupes)
+                                          skip_dupe_check=_skip_dupes, custom_subdir=custom_subdir)
 
             except Exception as e:
                 with db_conn() as conn:

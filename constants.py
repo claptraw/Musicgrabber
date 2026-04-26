@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.6.5"
+VERSION = "2.6.6"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -32,11 +32,10 @@ TIMEOUT_SPOTIFY_BROWSER = 180    # Headless browser for large playlists (3 minut
 SPOTIFY_BROWSER_STALL_SECONDS = 30  # No-progress cutoff while scrolling long Spotify playlists
 TIMEOUT_AMAZON_BROWSER = 180     # Amazon Music playlist scraping (3 minutes)
 TIMEOUT_FPCALC = 30              # Audio fingerprinting via fpcalc
-TIMEOUT_MONOCHROME_API = 15      # Monochrome/Tidal API calls (search + manifest)
-MONOCHROME_CDN_MAX_RETRIES = 2   # Retry attempts on CDN 403 (rate limit / geo hiccup)
-MONOCHROME_CDN_RETRY_DELAY = 3   # Seconds between CDN retries (multiplied by attempt)
 TIMEOUT_MP3PHOENIX_SEARCH = 15   # mp3phoenix AJAX search
 TIMEOUT_MP3PHOENIX_DOWNLOAD = int(os.getenv("TIMEOUT_MP3PHOENIX_DOWNLOAD", "120"))  # mp3phoenix direct MP3 stream
+TIMEOUT_ZVU4NO_SEARCH = 15       # zvu4no HTML search
+TIMEOUT_ZVU4NO_DOWNLOAD = int(os.getenv("TIMEOUT_ZVU4NO_DOWNLOAD", "120"))  # zvu4no direct MP3 stream
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
 LIBRARY_RECONCILE_INTERVAL = int(os.getenv("LIBRARY_RECONCILE_INTERVAL", "1800"))  # Reconcile deleted/renamed files every 30 minutes
@@ -58,7 +57,7 @@ SEARCH_MAX_PER_SOURCE = 4        # Max results any single source can contribute 
 SEARCH_MAX_PER_SOURCE_YOUTUBE = 6
 SEARCH_MAX_PER_SOURCE_MP3PHOENIX = 4
 SEARCH_MAX_PER_SOURCE_SOUNDCLOUD = 4
-SEARCH_MAX_PER_SOURCE_MONOCHROME = 10
+SEARCH_MAX_PER_SOURCE_ZVU4NO = 4
 SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 MAX_SEARCH_QUERY_LENGTH = 512    # Max characters allowed in search input
 SEARCH_LOG_RETENTION_DAYS = 90   # Keep search analytics for N days
@@ -128,32 +127,6 @@ TIMEOUT_MUSICBRAINZ_ARTIST = 10  # Artist search + singles listing HTTP timeout
 LISTENBRAINZ_API_URL = "https://api.listenbrainz.org"
 TIMEOUT_LISTENBRAINZ = 10
 TIMEOUT_LISTENBRAINZ_PLAYLIST = 15   # Per-playlist JSPF fetch
-
-# Monochrome API  -  Tidal frontend with public lossless FLAC streams.
-# Points at the official instance by default; users can override to use
-# community mirrors listed at github.com/monochrome-music/monochrome/blob/main/INSTANCES.md
-MONOCHROME_API_URL = os.getenv("MONOCHROME_API_URL", "https://api.monochrome.tf")
-_MONOCHROME_API_DEFAULTS = [
-    MONOCHROME_API_URL,
-    "https://frankfurt-1.monochrome.tf",
-    "https://singapore-1.monochrome.tf",
-    "https://triton.squid.wtf",
-    "https://wolf.qqdl.site",
-    "https://maus.qqdl.site",
-    "https://hifi.geeked.wtf",
-    "https://katze.qqdl.site",
-    "https://hund.qqdl.site",
-    "https://hifi-two.spotisaver.net",
-]
-_api_urls = os.getenv("MONOCHROME_API_URLS", ",".join(_MONOCHROME_API_DEFAULTS)).split(",")
-MONOCHROME_API_URLS = list(dict.fromkeys(
-    url.strip().rstrip("/") for url in _api_urls if url.strip()
-))
-_manifest_urls = os.getenv("MONOCHROME_MANIFEST_URLS", ",".join(MONOCHROME_API_URLS)).split(",")
-MONOCHROME_MANIFEST_URLS = list(dict.fromkeys(
-    url.strip().rstrip("/") for url in _manifest_urls if url.strip()
-))
-MONOCHROME_COVER_BASE = "https://resources.tidal.com/images"
 
 # Cover art fallback chain  -  we try really hard to get proper album art
 COVER_ART_TIMEOUT = 10           # Per-source HTTP timeout for cover art fetches

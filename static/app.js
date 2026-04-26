@@ -866,7 +866,7 @@
         }
 
         const versionLabel = document.getElementById('versionLabel');
-        const PLAYLIST_SERVICES = ["Spotify", "YouTube", "Apple Music", "Amazon Music", "Tidal", "SoundCloud"];
+        const PLAYLIST_SERVICES = ["Spotify", "YouTube", "Apple Music", "Amazon Music", "SoundCloud", "ListenBrainz"];
 
         function renderPlaylistServicesText() {
             const text = PLAYLIST_SERVICES.join(", ");
@@ -1083,7 +1083,7 @@
                     // Build preview URL with source params
                     const previewSource = (result && result.source) || 'youtube';
                     const params = new URLSearchParams({ source: previewSource });
-                    if ((previewSource === 'soundcloud' || previewSource === 'mp3phoenix') && result.source_url) {
+                    if ((previewSource === 'soundcloud' || previewSource === 'mp3phoenix' || previewSource === 'zvu4no') && result.source_url) {
                         params.set('url', result.source_url);
                     }
                     const response = await apiFetch(`/api/preview/${encodeURIComponent(videoId)}?${params}`);
@@ -1727,12 +1727,12 @@
         }
 
         function getSourceBadge(source) {
-            const badges = { youtube: 'YT', mp3phoenix: 'PX', soundcloud: 'SC', monochrome: 'MO', soulseek: 'SLK' };
+            const badges = { youtube: 'YT', mp3phoenix: 'PX', soundcloud: 'SC', zvu4no: 'ZV', soulseek: 'SLK' };
             return badges[source] || source.toUpperCase().slice(0, 3);
         }
 
         function getSourceLabel(source) {
-            const labels = { youtube: 'YouTube', mp3phoenix: 'MP3Phoenix', soundcloud: 'SoundCloud', monochrome: 'Monochrome', soulseek: 'Soulseek' };
+            const labels = { youtube: 'YouTube', mp3phoenix: 'MP3Phoenix', soundcloud: 'SoundCloud', zvu4no: 'zvu4no', soulseek: 'Soulseek' };
             return labels[source] || source;
         }
 
@@ -1766,7 +1766,7 @@
             } else {
                 parts.push(escapeHtml(result.channel || ''));
             }
-            // Show album for Monochrome results - clickable to open in Albums tab
+            // Show album if known - clickable to open in Albums tab
             if (result.album) {
                 const albumArtist = escapeAttr(result.artist || result.channel || '');
                 const albumTitle = escapeAttr(result.album);
@@ -2020,7 +2020,7 @@
                 }
 
                 // URL-based sources need the full URL for downloading
-                if ((result.source === 'soundcloud' || result.source === 'monochrome' || result.source === 'mp3phoenix') && result.source_url) {
+                if ((result.source === 'soundcloud' || result.source === 'mp3phoenix' || result.source === 'zvu4no') && result.source_url) {
                     payload.source_url = result.source_url;
                 }
 
@@ -2314,8 +2314,7 @@
                 'youtube_guessed': 'YouTube embedded/guessed',
                 'soundcloud_guessed': 'SoundCloud embedded/guessed',
                 'mp3phoenix_guessed': 'MP3Phoenix embedded/guessed',
-                'monochrome_guessed': 'Monochrome embedded/guessed',
-                'monochrome_api': 'Monochrome/Tidal API',
+                'zvu4no_guessed': 'zvu4no embedded/guessed',
                 'soulseek_guessed': 'Soulseek embedded/guessed',
             };
             return labels[source] || metadataSource;
@@ -2410,8 +2409,6 @@
             "free_slot": "Free download slot",
             "fast_uploader": "Fast uploader",
             "popularity": "Popularity bonus",
-            "monochrome_title_variant": "Tidal title variant penalty",
-            "monochrome_artist_mismatch": "Tidal artist mismatch",
         };
 
         function parseBreakdownEntry(entry) {
@@ -4292,15 +4289,15 @@
                 return;
             }
 
-            // URL validation - Spotify playlists/albums, Amazon Music playlists, Tidal, Apple Music, YouTube/YT Music playlists, and SoundCloud sets/likes
+            // URL validation - Spotify playlists/albums, Amazon Music playlists, Apple Music, YouTube/YT Music playlists, SoundCloud sets/likes, ListenBrainz
             const isSpotify = url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//);
             const isAmazon = url.match(/^https?:\/\/music\.amazon\.[a-z.]+\/(user-playlists|playlists)\//);
-            const isTidal = url.match(/^https?:\/\/(www\.)?tidal\.com\/(browse\/)?playlist\/[0-9a-f-]{36}/i);
             const isApple = url.match(/^https?:\/\/music\.apple\.com\/[a-z]{2}\/(playlist|album)\//i);
             const isYouTube = url.match(/^https?:\/\/(www\.|music\.)?youtube\.com\/(playlist|watch)\?[^"]*list=/i);
             const isSoundCloud = url.match(/^https?:\/\/soundcloud\.com\/[^/]+\/(sets\/[^/?]+|likes)/i);
-            if (!isSpotify && !isAmazon && !isTidal && !isApple && !isYouTube && !isSoundCloud) {
-                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, Tidal, or SoundCloud sets/likes link.';
+            const isListenBrainz = url.match(/^https?:\/\/listenbrainz\.org\/(playlist|user)\//i) || url.match(/^[a-zA-Z0-9_-]+$/);
+            if (!isSpotify && !isAmazon && !isApple && !isYouTube && !isSoundCloud && !isListenBrainz) {
+                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, SoundCloud sets/likes, or ListenBrainz link.';
                 spotifyError.style.display = 'block';
                 return;
             }
@@ -4491,7 +4488,6 @@
                     youtube: '<i class="fa-brands fa-youtube" title="YouTube"></i>',
                     apple: '<i class="fa-brands fa-apple" title="Apple Music"></i>',
                     amazon: '<i class="fa-brands fa-amazon" title="Amazon Music"></i>',
-                    tidal: '<i class="fa-solid fa-water" title="Tidal"></i>',
                     listenbrainz: '<i class="fa-solid fa-music" title="ListenBrainz"></i>',
                     soundcloud: '<i class="fa-brands fa-soundcloud" title="SoundCloud"></i>'
                 };
@@ -4660,7 +4656,6 @@
             else if (url.includes('youtube.com') || url.includes('youtu.be')) platform = 'youtube';
             else if (url.includes('music.apple.com')) platform = 'apple';
             else if (url.includes('amazon.') || url.includes('music.amazon')) platform = 'amazon';
-            else if (url.includes('tidal.com')) platform = 'tidal';
 
             watchedError.style.display = 'none';
             addWatchedBtn.disabled = true;
@@ -4690,7 +4685,8 @@
                         make_m3u: document.getElementById('watchedMakeM3u') ? document.getElementById('watchedMakeM3u').checked : false,
                         use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false,
                         sync_mode: document.getElementById('watchedSyncModeSelect') ? document.getElementById('watchedSyncModeSelect').value : 'append',
-                        preferred_sources: getWatchedPreferredSources()
+                        preferred_sources: getWatchedPreferredSources(),
+                        custom_subdir: (document.getElementById('watchedCustomSubdir')?.value || '').trim() || null
                     })
                 });
 
@@ -4705,6 +4701,8 @@
                 const data = await response.json();
                 showToast(`Now watching "${data.name}" (${data.track_count} tracks)`);
                 watchedUrlInput.value = '';
+                const customSubdirInput = document.getElementById('watchedCustomSubdir');
+                if (customSubdirInput) { customSubdirInput.value = ''; clearWatchedCustomSubdir(); }
                 loadWatchedPlaylists();
             } catch (error) {
                 watchedError.textContent = error.message;
@@ -4761,7 +4759,8 @@
                         convert_to_flac: watchedConvertToFlac ? watchedConvertToFlac.checked : convertToFlacCheckbox.checked,
                         make_m3u: document.getElementById('watchedMakeM3u') ? document.getElementById('watchedMakeM3u').checked : false,
                         use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false,
-                        sync_mode: 'mirror'
+                        sync_mode: 'mirror',
+                        custom_subdir: (document.getElementById('watchedCustomSubdir')?.value || '').trim() || null
                     })
                 });
 
@@ -5196,6 +5195,152 @@
                 showToast(syncMode === 'mirror' ? 'Sync mode: Mirror (M3U tracks upstream)' : 'Sync mode: Append (M3U grows over time)');
             } catch (error) {
                 showToast('Failed to update sync mode', true);
+                loadWatchedPlaylists();
+            }
+        }
+
+        function clearWatchedCustomSubdir() {
+            const input = document.getElementById('watchedCustomSubdir');
+            const btn = document.getElementById('watchedClearDestBtn');
+            const display = document.getElementById('watchedDestDisplay');
+            if (input) input.value = '';
+            if (btn) btn.style.display = 'none';
+            if (display) display.textContent = '';
+        }
+
+        function updateWatchedDestDisplay() {
+            const val = (document.getElementById('watchedCustomSubdir')?.value || '').trim();
+            const display = document.getElementById('watchedDestDisplay');
+            const clearBtn = document.getElementById('watchedClearDestBtn');
+            const musicRoot = (serverConfig?.music_dir || '/music').replace(/\/+$/, '');
+            if (display) display.textContent = val ? `${musicRoot}/${val}` : '';
+            if (clearBtn) clearBtn.style.display = val ? 'inline-flex' : 'none';
+        }
+
+        // =============================================================================
+        // Destination folder picker modal
+        // =============================================================================
+        let _destPickerCallback = null;
+        let _destPickerBrowsePath = '';   // directory currently being listed
+        let _destPickerSelected = '';     // path currently selected (confirmed in input)
+
+        async function openDestPicker(currentValue, callback) {
+            _destPickerCallback = callback;
+            _destPickerSelected = (currentValue || '').trim();
+            _destPickerBrowsePath = _destPickerSelected
+                ? _destPickerSelected.split('/').slice(0, -1).join('/')
+                : '';
+            const input = document.getElementById('destPickerCustomInput');
+            if (input) input.value = _destPickerSelected;
+            const overlay = document.getElementById('destPickerOverlay');
+            if (overlay) overlay.style.display = 'flex';
+            await _destPickerBrowse(_destPickerBrowsePath);
+        }
+
+        function closeDestPicker() {
+            const overlay = document.getElementById('destPickerOverlay');
+            if (overlay) overlay.style.display = 'none';
+            _destPickerCallback = null;
+        }
+
+        function confirmDestPicker() {
+            const raw = (document.getElementById('destPickerCustomInput')?.value || '').trim();
+            if (_destPickerCallback) _destPickerCallback(raw);
+            closeDestPicker();
+        }
+
+        function destPickerOnCustomInput(value) {
+            _destPickerSelected = value.trim();
+            _destPickerRenderBreadcrumb(_destPickerBrowsePath);
+        }
+
+        async function _destPickerBrowse(path) {
+            _destPickerBrowsePath = path;
+            _destPickerRenderBreadcrumb(path);
+            const listEl = document.getElementById('destPickerList');
+            if (!listEl) return;
+            listEl.innerHTML = '<div class="dest-picker-loading">Loading...</div>';
+            try {
+                const encoded = path ? encodeURIComponent(path) : '';
+                const resp = await apiFetch(`/api/music-dirs${encoded ? '?path=' + encoded : ''}`);
+                if (!resp.ok) throw new Error('Failed to load directories');
+                const data = await resp.json();
+                const dirs = Array.isArray(data.directories) ? data.directories : [];
+                listEl.innerHTML = '';
+                if (path) {
+                    const upBtn = document.createElement('button');
+                    upBtn.className = 'dest-picker-item dest-picker-up';
+                    upBtn.innerHTML = '<i class="fa-solid fa-arrow-left"></i> Up';
+                    upBtn.onclick = () => {
+                        const parent = path.includes('/') ? path.split('/').slice(0, -1).join('/') : '';
+                        _destPickerBrowse(parent);
+                    };
+                    listEl.appendChild(upBtn);
+                    // "Select this folder" button for the current browsed path
+                    const selfBtn = document.createElement('button');
+                    selfBtn.className = 'dest-picker-item dest-picker-self';
+                    selfBtn.innerHTML = `<i class="fa-solid fa-check"></i> Use: <strong>${escapeHtml(path)}</strong>`;
+                    selfBtn.onclick = () => _destPickerSetValue(path);
+                    listEl.appendChild(selfBtn);
+                } else {
+                    const rootBtn = document.createElement('button');
+                    rootBtn.className = 'dest-picker-item dest-picker-self';
+                    rootBtn.innerHTML = '<i class="fa-solid fa-check"></i> Use: <strong>music root</strong>';
+                    rootBtn.onclick = () => _destPickerSetValue('.');
+                    listEl.appendChild(rootBtn);
+                }
+                if (dirs.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.className = 'dest-picker-empty';
+                    empty.textContent = 'No subdirectories here.';
+                    listEl.appendChild(empty);
+                }
+                for (const dir of dirs) {
+                    const btn = document.createElement('button');
+                    btn.className = 'dest-picker-item';
+                    const name = dir.split('/').pop();
+                    btn.innerHTML = `<i class="fa-solid fa-folder"></i> ${escapeHtml(name)}`;
+                    btn.onclick = () => _destPickerBrowse(dir);
+                    listEl.appendChild(btn);
+                }
+            } catch (e) {
+                listEl.innerHTML = '<div class="dest-picker-empty">Could not load directories.</div>';
+            }
+        }
+
+        function _destPickerSetValue(path) {
+            _destPickerSelected = path;
+            const input = document.getElementById('destPickerCustomInput');
+            if (input) input.value = path === '.' ? '.' : path;
+        }
+
+        function _destPickerRenderBreadcrumb(path) {
+            const el = document.getElementById('destPickerBreadcrumb');
+            if (!el) return;
+            const musicRoot = (serverConfig?.music_dir || '/music').replace(/\/+$/, '');
+            const parts = path ? path.split('/') : [];
+            let html = `<span class="dest-crumb dest-crumb-root" onclick="_destPickerBrowse('')">${escapeHtml(musicRoot)}</span>`;
+            let cumulative = '';
+            for (const part of parts) {
+                cumulative = cumulative ? `${cumulative}/${part}` : part;
+                const captured = cumulative;
+                html += ` <span class="dest-crumb-sep">/</span> <span class="dest-crumb" onclick="_destPickerBrowse('${escapeAttr(captured)}')">${escapeHtml(part)}</span>`;
+            }
+            el.innerHTML = html;
+        }
+
+        async function updateWatchedPlaylistCustomSubdir(playlistId, value) {
+            try {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ custom_subdir: value || null })
+                });
+                if (!response.ok) throw new Error('Update failed');
+                showToast(value ? `Destination: ${value}` : 'Destination reset to default');
+                loadWatchedPlaylists();
+            } catch (error) {
+                showToast('Failed to update destination', true);
                 loadWatchedPlaylists();
             }
         }
@@ -5928,9 +6073,9 @@
             const ytCount = data.sources.youtube || 0;
             const pxCount = data.sources.mp3phoenix || 0;
             const scCount = data.sources.soundcloud || 0;
-            const moCount = data.sources.monochrome || 0;
+            const zvCount = data.sources.zvu4no || 0;
             const slkCount = data.sources.soulseek || 0;
-            const sourceTotal = ytCount + pxCount + scCount + moCount + slkCount || 1;
+            const sourceTotal = ytCount + pxCount + scCount + zvCount + slkCount || 1;
 
             let html = `
                 <!-- Summary cards -->
@@ -5986,14 +6131,13 @@
                         ${ytCount > 0 ? `<div style="flex: ${ytCount}; background: #ff0000; border-radius: 4px;"></div>` : ''}
                         ${pxCount > 0 ? `<div style="flex: ${pxCount}; background: #e05c00; border-radius: 4px;"></div>` : ''}
                         ${scCount > 0 ? `<div style="flex: ${scCount}; background: #ff5500; border-radius: 4px;"></div>` : ''}
-                        ${moCount > 0 ? `<div style="flex: ${moCount}; background: #00bcd4; border-radius: 4px;"></div>` : ''}
                         ${slkCount > 0 ? `<div style="flex: ${slkCount}; background: #4a9eff; border-radius: 4px;"></div>` : ''}
                     </div>
                     <div style="display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap;">
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff0000; border-radius: 2px; margin-right: 4px;"></span>YouTube: ${ytCount}</span>
                         ${pxCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #e05c00; border-radius: 2px; margin-right: 4px;"></span>MP3Phoenix: ${pxCount}</span>` : ''}
                         ${scCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff5500; border-radius: 2px; margin-right: 4px;"></span>SoundCloud: ${scCount}</span>` : ''}
-                        ${moCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #00bcd4; border-radius: 2px; margin-right: 4px;"></span>Monochrome: ${moCount}</span>` : ''}
+                        ${zvCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #7a6aee; border-radius: 2px; margin-right: 4px;"></span>zvu4no: ${zvCount}</span>` : ''}
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #4a9eff; border-radius: 2px; margin-right: 4px;"></span>Soulseek: ${slkCount}</span>
                     </div>
                 </div>
@@ -6090,7 +6234,7 @@
             'source_youtube_enabled': 'settingSourceYoutube',
             'source_mp3phoenix_enabled': 'settingSourceMp3phoenix',
             'source_soundcloud_enabled': 'settingSourceSoundcloud',
-            'source_monochrome_enabled': 'settingSourceMonochrome',
+            'source_zvu4no_enabled': 'settingSourceZvu4no',
             'slskd_url': 'settingSlskdUrl',
             'slskd_user': 'settingSlskdUser',
             'slskd_pass': 'settingSlskdPass',

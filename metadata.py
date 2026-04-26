@@ -53,7 +53,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
         recording = data["recordings"][0]
 
         # MusicBrainz scores text matches 0-100. Below 85 is too shaky to trust  -
-        # at that point we'd be replacing decent YouTube/Tidal metadata with a guess.
+        # at that point we'd be replacing decent source metadata with a guess.
         mb_score = int(recording.get("score", 0))
         if mb_score < 85:
             print(f"MusicBrainz text search score too low ({mb_score}) for {artist} - {title}, skipping")
@@ -774,8 +774,8 @@ def read_existing_track_number(file_path: Path) -> tuple[int | None, int | None]
     """Read existing track number and total from an audio file's tags.
 
     Returns (track_number, track_total), either or both may be None.
-    Useful for checking whether a source (e.g. Tidal) already baked in
-    track info before we overwrite it with MusicBrainz guesses.
+    Useful for checking whether a source already baked in track info before we
+    overwrite it with MusicBrainz guesses.
     """
     try:
         suffix = file_path.suffix.lower()

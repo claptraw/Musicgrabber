@@ -83,7 +83,6 @@
             <div class="source-selector" id="sourceSelector" style="display:none">
                 <button class="source-option" data-source="youtube" title="Search YouTube">YT</button>
                 <button class="source-option" data-source="soundcloud" title="Search SoundCloud">SC</button>
-                <button class="source-option" data-source="monochrome" title="Search Monochrome (Tidal lossless)">MO</button>
                 <button class="source-option active" data-source="all" title="Search all sources">All</button>
             </div>
             <button class="search-clear-btn" id="searchClearBtn" title="Clear search" aria-label="Clear search" style="display:none">&#x2715;</button>
@@ -178,15 +177,15 @@
                     </div>
                     <div id="spotifyError" style="display: none;" class="form-error"></div>
                     <div class="bulk-services-row">
-                        <span id="playlistServicesHint" class="bulk-services-hint">Supported services: Spotify, YouTube, Apple Music, Amazon Music, Tidal</span>
+                        <span id="playlistServicesHint" class="bulk-services-hint">Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, ListenBrainz</span>
                         <span
                             id="playlistServicesTooltip"
-                            title="Supported services: Spotify, YouTube, Apple Music, Amazon Music, Tidal"
+                            title="Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, ListenBrainz"
                             class="info-badge"
                         >i</span>
                     </div>
                     <div class="bulk-services-note">
-                        Large Spotify playlists may take a few seconds to load. YouTube playlists are unlimited. Tidal requires a public playlist URL.
+                        Large Spotify playlists may take a few seconds to load. YouTube playlists are unlimited.
                     </div>
                 </div>
                 <div class="bulk-textarea-wrap">
@@ -273,14 +272,14 @@
             </div>
             <div class="watched-add-panel">
                 <p class="watched-panel-text">
-                    Add a Spotify, YouTube, Apple Music, Amazon Music, or Tidal playlist to automatically download new tracks when they're added.
+                    Add a Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, or ListenBrainz playlist to automatically download new tracks when they're added.
                 </p>
                 <p id="watchedScheduleInfo" class="watched-schedule-info"></p>
                 <div class="watched-url-row">
                     <input
                         type="text"
                         id="watchedUrlInput"
-                        placeholder="Spotify, YouTube, Apple Music, Amazon Music, or Tidal playlist URL"
+                        placeholder="Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, or ListenBrainz playlist URL"
                         class="panel-text-input"
                     >
                     <button
@@ -356,6 +355,17 @@
                     <label class="watched-control-label">Sources:</label>
                     <div id="watchedSourcesSelector" class="watched-sources-selector">
                         <!-- Populated dynamically from /api/search/sources -->
+                    </div>
+                </div>
+                <div class="watched-controls-row" id="watchedDestRow">
+                    <div class="watched-dest-add-row">
+                        <span class="watched-dest-hint">To save to a different folder than the default playlist location:</span>
+                        <button type="button" id="watchedSetDestBtn" class="watched-dest-set-btn" onclick="openDestPicker(document.getElementById('watchedCustomSubdir').value, v => { document.getElementById('watchedCustomSubdir').value = v; updateWatchedDestDisplay(); })">
+                            <i class="fa-solid fa-folder-open"></i> Set Destination
+                        </button>
+                        <span id="watchedDestDisplay" class="watched-dest-display"></span>
+                        <button type="button" id="watchedClearDestBtn" class="watched-dest-clear" title="Reset to default" style="display:none;" onclick="clearWatchedCustomSubdir()">&#x2715;</button>
+                        <input type="hidden" id="watchedCustomSubdir">
                     </div>
                 </div>
                 <div id="watchedError" style="display: none;" class="form-error"></div>
@@ -523,9 +533,9 @@
                                 </div>
                             </label>
                             <label class="source-toggle-item">
-                                Monochrome (Tidal lossless)
+                                zvu4no
                                 <div class="toggle-switch">
-                                    <input type="checkbox" id="settingSourceMonochrome" checked>
+                                    <input type="checkbox" id="settingSourceZvu4no" checked>
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
@@ -1106,6 +1116,30 @@
             </div>
 
             <div id="missingTrackVersionsBody" class="missing-track-modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Destination picker modal -->
+    <div id="destPickerOverlay" style="display:none;" class="modal-overlay" onclick="closeDestPicker()">
+        <div class="dest-picker-card" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <div>
+                    <h3 class="modal-title">Choose Destination Folder</h3>
+                    <div id="destPickerBreadcrumb" class="dest-picker-breadcrumb"></div>
+                </div>
+                <button onclick="closeDestPicker()" class="modal-close-btn" title="Close">&#x2715;</button>
+            </div>
+            <div class="dest-picker-body">
+                <div id="destPickerList" class="dest-picker-list"></div>
+            </div>
+            <div class="dest-picker-custom-row">
+                <label class="dest-picker-custom-label" for="destPickerCustomInput">Folder path:</label>
+                <input type="text" id="destPickerCustomInput" class="dest-picker-custom-input" placeholder="e.g. Friends or Discovery/Weekly" oninput="destPickerOnCustomInput(this.value)">
+            </div>
+            <div class="modal-footer">
+                <button onclick="closeDestPicker()" class="tag-editor-secondary-btn">Cancel</button>
+                <button onclick="confirmDestPicker()" class="modal-confirm-btn" id="destPickerConfirmBtn">Select</button>
+            </div>
         </div>
     </div>
 

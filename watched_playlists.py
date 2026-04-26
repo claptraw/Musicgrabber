@@ -31,7 +31,7 @@ from settings import get_playlists_dir, get_setting
 from spotify import fetch_spotify_playlist_via_browser
 from utils import (
     extract_artist_title, hash_track, spawn_daemon_thread, sanitize_filename,
-    check_duplicate, fetch_monochrome_api_json,
+    check_duplicate,
 )
 from downloads import check_navidrome_duplicate
 from youtube import _ytdlp_base_args
@@ -153,11 +153,6 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if amazon_playlist:
         return "amazon", url  # Full URL needed  -  no extractable ID
 
-    # Tidal public playlist
-    tidal_playlist = re.match(r'https?://(?:www\.)?tidal\.com/(?:browse/)?playlist/([0-9a-f-]{36})', url, re.IGNORECASE)
-    if tidal_playlist:
-        return "tidal", tidal_playlist.group(1)
-
     # ListenBrainz individual playlist URL
     lb_playlist = re.match(r'https?://listenbrainz\.org/playlist/([0-9a-f-]{36})', url, re.IGNORECASE)
     if lb_playlist:
@@ -183,7 +178,7 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
 
     raise HTTPException(
         status_code=400,
-        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, Tidal public playlists, ListenBrainz playlists or usernames, SoundCloud sets/likes."
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, ListenBrainz playlists or usernames, SoundCloud sets/likes."
     )
 
 
@@ -386,50 +381,6 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
         "playlist_name": playlist_name,
         "count": len(tracks)
     }
-
-
-def _fetch_tidal_playlist(playlist_uuid: str) -> dict:
-    """Fetch Tidal playlist tracks via the Monochrome API.
-
-    Monochrome exposes a public /playlist/ endpoint that returns the full
-    track list in one shot  -  no pagination, no headless browser required.
-    Each item has artist.name and title at the top level. Simple.
-    """
-    try:
-        data, instance_url = fetch_monochrome_api_json("playlist", params={"id": playlist_uuid})
-        if instance_url:
-            print(f"Tidal playlist served by Monochrome instance {instance_url}")
-    except RuntimeError as e:
-        if "status=404" in str(e):
-            raise HTTPException(status_code=404, detail="Tidal playlist not found or is private")
-        raise HTTPException(status_code=502, detail="Monochrome API error while fetching Tidal playlist")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to connect to Monochrome API: {e}")
-
-    playlist_info = data.get("playlist", {})
-    playlist_name = playlist_info.get("title", "Tidal Playlist")
-    items = data.get("items", [])
-
-    tracks = []
-    for item in items:
-        track = item.get("item", {})
-        if item.get("type") != "track":
-            continue
-        title = track.get("title", "").strip()
-        # Prefer the primary artist; fall back to the first in the artists list
-        artist_obj = track.get("artist") or (track.get("artists") or [{}])[0]
-        artist = artist_obj.get("name", "").strip()
-        if title and artist:
-            tracks.append(f"{artist} - {title}")
-
-    if not tracks:
-        raise HTTPException(
-            status_code=422,
-            detail="No tracks found in Tidal playlist. It may be empty or private."
-        )
-
-    print(f"Fetched {len(tracks)} tracks from Tidal playlist '{playlist_name}' via Monochrome API")
-    return {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks)}
 
 
 def _parse_listenbrainz_jspf_tracks(jspf_playlist: dict) -> list[tuple[str, str]]:
@@ -704,22 +655,6 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
 
     elif platform == "amazon":
         result = fetch_amazon_playlist(url)
-
-        tracks = []
-        for track_str in result["tracks"]:
-            if " - " in track_str:
-                artist, title = track_str.split(" - ", 1)
-                tracks.append((artist.strip(), title.strip()))
-            else:
-                tracks.append(("Unknown", track_str.strip()))
-
-        return tracks, result["playlist_name"]
-
-    elif platform == "tidal":
-        m = re.search(r'([0-9a-f-]{36})', url, re.IGNORECASE)
-        if not m:
-            raise HTTPException(status_code=400, detail="Invalid Tidal playlist URL: no playlist UUID found")
-        result = _fetch_tidal_playlist(m.group(1))
 
         tracks = []
         for track_str in result["tracks"]:
@@ -1034,6 +969,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
 
             tracks_to_import = [(artist, title) for artist, title, _ in new_tracks + missing_tracks]
             use_playlists_dir = bool(playlist.get("use_playlists_dir", False))
+            custom_subdir = (playlist.get("custom_subdir") or "").strip() or None
             import_id = None
             if tracks_to_import:
                 set_refresh_stage("queueing")
@@ -1044,6 +980,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     use_playlists_dir=use_playlists_dir,
                     user_id=user_id,
                     preferred_sources=playlist.get("preferred_sources") or "all",
+                    custom_subdir=custom_subdir,
                 )
 
             # Update playlist metadata
@@ -1065,6 +1002,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     use_playlists_dir=use_playlists_dir,
                     sync_mode=sync_mode,
                     user_id=user_id,
+                    custom_subdir=custom_subdir,
                 )
 
             queued_count = len(tracks_to_import)

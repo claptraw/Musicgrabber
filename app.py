@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
 
@@ -63,7 +63,7 @@ from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, parse_duration,
     get_cookies_expiry,
 )
-from search import search_source, search_all, get_available_sources, SOURCE_REGISTRY, get_monochrome_stream_url
+from search import search_source, search_all, get_available_sources, SOURCE_REGISTRY
 from slskd import slskd_enabled, search_slskd
 from downloads import (
     process_download, process_playlist_download, process_slskd_download,
@@ -79,7 +79,8 @@ from watched_artists import refresh_watched_artist, start_artist_scheduler
 from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks, apply_metadata_to_file, guess_musicbrainz_tags
 from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 
-URL_BASED_SOURCES = {"soundcloud", "monochrome", "mp3phoenix"}
+URL_BASED_SOURCES = {"soundcloud", "mp3phoenix", "zvu4no"}
+DIRECT_PREVIEW_SOURCES = {"mp3phoenix", "zvu4no"}
 
 
 def _request_root_path(request: Request | None = None) -> str:
@@ -1494,17 +1495,11 @@ def get_score_rationale(job_id: str, http_request: Request):
 def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
     """Get a streamable audio URL for preview playback."""
     try:
-        # Monochrome now returns signed DASH MPD manifests, which browsers can't
-        # play directly in a plain <audio> element. Route preview through a
-        # short-lived server-side transcode endpoint instead.
-        if source == "monochrome":
-            return {"url": _app_path(f"/api/preview/monochrome/{video_id}/stream"), "video_id": video_id}
-
-        # mp3phoenix: the source_url is already a direct MP3 stream  -  hand it
+        # Direct MP3 sources: the source_url is already streamable  -  hand it
         # straight to the browser, no yt-dlp round-trip needed.
-        if source == "mp3phoenix":
+        if source in DIRECT_PREVIEW_SOURCES:
             if not url:
-                raise HTTPException(status_code=400, detail="mp3phoenix preview requires url parameter")
+                raise HTTPException(status_code=400, detail=f"{source.capitalize()} preview requires url parameter")
             return {"url": url, "video_id": video_id}
 
         if source == "youtube":
@@ -1559,62 +1554,6 @@ def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
         raise HTTPException(status_code=500, detail="Failed to get preview URL")
 
 
-@app.get("/api/preview/monochrome/{video_id}/stream")
-def stream_monochrome_preview(video_id: str):
-    """Proxy a short Monochrome preview as browser-playable MP3."""
-    try:
-        stream = get_monochrome_stream_url(video_id, quality="HIGH")
-        mpd_url = stream["url"]
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"No preview stream available for this track: {e}")
-
-    ffmpeg_cmd = [
-        "ffmpeg",
-        "-v", "error",
-        "-protocol_whitelist", "file,https,tls,tcp,http,crypto",
-        "-i", mpd_url,
-        "-map", "0:a:0",
-        "-t", "30",
-        "-c:a", "libmp3lame",
-        "-b:a", "128k",
-        "-f", "mp3",
-        "-",
-    ]
-
-    try:
-        proc = subprocess.Popen(
-            ffmpeg_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0,
-        )
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="ffmpeg is not installed")
-
-    def generate():
-        try:
-            assert proc.stdout is not None
-            while True:
-                chunk = proc.stdout.read(64 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            with contextlib.suppress(Exception):
-                if proc.poll() is None:
-                    proc.terminate()
-                    proc.wait(timeout=2)
-            with contextlib.suppress(Exception):
-                if proc.poll() is None:
-                    proc.kill()
-
-    return StreamingResponse(
-        generate(),
-        media_type="audio/mpeg",
-        headers={"Cache-Control": "no-store"},
-    )
-
-
 @app.get("/api/sources")
 def list_sources():
     """Return available search sources for the frontend source selector."""
@@ -1651,7 +1590,6 @@ def search(request: SearchRequest, http_request: Request):
                 quality_score=item["quality_score"],
                 slskd_username=item["slskd_username"],
                 slskd_filename=item["slskd_filename"],
-                album=item.get("monochrome_album"),
             ))
 
         search_token = None
@@ -2217,7 +2155,7 @@ def retry_job(job_id: str, http_request: Request):
             use_playlists_dir=_use_pl_dir,
         )
     else:
-        # For both YouTube and URL-based sources (Monochrome, SoundCloud, mp3phoenix):
+        # For both YouTube and URL-based sources (SoundCloud, mp3phoenix):
         # search across all sources and pick the best untried candidate.
         # Re-trying the same source_url or video_id that already failed is pointless.
         prior_id = job.get("video_id") or ""
@@ -2983,7 +2921,7 @@ def list_bulk_imports(limit: int = 10, http_request: Request = None):
 @app.post("/api/fetch-playlist")
 @app.post("/api/spotify-playlist")  # Backwards compat
 def fetch_playlist(request: Request, body: PlaylistFetchRequest):
-    """Fetch track list from a supported public playlist URL (Spotify, Amazon Music, Tidal)."""
+    """Fetch track list from a supported public playlist URL."""
     url = body.url.strip()
     platform, _ = detect_playlist_platform(url)
 
@@ -3024,6 +2962,16 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                     "SELECT id FROM watched_playlists WHERE url = ? AND (user_id = ? OR (user_id IS NULL AND ? IS NULL))",
                     (lb["playlist_url"], user_id, user_id)
                 ).fetchone()
+                if not existing:
+                    # LB rotates playlist UUIDs weekly, so also match by username + name prefix
+                    # (the part before ", week of YYYY-MM-DD") to avoid duplicate watched playlists.
+                    name_prefix = lb["name"].split(", week of")[0]
+                    existing = conn.execute(
+                        """SELECT id FROM watched_playlists
+                           WHERE lb_username = ? AND name LIKE ?
+                           AND (user_id = ? OR (user_id IS NULL AND ? IS NULL))""",
+                        (platform_id, name_prefix + "%", user_id, user_id)
+                    ).fetchone()
                 if existing:
                     skipped += 1
                     continue
@@ -3031,12 +2979,13 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                 playlist_id = str(uuid.uuid4())[:8]
                 conn.execute("""
                     INSERT INTO watched_playlists
-                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, lb_username)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, lb_username, custom_subdir)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (playlist_id, lb["playlist_url"], lb["name"], "listenbrainz",
                       refresh_hours, int(body.convert_to_flac),
                       int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(lb["tracks"]), user_id,
-                      body.preferred_sources or "all", platform_id))
+                      body.preferred_sources or "all", platform_id,
+                      (body.custom_subdir or "").strip() or None))
 
                 for artist, title in lb["tracks"]:
                     track_hash = hash_track(artist, title)
@@ -3098,12 +3047,13 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
         sync_mode = body.sync_mode if body.sync_mode in ("append", "mirror") else "append"
         conn.execute("""
             INSERT INTO watched_playlists
-            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, custom_subdir)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (playlist_id, body.url, playlist_name, platform,
               body.refresh_interval_hours, int(body.convert_to_flac),
               int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(tracks), user_id,
-              "soundcloud" if platform == "soundcloud" and (not body.preferred_sources or body.preferred_sources == "all") else (body.preferred_sources or "all")))
+              "soundcloud" if platform == "soundcloud" and (not body.preferred_sources or body.preferred_sources == "all") else (body.preferred_sources or "all"),
+              (body.custom_subdir or "").strip() or None))
 
         # Insert all current tracks as "seen"
         for artist, title in tracks:
@@ -3249,6 +3199,10 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, ht
             updates.append("preferred_sources = ?")
             params.append(request.preferred_sources or "all")
 
+        if request.custom_subdir is not None:
+            updates.append("custom_subdir = ?")
+            params.append((request.custom_subdir or "").strip() or None)
+
         if updates:
             params.append(playlist_id)
             conn.execute(
@@ -3389,13 +3343,14 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"SELECT id, name, convert_to_flac, use_playlists_dir, preferred_sources FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            f"SELECT id, name, convert_to_flac, use_playlists_dir, preferred_sources, custom_subdir FROM watched_playlists WHERE id = ? AND {_scope_frag}",
             (playlist_id, *_scope_params)
         ).fetchone()
 
     if not playlist:
         raise HTTPException(status_code=404, detail="Watched playlist not found")
 
+    custom_subdir = (playlist["custom_subdir"] or "").strip() or None
     # Kick off a single-track bulk import linked to this watched playlist so the
     # M3U rebuild and watched_playlist_tracks update happen automatically on completion.
     import_id = start_bulk_import_for_tracks(
@@ -3405,6 +3360,7 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
         use_playlists_dir=bool(playlist["use_playlists_dir"]),
         user_id=user_id,
         preferred_sources=playlist["preferred_sources"] or "all",
+        custom_subdir=custom_subdir,
     )
 
     return {"import_id": import_id, "status": "queued", "message": f"Searching for {request.artist} - {request.title}"}
@@ -3482,7 +3438,7 @@ def queue_watched_playlist_track_candidate(
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"""SELECT id, name, convert_to_flac, use_playlists_dir
+            f"""SELECT id, name, convert_to_flac, use_playlists_dir, custom_subdir
                 FROM watched_playlists
                 WHERE id = ? AND {_scope_frag}""",
             (playlist_id, *_scope_params)
@@ -3533,6 +3489,7 @@ def queue_watched_playlist_track_candidate(
     convert_to_flac = bool(playlist["convert_to_flac"])
     playlist_name = playlist["name"] if playlist["use_playlists_dir"] else None
     use_playlists_dir = bool(playlist["use_playlists_dir"])
+    custom_subdir = (playlist["custom_subdir"] or "").strip() or None
 
     if source == "soulseek":
         spawn_daemon_thread(
@@ -3546,6 +3503,7 @@ def queue_watched_playlist_track_candidate(
             user_id=user_id,
             playlist_name=playlist_name,
             use_playlists_dir=use_playlists_dir,
+            custom_subdir=custom_subdir,
         )
     else:
         spawn_daemon_thread(
@@ -3557,6 +3515,7 @@ def queue_watched_playlist_track_candidate(
             playlist_name=playlist_name,
             use_playlists_dir=use_playlists_dir,
             user_id=user_id,
+            custom_subdir=custom_subdir,
         )
 
     return {"job_id": job_id, "status": "queued", "message": f"Queued {artist} - {title}"}

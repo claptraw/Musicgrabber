@@ -572,6 +572,14 @@ def init_db():
             conn.execute("ALTER TABLE bulk_imports ADD COLUMN album_release_mbid TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN custom_subdir TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_imports ADD COLUMN custom_subdir TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN skip_mismatch_check INTEGER DEFAULT 0")
