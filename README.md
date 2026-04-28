@@ -364,11 +364,11 @@ environment:
 
 ### Soulseek Integration (Optional)
 
-MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled and configured, search results from both YouTube and Soulseek are displayed, sorted by quality; FLAC files from Soulseek appear at the top.
+MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled, search results from YouTube and Soulseek are shown together, ranked by quality; FLAC files from Soulseek appear at the top.
 
-Soulseek is disabled by default. Turn it on in Settings under Search Sources, or set `SOURCE_SOULSEEK_ENABLED=true`. slskd credentials alone do not enable Soulseek.
+Soulseek is disabled by default. Turn it on in Settings under Search Sources, or set `SOURCE_SOULSEEK_ENABLED=true`. Entering credentials alone does not enable it.
 
-**Searching only** (no downloads): If you only want to see what's available on Soulseek without downloading, configure just the API credentials:
+**Searching only** (no downloads): Just the API credentials are needed to see Soulseek results without downloading anything:
 
 ```yaml
 environment:
@@ -378,34 +378,40 @@ environment:
   - SLSKD_PASS=your-slskd-password
 ```
 
-**Full integration** (search + download): To download files from Soulseek, MusicGrabber needs access to slskd's download directory. This requires a shared volume:
+**Full integration** (search + download): This is where most people get tripped up, so here is the plain English version of what needs to happen.
+
+When slskd finishes downloading a track, it saves it to a folder on your server. MusicGrabber needs to be able to see that same folder so it can pick the file up, tag it, and move it into your music library. The two applications are separate Docker containers, so they cannot see each other's files by default. You have to give them both access to the same folder on your server.
+
+You do that by adding the same folder to the `volumes:` section of **both** containers in your `docker-compose.yml`. The path on the **left** of the `:` is the folder on your server. The path on the **right** is where that folder appears inside the container. The right-hand path must be the same in both containers.
+
+Here is a complete example. The server folder is `/mnt/music/downloads`, and both containers see it as `/downloads`:
 
 ```yaml
-volumes:
-  - /path/to/slskd/downloads:/slskd-downloads  # Mount slskd's downloads folder
-environment:
-  - SOURCE_SOULSEEK_ENABLED=true
-  - SLSKD_URL=http://slskd:5030
-  - SLSKD_USER=your-slskd-username
-  - SLSKD_PASS=your-slskd-password
-  - SLSKD_DOWNLOADS_PATH=/slskd-downloads      # Path inside container
+services:
+  slskd:
+    image: slskd/slskd
+    volumes:
+      - /mnt/music/downloads:/downloads   # server folder : path inside slskd
+    environment:
+      - SLSKD_DOWNLOADS_DIR=/downloads    # tell slskd to save completed files here
+
+  musicgrabber:
+    image: g33kphr33k/musicgrabber:latest
+    volumes:
+      - /mnt/music/downloads:/downloads   # same server folder, same inside path
+    environment:
+      - SOURCE_SOULSEEK_ENABLED=true
+      - SLSKD_URL=http://slskd:5030
+      - SLSKD_USER=your-slskd-username
+      - SLSKD_PASS=your-slskd-password
+      - SLSKD_DOWNLOADS_PATH=/downloads   # must match the right-hand path above
 ```
 
-**Setup options:**
+The right-hand paths (`:/downloads`) match, so both containers are looking at the same folder. `SLSKD_DOWNLOADS_PATH` tells MusicGrabber where to find it. You can set this in the MusicGrabber Settings tab instead of the env var if you prefer.
 
-1. **Same host**: If slskd runs on the same machine, mount its downloads directory directly
-2. **Different host**: Use NFS, CIFS/SMB, or similar to make slskd's downloads accessible
-3. **Same Docker network**: Ensure both containers can access a shared volume
+**If slskd runs on a different machine**, you can still share the folder over the network using NFS or SMB and mount it the same way.
 
-Use the path as MusicGrabber sees it inside its own container. For example, if the host directory `/opt/slskd/downloads` is mounted as `/downloads` in the MusicGrabber container, set `SLSKD_DOWNLOADS_PATH=/downloads` or enter `/downloads` in Settings.
-
-slskd may store completed downloads under album/source folders rather than the original Soulseek user path. MusicGrabber searches the configured downloads root recursively, so the important part is mounting the actual completed-downloads directory, not just configuring API credentials.
-
-The Settings tab includes the same warning: slskd URL, username, and password are enough for search results, but completed downloads will fail to import unless the downloads path is visible to MusicGrabber.
-
-**Note:** Soulseek is a P2P network. Most users run slskd behind a VPN. This integration only talks to your slskd instance; it doesn't connect directly to the Soulseek network.
-
-**Status:** Soulseek integration is in progress and needs testing. New Soulseek users may experience rejected downloads until they build reputation by sharing files.
+**Note:** Soulseek is a P2P network. Most users run slskd behind a VPN. This integration only talks to your slskd instance; it does not connect directly to the Soulseek network. New accounts may see rejected downloads until they build reputation by sharing files.
 
 ### Playlist Import
 

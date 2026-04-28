@@ -728,7 +728,7 @@ def test_slskd_connection(http_request: Request, body: TestSlskdRequest = None):
                     return {
                         "success": True,
                         "warning": True,
-                        "message": "Connected to slskd. Soulseek search will work, but downloads need a completed-downloads path mounted into MusicGrabber.",
+                        "message": "Connected to slskd. Search works. For downloads to import, slskd and MusicGrabber must point at the same folder on your server: mount slskd's completed-downloads directory into MusicGrabber at the same path, then enter that path in the field below. See the README for a step-by-step example.",
                     }
                 path = Path(downloads_path).expanduser()
                 if not path.exists():
