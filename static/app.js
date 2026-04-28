@@ -1959,6 +1959,7 @@
                     source_url: result.source_url || null,
                     slskd_username: result.slskd_username || null,
                     slskd_filename: result.slskd_filename || null,
+                    slskd_size: result.slskd_size || result.size || null,
                 };
                 const resp = await apiFetch(`/api/watched-playlists/${encodeURIComponent(missingTrackVersionsState.playlistId)}/queue-track-candidate`, {
                     method: 'POST',
@@ -2028,6 +2029,7 @@
                 if (result.source === 'soulseek') {
                     payload.slskd_username = result.slskd_username;
                     payload.slskd_filename = result.slskd_filename;
+                    payload.slskd_size = result.slskd_size || result.size || null;
                     if (result.artist) {
                         payload.artist = result.artist;
                     }
@@ -6235,6 +6237,7 @@
             'source_mp3phoenix_enabled': 'settingSourceMp3phoenix',
             'source_soundcloud_enabled': 'settingSourceSoundcloud',
             'source_zvu4no_enabled': 'settingSourceZvu4no',
+            'source_soulseek_enabled': 'settingSourceSoulseek',
             'slskd_url': 'settingSlskdUrl',
             'slskd_user': 'settingSlskdUser',
             'slskd_pass': 'settingSlskdPass',
@@ -7095,7 +7098,8 @@
                 body = {
                     url: document.getElementById('settingSlskdUrl').value.trim(),
                     username: document.getElementById('settingSlskdUser').value.trim(),
-                    password: document.getElementById('settingSlskdPass').value.trim()
+                    password: document.getElementById('settingSlskdPass').value.trim(),
+                    downloads_path: document.getElementById('settingSlskdDownloads').value.trim()
                 };
             } else if (service === 'navidrome') {
                 body = {
@@ -7138,7 +7142,7 @@
 
                 if (data.success) {
                     resultDiv.textContent = data.message;
-                    resultDiv.className = 'test-result success';
+                    resultDiv.className = data.warning ? 'test-result warning' : 'test-result success';
                     // For Navidrome, show a second status line about real path support
                     if (service === 'navidrome') {
                         const rpDiv = document.getElementById('navidromeRealPathStatus');

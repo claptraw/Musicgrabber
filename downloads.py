@@ -1017,7 +1017,7 @@ def _resolve_track_number(
 _ALLOWED_JOB_COLS = frozenset({
     "video_id", "title", "artist", "status", "error", "download_type",
     "playlist_name", "total_tracks", "completed_tracks", "failed_tracks",
-    "skipped_tracks", "m3u_path", "source", "slskd_username", "slskd_filename",
+    "skipped_tracks", "m3u_path", "source", "slskd_username", "slskd_filename", "slskd_size",
     "convert_to_flac", "source_url", "file_deleted", "metadata_source",
     "override_dir", "album_release_mbid", "album_name", "album_track_title",
     "album_track_number", "album_track_total", "completed_at", "uploader",
@@ -2531,7 +2531,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
 
 
-def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_to_flac: bool = True, user_id: str | None = None, override_dir: str | None = None, playlist_name: str = None, use_playlists_dir: bool = False, custom_subdir: str | None = None):
+def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_to_flac: bool = True, user_id: str | None = None, override_dir: str | None = None, playlist_name: str = None, use_playlists_dir: bool = False, custom_subdir: str | None = None, slskd_size: int | None = None):
     """Process a Soulseek download job via slskd"""
     album_ctx = _get_job_album_context(job_id)
     if not override_dir and album_ctx.get("override_dir"):
@@ -2596,17 +2596,40 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         downloaded_file = None
         attempts = 0
         tried_candidates = set()
-        candidate_queue = [(username, filename)]
+        candidate_queue = [(username, filename, slskd_size)]
         last_error = None
 
+        # Jobs created before MusicGrabber stored Soulseek sizes cannot be
+        # retried safely as-is: slskd treats a missing size as 0 and aborts
+        # when the remote peer reports the real byte count.
+        if not slskd_size:
+            retry_query = f"{artist} {title}".strip()
+            retry_results = search_slskd(retry_query, timeout_secs=max(TIMEOUT_SLSKD_SEARCH, 30)) if retry_query else []
+            refreshed_candidates = []
+            target_norm = filename.replace("\\", "/").strip()
+            for r in retry_results:
+                cand_username = r.get("slskd_username", "")
+                cand_filename = r.get("slskd_filename", "")
+                cand_size = r.get("slskd_size") or r.get("size")
+                if not (cand_username and cand_filename and cand_size):
+                    continue
+                cand_norm = cand_filename.replace("\\", "/").strip()
+                if cand_username == username and cand_norm == target_norm:
+                    refreshed_candidates.insert(0, (cand_username, cand_filename, cand_size))
+                else:
+                    refreshed_candidates.append((cand_username, cand_filename, cand_size))
+            if refreshed_candidates:
+                candidate_queue = refreshed_candidates
+
         while candidate_queue:
-            cand_username, cand_filename = candidate_queue.pop(0)
-            if (cand_username, cand_filename) in tried_candidates:
+            cand_username, cand_filename, cand_size = candidate_queue.pop(0)
+            candidate_key = (cand_username, cand_filename)
+            if candidate_key in tried_candidates:
                 continue
-            tried_candidates.add((cand_username, cand_filename))
+            tried_candidates.add(candidate_key)
 
             try:
-                downloaded_file = download_from_slskd(cand_username, cand_filename, artist_dir)
+                downloaded_file = download_from_slskd(cand_username, cand_filename, artist_dir, size=cand_size)
                 if not downloaded_file or not downloaded_file.exists():
                     raise Exception("Download completed but file not found")
 
@@ -2622,6 +2645,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                         uploader=cand_username,
                     )
                     raise Exception(f"Invalid downloaded audio from {cand_username}: {raw_reason}")
+                _update_job(job_id, slskd_username=cand_username, slskd_filename=cand_filename, slskd_size=cand_size)
                 break
             except Exception as e:
                 last_error = str(e)
@@ -2633,11 +2657,11 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 # Refresh candidates from a new search if we don't have any left
                 if not candidate_queue:
                     retry_query = f"{artist} {title}".strip()
-                    retry_results = search_slskd(retry_query, timeout_secs=TIMEOUT_SLSKD_SEARCH)
+                    retry_results = search_slskd(retry_query, timeout_secs=max(TIMEOUT_SLSKD_SEARCH, 30))
                     for r in retry_results:
                         candidate = (r.get("slskd_username", ""), r.get("slskd_filename", ""))
                         if candidate[0] and candidate[1] and candidate not in tried_candidates:
-                            candidate_queue.append(candidate)
+                            candidate_queue.append((candidate[0], candidate[1], r.get("slskd_size") or r.get("size")))
 
         if not downloaded_file:
             raise Exception(last_error or "Soulseek download failed")

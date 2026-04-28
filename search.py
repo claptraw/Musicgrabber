@@ -76,6 +76,7 @@ def parse_soundcloud_search_results(stdout: str, query: str | None = None) -> li
                 "score_breakdown": score_breakdown,
                 "slskd_username": None,
                 "slskd_filename": None,
+                "slskd_size": None,
             })
         except json.JSONDecodeError:
             continue

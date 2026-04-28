@@ -7,6 +7,25 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.7.0": {
+        title: "What's New in v2.7.0",
+        sections: [
+            {
+                heading: "Soulseek downloads now work properly",
+                items: [
+                    "MusicGrabber now sends slskd the real file size when queueing Soulseek downloads, so transfers no longer get rejected because slskd thinks we asked for a zero-byte file. Very clever of us, only slightly late.",
+                    "Completed slskd files are now found even when slskd stores them under album folders instead of the original Soulseek user path. Point MusicGrabber at the completed-downloads root and it will search from there.",
+                ]
+            },
+            {
+                heading: "Soulseek is now opt-in",
+                items: [
+                    "Soulseek has its own Search Sources toggle in Settings and defaults to off. slskd credentials alone no longer enable it. Turn it on in the UI or set SOURCE_SOULSEEK_ENABLED=true.",
+                    "The slskd Settings panel now warns that API credentials are enough for searching, but downloads also need the completed-downloads folder mounted into MusicGrabber. Test Connection checks that path too.",
+                ]
+            },
+        ]
+    },
     "2.6.6": {
         title: "What's New in v2.6.6",
         sections: [

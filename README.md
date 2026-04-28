@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.6.6**
+**v2.7.0**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, and MP3Phoenix, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -21,7 +21,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 ## Features
 
-- **Multi-source search:** YouTube, SoundCloud, MP3Phoenix, and Soulseek searched in parallel; quality-ranked results with source badges and score explanations
+- **Multi-source search:** YouTube, SoundCloud, MP3Phoenix, zvu4no, and optional Soulseek searched in parallel; quality-ranked results with source badges and score explanations
 - **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
 - **Watched Artists:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles only: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Tracks already on disk are recognised immediately. Per-artist check interval, convert-to-FLAC toggle, pause/resume, missing and track list panels
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
@@ -213,7 +213,7 @@ Both scripts are copied to `%APPDATA%\MusicGrabber` during setup. You can also p
 The easiest way to configure MusicGrabber is via the **Settings tab** in the UI. You can configure:
 
 - **General**: MusicBrainz metadata, lyrics fetching, default FLAC conversion, minimum audio bitrate, artist subfolder organisation
-- **Soulseek (slskd)**: URL, credentials, downloads path
+- **Soulseek (slskd)**: enable toggle, URL, credentials, downloads path
 - **Navidrome**: URL and credentials for library refresh
 - **Jellyfin**: URL and API key for library refresh
 - **Notifications**: Apprise URL, Telegram webhook, generic webhook URL, and SMTP settings
@@ -251,6 +251,7 @@ Settings are stored in the database and persist across container restarts.
 | `NAVIDROME_PASS` | - | Navidrome password for API |
 | `JELLYFIN_URL` | - | Jellyfin server URL (e.g., `http://jellyfin:8096`) |
 | `JELLYFIN_API_KEY` | - | Jellyfin API key for library refresh |
+| `SOURCE_SOULSEEK_ENABLED` | `false` | Enable Soulseek/slskd search results. Credentials alone do not enable Soulseek |
 | `SLSKD_URL` | - | slskd API URL (e.g., `http://slskd:5030`) |
 | `SLSKD_USER` | - | slskd username |
 | `SLSKD_PASS` | - | slskd password |
@@ -363,12 +364,15 @@ environment:
 
 ### Soulseek Integration (Optional)
 
-MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When configured, search results from both YouTube and Soulseek are displayed, sorted by quality; FLAC files from Soulseek appear at the top.
+MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled and configured, search results from both YouTube and Soulseek are displayed, sorted by quality; FLAC files from Soulseek appear at the top.
+
+Soulseek is disabled by default. Turn it on in Settings under Search Sources, or set `SOURCE_SOULSEEK_ENABLED=true`. slskd credentials alone do not enable Soulseek.
 
 **Searching only** (no downloads): If you only want to see what's available on Soulseek without downloading, configure just the API credentials:
 
 ```yaml
 environment:
+  - SOURCE_SOULSEEK_ENABLED=true
   - SLSKD_URL=http://slskd:5030
   - SLSKD_USER=your-slskd-username
   - SLSKD_PASS=your-slskd-password
@@ -380,6 +384,7 @@ environment:
 volumes:
   - /path/to/slskd/downloads:/slskd-downloads  # Mount slskd's downloads folder
 environment:
+  - SOURCE_SOULSEEK_ENABLED=true
   - SLSKD_URL=http://slskd:5030
   - SLSKD_USER=your-slskd-username
   - SLSKD_PASS=your-slskd-password
@@ -392,7 +397,11 @@ environment:
 2. **Different host**: Use NFS, CIFS/SMB, or similar to make slskd's downloads accessible
 3. **Same Docker network**: Ensure both containers can access a shared volume
 
-slskd organises downloads as `{downloads}/{username}/{filename}`, which MusicGrabber will look for automatically.
+Use the path as MusicGrabber sees it inside its own container. For example, if the host directory `/opt/slskd/downloads` is mounted as `/downloads` in the MusicGrabber container, set `SLSKD_DOWNLOADS_PATH=/downloads` or enter `/downloads` in Settings.
+
+slskd may store completed downloads under album/source folders rather than the original Soulseek user path. MusicGrabber searches the configured downloads root recursively, so the important part is mounting the actual completed-downloads directory, not just configuring API credentials.
+
+The Settings tab includes the same warning: slskd URL, username, and password are enough for search results, but completed downloads will fail to import unless the downloads path is visible to MusicGrabber.
 
 **Note:** Soulseek is a P2P network. Most users run slskd behind a VPN. This integration only talks to your slskd instance; it doesn't connect directly to the Soulseek network.
 

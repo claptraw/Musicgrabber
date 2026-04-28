@@ -1820,6 +1820,21 @@ h1 {
     line-height: 1.45;
 }
 
+.settings-warning {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(245, 158, 11, 0.45);
+    border-radius: 8px;
+    background: rgba(245, 158, 11, 0.08);
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.settings-warning code {
+    color: var(--accent);
+}
+
 /* Lift tiny helper copy in Settings where inline styles were 10-11px */
 #settingsTabContainer .settings-row > span {
     font-size: 13px !important;

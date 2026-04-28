@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.7.0 (2026-04-28)
+
+### Added
+- **Soulseek/slskd downloads are now properly wired up**: MusicGrabber now preserves the slskd file size from search results and sends it back when queueing downloads, which stops slskd rejecting MusicGrabber-created transfers as expected-size-zero nonsense. Old Soulseek jobs without a stored size do a fresh search before retrying.
+- **Soulseek source toggle**: Soulseek is now disabled by default and has an explicit Search Sources toggle in Settings. Configuring slskd URL, username, and password no longer enables Soulseek by itself. Use the UI toggle or `SOURCE_SOULSEEK_ENABLED=true`.
+- **slskd downloads path warning**: the Settings tab now calls out that credentials are enough for search, but downloads need slskd's completed-downloads directory mounted into MusicGrabber. The slskd connection test also checks that the configured downloads path is visible.
+
+### Fixed
+- **MusicGrabber could not find completed slskd downloads**: slskd can store completed files under album/source folders instead of the original Soulseek user path. MusicGrabber now searches the configured downloads root recursively after the stricter lookup fails, so completed downloads can be imported, tagged, and moved into the library.
+- **Numeric slskd transfer states**: newer slskd responses can expose transfer states numerically. MusicGrabber now normalises those states before deciding whether a download is queued, in progress, succeeded, or failed.
+
 ## v2.6.6 (2026-04-26)
 
 ### Removed

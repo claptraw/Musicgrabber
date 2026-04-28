@@ -105,6 +105,7 @@ def search_zvu4no(query: str, limit: int) -> list[dict]:
                 "score_breakdown": score_breakdown,
                 "slskd_username": None,
                 "slskd_filename": None,
+                "slskd_size": None,
             })
 
         results.sort(key=lambda x: x["quality_score"], reverse=True)

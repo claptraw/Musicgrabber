@@ -712,6 +712,7 @@ def test_slskd_connection(http_request: Request, body: TestSlskdRequest = None):
     url = (body.url if body and body.url else None) or _get_typed_setting("slskd_url")
     user = (body.username if body and body.username else None) or _get_typed_setting("slskd_user")
     password = (body.password if body and body.password else None) or _get_typed_setting("slskd_pass")
+    downloads_path = (body.downloads_path if body and body.downloads_path else None) or _get_typed_setting("slskd_downloads_path")
 
     if not url:
         return {"success": False, "message": "slskd URL not configured"}
@@ -723,7 +724,26 @@ def test_slskd_connection(http_request: Request, body: TestSlskdRequest = None):
                 json={"username": user, "password": password}
             )
             if auth_response.status_code == 200:
-                return {"success": True, "message": "Connected to slskd successfully"}
+                if not downloads_path:
+                    return {
+                        "success": True,
+                        "warning": True,
+                        "message": "Connected to slskd. Soulseek search will work, but downloads need a completed-downloads path mounted into MusicGrabber.",
+                    }
+                path = Path(downloads_path).expanduser()
+                if not path.exists():
+                    return {
+                        "success": True,
+                        "warning": True,
+                        "message": f"Connected to slskd, but downloads path is not visible to MusicGrabber: {downloads_path}",
+                    }
+                if not path.is_dir():
+                    return {
+                        "success": True,
+                        "warning": True,
+                        "message": f"Connected to slskd, but downloads path is not a directory: {downloads_path}",
+                    }
+                return {"success": True, "message": "Connected to slskd and downloads path is accessible"}
             else:
                 return {"success": False, "message": f"Authentication failed: {auth_response.status_code}"}
     except httpx.TimeoutException:
@@ -1412,6 +1432,7 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
             override_dir=job.get("override_dir"),
             playlist_name=_pl_name,
             use_playlists_dir=_use_pl_dir,
+            slskd_size=job.get("slskd_size"),
         )
     else:
         prior_id = job.get("video_id") or ""
@@ -1590,6 +1611,7 @@ def search(request: SearchRequest, http_request: Request):
                 quality_score=item["quality_score"],
                 slskd_username=item["slskd_username"],
                 slskd_filename=item["slskd_filename"],
+                slskd_size=item.get("slskd_size") or item.get("size"),
             ))
 
         search_token = None
@@ -1639,6 +1661,7 @@ def search_slskd_endpoint(request: SearchRequest):
                 quality_score=r["quality_score"],
                 slskd_username=r["slskd_username"],
                 slskd_filename=r["slskd_filename"],
+                slskd_size=r.get("slskd_size") or r.get("size"),
             ))
 
         return {"results": final_results, "slskd_enabled": True}
@@ -1785,12 +1808,12 @@ def download(body: DownloadRequest, http_request: Request):
         else:
             conn.execute(
                 """INSERT INTO jobs
-                   (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, convert_to_flac, source_url, search_token, user_id,
+                   (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, slskd_size, convert_to_flac, source_url, search_token, user_id,
                     override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     job_id, body.video_id, title, artist or "", "queued", "single", source,
-                    body.slskd_username, body.slskd_filename, int(body.convert_to_flac), source_url, valid_search_token, user_id,
+                    body.slskd_username, body.slskd_filename, body.slskd_size, int(body.convert_to_flac), source_url, valid_search_token, user_id,
                     override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total,
                 )
             )
@@ -1819,6 +1842,7 @@ def download(body: DownloadRequest, http_request: Request):
             override_dir=override_dir,
             playlist_name=body.playlist_name,
             use_playlists_dir=body.use_playlists_dir,
+            slskd_size=body.slskd_size,
         )
     elif source in URL_BASED_SOURCES:
         spawn_daemon_thread(
@@ -2153,6 +2177,7 @@ def retry_job(job_id: str, http_request: Request):
             override_dir=job.get("override_dir"),
             playlist_name=_pl_name,
             use_playlists_dir=_use_pl_dir,
+            slskd_size=job.get("slskd_size"),
         )
     else:
         # For both YouTube and URL-based sources (SoundCloud, mp3phoenix):
@@ -3465,8 +3490,8 @@ def queue_watched_playlist_track_candidate(
         conn.execute(
             """INSERT INTO jobs
                (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename,
-                convert_to_flac, source_url, user_id)
-               VALUES (?, ?, ?, ?, 'queued', 'single', ?, ?, ?, ?, ?, ?)""",
+                slskd_size, convert_to_flac, source_url, user_id)
+               VALUES (?, ?, ?, ?, 'queued', 'single', ?, ?, ?, ?, ?, ?, ?)""",
             (
                 job_id,
                 request.video_id,
@@ -3475,6 +3500,7 @@ def queue_watched_playlist_track_candidate(
                 source,
                 request.slskd_username,
                 request.slskd_filename,
+                request.slskd_size,
                 int(bool(playlist["convert_to_flac"])),
                 source_url,
                 user_id,
@@ -3504,6 +3530,7 @@ def queue_watched_playlist_track_candidate(
             playlist_name=playlist_name,
             use_playlists_dir=use_playlists_dir,
             custom_subdir=custom_subdir,
+            slskd_size=request.slskd_size,
         )
     else:
         spawn_daemon_thread(

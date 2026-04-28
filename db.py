@@ -99,6 +99,7 @@ def init_db():
             source TEXT DEFAULT 'youtube',
             slskd_username TEXT,
             slskd_filename TEXT,
+            slskd_size INTEGER,
             convert_to_flac INTEGER DEFAULT 1,
             source_url TEXT,
             file_deleted INTEGER DEFAULT 0,
@@ -125,6 +126,10 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN slskd_filename TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN slskd_size INTEGER")
         except sqlite3.OperationalError:
             pass
         try:

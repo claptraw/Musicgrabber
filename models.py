@@ -34,6 +34,7 @@ class DownloadRequest(BaseModel):
     # Soulseek-specific fields
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
+    slskd_size: Optional[int] = None
     # Playlist routing  -  optional, defaults to Singles
     playlist_name: Optional[str] = None  # Name of target playlist (M3U stem)
     use_playlists_dir: bool = False  # Route into Playlists dir instead of Singles
@@ -106,6 +107,7 @@ class SettingsUpdate(BaseModel):
     source_mp3phoenix_enabled: Optional[bool] = None
     source_soundcloud_enabled: Optional[bool] = None
     source_zvu4no_enabled: Optional[bool] = None
+    source_soulseek_enabled: Optional[bool] = None
     # Soulseek/slskd
     slskd_url: Optional[str] = None
     slskd_user: Optional[str] = None
@@ -161,6 +163,7 @@ class SearchResult(BaseModel):
     quality_score: int = 40  # For sorting (higher = better)
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
+    slskd_size: Optional[int] = None
     album: Optional[str] = None
 
 class BlacklistRequest(BaseModel):
@@ -177,6 +180,7 @@ class TestSlskdRequest(BaseModel):
     url: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    downloads_path: Optional[str] = None
 
 class TestNavidromeRequest(BaseModel):
     url: Optional[str] = None
@@ -236,6 +240,7 @@ class QueueMissingTrackCandidateRequest(BaseModel):
     source_url: Optional[str] = None
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
+    slskd_size: Optional[int] = None
 
 class PatchTagsRequest(BaseModel):
     artist: str = Field(..., min_length=1, max_length=200)

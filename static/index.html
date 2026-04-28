@@ -539,8 +539,15 @@
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
+                            <label class="source-toggle-item">
+                                Soulseek
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="settingSourceSoulseek">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
                         </div>
-                        <span class="settings-hint settings-hint-full">Controls which sources appear in search results and are used for automatic matching (watched playlists, bulk import). YouTube is the primary fallback so disabling it may leave some tracks unfound.</span>
+                        <span class="settings-hint settings-hint-full">Controls which sources appear in search results. YouTube, MP3Phoenix, SoundCloud, and zvu4no are also used for automatic matching. Soulseek also needs the slskd credentials below.</span>
                     </label>
                     <label class="settings-label format-selector-wrap">
                         <span>Audio Format</span>
@@ -869,6 +876,10 @@
 
             <div class="settings-section admin-only">
                 <h3 class="settings-section-title">Soulseek (slskd)</h3>
+                <div class="settings-warning">
+                    <strong>Downloads require a shared completed-downloads folder.</strong>
+                    Turn on Soulseek in Search Sources above, then add slskd credentials here. MusicGrabber can only import Soulseek downloads if slskd's completed downloads directory is mounted into this container and entered below. Use the path as MusicGrabber sees it, for example <code>/downloads</code>.
+                </div>
                 <div class="settings-form">
                     <div class="settings-row">
                         <label for="settingSlskdUrl">URL</label>
@@ -888,7 +899,7 @@
                     <div class="settings-row">
                         <label for="settingSlskdDownloads">Downloads Path</label>
                         <input type="text" id="settingSlskdDownloads" placeholder="/downloads">
-                        <span class="settings-hint-sm">The path slskd writes completed downloads to, as seen from MusicGrabber's container (e.g. <code>/downloads</code>). Must be accessible to MusicGrabber so it can move files into your music library.</span>
+                        <span class="settings-hint-sm">The path slskd writes completed downloads to, as seen from MusicGrabber's container. This is usually a Docker volume mount, not the host path and not necessarily slskd's <code>/downloads</code> path.</span>
                     </div>
                     <button type="button" class="test-btn" id="testSlskdBtn">Test Connection</button>
                     <div id="slskdTestResult" class="test-result"></div>

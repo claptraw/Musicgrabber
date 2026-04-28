@@ -18,7 +18,7 @@ from constants import (
     TIMEOUT_SLSKD_DOWNLOAD, SLSKD_MAX_RESULTS, SLSKD_MIN_QUALITY_SCORE,
     SLSKD_REQUIRE_FREE_SLOT,
 )
-from settings import get_setting
+from settings import get_setting, get_setting_bool
 from youtube import score_search_result_with_breakdown
 
 
@@ -29,6 +29,8 @@ _slskd_token_cache: dict[tuple[str, str], tuple[str, float]] = {}
 
 def slskd_enabled(user_id: str | None = None) -> bool:
     """Check if slskd integration is configured"""
+    if not get_setting_bool("source_soulseek_enabled", False, user_id=user_id):
+        return False
     url = get_setting("slskd_url", user_id=user_id)
     user = get_setting("slskd_user", user_id=user_id)
     password = get_setting("slskd_pass", user_id=user_id)
@@ -128,8 +130,38 @@ def should_retry_slskd_error(error_message: str) -> bool:
         "timed out",
         "timeout",
         "queued",
+        "missing slskd file size",
     ]
     return any(marker in msg for marker in retry_markers)
+
+
+def _normalise_transfer_state(state: object) -> str:
+    """Return a stable text label for slskd/Soulseek transfer states."""
+    if isinstance(state, str):
+        return state
+    if isinstance(state, int):
+        completed = bool(state & 16)
+        if completed and state & 32:
+            return "Completed, Succeeded"
+        if completed and state & 64:
+            return "Completed, Cancelled"
+        if completed and state & 128:
+            return "Completed, TimedOut"
+        if completed and state & 256:
+            return "Completed, Errored"
+        if completed and state & 512:
+            return "Completed, Rejected"
+        if completed and state & 1024:
+            return "Completed, Aborted"
+        if completed:
+            return "Completed"
+        if state & 2:
+            return "Queued"
+        if state & 4:
+            return "Initializing"
+        if state & 8:
+            return "InProgress"
+    return str(state or "")
 
 
 def extract_track_info_from_path(filepath: str) -> tuple[str, str]:
@@ -228,7 +260,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
 
             # Get responses with a short retry window in case indexing lags
             responses = []
-            responses_deadline = time.time() + min(5, timeout_secs)
+            responses_deadline = time.time() + max(10, min(20, timeout_secs))
             while time.time() < responses_deadline:
                 responses_response = client.get(
                     f"{slskd_url}/api/v0/searches/{search_id}/responses",
@@ -312,6 +344,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                         "size": file_info.get("size", 0),
                         "slskd_username": username,
                         "slskd_filename": filepath,
+                        "slskd_size": file_info.get("size", 0),
                     })
 
             print(
@@ -335,7 +368,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
     return results[:SLSKD_MAX_RESULTS]
 
 
-def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_secs: int = TIMEOUT_SLSKD_DOWNLOAD) -> Optional[Path]:
+def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_secs: int = TIMEOUT_SLSKD_DOWNLOAD, size: int | None = None) -> Optional[Path]:
     """
     Download a file from Soulseek via slskd.
     Returns the path to the downloaded file, or None on failure.
@@ -355,6 +388,8 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
     # Extract just the filename from the full path
     target_norm = normalize_slskd_path(filename)
     source_filename = Path(target_norm).name
+    if not size or int(size) <= 0:
+        raise Exception("Missing slskd file size; retry with fresh search")
 
     slskd_download_dirs = []
     if slskd_downloads_path:
@@ -373,16 +408,28 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
     try:
         with httpx.Client(timeout=TIMEOUT_SLSKD_API) as client:
             # Enqueue the download
+            queue_item = {"filename": filename}
+            if size is not None:
+                queue_item["size"] = int(size)
+
             enqueue_response = client.post(
                 f"{slskd_url}/api/v0/transfers/downloads/{username}",
                 headers=headers,
-                json=[{"filename": filename}]
+                json=[queue_item]
             )
 
             if enqueue_response.status_code not in [200, 201]:
-                raise Exception(f"Failed to enqueue download: {enqueue_response.status_code}")
+                raise Exception(f"Failed to enqueue download: {enqueue_response.status_code} {enqueue_response.text[:200]}")
+            try:
+                enqueue_data = enqueue_response.json()
+                failed = enqueue_data.get("failed") or enqueue_data.get("Failed") or []
+                enqueued = enqueue_data.get("enqueued", enqueue_data.get("Enqueued"))
+                if failed or enqueued == 0:
+                    raise Exception(f"slskd did not enqueue the file: {enqueue_data}")
+            except ValueError:
+                pass
 
-            print(f"slskd: Enqueued download of '{source_filename}' from {username}")
+            print(f"slskd: Enqueued download of '{source_filename}' from {username} ({int(size)} bytes)")
 
             # Poll for download completion
             start_time = time.time()
@@ -426,7 +473,7 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                     dl_base = Path(dl_norm).name
                     if dl_norm == target_norm or dl_base == source_filename or dl_norm.endswith(f"/{source_filename}"):
                         file_found = True
-                        state = dl.get("state", "")
+                        state = _normalise_transfer_state(dl.get("stateDescription", dl.get("state", "")))
                         progress = dl.get("percentComplete", 0)
 
                         # Only log state changes to reduce noise
@@ -453,7 +500,7 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                             requeue_response = client.post(
                                 f"{slskd_url}/api/v0/transfers/downloads/{username}",
                                 headers=headers,
-                                json=[{"filename": filename}]
+                                json=[queue_item]
                             )
                             if requeue_response.status_code not in [200, 201]:
                                 print(f"slskd: Re-queue failed with status {requeue_response.status_code}")
@@ -483,7 +530,7 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                     requeue_response = client.post(
                         f"{slskd_url}/api/v0/transfers/downloads/{username}",
                         headers=headers,
-                        json=[{"filename": filename}]
+                        json=[queue_item]
                     )
                     if requeue_response.status_code in [200, 201]:
                         print(f"slskd: Re-queued successfully")
@@ -550,6 +597,18 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                 user_dir = slskd_dir / username
                 if user_dir.exists():
                     for found_file in user_dir.rglob(source_filename):
+                        if found_file.is_file():
+                            dest_path = dest_dir / source_filename
+                            shutil.copy2(found_file, dest_path)
+                            print(f"slskd: Found and copied {found_file} to {dest_path}")
+                            return dest_path
+
+            # Some slskd installs group completed downloads by remote folder or
+            # album rather than by Soulseek username. Fall back to the whole
+            # configured root after the stricter username lookup fails.
+            for slskd_dir in slskd_download_dirs:
+                if slskd_dir.exists():
+                    for found_file in slskd_dir.rglob(source_filename):
                         if found_file.is_file():
                             dest_path = dest_dir / source_filename
                             shutil.copy2(found_file, dest_path)
