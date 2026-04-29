@@ -12,15 +12,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from constants import (
     TIMEOUT_YTDLP_SEARCH,
+    TIMEOUT_SLSKD_SEARCH,
     SOUNDCLOUD_SEARCH_MULTIPLIER, SOUNDCLOUD_SEARCH_MIN_FETCH,
     SEARCH_MAX_PER_SOURCE,
     SEARCH_MAX_PER_SOURCE_YOUTUBE, SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
     SEARCH_MAX_PER_SOURCE_SOUNDCLOUD, SEARCH_MAX_PER_SOURCE_ZVU4NO,
+    SEARCH_MAX_PER_SOURCE_SOULSEEK,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration, search_artist_mbid, lookup_musicbrainz
 from settings import get_setting, get_setting_bool
 from mp3phoenix import search_mp3phoenix
+from slskd import slskd_enabled, search_slskd
 from zvu4no import search_zvu4no
 from youtube import (
     search_youtube, score_search_result_with_breakdown, format_score_breakdown, parse_duration,
@@ -36,6 +39,27 @@ _BLACKLIST_UPLOADER_PENALTY = 500
 # ---------------------------------------------------------------------------
 # SoundCloud search
 # ---------------------------------------------------------------------------
+
+def search_soulseek(query: str, limit: int = 10) -> list[dict]:
+    """Search Soulseek via slskd and return normal search-result dictionaries."""
+    if not slskd_enabled():
+        return []
+
+    results = []
+    for item in search_slskd(query, timeout_secs=TIMEOUT_SLSKD_SEARCH)[:limit]:
+        duration_raw = item.get("duration", "0")
+        try:
+            duration = parse_duration(int(duration_raw))
+        except (TypeError, ValueError):
+            duration = str(duration_raw or "")
+        result = dict(item)
+        result["video_id"] = item.get("id") or f"slskd_{len(results)}"
+        result["duration"] = duration
+        result["thumbnail"] = ""
+        result["source_url"] = f"soulseek://{item.get('slskd_username', '')}/{item.get('slskd_filename', '')}"
+        result["slskd_size"] = item.get("slskd_size") or item.get("size")
+        results.append(result)
+    return results
 
 def parse_soundcloud_search_results(stdout: str, query: str | None = None) -> list[dict]:
     """Parse yt-dlp JSON output from an scsearch query."""
@@ -143,6 +167,14 @@ SOURCE_REGISTRY = {
         "search_fn": search_zvu4no,
         "has_preview": True,
     },
+    "soulseek": {
+        "label": "Soulseek",
+        "badge": "SLK",
+        "colour": "#7c3aed",
+        "search_fn": search_soulseek,
+        "has_preview": False,
+        "default_enabled": False,
+    },
 }
 
 SEARCH_MAX_PER_SOURCE_BY_SOURCE = {
@@ -150,6 +182,7 @@ SEARCH_MAX_PER_SOURCE_BY_SOURCE = {
     "mp3phoenix": SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
     "soundcloud": SEARCH_MAX_PER_SOURCE_SOUNDCLOUD,
     "zvu4no": SEARCH_MAX_PER_SOURCE_ZVU4NO,
+    "soulseek": SEARCH_MAX_PER_SOURCE_SOULSEEK,
 }
 
 
@@ -279,11 +312,12 @@ def _apply_blacklist_filter(results: list[dict], source: str | None = None) -> l
     return filtered
 
 
-def _enabled_sources() -> dict:
+def _enabled_sources(include_soulseek: bool = False) -> dict:
     """Return the subset of SOURCE_REGISTRY that is currently enabled in settings."""
     return {
         name: cfg for name, cfg in SOURCE_REGISTRY.items()
-        if get_setting_bool(f"source_{name}_enabled", True)
+        if (include_soulseek or name != "soulseek")
+        and get_setting_bool(f"source_{name}_enabled", cfg.get("default_enabled", True))
     }
 
 
@@ -291,13 +325,14 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
     """Search a single registered source."""
     if source not in SOURCE_REGISTRY:
         raise ValueError(f"Unknown search source: {source}")
-    if not get_setting_bool(f"source_{source}_enabled", True):
+    cfg = SOURCE_REGISTRY[source]
+    if not get_setting_bool(f"source_{source}_enabled", cfg.get("default_enabled", True)):
         return []
 
     # Fire MB duration lookup in parallel with the source search so it doesn't
     # add any latency  -  both finish before we sort and return.
     with ThreadPoolExecutor(max_workers=2) as pool:
-        search_future = pool.submit(SOURCE_REGISTRY[source]["search_fn"], query, limit)
+        search_future = pool.submit(cfg["search_fn"], query, limit)
         mb_future = pool.submit(_mb_duration_lookup, query)
         results = search_future.result()
         expected_dur = mb_future.result()
@@ -309,7 +344,7 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
     return results[:limit]
 
 
-def search_all(query: str, limit: int, sources: list[str] | None = None) -> tuple[list[dict], dict | None]:
+def search_all(query: str, limit: int, sources: list[str] | None = None, include_soulseek: bool = False) -> tuple[list[dict], dict | None]:
     """Search enabled sources in parallel, merge by quality score.
 
     If *sources* is provided (list of source IDs), only those sources are used,
@@ -320,7 +355,7 @@ def search_all(query: str, limit: int, sources: list[str] | None = None) -> tupl
     artist_name, artist_mbid, album_title, release_mbid, or None if the query
     didn't resolve to a known album.
     """
-    active = _enabled_sources()
+    active = _enabled_sources(include_soulseek=include_soulseek)
     if sources:
         # Intersect requested sources with enabled ones; fall back to all if none survive
         filtered = {k: v for k, v in active.items() if k in sources}
@@ -370,7 +405,8 @@ def get_available_sources() -> list[dict]:
             "label": cfg["label"],
             "badge": cfg["badge"],
             "colour": cfg["colour"],
-            "enabled": bool(get_setting(f"source_{name}_enabled", True)),
+            "enabled": get_setting_bool(f"source_{name}_enabled", cfg.get("default_enabled", True)),
+            "has_preview": bool(cfg.get("has_preview", True)),
         }
         for name, cfg in SOURCE_REGISTRY.items()
     ]

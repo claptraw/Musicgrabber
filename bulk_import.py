@@ -14,7 +14,7 @@ from typing import Optional
 
 from constants import BULK_IMPORT_SEARCH_DELAY
 from db import db_conn, upsert_album_track_lock
-from downloads import process_download, create_bulk_playlist
+from downloads import process_download, process_slskd_download, create_bulk_playlist
 from notifications import send_notification
 from search import search_all, log_ranked_results
 from settings import get_setting_int
@@ -259,7 +259,7 @@ def process_bulk_import_worker(import_id: str):
             # Search preferred (or all) sources in parallel, ranked by quality score
             try:
                 search_query = f"{artist} - {song}"
-                search_results, _ = search_all(search_query, limit=10, sources=preferred_sources_list)
+                search_results, _ = search_all(search_query, limit=10, sources=preferred_sources_list, include_soulseek=True)
                 log_ranked_results(f"Bulk import {import_id}", search_query, search_results)
 
                 if not search_results:
@@ -337,6 +337,9 @@ def process_bulk_import_worker(import_id: str):
                 video_id = best_match["video_id"]
                 source = best_match.get("source", "youtube")
                 source_url = best_match.get("source_url")
+                slskd_username = best_match.get("slskd_username")
+                slskd_filename = best_match.get("slskd_filename")
+                slskd_size = best_match.get("slskd_size") or best_match.get("size")
                 if watch_playlist_id or watch_artist_id:
                     wid = watch_playlist_id or watch_artist_id
                     print(
@@ -348,7 +351,20 @@ def process_bulk_import_worker(import_id: str):
                 job_id = str(uuid.uuid4())[:8]
 
                 with db_conn() as conn:
-                    if create_playlist:
+                    if source == "soulseek":
+                        conn.execute(
+                            """INSERT INTO jobs
+                               (id, video_id, title, artist, status, download_type, playlist_name, source,
+                                slskd_username, slskd_filename, slskd_size, source_url, convert_to_flac, user_id)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                job_id, video_id, song, artist, "queued", "single",
+                                import_id if create_playlist else None,
+                                source, slskd_username, slskd_filename, slskd_size,
+                                source_url, int(convert_to_flac), user_id,
+                            )
+                        )
+                    elif create_playlist:
                         conn.execute(
                             "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name, source, source_url, convert_to_flac, user_id) "
                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -431,7 +447,23 @@ def process_bulk_import_worker(import_id: str):
                     upsert_album_track_lock(
                         album_release_mbid, _album_name_lock, _album_artist_lock, song, job_id
                     )
-                if source == "mp3phoenix":
+                if source == "soulseek":
+                    _get_download_pool().submit(
+                        process_slskd_download,
+                        job_id,
+                        slskd_username,
+                        slskd_filename,
+                        artist,
+                        song,
+                        convert_to_flac,
+                        user_id=user_id,
+                        override_dir=override_dir,
+                        playlist_name=_pname,
+                        use_playlists_dir=use_playlists_dir,
+                        custom_subdir=custom_subdir,
+                        slskd_size=slskd_size,
+                    )
+                elif source == "mp3phoenix":
                     spawn_daemon_thread(process_download, job_id, video_id, convert_to_flac,
                                         source_url, _pname, use_playlists_dir,
                                         user_id=user_id, override_dir=override_dir,

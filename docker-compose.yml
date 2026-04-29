@@ -13,7 +13,7 @@ services:
       # Persist the job database and settings
       - ./data:/data
       # Optional: slskd downloads directory for Soulseek integration
-      # - /path/to/slskd/downloads:/downloads
+      - /mnt/music/downloads:/downloads
     environment:
       # Required paths
       - MUSIC_DIR=/music
@@ -28,7 +28,7 @@ services:
       # - PUID=1000
       # - PGID=1000
       # Optional: slskd downloads path (if using Soulseek)
-      # - SLSKD_DOWNLOADS_PATH=/downloads
+      - SLSKD_DOWNLOADS_PATH=/downloads
       # Optional: increase timeouts for long tracks (DJ mixes, symphonies) or slow connections
       # - TIMEOUT_YTDLP_DOWNLOAD=300      # yt-dlp download (default 5 min)
       # - TIMEOUT_FFMPEG_CONVERT=120      # ffmpeg format conversion (default 2 min)

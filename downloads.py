@@ -7,6 +7,7 @@ Library scan triggers and M3U playlist generation.
 
 import json
 import re
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -74,6 +75,36 @@ def _default_metadata_source(source: str) -> str:
     if source_name == "soulseek":
         return "soulseek_guessed"
     return "youtube_guessed"
+
+
+def _move_completed_file(source: Path, dest: Path) -> Path:
+    """Move a completed file, falling back for NAS shares that reject rename()."""
+    if source == dest:
+        return dest
+
+    try:
+        source.rename(dest)
+        return dest
+    except OSError as exc:
+        if dest.exists() and not source.exists():
+            return dest
+        if dest.exists():
+            raise
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(source, dest)
+            if source.exists() and dest.stat().st_size == source.stat().st_size:
+                source.unlink()
+                print(f"Recovered from rename failure with copy fallback: {source} -> {dest} ({exc})")
+                return dest
+        except OSError:
+            if dest.exists():
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
+        raise
 
 
 def _safe_sanitized_title(title: str, fallback: str) -> str:
@@ -1370,7 +1401,7 @@ def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artis
         print(f"Artist normalisation: target already exists, skipping move: {new_path}")
         return audio_file
 
-    audio_file.rename(new_path)
+    _move_completed_file(audio_file, new_path)
     print(f"Artist normalised: {old_dir.name}/{audio_file.name} -> {new_dir.name}/{audio_file.name}")
     set_file_permissions(new_path)
 
@@ -1378,7 +1409,7 @@ def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artis
     old_lrc = audio_file.with_suffix(".lrc")
     if old_lrc.exists():
         new_lrc = new_path.with_suffix(".lrc")
-        old_lrc.rename(new_lrc)
+        _move_completed_file(old_lrc, new_lrc)
         set_file_permissions(new_lrc)
 
     # Tidy up the old directory if it's now gathering dust
@@ -1427,14 +1458,14 @@ def _auto_route_single_to_album(
         print(f"Auto-album routing: target already exists, skipping move: {new_path}")
         return audio_file
 
-    audio_file.rename(new_path)
+    _move_completed_file(audio_file, new_path)
     set_file_permissions(new_path)
 
     # Move any .lrc that came along for the ride
     old_lrc = audio_file.with_suffix(".lrc")
     if old_lrc.exists():
         new_lrc = new_path.with_suffix(".lrc")
-        old_lrc.rename(new_lrc)
+        _move_completed_file(old_lrc, new_lrc)
         set_file_permissions(new_lrc)
 
     # Retag with track number/total if MB provided them  -  nicer than leaving them blank
@@ -2699,12 +2730,12 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             else:
                 # Conversion failed, keep original with new name
                 final_file = artist_dir / f"{sanitized_title}{source_ext}"
-                downloaded_file.rename(final_file)
+                _move_completed_file(downloaded_file, final_file)
         else:
             # Already in target format (or no conversion requested), just rename
             final_file = artist_dir / f"{sanitized_title}{source_ext}"
             if downloaded_file != final_file:
-                downloaded_file.rename(final_file)
+                _move_completed_file(downloaded_file, final_file)
 
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(final_file)

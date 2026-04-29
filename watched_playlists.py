@@ -814,15 +814,30 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     except ValueError:
                         return False
 
-                def _lb_reresolution_fetch() -> list:
+                def _lb_playlist_week_date(name: str) -> datetime:
+                    m = re.search(r'week of (\d{4}-\d{2}-\d{2})', name or "")
+                    if not m:
+                        return datetime.min.replace(tzinfo=timezone.utc)
+                    try:
+                        return datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        return datetime.min.replace(tzinfo=timezone.utc)
+
+                def _lb_reresolution_fetch(prefer_latest: bool = False) -> list:
                     """Re-query createdfor API, update stored URL, return tracks."""
                     print(f"ListenBrainz playlist '{playlist_name}' appears stale — re-resolving via createdfor API")
                     lb_playlists = fetch_listenbrainz_createdfor(playlist["lb_username"])
-                    # Exact name match first, then prefix ("Weekly Exploration for X, week of ..." -> "Weekly Exploration for X")
-                    matched = next((p for p in lb_playlists if p["name"] == playlist_name), None)
-                    if not matched:
-                        name_prefix = playlist_name.split(", week of")[0]
-                        matched = next((p for p in lb_playlists if p["name"].startswith(name_prefix)), None)
+                    name_prefix = playlist_name.split(", week of")[0]
+                    same_family = [p for p in lb_playlists if p["name"].startswith(name_prefix)]
+                    if prefer_latest and same_family:
+                        matched = max(same_family, key=lambda p: _lb_playlist_week_date(p["name"]))
+                    else:
+                        # For 404 self-healing, exact match is fine. For stale
+                        # weekly playlists, exact match is the old playlist and
+                        # must not win over the newer playlist with the same prefix.
+                        matched = next((p for p in lb_playlists if p["name"] == playlist_name), None)
+                        if not matched and same_family:
+                            matched = max(same_family, key=lambda p: _lb_playlist_week_date(p["name"]))
                     if not matched:
                         raise HTTPException(
                             status_code=404,
@@ -839,14 +854,14 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     return matched["tracks"]
 
                 if _lb_needs_reresolution():
-                    tracks = _lb_reresolution_fetch()
+                    tracks = _lb_reresolution_fetch(prefer_latest=True)
                 else:
                     try:
                         tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
                     except HTTPException as e:
                         if e.status_code != 404:
                             raise
-                        tracks = _lb_reresolution_fetch()
+                        tracks = _lb_reresolution_fetch(prefer_latest=False)
             else:
                 tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.7.1 (2026-04-29)
+
+### Added
+- **Soulseek for watched playlists**: watched playlist source chips now include Soulseek when the global Soulseek toggle is on, and watched playlist imports can queue real slskd download jobs with the required username, filename, and size fields.
+- **Soulseek ranking boost**: Soulseek results now get a source-trust bonus, with extra lift for lossless and 24-bit files, and can contribute up to six candidates in merged searches. Properly shared FLACs should now beat lossy web sources when the title/artist match is solid.
+
+### Changed
+- **Local Docker Soulseek downloads mount**: the local `docker-compose.yml` now mounts `/mnt/music/downloads` as `/downloads` and sets `SLSKD_DOWNLOADS_PATH=/downloads`, so local testing uses the same shared NAS landing folder as slskd.
+
+### Fixed
+- **ListenBrainz Weekly Exploration stayed on the old week**: ListenBrainz can keep the previous weekly playlist visible after publishing the new one. MusicGrabber was re-resolving correctly, then exact-matching the stale old title and choosing it again. Stale weekly playlists now pick the newest matching playlist family, so `Weekly Exploration` advances to the current generated week.
+- **slskd incomplete-path race**: slskd can report a local path under `/downloads/incomplete/...` and then move the file to the completed downloads folder before MusicGrabber copies it. MusicGrabber now checks the completed equivalent path before failing, so downloads do not die because the file finished too quickly.
+- **NAS rename failures after Soulseek downloads**: some SMB/NAS mounts can return `Errno 5` while MusicGrabber renames a fully downloaded Soulseek file from the source filename to the cleaned library filename. Completed-file moves now fall back to copy-and-verify before failing the job, so files do not get stranded under the uploader's track-numbered name.
+
 ## v2.7.0 (2026-04-28)
 
 ### Added

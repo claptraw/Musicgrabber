@@ -1588,7 +1588,7 @@ def search(request: SearchRequest, http_request: Request):
         source = request.source
         album_suggestion = None
         if source == "all":
-            raw_results, album_suggestion = search_all(request.query, request.limit)
+            raw_results, album_suggestion = search_all(request.query, request.limit, include_soulseek=False)
         elif source in SOURCE_REGISTRY:
             raw_results = search_source(source, request.query, request.limit)
         else:
@@ -3424,7 +3424,7 @@ def get_watched_playlist_track_candidates(
     sources = None if preferred_sources == "all" else [s.strip() for s in preferred_sources.split(",") if s.strip()]
     query = f"{artist} - {title}".strip(" -")
     fetch_limit = max(1, min(limit, 10))
-    results, _ = search_all(query, limit=fetch_limit, sources=sources)
+    results, _ = search_all(query, limit=fetch_limit, sources=sources, include_soulseek=True)
 
     return {
         "query": query,

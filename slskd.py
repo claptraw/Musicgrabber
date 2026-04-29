@@ -26,6 +26,10 @@ from youtube import score_search_result_with_breakdown
 # with different slskd instances get their own tokens
 _slskd_token_cache: dict[tuple[str, str], tuple[str, float]] = {}
 
+SLSKD_SOURCE_TRUST_BONUS = 35
+SLSKD_LOSSLESS_BONUS = 25
+SLSKD_HIRES_BONUS = 15
+
 
 def slskd_enabled(user_id: str | None = None) -> bool:
     """Check if slskd integration is configured"""
@@ -117,6 +121,28 @@ def get_slskd_local_path(download_info: dict) -> Optional[str]:
         if value:
             return value
     return None
+
+
+def _completed_equivalent_paths(path: Path, download_roots: list[Path]) -> list[Path]:
+    """Return likely completed-file paths for a transient incomplete path."""
+    candidates = []
+    parts = path.parts
+    if "incomplete" not in parts:
+        return candidates
+
+    for index, part in enumerate(parts):
+        if part != "incomplete":
+            continue
+        without_incomplete = Path(*parts[:index], *parts[index + 1:])
+        candidates.append(without_incomplete)
+
+        for root in download_roots:
+            try:
+                rel_after_incomplete = Path(*parts[index + 1:])
+                candidates.append(root / rel_after_incomplete)
+            except TypeError:
+                continue
+    return candidates
 
 
 def should_retry_slskd_error(error_message: str) -> bool:
@@ -324,6 +350,20 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                     adjusted_score = relevance_score + quality_score
                     if quality_score:
                         score_breakdown.append(f"source_quality=+{quality_score}")
+                    # Soulseek users often share properly ripped files. Give
+                    # these results a source-trust lift after title/artist
+                    # relevance, so good matches beat lossy web sources without
+                    # letting unrelated files win just because they are FLAC.
+                    adjusted_score += SLSKD_SOURCE_TRUST_BONUS
+                    score_breakdown.append(f"soulseek_trust=+{SLSKD_SOURCE_TRUST_BONUS}")
+                    quality_upper = quality_label.upper()
+                    if "FLAC" in quality_upper or "WAV" in quality_upper:
+                        adjusted_score += SLSKD_LOSSLESS_BONUS
+                        score_breakdown.append(f"lossless=+{SLSKD_LOSSLESS_BONUS}")
+                    if bit_depth := file_info.get("bitDepth", 0):
+                        if isinstance(bit_depth, int) and bit_depth >= 24:
+                            adjusted_score += SLSKD_HIRES_BONUS
+                            score_breakdown.append(f"hires=+{SLSKD_HIRES_BONUS}")
                     if has_free_slot:
                         adjusted_score += 10
                         score_breakdown.append("free_slot=+10")
@@ -586,11 +626,13 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                 except (OSError, ValueError):
                     continue
 
-                if potential_path.exists():
-                    dest_path = dest_dir / source_filename
-                    shutil.copy2(potential_path, dest_path)
-                    print(f"slskd: Copied {potential_path} to {dest_path}")
-                    return dest_path
+                path_options = [potential_path, *_completed_equivalent_paths(potential_path, slskd_download_dirs)]
+                for path_option in path_options:
+                    if path_option.exists():
+                        dest_path = dest_dir / source_filename
+                        shutil.copy2(path_option, dest_path)
+                        print(f"slskd: Copied {path_option} to {dest_path}")
+                        return dest_path
 
             # If not found, search recursively in the username folder
             for slskd_dir in slskd_download_dirs:

@@ -7,6 +7,31 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.7.1": {
+        title: "What's New in v2.7.1",
+        sections: [
+            {
+                heading: "Soulseek for watched playlists",
+                items: [
+                    "When Soulseek is globally enabled, the per-playlist source chips now include SLK, and watched playlist imports queue proper slskd download jobs with the username, filename, and size fields slskd actually needs.",
+                    "Soulseek results now get a source-trust ranking boost, with extra lift for lossless and 24-bit files, and can contribute up to six candidates in merged searches. A well-shared FLAC should finally beat a grubby web rip with a suspiciously cheerful thumbnail.",
+                ]
+            },
+            {
+                heading: "Fixed: ListenBrainz Weekly Exploration stuck on old week",
+                items: [
+                    "ListenBrainz sometimes keeps the previous week's playlist visible after publishing a new one. MusicGrabber was re-resolving the URL correctly, then politely picking the stale exact title again. It now picks the newest playlist in the same family, so Weekly Exploration advances to the current week as intended.",
+                ]
+            },
+            {
+                heading: "Fixed: Soulseek download edge cases",
+                items: [
+                    "slskd can report a file path under the incomplete folder and then move it to completed before MusicGrabber copies it. MusicGrabber now checks the completed equivalent before failing, so downloads that finished quickly no longer die of their own success.",
+                    "Some SMB and NAS mounts return a cryptic error when MusicGrabber renames a finished Soulseek file to its library name. The move now falls back to a copy-and-verify approach, so files no longer get stranded under the uploader's original track-numbered name.",
+                ]
+            },
+        ]
+    },
     "2.7.0": {
         title: "What's New in v2.7.0",
         sections: [
