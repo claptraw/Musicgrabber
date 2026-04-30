@@ -17,11 +17,12 @@ from constants import (
     SEARCH_MAX_PER_SOURCE,
     SEARCH_MAX_PER_SOURCE_YOUTUBE, SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
     SEARCH_MAX_PER_SOURCE_SOUNDCLOUD, SEARCH_MAX_PER_SOURCE_ZVU4NO,
-    SEARCH_MAX_PER_SOURCE_SOULSEEK,
+    SEARCH_MAX_PER_SOURCE_SOULSEEK, SEARCH_MAX_PER_SOURCE_MONOCHROME,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration, search_artist_mbid, lookup_musicbrainz
 from settings import get_setting, get_setting_bool
+from monochrome import search_monochrome, monochrome_enabled
 from mp3phoenix import search_mp3phoenix
 from slskd import slskd_enabled, search_slskd
 from zvu4no import search_zvu4no
@@ -39,6 +40,13 @@ _BLACKLIST_UPLOADER_PENALTY = 500
 # ---------------------------------------------------------------------------
 # SoundCloud search
 # ---------------------------------------------------------------------------
+
+def search_monochrome_source(query: str, limit: int = 10) -> list[dict]:
+    """Wrap search_monochrome with the enabled-check so the registry stays consistent."""
+    if not monochrome_enabled():
+        return []
+    return search_monochrome(query, limit)
+
 
 def search_soulseek(query: str, limit: int = 10) -> list[dict]:
     """Search Soulseek via slskd and return normal search-result dictionaries."""
@@ -175,6 +183,14 @@ SOURCE_REGISTRY = {
         "has_preview": False,
         "default_enabled": False,
     },
+    "monochrome": {
+        "label": "Monochrome",
+        "badge": "MONO",
+        "colour": "#0f766e",
+        "search_fn": search_monochrome_source,
+        "has_preview": True,
+        "default_enabled": False,
+    },
 }
 
 SEARCH_MAX_PER_SOURCE_BY_SOURCE = {
@@ -183,6 +199,7 @@ SEARCH_MAX_PER_SOURCE_BY_SOURCE = {
     "soundcloud": SEARCH_MAX_PER_SOURCE_SOUNDCLOUD,
     "zvu4no": SEARCH_MAX_PER_SOURCE_ZVU4NO,
     "soulseek": SEARCH_MAX_PER_SOURCE_SOULSEEK,
+    "monochrome": SEARCH_MAX_PER_SOURCE_MONOCHROME,
 }
 
 

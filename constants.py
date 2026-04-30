@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.7.1"
+VERSION = "2.8.0"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -36,6 +36,8 @@ TIMEOUT_MP3PHOENIX_SEARCH = 15   # mp3phoenix AJAX search
 TIMEOUT_MP3PHOENIX_DOWNLOAD = int(os.getenv("TIMEOUT_MP3PHOENIX_DOWNLOAD", "120"))  # mp3phoenix direct MP3 stream
 TIMEOUT_ZVU4NO_SEARCH = 15       # zvu4no HTML search
 TIMEOUT_ZVU4NO_DOWNLOAD = int(os.getenv("TIMEOUT_ZVU4NO_DOWNLOAD", "120"))  # zvu4no direct MP3 stream
+TIMEOUT_MONOCHROME_SEARCH = 15   # Monochrome/Qobuz search and proxy lookups
+TIMEOUT_MONOCHROME_DOWNLOAD = int(os.getenv("TIMEOUT_MONOCHROME_DOWNLOAD", "300"))  # Qobuz FLAC CDN download (FLACs are big)
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
 LIBRARY_RECONCILE_INTERVAL = int(os.getenv("LIBRARY_RECONCILE_INTERVAL", "1800"))  # Reconcile deleted/renamed files every 30 minutes
@@ -59,6 +61,7 @@ SEARCH_MAX_PER_SOURCE_MP3PHOENIX = 4
 SEARCH_MAX_PER_SOURCE_SOUNDCLOUD = 4
 SEARCH_MAX_PER_SOURCE_ZVU4NO = 4
 SEARCH_MAX_PER_SOURCE_SOULSEEK = 6
+SEARCH_MAX_PER_SOURCE_MONOCHROME = 6
 SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 MAX_SEARCH_QUERY_LENGTH = 512    # Max characters allowed in search input
 SEARCH_LOG_RETENTION_DAYS = 90   # Keep search analytics for N days
@@ -136,3 +139,7 @@ DEEZER_SEARCH_URL = "https://api.deezer.com/search"
 
 # Default settings for fields that need startup values
 DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"
+
+# Monochrome (Qobuz/Tidal) — configurable so you can point at a self-hosted hifi-api
+MONOCHROME_HIFI_API_URL = os.getenv("MONOCHROME_HIFI_API_URL", "https://eu-central.monochrome.tf")
+MONOCHROME_QOBUZ_PROXY_URL = os.getenv("MONOCHROME_QOBUZ_PROXY_URL", "https://qobuz.kennyy.com.br")

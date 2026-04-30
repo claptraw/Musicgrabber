@@ -7,6 +7,31 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.0": {
+        title: "What's New in v2.8.0",
+        sections: [
+            {
+                heading: "Monochrome is back — and it brought Qobuz",
+                items: [
+                    "Monochrome.tf was ripped out in v2.6.6 when Tidal started banning the proxy accounts and every stream degraded to a 30-second teaser. They've come back with Qobuz as the audio backend: Tidal's catalogue for search and metadata, a Qobuz proxy for the actual bytes. The result is direct, no-nonsense FLAC from Qobuz's CDN.",
+                    "Hi-res (24-bit/192 kHz) and standard FLAC (16-bit/44.1 kHz) both supported, depending on what Qobuz has for the track. Score bonuses match Soulseek's lossless weighting, so a proper master will beat a YouTube rip in the results.",
+                    "Enable it via the Monochrome toggle in Search Sources. The public proxy endpoints are pre-configured. Advanced users can point the URL fields at a self-hosted hifi-api or Qobuz proxy instance.",
+                ]
+            },
+            {
+                heading: "Hover preview",
+                items: [
+                    "Monochrome results support the hover-to-preview feature like YouTube and SoundCloud. The server resolves the Qobuz CDN URL and hands it to the browser — audition before you commit.",
+                ]
+            },
+            {
+                heading: "Tidal playlists restored",
+                items: [
+                    "tidal.com/browse/playlist URLs work again in the watched playlist importer. This was dropped along with Monochrome in v2.6.6.",
+                ]
+            },
+        ]
+    },
     "2.7.1": {
         title: "What's New in v2.7.1",
         sections: [

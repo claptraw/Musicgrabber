@@ -913,6 +913,11 @@ h1 {
     color: white;
 }
 
+.source-badge.monochrome {
+    background: #0f766e;
+    color: white;
+}
+
 .job-source-badge {
     position: absolute;
     bottom: 2px;
@@ -960,6 +965,20 @@ h1 {
     font-family: 'Font Awesome 6 Free';
     font-weight: 900;
     color: white;
+}
+
+/* When artwork is applied, override the soulseek placeholder gradient */
+.result-item.soulseek .result-thumb.has-artwork::before {
+    display: none;
+}
+
+.slskd-searching-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px;
+    color: var(--text-secondary);
+    font-size: 13px;
 }
 
 .job-item {

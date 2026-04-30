@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.8.0 (dev)
+
+### Added
+- **Monochrome source is back**: Monochrome.tf returned from the dead with Qobuz under the hood. MusicGrabber now searches the Tidal catalogue via hifi-api for metadata and ISRC, then pulls a direct FLAC from the Qobuz CDN. No DASH segments, no 30-second previews, no nonsense — just proper lossless audio. Hi-res (24-bit/192 kHz) and standard FLAC supported. Enable via Search Sources toggle in Settings.
+- **Hover preview for Monochrome**: the CDN URL is resolved server-side and streamed to the browser, so you can audition a track before downloading it.
+- **Tidal playlist support restored**: `tidal.com/browse/playlist/UUID` URLs now work in the watched playlist importer.
+- **Monochrome settings section**: configurable hifi-api URL and Qobuz proxy URL for anyone running self-hosted instances.
+
+### Changed
+
 ## v2.7.1 (2026-04-29)
 
 ### Added

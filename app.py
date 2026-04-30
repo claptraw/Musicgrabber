@@ -78,9 +78,11 @@ from watched_playlists import (
 from watched_artists import refresh_watched_artist, start_artist_scheduler
 from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks, apply_metadata_to_file, guess_musicbrainz_tags
 from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
+from coverart import fetch_cover_art_url
 
-URL_BASED_SOURCES = {"soundcloud", "mp3phoenix", "zvu4no"}
+URL_BASED_SOURCES = {"soundcloud", "mp3phoenix", "zvu4no", "monochrome"}
 DIRECT_PREVIEW_SOURCES = {"mp3phoenix", "zvu4no"}
+MONOCHROME_PREVIEW_SOURCES = {"monochrome"}
 
 
 def _request_root_path(request: Request | None = None) -> str:
@@ -1523,6 +1525,20 @@ def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
                 raise HTTPException(status_code=400, detail=f"{source.capitalize()} preview requires url parameter")
             return {"url": url, "video_id": video_id}
 
+        if source in MONOCHROME_PREVIEW_SOURCES:
+            if not url:
+                raise HTTPException(status_code=400, detail="Monochrome preview requires url parameter")
+            from monochrome import get_monochrome_preview_url
+            from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
+            _parsed = _urlparse(url)
+            if not _parsed.netloc:
+                raise HTTPException(status_code=400, detail="Invalid Monochrome source URL")
+            _isrc = (_parse_qs(_parsed.query).get("isrc") or [""])[0]
+            if not _isrc:
+                raise HTTPException(status_code=400, detail="Monochrome source URL missing ISRC")
+            cdn_url = get_monochrome_preview_url(_isrc)
+            return {"url": cdn_url, "video_id": video_id}
+
         if source == "youtube":
             if not is_valid_youtube_id(video_id):
                 raise HTTPException(status_code=400, detail="Invalid YouTube video ID")
@@ -1669,6 +1685,21 @@ def search_slskd_endpoint(request: SearchRequest):
     except Exception as e:
         print(f"slskd search error: {type(e).__name__}: {e}")
         return {"results": [], "slskd_enabled": True, "error": "Search failed  -  check server logs for details"}
+
+
+@app.get("/api/search/artwork")
+def search_artwork(artist: str, title: str):
+    """Return a cover art URL for display in search results.
+
+    Tries iTunes then Deezer. Returns the remote URL so the browser loads
+    it directly; no image bytes are proxied through MusicGrabber.
+    """
+    artist = (artist or "").strip()
+    title = (title or "").strip()
+    if not artist or not title:
+        return {"url": None}
+    url = fetch_cover_art_url(artist, title)
+    return {"url": url}
 
 
 @app.post("/api/explore/similar")

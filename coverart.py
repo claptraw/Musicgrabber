@@ -31,6 +31,10 @@ _MBID_CACHE_LOCK = threading.Lock()
 _SEARCH_CACHE: dict[tuple[str, str], tuple[bytes, str] | None] = {}
 _SEARCH_CACHE_LOCK = threading.Lock()
 
+# URL-only cache for search result thumbnails (just the remote URL, no download)
+_URL_CACHE: dict[tuple[str, str], str | None] = {}
+_URL_CACHE_LOCK = threading.Lock()
+
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -233,6 +237,60 @@ def cache_cover_art(release_mbid: str, art: tuple[bytes, str] | None) -> None:
     """Manually cache a cover art result (used by sidecar fallback in downloads)."""
     with _MBID_CACHE_LOCK:
         _MBID_CACHE[release_mbid] = art
+
+
+def fetch_cover_art_url(artist: str, title: str) -> str | None:
+    """Return a cover art image URL for display in search results.
+
+    Unlike fetch_cover_art(), this returns just a remote URL without downloading
+    the image bytes; the browser loads it directly. Tries iTunes then Deezer.
+    Results are cached so repeated calls for the same track are free.
+    """
+    cache_key = (artist.lower().strip(), title.lower().strip())
+    with _URL_CACHE_LOCK:
+        if cache_key in _URL_CACHE:
+            return _URL_CACHE[cache_key]
+
+    url = _itunes_artwork_url(artist, title) or _deezer_artwork_url(artist, title)
+
+    with _URL_CACHE_LOCK:
+        _URL_CACHE[cache_key] = url
+    return url
+
+
+def _itunes_artwork_url(artist: str, title: str) -> str | None:
+    try:
+        resp = httpx.get(
+            ITUNES_SEARCH_URL,
+            params={"term": f"{artist} {title}", "media": "music", "limit": 5},
+            timeout=COVER_ART_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return None
+        results = resp.json().get("results", [])
+        if not results:
+            return None
+        url = results[0].get("artworkUrl100", "")
+        return url.replace("100x100", "600x600") if url else None
+    except Exception:
+        return None
+
+
+def _deezer_artwork_url(artist: str, title: str) -> str | None:
+    try:
+        resp = httpx.get(
+            DEEZER_SEARCH_URL,
+            params={"q": f'artist:"{artist}" track:"{title}"'},
+            timeout=COVER_ART_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return None
+        results = resp.json().get("data", [])
+        if not results:
+            return None
+        return results[0].get("album", {}).get("cover_big") or None
+    except Exception:
+        return None
 
 
 # ── Internal helpers ────────────────────────────────────────────────────

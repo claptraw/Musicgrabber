@@ -546,8 +546,15 @@
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
+                            <label class="source-toggle-item">
+                                Monochrome
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="settingSourceMonochrome">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
                         </div>
-                        <span class="settings-hint settings-hint-full">Controls which sources appear in search results. YouTube, MP3Phoenix, SoundCloud, and zvu4no are also used for automatic matching. Soulseek also needs the slskd credentials below.</span>
+                        <span class="settings-hint settings-hint-full">Controls which sources appear in search results. YouTube, MP3Phoenix, SoundCloud, and zvu4no are also used for automatic matching. Soulseek needs slskd credentials; Monochrome uses Qobuz lossless via the hifi-api proxy.</span>
                     </label>
                     <label class="settings-label format-selector-wrap">
                         <span>Audio Format</span>
@@ -903,6 +910,26 @@
                     </div>
                     <button type="button" class="test-btn" id="testSlskdBtn">Test Connection</button>
                     <div id="slskdTestResult" class="test-result"></div>
+                </div>
+            </div>
+
+            <!-- Monochrome -->
+            <div class="settings-section">
+                <h3 class="settings-section-title">Monochrome (Qobuz / Tidal)</h3>
+                <div class="settings-warning">
+                    Enable Monochrome in Search Sources above to get lossless FLAC from Qobuz via the Tidal catalogue. No account or API key required. The default public proxy is shared infrastructure, so be reasonable with it. You can point these at a self-hosted hifi-api + Qobuz proxy if you prefer.
+                </div>
+                <div class="settings-form">
+                    <div class="settings-row">
+                        <label for="settingMonochromeHifiUrl">hifi-api URL</label>
+                        <input type="text" id="settingMonochromeHifiUrl" placeholder="https://eu-central.monochrome.tf">
+                        <span class="settings-hint-sm">Tidal metadata proxy (hifi-api). Used for search and Tidal playlist import.</span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingMonochromeQobuzUrl">Qobuz Proxy URL</label>
+                        <input type="text" id="settingMonochromeQobuzUrl" placeholder="https://qobuz.kennyy.com.br">
+                        <span class="settings-hint-sm">Qobuz stream resolver. Fetches the actual FLAC CDN URL given an ISRC.</span>
+                    </div>
                 </div>
             </div>
 

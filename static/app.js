@@ -993,6 +993,9 @@
         let lastResults = [];
         let currentSearchToken = 0;
         let pendingSlskdToken = 0;
+        let currentArtworkUrl = null;
+        let currentArtworkArtist = null;
+        let currentArtworkTitle = null;
         let currentSearchLogToken = null;
         let currentSource = 'all'; // Always search all sources
         const expandedJobIds = new Set();
@@ -1083,7 +1086,7 @@
                     // Build preview URL with source params
                     const previewSource = (result && result.source) || 'youtube';
                     const params = new URLSearchParams({ source: previewSource });
-                    if ((previewSource === 'soundcloud' || previewSource === 'mp3phoenix' || previewSource === 'zvu4no') && result.source_url) {
+                    if ((previewSource === 'soundcloud' || previewSource === 'mp3phoenix' || previewSource === 'zvu4no' || previewSource === 'monochrome') && result.source_url) {
                         params.set('url', result.source_url);
                     }
                     const response = await apiFetch(`/api/preview/${encodeURIComponent(videoId)}?${params}`);
@@ -1277,6 +1280,9 @@
             if (_destRow1) _destRow1.style.display = 'none';
             _exploreOriginalResults = null;
             _exploreResolvedResults = null;
+            currentArtworkUrl = null;
+            currentArtworkArtist = null;
+            currentArtworkTitle = null;
             stopPreview(); // Stop any playing preview
 
             try {
@@ -1297,9 +1303,21 @@
                 renderResults(data.results);
                 showRelatedSuggestions(data.results, data.album_suggestion);
 
+                // Fire artwork fetch for "Artist - Title" queries
+                const artworkParsed = parseArtistTitle(query);
+                if (artworkParsed) {
+                    fetchAndApplyArtwork(artworkParsed.artist, artworkParsed.title, searchToken);
+                }
+
                 // If slskd is enabled and we're searching YouTube or All, fetch slskd results too
                 if (data.slskd_enabled && (currentSource === 'youtube' || currentSource === 'all')) {
                     pendingSlskdToken = searchToken;
+                    // Show a small indicator so the user knows SLK is still working
+                    const slskdIndicator = document.createElement('div');
+                    slskdIndicator.id = 'slskd-searching';
+                    slskdIndicator.className = 'slskd-searching-indicator';
+                    slskdIndicator.innerHTML = '<span class="watched-refresh-spinner"></span> Searching Soulseek&hellip;';
+                    resultsTab.appendChild(slskdIndicator);
                     fetchSlskdResults(query, searchToken);
                 }
             } catch (error) {
@@ -1323,18 +1341,23 @@
                     body: JSON.stringify({ query, limit: 15 })
                 });
 
-                if (!response.ok) return;
+                if (!response.ok) {
+                    document.getElementById('slskd-searching')?.remove();
+                    return;
+                }
 
                 const data = await response.json();
                 if (searchToken !== currentSearchToken || pendingSlskdToken !== searchToken) {
                     return;
                 }
                 if (data.results && data.results.length > 0) {
-                    // Merge slskd results with existing results
                     mergeSlskdResults(data.results);
+                } else {
+                    document.getElementById('slskd-searching')?.remove();
                 }
             } catch (error) {
                 console.log('slskd search failed:', error);
+                document.getElementById('slskd-searching')?.remove();
             } finally {
                 if (pendingSlskdToken === searchToken) {
                     pendingSlskdToken = 0;
@@ -1362,6 +1385,62 @@
 
             lastResults = merged;
             renderResults(merged);
+            // Re-apply artwork after the re-render wipes the thumbnails
+            if (currentArtworkUrl && currentArtworkArtist && currentArtworkTitle) {
+                applyArtworkToResults(currentArtworkArtist, currentArtworkTitle, currentArtworkUrl);
+            }
+        }
+
+        function parseArtistTitle(query) {
+            const match = query.match(/^(.+?)\s+-\s+(.+)$/);
+            if (!match) return null;
+            return { artist: match[1].trim(), title: match[2].trim() };
+        }
+
+        async function fetchAndApplyArtwork(artist, title, searchToken) {
+            try {
+                const resp = await apiFetch(
+                    `/api/search/artwork?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`
+                );
+                if (!resp.ok || searchToken !== currentSearchToken) return;
+                const data = await resp.json();
+                if (!data.url) return;
+                currentArtworkUrl = data.url;
+                currentArtworkArtist = artist;
+                currentArtworkTitle = title;
+                applyArtworkToResults(artist, title, data.url);
+            } catch (e) {
+                // Artwork is purely cosmetic, never fail the search over it
+            }
+        }
+
+        function applyArtworkToResults(queryArtist, queryTitle, artworkUrl) {
+            const norm = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+            const normArtist = norm(queryArtist);
+            const normTitle = norm(queryTitle);
+
+            resultsTab.querySelectorAll('.result-item').forEach((item, index) => {
+                const result = lastResults[index];
+                if (!result) return;
+
+                // Only fill in blank placeholders, leave source thumbnails alone
+                const thumb = item.querySelector('.result-thumb');
+                if (!thumb || thumb.tagName === 'IMG') return;
+
+                const resultArtist = norm(result.artist || result.channel || '');
+                const resultTitle = norm(result.title || '');
+                const artistMatch = resultArtist.includes(normArtist) || normArtist.includes(resultArtist);
+                const titleMatch = resultTitle.includes(normTitle) || normTitle.includes(resultTitle);
+
+                if (artistMatch && titleMatch) {
+                    const img = document.createElement('img');
+                    img.className = 'result-thumb has-artwork';
+                    img.src = artworkUrl;
+                    img.alt = '';
+                    img.loading = 'lazy';
+                    thumb.replaceWith(img);
+                }
+            });
         }
 
         // Show related search suggestions based on artists, plus album suggestion if available
@@ -1727,12 +1806,12 @@
         }
 
         function getSourceBadge(source) {
-            const badges = { youtube: 'YT', mp3phoenix: 'PX', soundcloud: 'SC', zvu4no: 'ZV', soulseek: 'SLK' };
+            const badges = { youtube: 'YT', mp3phoenix: 'PX', soundcloud: 'SC', zvu4no: 'ZV', soulseek: 'SLK', monochrome: 'MONO' };
             return badges[source] || source.toUpperCase().slice(0, 3);
         }
 
         function getSourceLabel(source) {
-            const labels = { youtube: 'YouTube', mp3phoenix: 'MP3Phoenix', soundcloud: 'SoundCloud', zvu4no: 'zvu4no', soulseek: 'Soulseek' };
+            const labels = { youtube: 'YouTube', mp3phoenix: 'MP3Phoenix', soundcloud: 'SoundCloud', zvu4no: 'zvu4no', soulseek: 'Soulseek', monochrome: 'Monochrome' };
             return labels[source] || source;
         }
 
@@ -2021,7 +2100,7 @@
                 }
 
                 // URL-based sources need the full URL for downloading
-                if ((result.source === 'soundcloud' || result.source === 'mp3phoenix' || result.source === 'zvu4no') && result.source_url) {
+                if ((result.source === 'soundcloud' || result.source === 'mp3phoenix' || result.source === 'zvu4no' || result.source === 'monochrome') && result.source_url) {
                     payload.source_url = result.source_url;
                 }
 
@@ -6238,6 +6317,9 @@
             'source_soundcloud_enabled': 'settingSourceSoundcloud',
             'source_zvu4no_enabled': 'settingSourceZvu4no',
             'source_soulseek_enabled': 'settingSourceSoulseek',
+            'source_monochrome_enabled': 'settingSourceMonochrome',
+            'monochrome_hifi_api_url': 'settingMonochromeHifiUrl',
+            'monochrome_qobuz_proxy_url': 'settingMonochromeQobuzUrl',
             'slskd_url': 'settingSlskdUrl',
             'slskd_user': 'settingSlskdUser',
             'slskd_pass': 'settingSlskdPass',

@@ -176,9 +176,14 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if soundcloud_likes:
         return "soundcloud", url
 
+    # Tidal playlist
+    tidal_playlist = re.match(r'https?://tidal\.com/browse/playlist/([0-9a-f-]{36})', url, re.IGNORECASE)
+    if tidal_playlist:
+        return "tidal", tidal_playlist.group(1)
+
     raise HTTPException(
         status_code=400,
-        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, ListenBrainz playlists or usernames, SoundCloud sets/likes."
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, ListenBrainz playlists or usernames, SoundCloud sets/likes, Tidal playlists."
     )
 
 
@@ -683,6 +688,13 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
 
     elif platform == "soundcloud":
         return _fetch_soundcloud_playlist(url)
+
+    elif platform == "tidal":
+        from monochrome import fetch_tidal_playlist_tracks
+        try:
+            return fetch_tidal_playlist_tracks(url)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch Tidal playlist: {e}")
 
     raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
 

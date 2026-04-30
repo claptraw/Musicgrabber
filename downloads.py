@@ -50,6 +50,7 @@ from utils import (
     set_file_permissions,
     subsonic_auth_params,
 )
+from monochrome import download_monochrome_track
 from mp3phoenix import download_mp3phoenix_track
 from zvu4no import download_zvu4no_track
 from youtube import (
@@ -3021,18 +3022,20 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             safe_title = _output_stem(artist, forced_track_title or title, job_id, user_id=user_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
-        # Download as MP3 first  -  we'll convert to FLAC below if requested
+        # Direct sources mostly serve MP3. Monochrome serves FLAC, so keep the
+        # staging suffix honest when the user keeps the source format.
         _update_job(job_id, progress_stage="Downloading audio")
-        mp3_path = artist_dir / f"{safe_title}.mp3"
+        source_ext = ".flac" if source_label == "monochrome" else ".mp3"
+        source_path = artist_dir / f"{safe_title}{source_ext}"
 
         integrity_reason = ""
         actual_duration_secs = 0.0
         for attempt in range(1, _AUDIO_RECHECK_MAX_ATTEMPTS + 1):
-            download_fn(download_url, mp3_path)
-            valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(mp3_path)
+            download_fn(download_url, source_path)
+            valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(source_path)
             if valid_audio:
                 break
-            mp3_path.unlink(missing_ok=True)
+            source_path.unlink(missing_ok=True)
             print(
                 f"{source_label} integrity check failed for '{artist} - {title}' "
                 f"(attempt {attempt}/{_AUDIO_RECHECK_MAX_ATTEMPTS}): {integrity_reason}"
@@ -3050,22 +3053,21 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                 return
             raise Exception(f"{source_label} download failed integrity checks: {integrity_reason}")
 
-        # Convert to the user's chosen format if requested. Direct sources serve MP3,
-        # so if the user wants MP3 there's nothing to do. FLAC/Opus/ALAC get transcoded.
+        # Convert to the user's chosen format if requested.
         _update_job(job_id, progress_stage="Converting audio")
         if convert_to_flac:
             audio_fmt = get_setting("audio_format", "flac", user_id=user_id)
             if audio_fmt not in _FORMAT_CODEC_MAP:
                 audio_fmt = "flac"
             codec, extra_args, target_ext = _get_lossy_codec_args(audio_fmt, user_id=user_id)
-            if target_ext == ".mp3":
-                # Already MP3, no conversion needed
-                output_path = mp3_path
+            if target_ext == source_path.suffix.lower():
+                # Already in the requested format, no conversion needed.
+                output_path = source_path
             else:
-                output_path = mp3_path.with_suffix(target_ext)
+                output_path = source_path.with_suffix(target_ext)
                 convert_cmd = [
                     "ffmpeg", "-y", "-v", "error",
-                    "-i", str(mp3_path),
+                    "-i", str(source_path),
                     "-c:a", codec,
                     *extra_args,
                     str(output_path),
@@ -3073,9 +3075,9 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                 result = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=TIMEOUT_FFMPEG_CONVERT)
                 if result.returncode != 0 or not output_path.exists():
                     raise Exception(f"{audio_fmt.upper()} conversion failed: {(result.stderr or '').strip()}")
-                mp3_path.unlink(missing_ok=True)
+                source_path.unlink(missing_ok=True)
         else:
-            output_path = mp3_path
+            output_path = source_path
 
         set_file_permissions(output_path)
 
@@ -3258,10 +3260,11 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
     override_dir, when set, is an absolute path string used as the download directory
     instead of the normal Singles/Artist layout  -  used by album downloads.
     """
-    is_soundcloud = source_url and "soundcloud.com" in source_url
-    is_mp3phoenix = source_url and "mp3phoenix.net" in source_url
-    is_zvu4no = source_url and "zvu4no.org" in source_url
-    is_url_source = bool(source_url)
+    is_soundcloud  = source_url and "soundcloud.com" in source_url
+    is_mp3phoenix  = source_url and "mp3phoenix.net" in source_url
+    is_zvu4no      = source_url and "zvu4no.org" in source_url
+    is_monochrome  = source_url and source_url.startswith("monochrome://")
+    is_url_source  = bool(source_url)
 
     attempted_ids = set(attempted_ids or [])
     attempted_ids.add(video_id)
@@ -3290,9 +3293,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 pass
     ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
 
-    # Direct MP3 sources: direct HTTP stream, no yt-dlp needed.
+    # Direct stream sources: bypass yt-dlp entirely.
     # artist/title come from the job row (set at queue time from search results).
-    if is_mp3phoenix or is_zvu4no:
+    if is_monochrome or is_mp3phoenix or is_zvu4no:
         with db_conn() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
@@ -3306,8 +3309,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             video_id=video_id, attempted_ids=attempted_ids, user_id=user_id,
             override_dir=override_dir, skip_dupe_check=skip_dupe_check,
             custom_subdir=custom_subdir,
-            source_label="zvu4no" if is_zvu4no else "mp3phoenix",
-            download_fn=download_zvu4no_track if is_zvu4no else download_mp3phoenix_track,
+            source_label="monochrome" if is_monochrome else ("zvu4no" if is_zvu4no else "mp3phoenix"),
+            download_fn=download_monochrome_track if is_monochrome else (download_zvu4no_track if is_zvu4no else download_mp3phoenix_track),
         )
         return
 

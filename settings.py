@@ -12,6 +12,7 @@ from constants import (
     BOT_BACKOFF_MIN_SECONDS, BOT_BACKOFF_MAX_SECONDS,
     TIMEOUT_SPOTIFY_BROWSER, SPOTIFY_BROWSER_STALL_SECONDS,
     MUSIC_DIR, DB_PATH,
+    MONOCHROME_HIFI_API_URL, MONOCHROME_QOBUZ_PROXY_URL,
 )
 from db import db_conn
 
@@ -207,6 +208,9 @@ SETTINGS_SCHEMA = {
     "source_soundcloud_enabled": {"type": "bool", "default": True, "env": "SOURCE_SOUNDCLOUD_ENABLED"},
     "source_zvu4no_enabled": {"type": "bool", "default": True, "env": "SOURCE_ZVU4NO_ENABLED"},
     "source_soulseek_enabled": {"type": "bool", "default": False, "env": "SOURCE_SOULSEEK_ENABLED"},
+    "source_monochrome_enabled": {"type": "bool", "default": False, "env": "SOURCE_MONOCHROME_ENABLED"},
+    "monochrome_hifi_api_url": {"type": "str", "default": MONOCHROME_HIFI_API_URL, "env": "MONOCHROME_HIFI_API_URL"},
+    "monochrome_qobuz_proxy_url": {"type": "str", "default": MONOCHROME_QOBUZ_PROXY_URL, "env": "MONOCHROME_QOBUZ_PROXY_URL"},
     # YouTube
     "youtube_cookies": {"type": "str", "default": "", "env": "YOUTUBE_COOKIES", "sensitive": True},
     "youtube_bot_backoff_min": {"type": "int", "default": BOT_BACKOFF_MIN_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MIN"},
