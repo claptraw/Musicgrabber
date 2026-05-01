@@ -1,6 +1,14 @@
 # Changelog
 
-## v2.8.0 (dev)
+## v2.8.1 (2026-05-01)
+
+### Added
+- **You can now add numbers to your tracks**: A feature that people kept asking for. You can now insert the track number at the beginning of the filename with a Settings toggle.
+
+### Fixed
+- **Monochrome toggle would not stick**: the new Monochrome source toggle and its hifi-api / Qobuz proxy URL fields were quietly being thrown overboard by the settings API because the Pydantic model never got the memo about v2.8.0. Added the fields properly, so the switch now stays where you put it.
+
+## v2.8.0 (2026-05-01)
 
 ### Added
 - **Monochrome source is back**: Monochrome.tf returned from the dead with Qobuz under the hood. MusicGrabber now searches the Tidal catalogue via hifi-api for metadata and ISRC, then pulls a direct FLAC from the Qobuz CDN. No DASH segments, no 30-second previews, no nonsense — just proper lossless audio. Hi-res (24-bit/192 kHz) and standard FLAC supported. Enable via Search Sources toggle in Settings.

@@ -6310,6 +6310,7 @@
             'playlists_subdir': 'settingPlaylistsSubdir',
             'albums_subdir': 'settingAlbumsSubdir',
             'organise_by_artist': 'settingOrganiseByArtist',
+            'include_track_number_in_filename': 'settingIncludeTrackNumberInFilename',
             'auto_album_singles': 'settingAutoAlbumSingles',
             'auto_album_singles_use_albums_dir': 'settingAutoAlbumSinglesUseAlbumsDir',
             'source_youtube_enabled': 'settingSourceYoutube',
@@ -6429,9 +6430,11 @@
                 // Populate albums subfolder dropdown
                 await _populateAlbumsSubdirDropdown(settings['albums_subdir'] || 'Albums');
 
-                // Live path preview: update whenever organise-by-artist toggle changes
+                // Live path preview: update whenever filename layout toggles change
                 const organiseToggle = document.getElementById('settingOrganiseByArtist');
                 if (organiseToggle) organiseToggle.onchange = _updatePathPreviews;
+                const trackNumberToggle = document.getElementById('settingIncludeTrackNumberInFilename');
+                if (trackNumberToggle) trackNumberToggle.onchange = _updatePathPreviews;
 
                 // Grey out "Route to Albums folder" when auto-album routing is off
                 function _updateAlbumsDirToggle() {
@@ -6839,6 +6842,7 @@
             const albumsSelect = document.getElementById('settingAlbumsSubdir');
             const albumsCustom = document.getElementById('customAlbumsSubdirInput');
             const organiseToggle = document.getElementById('settingOrganiseByArtist');
+            const trackNumberToggle = document.getElementById('settingIncludeTrackNumberInFilename');
 
             const singlesVal = singlesSelect && singlesSelect.value === SUBDIR_CUSTOM_VALUE
                 ? (singlesCustom ? singlesCustom.value.trim() : '')
@@ -6847,6 +6851,9 @@
                 ? (playlistsCustom ? playlistsCustom.value.trim() : '')
                 : (playlistsSelect ? playlistsSelect.value : '');
             const organise = organiseToggle ? organiseToggle.checked : true;
+            const includeTrackNumber = trackNumberToggle ? trackNumberToggle.checked : false;
+            const titleExample = includeTrackNumber ? '1 - Track Title.flac' : 'Track Title.flac';
+            const flatTitleExample = includeTrackNumber ? 'Artist Name - 1 - Track Title.flac' : 'Artist Name - Track Title.flac';
 
             const musicRoot = (serverConfig && serverConfig.music_dir) ? serverConfig.music_dir.replace(/\/+$/, '') : '/music';
 
@@ -6854,9 +6861,9 @@
                 let p = musicRoot;
                 if (singlesVal && singlesVal !== '.') p += '/' + singlesVal;
                 if (organise) {
-                    p += '/Artist Name/Track Title.flac';
+                    p += '/Artist Name/' + titleExample;
                 } else {
-                    p += '/Artist Name - Track Title.flac';
+                    p += '/' + flatTitleExample;
                 }
                 singlesEl.textContent = 'Files saved to: ' + p;
             }
@@ -6867,7 +6874,7 @@
                 } else {
                     let p = musicRoot;
                     if (playlistsVal !== '.') p += '/' + playlistsVal;
-                    p += '/Playlist Name/Artist - Title.flac';
+                    p += '/Playlist Name/' + (includeTrackNumber ? 'Artist - 1 - Title.flac' : 'Artist - Title.flac');
                     playlistsEl.textContent = 'Files saved to: ' + p;
                 }
             }
@@ -6878,7 +6885,7 @@
             if (albumsEl) {
                 let p = musicRoot;
                 if (albumsVal && albumsVal !== '.') p += '/' + albumsVal;
-                p += '/Artist/Album/Track.flac';
+                p += '/Artist/Album/' + (includeTrackNumber ? '1 - Track.flac' : 'Track.flac');
                 albumsEl.textContent = 'Files saved to: ' + p;
             }
         }

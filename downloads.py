@@ -144,6 +144,69 @@ def _playlist_stem(artist: str, title: str, fallback: str) -> str:
     return f"{safe_artist} - {safe_title}"
 
 
+def _numbered_output_stem(
+    artist: str,
+    title: str,
+    fallback: str,
+    track_number: int | None,
+    user_id: str | None = None,
+    playlist_routed: bool = False,
+) -> str | None:
+    """Return the final filename stem when track-number filenames are enabled."""
+    if not track_number:
+        return None
+    try:
+        track_number = int(track_number)
+    except (TypeError, ValueError):
+        return None
+    if track_number <= 0:
+        return None
+
+    safe_title = _safe_sanitized_title(title, fallback)
+    numbered_title = f"{track_number} - {safe_title}"
+    if playlist_routed or not get_setting_bool("organise_by_artist", True, user_id=user_id):
+        safe_artist = sanitize_filename(artist or "Unknown Artist")
+        return f"{safe_artist} - {numbered_title}"
+    return numbered_title
+
+
+def _rename_with_track_number_if_enabled(
+    audio_file: Path,
+    artist: str,
+    title: str,
+    fallback: str,
+    track_number: int | None,
+    user_id: str | None = None,
+    playlist_routed: bool = False,
+) -> Path:
+    """Rename a tagged file to include its resolved track number, when configured."""
+    if not get_setting_bool("include_track_number_in_filename", False, user_id=user_id):
+        return audio_file
+
+    new_stem = _numbered_output_stem(
+        artist, title, fallback, track_number,
+        user_id=user_id, playlist_routed=playlist_routed,
+    )
+    if not new_stem or audio_file.stem == new_stem:
+        return audio_file
+
+    new_path = audio_file.with_name(f"{new_stem}{audio_file.suffix}")
+    if new_path.exists():
+        print(f"Track-number rename: target already exists, skipping: {new_path}")
+        return audio_file
+
+    _move_completed_file(audio_file, new_path)
+    set_file_permissions(new_path)
+
+    old_lrc = audio_file.with_suffix(".lrc")
+    if old_lrc.exists():
+        new_lrc = new_path.with_suffix(".lrc")
+        _move_completed_file(old_lrc, new_lrc)
+        set_file_permissions(new_lrc)
+
+    return new_path
+
+
 def _get_job_album_context(job_id: str) -> dict:
     """Return album-routing context stored on a single download job."""
     if not job_id:
@@ -2466,13 +2529,19 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                         album_art_mime=pl_cover_art_mime,
                     )
 
+                audio_file = _rename_with_track_number_if_enabled(
+                    audio_file, artist, title, video_id,
+                    tag_track_num, user_id=user_id,
+                    playlist_routed=bool(playlists_dir),
+                )
+
                 # Fetch and save lyrics
                 lyrics = fetch_lyrics(artist, title)
                 if lyrics:
                     save_lyrics_file(audio_file, lyrics)
 
                 if playlists_dir:
-                    downloaded_files.append(f"{safe_playlist}/{safe_title}{audio_file.suffix}")
+                    downloaded_files.append(f"{safe_playlist}/{audio_file.name}")
                 else:
                     downloaded_files.append(str(audio_file.relative_to(get_singles_dir(user_id=user_id))))
                 completed_tracks += 1
@@ -2829,6 +2898,11 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             )
             title = forced_track_title or title
 
+        final_file = _rename_with_track_number_if_enabled(
+            final_file, artist, title, Path(filename).stem or job_id,
+            tag_track_num, user_id=user_id,
+        )
+
         # Fetch and save lyrics
         _update_job(job_id, progress_stage="Fetching lyrics")
         lyrics = fetch_lyrics(artist, title)
@@ -3151,6 +3225,12 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             output_path = _auto_route_single_to_album(
                 output_path, artist, title, mb_metadata, job_id, user_id
             )
+
+        output_path = _rename_with_track_number_if_enabled(
+            output_path, artist, title, job_id,
+            tag_track_num, user_id=user_id,
+            playlist_routed=bool(playlists_dir),
+        )
 
         _update_job(job_id, progress_stage="Fetching lyrics")
         lyrics = fetch_lyrics(artist, title)
@@ -3667,6 +3747,12 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 album_artist=forced_album_artist,
             )
             title = tag_title
+
+        audio_file = _rename_with_track_number_if_enabled(
+            audio_file, artist, title, video_id,
+            tag_track_num, user_id=user_id,
+            playlist_routed=bool(playlists_dir),
+        )
 
         # Fetch and save lyrics
         _update_job(job_id, progress_stage="Fetching lyrics")

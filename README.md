@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.8.0**
+**v2.8.1**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, and MP3Phoenix, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -32,7 +32,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Best quality audio:** output format is configurable (FLAC, Opus, or MP3 ~192 kbps VBR)
 - **Enhanced metadata:** AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source tags. For "Artist - Title" queries, MusicBrainz expected duration is used as a scoring signal at search time, so a 1:41 DJ edit won't outrank the 3:31 original
 - **Synced lyrics:** automatic lyrics fetching from LRClib, saved as `.lrc` files
-- **Auto-organise:** `Singles/Artist/Title.flac` (or flat `Singles/Artist - Title.flac` with "Organise by Artist" off)
+- **Auto-organise:** `Singles/Artist/Title.flac` (or flat `Singles/Artist - Title.flac` with "Organise by Artist" off). Optional track-number filenames produce `Singles/Artist/1 - Title.flac` when metadata includes a track number
 - **Duplicate detection:** local filesystem check plus optional Navidrome Subsonic API check
 - **Trash bin:** deleted files move to `.trash/` instead of being permanently removed; restore with one click to skip re-downloading. Files that fail mismatch or duration checks also land in the trash so you can listen before they vanish
 - **In-queue playback:** play button on completed queue cards and trashed files for instant preview without leaving the tab
@@ -244,6 +244,7 @@ Settings are stored in the database and persist across container restarts.
 | `DEFAULT_CONVERT_TO_FLAC` | `true` | Convert downloads to FLAC by default (can be toggled per-download in UI) |
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
 | `ORGANISE_BY_ARTIST` | `true` | Create artist subfolders under Singles. Set to `false` for a flat directory |
+| `INCLUDE_TRACK_NUMBER_IN_FILENAME` | `false` | Prefix saved filenames with the resolved track number when one is available, e.g. `Singles/Artist/1 - Title.flac` |
 | `WEBHOOK_URL` | - | Generic webhook URL; receives JSON POST on download completion/failure |
 | `YTDLP_PLAYER_CLIENT` | *(empty)* | Override yt-dlp YouTube player client (expert-only, e.g. `android`, `web,android`) |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
@@ -574,12 +575,14 @@ Downloads are organised as:
 └── Singles/
     ├── Artist Name/              # When "Organise by Artist" is on (default)
     │   └── Track Title.flac
+    │   └── 1 - Track Title.flac  # With "Include Track Number in Filename" on
     ├── Artist Name - Track Title.flac  # When "Organise by Artist" is off
     └── Playlist Name.m3u
 ```
 
 - By default, tracks go into `Singles/Artist/` directories
 - Disable "Organise by Artist" in Settings to put all tracks directly in `Singles/` with `Artist - Title` filenames
+- Enable "Include Track Number in Filename" in Settings to prefix saved files with the resolved track number when MusicBrainz or source tags provide one
 - Playlist downloads generate `.m3u` files with relative paths
 - Watched playlists with M3U enabled keep their `.m3u` file updated on every refresh cycle
 - Artist and title are extracted from source metadata, with YouTube and SoundCloud titles parsed when needed

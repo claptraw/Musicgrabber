@@ -7,6 +7,23 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.1": {
+        title: "What's New in v2.8.1",
+        sections: [
+            {
+                heading: "Track numbers in filenames",
+                items: [
+                    "A long-requested toggle: prefix the track number to filenames so your file manager sorts albums in the right order without arguing with you. Off by default, flip it on in Settings.",
+                ]
+            },
+            {
+                heading: "Fixed: Monochrome toggle would not stick",
+                items: [
+                    "The shiny new Monochrome switch from v2.8.0 forgot to introduce itself to the settings API, so it cheerfully reverted every time you reloaded the page. The Pydantic model now knows about it, along with the hifi-api and Qobuz proxy URL fields. Toggle once, stays toggled.",
+                ]
+            },
+        ]
+    },
     "2.8.0": {
         title: "What's New in v2.8.0",
         sections: [

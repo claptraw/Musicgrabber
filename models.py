@@ -91,6 +91,7 @@ class SettingsUpdate(BaseModel):
     playlists_subdir: Optional[str] = None
     albums_subdir: Optional[str] = None
     organise_by_artist: Optional[bool] = None
+    include_track_number_in_filename: Optional[bool] = None
     auto_album_singles: Optional[bool] = None
     auto_album_singles_use_albums_dir: Optional[bool] = None
     file_permissions: Optional[str] = None
@@ -108,6 +109,10 @@ class SettingsUpdate(BaseModel):
     source_soundcloud_enabled: Optional[bool] = None
     source_zvu4no_enabled: Optional[bool] = None
     source_soulseek_enabled: Optional[bool] = None
+    source_monochrome_enabled: Optional[bool] = None
+    # Monochrome (Qobuz / Tidal via hifi-api)
+    monochrome_hifi_api_url: Optional[str] = None
+    monochrome_qobuz_proxy_url: Optional[str] = None
     # Soulseek/slskd
     slskd_url: Optional[str] = None
     slskd_user: Optional[str] = None
