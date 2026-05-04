@@ -176,6 +176,11 @@
             return !user || user.role === 'admin';
         }
 
+        function isPeon() {
+            const user = getCurrentUser();
+            return !!(user && user.role === 'peon');
+        }
+
         // Namespaced localStorage key — keeps per-user preferences separate on shared browsers.
         // Session-global keys (theme, seen_version, sessionToken, etc.) are NOT namespaced.
         function userStorageKey(key) {
@@ -6313,6 +6318,7 @@
             'include_track_number_in_filename': 'settingIncludeTrackNumberInFilename',
             'auto_album_singles': 'settingAutoAlbumSingles',
             'auto_album_singles_use_albums_dir': 'settingAutoAlbumSinglesUseAlbumsDir',
+            'singles_only_mode': 'settingSinglesOnlyMode',
             'source_youtube_enabled': 'settingSourceYoutube',
             'source_mp3phoenix_enabled': 'settingSourceMp3phoenix',
             'source_soundcloud_enabled': 'settingSourceSoundcloud',
@@ -7379,11 +7385,35 @@
 
         function applyUserRoleToUI() {
             const admin = isAdmin();
+            const peon = isPeon();
 
             // Toggle visibility of admin-only sections (set inline — no CSS class needed)
             document.querySelectorAll('.admin-only').forEach(el => {
                 el.style.display = admin ? '' : 'none';
             });
+
+            // Peons are kept on the happy path: no Settings, no Stats. Anything
+            // else marked .peon-hide vanishes for them too. If they were sat on
+            // a now-hidden tab, bounce them back to Results.
+            document.querySelectorAll('.peon-hide').forEach(el => {
+                el.style.display = peon ? 'none' : '';
+            });
+            if (peon) {
+                const activeTab = document.querySelector('.tab.active');
+                if (activeTab && activeTab.classList.contains('peon-hide')) {
+                    const resultsTabBtn = document.querySelector('.tab[data-tab="results"]');
+                    if (resultsTabBtn) resultsTabBtn.click();
+                }
+                // Pin the convert-to-format checkboxes to whatever the admin set
+                // globally. The server overrides these on submit either way, but
+                // mirroring the value here keeps the (hidden) UI honest if anyone
+                // peeks via dev tools.
+                const adminDefault = !!(serverConfig && serverConfig.default_convert_to_flac);
+                const flac = document.getElementById('convertToFlac');
+                const watchedFlac = document.getElementById('watchedConvertToFlac');
+                if (flac) flac.checked = adminDefault;
+                if (watchedFlac) watchedFlac.checked = adminDefault;
+            }
 
             // Show logout button only in session mode
             const logoutBtn = document.getElementById('logoutBtn');
@@ -7408,7 +7438,33 @@
             if (changePwSection) {
                 changePwSection.style.display = (serverConfig && serverConfig.users_exist) ? '' : 'none';
             }
+
+            // Singles-only mode hides the Albums tab. If the user was sitting on it,
+            // bounce them back to Results so they're not staring at an empty page.
+            const albumsTabBtn = document.getElementById('albumsTabBtn');
+            if (albumsTabBtn) {
+                const singlesOnly = !!(serverConfig && serverConfig.singles_only_mode);
+                albumsTabBtn.style.display = singlesOnly ? 'none' : '';
+                if (singlesOnly && albumsTabBtn.classList.contains('active')) {
+                    const resultsTabBtn = document.querySelector('.tab[data-tab="results"]');
+                    if (resultsTabBtn) resultsTabBtn.click();
+                }
+            }
         }
+
+        document.getElementById('userInfoToggle')?.addEventListener('click', () => {
+            const panel = document.getElementById('userInfoPanel');
+            const btn = document.getElementById('userInfoToggle');
+            if (!panel || !btn) return;
+            const open = panel.hasAttribute('hidden');
+            if (open) {
+                panel.removeAttribute('hidden');
+                btn.setAttribute('aria-expanded', 'true');
+            } else {
+                panel.setAttribute('hidden', '');
+                btn.setAttribute('aria-expanded', 'false');
+            }
+        });
 
         async function loadUsers() {
             if (!isAdmin()) return;
@@ -7473,10 +7529,11 @@
                 errorEl.style.display = 'none';
                 document.getElementById('newUserUsername').value = '';
                 document.getElementById('newUserPassword').value = '';
-                // First user switches from single-user to auth mode; clear
-                // session state and bounce to the login page so the user
-                // isn't left staring at a now-locked UI.
-                if (data.first_user) {
+                // Going from 0 to 1 users (first_user) or 1 to 2 (requires_login)
+                // both flip into session-required mode. The current admin has no
+                // session, so further requests will 401 — clear state and bounce
+                // to login rather than leaving the UI stuck on a stale view.
+                if (data.first_user || data.requires_login) {
                     localStorage.clear();
                     sessionStorage.clear();
                     window.location.reload();

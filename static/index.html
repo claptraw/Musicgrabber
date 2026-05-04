@@ -56,7 +56,7 @@
             <img src="__ROOT_PATH__/static/favicon.png" class="logo" alt="Music Grabber">
             <h1>Music Grabber</h1>
             <div class="header-controls">
-                <label class="header-format-label" title="When on, converts downloads to the format selected in Settings. When off, keeps the source format.">
+                <label class="header-format-label peon-hide" title="When on, converts downloads to the format selected in Settings. When off, keeps the source format.">
                     <span id="headerFormatLabel">FLAC</span>
                     <div class="toggle-switch" id="flacToggle">
                         <input type="checkbox" id="convertToFlac" checked>
@@ -137,11 +137,11 @@
         <div class="tabs">
             <button class="tab active" data-tab="results">Results</button>
             <button class="tab" data-tab="bulk">Bulk Import</button>
-            <button class="tab" data-tab="albums">Albums</button>
+            <button class="tab peon-hide" data-tab="albums" id="albumsTabBtn">Albums</button>
             <button class="tab" data-tab="watched">Watched</button>
             <button class="tab" data-tab="queue">Queue</button>
-            <button class="tab" data-tab="stats">Stats</button>
-            <button class="tab" data-tab="settings">Settings</button>
+            <button class="tab peon-hide" data-tab="stats">Stats</button>
+            <button class="tab peon-hide" data-tab="settings">Settings</button>
         </div>
 
         <div id="relatedSuggestions" style="display: none;"></div>
@@ -329,7 +329,7 @@
                     </label>
                 </div>
                 <div class="watched-controls-row">
-                    <label class="watched-control-label" title="Convert new tracks to the selected audio format">
+                    <label class="watched-control-label peon-hide" title="Convert new tracks to the selected audio format">
                         <span id="watchedFormatLabel">Convert to FLAC</span>
                         <div class="toggle-switch" id="watchedFlacToggle">
                             <input type="checkbox" id="watchedConvertToFlac" checked>
@@ -432,7 +432,7 @@
         <div id="queueTabContainer" class="tab-panel">
             <div class="queue-header">
                 <h2 class="queue-section-heading">Download Queue / <a href="#downloadableSection" title="Jump to Downloadable to Device">Downloadable to Device &#8595;</a></h2>
-                <button class="clear-btn" id="clearQueueBtn">Clear Queue</button>
+                <button class="clear-btn peon-hide" id="clearQueueBtn">Clear Queue</button>
             </div>
             <div id="queueTab" class="results"></div>
             <div id="queuePager" style="display:none;" class="downloadable-pager">
@@ -484,7 +484,7 @@
             <div class="settings-section">
                 <h3 class="settings-section-title">General</h3>
                 <div class="settings-grid">
-                    <label class="settings-label settings-label-wrap">
+                    <label class="settings-label settings-label-wrap admin-only">
                         <span>Skip duplicates</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingSkipDupes" checked>
@@ -492,7 +492,7 @@
                         </div>
                         <span class="settings-hint settings-hint-full">When on, tracks already in your library, Navidrome, or Lidarr are skipped. Turn off if you want to re-download something. Duplicate checks still run for M3U path resolution either way.</span>
                     </label>
-                    <label class="settings-label settings-label-wrap">
+                    <label class="settings-label settings-label-wrap admin-only">
                         <span>MusicBrainz Metadata</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingEnableMusicbrainz" checked>
@@ -500,7 +500,7 @@
                         </div>
                         <span class="settings-hint settings-hint-full">Looks up each download on MusicBrainz to correct artist/title tags, add release year, and verify track duration. Occasional false matches are possible for obscure tracks.</span>
                     </label>
-                    <label class="settings-label settings-label-wrap">
+                    <label class="settings-label settings-label-wrap admin-only">
                         <span>Fetch Lyrics (LRClib)</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingEnableLyrics" checked>
@@ -508,7 +508,7 @@
                         </div>
                         <span class="settings-hint settings-hint-full">Downloads synced (.lrc) or plain lyrics from LRClib after each track is saved. Displayed by players that support LRC files (e.g. Navidrome, foobar2000).</span>
                     </label>
-                    <label class="settings-label settings-label-top">
+                    <label class="settings-label settings-label-top admin-only">
                         <span>Search Sources</span>
                         <div class="source-toggle-list">
                             <label class="source-toggle-item">
@@ -556,7 +556,7 @@
                         </div>
                         <span class="settings-hint settings-hint-full">Controls which sources appear in search results. YouTube, MP3Phoenix, SoundCloud, and zvu4no are also used for automatic matching. Soulseek needs slskd credentials; Monochrome uses Qobuz lossless via the hifi-api proxy.</span>
                     </label>
-                    <label class="settings-label format-selector-wrap">
+                    <label class="settings-label format-selector-wrap admin-only">
                         <span>Audio Format</span>
                         <div class="format-btn-group">
                             <button type="button" id="formatBtnFlac" class="format-option active" onclick="setAudioFormat('flac'); saveSettings();">FLAC</button>
@@ -626,14 +626,22 @@
                         </div>
                         <span class="settings-hint settings-hint-full">When on, album-routed singles land in <code>Albums/Artist/Album/Track.ext</code> instead of the Singles folder. Requires auto-album routing to be enabled.</span>
                     </label>
+                    <label class="settings-label settings-label-wrap admin-only">
+                        <span>Singles-only mode</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingSinglesOnlyMode">
+                            <span class="toggle-slider"></span>
+                        </div>
+                        <span class="settings-hint settings-hint-full">Hides the Albums tab for everyone. Handy when you're feeding Navidrome with singles only and don't want family members poking at the album browser. Reload required.</span>
+                    </label>
                 </div>
                 <div class="settings-form settings-form-top">
-                    <div class="settings-row">
+                    <div class="settings-row admin-only">
                         <label for="settingAcoustidKey">AcoustID API Key</label>
                         <input type="text" id="settingAcoustidKey" placeholder="Your AcoustID API key" class="settings-input-acoustid" autocomplete="off">
                         <span class="settings-hint-sm">Used for audio fingerprinting to improve metadata accuracy. A shared fallback key is built in but <strong>may hit rate limits</strong> if many people are using it. Register your own free key at <a href="https://acoustid.org/login" target="_blank" rel="noopener">acoustid.org</a> to avoid this.</span>
                     </div>
-                    <div class="settings-row">
+                    <div class="settings-row admin-only">
                         <label for="settingMinBitrate">Minimum Audio Bitrate (kbps)</label>
                         <input type="number" id="settingMinBitrate" placeholder="0 (disabled)" value="0" min="0" max="320" class="settings-input-sm">
                         <span class="settings-hint-sm">Downloads below this bitrate are rejected. 0 = no minimum.</span>
@@ -922,7 +930,7 @@
             </div>
 
             <!-- Monochrome -->
-            <div class="settings-section">
+            <div class="settings-section admin-only">
                 <h3 class="settings-section-title">Monochrome (Qobuz / Tidal)</h3>
                 <div class="settings-warning">
                     Enable Monochrome in Search Sources above to get lossless FLAC from Qobuz via the Tidal catalogue. No account or API key required. The default public proxy is shared infrastructure, so be reasonable with it. You can point these at a self-hosted hifi-api + Qobuz proxy if you prefer.
@@ -942,8 +950,16 @@
             </div>
 
             <!-- User Management (admin only) -->
-            <div class="settings-section admin-only">
+            <div class="settings-section admin-only user-mgmt-section">
+                <button type="button" class="user-info-toggle" id="userInfoToggle" aria-expanded="false" aria-controls="userInfoPanel" title="What do the roles mean?">
+                    <i class="fa-solid fa-circle-info"></i>
+                </button>
                 <h3 class="settings-section-title">User Management</h3>
+                <div id="userInfoPanel" class="user-info-panel" hidden>
+                    <p><strong>Admin</strong> &mdash; full run of the place. Can change every setting, manage users, and see Stats.</p>
+                    <p><strong>User</strong> &mdash; their own per-user settings (Navidrome / Jellyfin / Lidarr creds, Spotify cookies, notifications, subfolders, change password). System-level settings stay admin-only. Stats tab visible.</p>
+                    <p><strong>Peon</strong> &mdash; locked-down request-only account. Search, Bulk Import, Queue and Watched, that is the lot. No Settings, no Stats, no Albums, and the Convert toggle is hidden too: they always download in whatever format the admin has chosen globally. Ideal for the family member who keeps changing the audio format to MP3.</p>
+                </div>
                 <div id="userList" class="user-list-wrap"></div>
                 <div id="firstUserWarning" style="display:none;" class="first-user-warning">
                     <strong>Heads up:</strong> Creating the first account enables multi-user mode. A login screen will appear from this point on. This account will be the admin and inherit all current settings. <strong>There is no undo.</strong>
@@ -955,6 +971,7 @@
                         <select id="newUserRole" class="user-role-select">
                             <option value="admin">Admin</option>
                             <option value="user">User</option>
+                            <option value="peon">Peon</option>
                         </select>
                     </div>
                     <div id="createUserError" style="display:none;" class="user-create-error"></div>

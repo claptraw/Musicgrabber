@@ -651,6 +651,15 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_atl_track "
             "ON album_track_locks (album_artist, track_title)"
         )
+        # Without this unique index the ON CONFLICT(release_mbid, track_title)
+        # clause in upsert_album_track_lock() has nothing to conflict against,
+        # and SQLite refuses the statement entirely. NULL release_mbids are still
+        # allowed to repeat (SQLite treats NULLs as distinct in unique indexes),
+        # which is exactly what we want for the folder-only routing branch.
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_atl_release_track "
+            "ON album_track_locks (release_mbid, track_title)"
+        )
 
         # --- DB version tracking ---
         # Version is stored in settings as 'db_version' (integer string).

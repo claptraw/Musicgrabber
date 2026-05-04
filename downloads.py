@@ -15,6 +15,7 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse, parse_qs
 
 import httpx
 
@@ -34,7 +35,7 @@ from constants import (
 )
 from coverart import fetch_cover_art, get_album_art_context, ensure_album_cover_files, cache_cover_art, _fetch_caa_cover
 from db import db_conn, log_match_mismatch, get_album_track_lock, complete_album_track_lock
-from metadata import lookup_metadata, fetch_lyrics, save_lyrics_file, apply_metadata_to_file, read_existing_track_number
+from metadata import lookup_metadata, lookup_musicbrainz_by_isrc, fetch_lyrics, save_lyrics_file, apply_metadata_to_file, read_existing_track_number
 from notifications import send_notification
 from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir, get_albums_dir, resolve_custom_subdir
 from slskd import (
@@ -2688,8 +2689,21 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None, skip_mismatch=True)
             return
 
-        # Create download directory (with or without artist subfolder)
-        artist_dir = Path(override_dir) if override_dir else get_download_dir(artist, user_id=user_id)
+        # Create download directory: custom playlist dir, Playlists/Name/, album override,
+        # or standard Singles layout.
+        if custom_subdir and playlist_name:
+            playlists_dir = resolve_custom_subdir(custom_subdir, user_id=user_id)
+        elif use_playlists_dir and playlist_name:
+            playlists_dir = get_playlists_dir(user_id=user_id)
+        else:
+            playlists_dir = None
+
+        if playlists_dir:
+            artist_dir = playlists_dir / sanitize_filename(playlist_name)
+        elif override_dir:
+            artist_dir = Path(override_dir)
+        else:
+            artist_dir = get_download_dir(artist, user_id=user_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
         # Download from slskd with retries on common queue/abort failures
@@ -2768,7 +2782,10 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             raise Exception(last_error or "Soulseek download failed")
 
         # Rename to our standard naming
-        sanitized_title = _output_stem(artist, forced_track_title or title, Path(filename).stem or job_id, user_id=user_id)
+        if playlists_dir:
+            sanitized_title = _playlist_stem(artist, forced_track_title or title, Path(filename).stem or job_id)
+        else:
+            sanitized_title = _output_stem(artist, forced_track_title or title, Path(filename).stem or job_id, user_id=user_id)
         source_ext = downloaded_file.suffix.lower()
 
         # Probe the source file BEFORE conversion so we know the real quality
@@ -2873,10 +2890,11 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             )
             # Use canonical artist/title from MusicBrainz
             if mb_artist != artist:
-                final_file = _relocate_for_normalised_artist(final_file, artist, mb_artist, user_id=user_id)
+                if not playlists_dir:
+                    final_file = _relocate_for_normalised_artist(final_file, artist, mb_artist, user_id=user_id)
                 artist = mb_artist
             title = tag_title
-            if not override_dir:
+            if not override_dir and not playlists_dir:
                 final_file = _auto_route_single_to_album(
                     final_file, artist, title, mb_metadata, job_id, user_id
                 )
@@ -2901,6 +2919,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         final_file = _rename_with_track_number_if_enabled(
             final_file, artist, title, Path(filename).stem or job_id,
             tag_track_num, user_id=user_id,
+            playlist_routed=bool(playlists_dir),
         )
 
         # Fetch and save lyrics
@@ -3104,8 +3123,18 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
 
         integrity_reason = ""
         actual_duration_secs = 0.0
+        download_failed_reason = ""
         for attempt in range(1, _AUDIO_RECHECK_MAX_ATTEMPTS + 1):
-            download_fn(download_url, source_path)
+            try:
+                download_fn(download_url, source_path)
+            except Exception as dl_exc:
+                # Source itself blew up (e.g. Qobuz proxy has nothing for this ISRC at any tier).
+                # Don't keep retrying the same dead source; bail out and let the alternate-candidate
+                # path try YouTube / Soulseek / friends. Belt and braces: nuke any partial file too.
+                source_path.unlink(missing_ok=True)
+                download_failed_reason = f"{source_label} source unavailable: {dl_exc}"
+                print(download_failed_reason)
+                break
             valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(source_path)
             if valid_audio:
                 break
@@ -3126,6 +3155,13 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             if _try_alternate_candidate(f"{source_label} integrity failure: {integrity_reason}"):
                 return
             raise Exception(f"{source_label} download failed integrity checks: {integrity_reason}")
+
+        # Source said "no" before we ever got bytes (e.g. Qobuz had nothing for this ISRC).
+        # Hand off to the alternate-candidate machinery so YouTube/Soulseek can have a go.
+        if download_failed_reason:
+            if _try_alternate_candidate(download_failed_reason):
+                return
+            raise Exception(download_failed_reason)
 
         # Convert to the user's chosen format if requested.
         _update_job(job_id, progress_stage="Converting audio")
@@ -3165,8 +3201,16 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
 
         # Metadata  -  direct sources give us artist/title from search result HTML, which is
         # usually reasonable. MusicBrainz fills in year/album and keeps us honest.
+        # Monochrome additionally hands us an ISRC, so we can ask MB the exact question
+        # rather than letting AcoustID guess wrongly between remasters and reissues.
         _update_job(job_id, progress_stage="Looking up metadata")
-        mb_metadata = lookup_metadata(artist, title, output_path)
+        mb_metadata = None
+        if source_label == "monochrome" and download_url.startswith("monochrome://"):
+            isrc = (parse_qs(urlparse(download_url).query).get("isrc") or [""])[0]
+            if isrc:
+                mb_metadata = lookup_musicbrainz_by_isrc(isrc, expected_artist=artist)
+        if not mb_metadata:
+            mb_metadata = lookup_metadata(artist, title, output_path)
         metadata_source = _default_metadata_source(source_label)
         if mb_metadata:
             metadata_source = mb_metadata.get("source", metadata_source)
@@ -3221,7 +3265,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             album_artist=forced_album_artist,
         )
 
-        if not override_dir and mb_metadata:
+        if not override_dir and not playlists_dir and mb_metadata:
             output_path = _auto_route_single_to_album(
                 output_path, artist, title, mb_metadata, job_id, user_id
             )

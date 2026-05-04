@@ -94,6 +94,7 @@ class SettingsUpdate(BaseModel):
     include_track_number_in_filename: Optional[bool] = None
     auto_album_singles: Optional[bool] = None
     auto_album_singles_use_albums_dir: Optional[bool] = None
+    singles_only_mode: Optional[bool] = None
     file_permissions: Optional[str] = None
 
     @field_validator("file_permissions")

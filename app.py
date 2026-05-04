@@ -119,6 +119,22 @@ def _user_scope(user_id: str | None, is_admin: bool) -> tuple[str, tuple]:
     return "user_id = ?", (user_id,)
 
 
+def _is_peon(request: Request) -> bool:
+    user = getattr(request.state, "user", None) or {}
+    return user.get("role") == "peon"
+
+
+def _enforce_peon_format(request: Request, body) -> None:
+    """Peons cannot toggle conversion on or off. Force their requests onto whatever
+    the admin has set globally for default_convert_to_flac. Belt to the UI's braces:
+    the toggle is hidden, but a peon with the dev tools open could still try to send
+    their own value, so we overwrite it server-side."""
+    if not _is_peon(request):
+        return
+    if hasattr(body, "convert_to_flac"):
+        body.convert_to_flac = get_setting_bool("default_convert_to_flac", True)
+
+
 # =============================================================================
 # Application Setup
 # =============================================================================
@@ -227,7 +243,8 @@ def get_config(request: Request):
         "auth_required": bool(api_key),
         "auth_mode": "session",
         "users_exist": users_exist,
-        "volume_mounted": _is_volume_mounted()
+        "volume_mounted": _is_volume_mounted(),
+        "singles_only_mode": get_setting_bool("singles_only_mode", False),
     }
 
 
@@ -464,8 +481,8 @@ def get_users(request: Request):
 def create_new_user(request: Request, body: CreateUserRequest):
     if not request.state.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
-    if body.role not in ("admin", "user"):
-        raise HTTPException(status_code=400, detail="Role must be 'admin' or 'user'")
+    if body.role not in ("admin", "user", "peon"):
+        raise HTTPException(status_code=400, detail="Role must be 'admin', 'user', or 'peon'")
     if not body.username:
         raise HTTPException(status_code=400, detail="Username cannot be empty")
     if not body.password or len(body.password) < 8:
@@ -476,12 +493,22 @@ def create_new_user(request: Request, body: CreateUserRequest):
     if user_count == 0 and body.role != "admin":
         raise HTTPException(status_code=400, detail="The first account must be an admin")
     first_user = user_count == 0
+    # Adding the 2nd account flips us from single-user to session-required mode.
+    # The current admin has no session, so subsequent requests will 401 — the
+    # frontend uses this flag to bounce them to login instead of leaving the
+    # user list stuck on the old single-user view.
+    crosses_into_session_mode = user_count == 1
     try:
         new_id = create_user(body.username, body.password, body.role)
     except ValueError:
         raise HTTPException(status_code=409, detail="Username already exists")
     invalidate_users_cache()
-    return {"ok": True, "user_id": new_id, "first_user": first_user}
+    return {
+        "ok": True,
+        "user_id": new_id,
+        "first_user": first_user,
+        "requires_login": crosses_into_session_mode,
+    }
 
 
 @app.delete("/api/users/{user_id}")
@@ -513,8 +540,8 @@ def admin_set_password(request: Request, user_id: str, body: SetUserPasswordRequ
 def set_user_role(request: Request, user_id: str, body: SetUserRoleRequest):
     if not request.state.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
-    if body.role not in ("admin", "user"):
-        raise HTTPException(status_code=400, detail="Role must be 'admin' or 'user'")
+    if body.role not in ("admin", "user", "peon"):
+        raise HTTPException(status_code=400, detail="Role must be 'admin', 'user', or 'peon'")
     if not get_user_by_id(user_id):
         raise HTTPException(status_code=404, detail="User not found")
     if user_id == request.state.user_id:
@@ -601,8 +628,15 @@ def update_settings(updates: SettingsUpdate, request: Request):
     """Update settings. Only non-None values are updated. Returns updated settings.
 
     Per-user keys are written to user_settings (or global when in single-user mode).
-    Global keys can only be written by admins.
+    Global keys can only be written by admins. Peons are read-only — they inherit
+    the admin's globals for everything and have no Settings UI to begin with.
     """
+    # Peons have no business writing settings — Settings tab is hidden, but the
+    # API endpoint stays open to other roles, so this is the belt to the UI's braces.
+    user = getattr(request.state, "user", None) or {}
+    if user.get("role") == "peon":
+        raise HTTPException(status_code=403, detail="Read-only account")
+
     updated_keys = []
     user_id = request.state.user_id
 
@@ -1764,6 +1798,7 @@ def explore_similar(request: ExploreRequest):
 @app.post("/api/download")
 def download(body: DownloadRequest, http_request: Request):
     """Queue a download job"""
+    _enforce_peon_format(http_request, body)
     job_id = str(uuid.uuid4())[:8]
     user_id = http_request.state.user_id
 
@@ -2536,25 +2571,46 @@ def get_job_musicbrainz_guess(job_id: str, artist: str, title: str, http_request
 
 @app.delete("/api/jobs/cleanup")
 def cleanup_jobs(http_request: Request, status: Optional[str] = None):
-    """Delete completed, failed, or stale jobs"""
-    if not http_request.state.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    """Delete completed, failed, or stale jobs.
+
+    Admins clear the lot; standard users only clear their own rows.
+    Peons get bounced; the UI hides the button but a curious one with dev
+    tools open shouldn't get to nuke anything.
+    """
+    user = getattr(http_request.state, "user", None) or {}
+    if user.get("role") == "peon":
+        raise HTTPException(status_code=403, detail="Peons cannot clear the queue")
+
     # First, mark any stale jobs as failed so they get cleaned up
     cleanup_stale_jobs()
 
+    is_admin = http_request.state.is_admin
+    user_id = http_request.state.user_id
+    scope_clause = "" if is_admin else " AND user_id = ?"
+    scope_params: tuple = () if is_admin else (user_id,)
+
     with db_conn() as conn:
         if status == "completed":
-            cursor = conn.execute("DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors')")
+            cursor = conn.execute(
+                f"DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors'){scope_clause}",
+                scope_params,
+            )
         elif status == "failed":
-            cursor = conn.execute("DELETE FROM jobs WHERE status = 'failed'")
+            cursor = conn.execute(
+                f"DELETE FROM jobs WHERE status = 'failed'{scope_clause}",
+                scope_params,
+            )
         elif status == "stale":
             cursor = conn.execute(
-                "DELETE FROM jobs WHERE status IN ('downloading', 'queued') "
-                "AND created_at < datetime('now', ? || ' seconds')",
-                (str(-STALE_JOB_TIMEOUT),)
+                f"DELETE FROM jobs WHERE status IN ('downloading', 'queued') "
+                f"AND created_at < datetime('now', ? || ' seconds'){scope_clause}",
+                (str(-STALE_JOB_TIMEOUT), *scope_params),
             )
         else:
-            cursor = conn.execute("DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors', 'failed')")
+            cursor = conn.execute(
+                f"DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors', 'failed'){scope_clause}",
+                scope_params,
+            )
 
         deleted_count = cursor.rowcount
         conn.commit()
@@ -2814,6 +2870,7 @@ def remove_blacklist_entry(entry_id: int, http_request: Request):
 @app.post("/api/bulk-import-async")
 def bulk_import_async(body: AsyncBulkImportRequest, http_request: Request):
     """Start an async bulk import job"""
+    _enforce_peon_format(http_request, body)
     lines = body.songs.strip().split('\n')
     import_id = str(uuid.uuid4())[:8]
     user_id = http_request.state.user_id
@@ -2996,6 +3053,7 @@ def fetch_playlist(request: Request, body: PlaylistFetchRequest):
 @app.post("/api/watched-playlists")
 def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
     """Add a new playlist to watch for new tracks"""
+    _enforce_peon_format(http_request, body)
     platform, platform_id = detect_playlist_platform(body.url)
     user_id = http_request.state.user_id
 
@@ -3069,6 +3127,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                     use_playlists_dir=body.use_playlists_dir,
                     user_id=user_id,
                     preferred_sources=body.preferred_sources or "all",
+                    custom_subdir=(body.custom_subdir or "").strip() or None,
                 )
 
         return {
@@ -3131,6 +3190,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
             use_playlists_dir=body.use_playlists_dir,
             user_id=user_id,
             preferred_sources=body.preferred_sources or "all",
+            custom_subdir=(body.custom_subdir or "").strip() or None,
         )
 
     return {
@@ -3209,6 +3269,8 @@ def get_watched_playlist(playlist_id: str, http_request: Request):
 @app.put("/api/watched-playlists/{playlist_id}")
 def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, http_request: Request):
     """Update watched playlist settings"""
+    if _is_peon(http_request):
+        request.convert_to_flac = None  # Peons cannot change conversion setting
     user_id = http_request.state.user_id
     is_admin = http_request.state.is_admin
     with db_conn() as conn:
@@ -3544,9 +3606,9 @@ def queue_watched_playlist_track_candidate(
         conn.commit()
 
     convert_to_flac = bool(playlist["convert_to_flac"])
-    playlist_name = playlist["name"] if playlist["use_playlists_dir"] else None
-    use_playlists_dir = bool(playlist["use_playlists_dir"])
     custom_subdir = (playlist["custom_subdir"] or "").strip() or None
+    playlist_name = playlist["name"] if (playlist["use_playlists_dir"] or custom_subdir) else None
+    use_playlists_dir = bool(playlist["use_playlists_dir"])
 
     if source == "soulseek":
         spawn_daemon_thread(
@@ -3650,6 +3712,7 @@ def search_watched_artist(q: str):
 @app.post("/api/watched-artists")
 def add_watched_artist(body: WatchedArtistRequest, http_request: Request):
     """Add an artist to watch. Seeds all known singles then queues any after from_date."""
+    _enforce_peon_format(http_request, body)
     user_id = http_request.state.user_id
 
     with db_conn() as conn:
@@ -3706,6 +3769,8 @@ def list_watched_artists(http_request: Request):
 @app.put("/api/watched-artists/{artist_id}")
 def update_watched_artist(artist_id: str, request: WatchedArtistUpdate, http_request: Request):
     """Update a watched artist's settings."""
+    if _is_peon(http_request):
+        request.convert_to_flac = None  # Peons cannot change conversion setting
     user_id = http_request.state.user_id
     is_admin = http_request.state.is_admin
     updates: list[str] = []
@@ -4187,6 +4252,7 @@ def albums_download(body: AlbumDownloadRequest, http_request: Request):
     Albums/Artist/Album/ instead of the normal Singles layout.
     Returns {import_id} for polling via /api/bulk-import/{id}/status.
     """
+    _enforce_peon_format(http_request, body)
     user_id = getattr(http_request.state, "user_id", None)
 
     artist = body.artist.strip()

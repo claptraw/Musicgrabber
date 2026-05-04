@@ -7,6 +7,41 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.2": {
+        title: "What's New in v2.8.2",
+        sections: [
+            {
+                heading: "Singles-only mode",
+                items: [
+                    "A new Settings toggle that hides the Albums tab outright. If you're running MusicGrabber as a singles feeder for Navidrome and you'd rather your less-technical users didn't poke at the album browser, this is for you. Auto-album routing for individual singles still works exactly as before; this just retires the dedicated Albums workflow from the UI.",
+                ]
+            },
+            {
+                heading: "Peon: the strictest user role yet",
+                items: [
+                    "Three roles now: Admin (full access), User (own settings, no admin functions), and the new Peon (locked-down request-only). Peons see Search, Bulk Import, Queue, Albums and Watched. No Settings, no Stats, no Clear Queue button, and no fiddling with Navidrome or Soulseek; they inherit whatever the admin set globally. Perfect for the family member who keeps 'helpfully' changing the audio format to MP3.",
+                ]
+            },
+            {
+                heading: "Clear Queue is now role-aware",
+                items: [
+                    "Standard users hitting Clear Queue only wipe their own completed/failed/stale jobs, leaving everyone else's queue alone. Admins keep the full nuke for when the shared queue has gone feral. Peons don't get the button, and the API turns them away if they try to reach it directly.",
+                ]
+            },
+            {
+                heading: "Settings tab tidied for non-admins",
+                items: [
+                    "Standard (non-admin) users now see only the bits of Settings that are actually theirs: per-user music subfolders, Navidrome/Jellyfin/Lidarr credentials, Spotify cookies, notifications, change password. The system-level rows, search sources, audio format, AcoustID key, minimum bitrate, Monochrome URLs and the new singles-only toggle, are admins-only. Backend writes were already locked down; this just stops standard users seeing knobs they couldn't actually turn.",
+                ]
+            },
+            {
+                heading: "Monochrome metadata stops guessing",
+                items: [
+                    "Tidal hands us a real ISRC for every Monochrome track, but the tagger was ignoring that and letting AcoustID's fingerprint pick whatever it fancied: remasters, karaoke versions, the occasional inexplicable Kylie Minogue. We now look the ISRC up on MusicBrainz directly, so tags match the track you actually asked for, with the right album and year. AcoustID and text search still take over if MusicBrainz has never heard of the recording.",
+                ]
+            },
+        ]
+    },
     "2.8.1": {
         title: "What's New in v2.8.1",
         sections: [

@@ -220,7 +220,7 @@ def process_bulk_import_worker(import_id: str):
 
         # For watched playlist imports, playlist_name is stored as NULL in bulk_imports.
         # Fetch the actual name from watched_playlists so folder routing works correctly.
-        if use_playlists_dir and not playlist_name and watch_playlist_id:
+        if (use_playlists_dir or custom_subdir) and not playlist_name and watch_playlist_id:
             row = conn.execute(
                 "SELECT name FROM watched_playlists WHERE id = ?", (watch_playlist_id,)
             ).fetchone()
@@ -433,7 +433,7 @@ def process_bulk_import_worker(import_id: str):
                 # mp3phoenix is a fast HTTP stream — skip the pool entirely so it
                 # doesn't queue behind slow yt-dlp jobs.  Everything else goes through
                 # the bounded pool (max 3 concurrent) to avoid hammering YouTube.
-                _pname = playlist_name if use_playlists_dir else None
+                _pname = playlist_name if (use_playlists_dir or custom_subdir) else None
                 # Album downloads (override_dir set) bypass dupe checks — you picked the album
                 # intentionally, and the track lives in Albums/ not Singles/ anyway.
                 _skip_dupes = bool(override_dir)

@@ -620,6 +620,64 @@ def _lookup_musicbrainz_by_id(recording_id: str, expected_artist: str = "") -> O
         return None
 
 
+def lookup_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional[dict]:
+    """Look up a recording by ISRC.
+
+    Tidal hands us a real ISRC at search time, so we can ask MusicBrainz the
+    exact question instead of guessing by title and crossing our fingers.
+    The ISRC endpoint returns the recording; we then reuse the by-ID release
+    scoring to land on a sensible album/year/track number.
+    """
+    if not get_setting_bool("enable_musicbrainz", True):
+        return None
+    if not isrc:
+        return None
+    try:
+        headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+        url = f"https://musicbrainz.org/ws/2/isrc/{isrc}"
+        params = {"inc": "artist-credits", "fmt": "json"}
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
+            response = client.get(url, params=params, headers=headers)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        recordings = data.get("recordings") or []
+        if not recordings:
+            return None
+
+        recording = recordings[0]
+        recording_id = recording.get("id")
+        artist_credit = recording.get("artist-credit") or []
+        artist_name = " ".join(
+            (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
+            for ac in artist_credit
+            if isinstance(ac, dict)
+        ).strip() or expected_artist or None
+
+        metadata = {
+            "title": recording.get("title"),
+            "artist": artist_name,
+            "recording_id": recording_id,
+            "metadata_source": "musicbrainz_isrc",
+        }
+        length_ms = recording.get("length")
+        if length_ms:
+            metadata["expected_duration_secs"] = length_ms / 1000.0
+
+        # Re-use the by-ID lookup so we get the same release-scoring as everyone else
+        if recording_id:
+            extra = _lookup_musicbrainz_by_id(recording_id, expected_artist=artist_name or expected_artist)
+            if extra:
+                for k, v in extra.items():
+                    if v and not metadata.get(k):
+                        metadata[k] = v
+        return metadata
+
+    except Exception as e:
+        print(f"MusicBrainz ISRC lookup failed for {isrc}: {e}")
+        return None
+
+
 def lookup_metadata(artist: str, title: str, file_path: Path = None) -> Optional[dict]:
     """Look up track metadata, trying audio fingerprinting first.
 

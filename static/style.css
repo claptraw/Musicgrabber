@@ -1971,6 +1971,50 @@ h1 {
     color: var(--warning);
 }
 
+.user-mgmt-section {
+    position: relative;
+}
+
+.user-info-toggle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px 6px;
+    line-height: 1;
+}
+
+.user-info-toggle:hover {
+    color: var(--text-primary);
+}
+
+.user-info-panel {
+    margin: 0 0 14px 0;
+    padding: 12px 14px;
+    background: var(--surface-2, rgba(255,255,255,0.04));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.user-info-panel p {
+    margin: 0 0 8px 0;
+}
+
+.user-info-panel p:last-child {
+    margin-bottom: 0;
+}
+
+.user-info-panel strong {
+    color: var(--text-primary);
+}
+
 .settings-details {
     margin-top: 12px;
 }

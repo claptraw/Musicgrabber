@@ -171,6 +171,7 @@ SETTINGS_SCHEMA = {
     "include_track_number_in_filename": {"type": "bool", "default": False, "env": "INCLUDE_TRACK_NUMBER_IN_FILENAME"},
     "auto_album_singles": {"type": "bool", "default": False, "env": "AUTO_ALBUM_SINGLES"},
     "auto_album_singles_use_albums_dir": {"type": "bool", "default": False, "env": "AUTO_ALBUM_SINGLES_USE_ALBUMS_DIR"},
+    "singles_only_mode": {"type": "bool", "default": False, "env": "SINGLES_ONLY_MODE"},
     "file_permissions": {"type": "str", "default": "666", "env": "FILE_PERMISSIONS"},
     # Soulseek/slskd
     "slskd_url": {"type": "str", "default": "", "env": "SLSKD_URL"},

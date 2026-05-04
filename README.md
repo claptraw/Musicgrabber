@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.8.1**
+**v2.8.2**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, and MP3Phoenix, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 

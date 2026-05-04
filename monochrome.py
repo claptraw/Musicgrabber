@@ -109,6 +109,10 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
 
             if not (title and artist):
                 continue
+            # No ISRC means Qobuz can't find it, which means we can't download or even
+            # preview it. Pretending otherwise just leads to broken results and angry users.
+            if not isrc:
+                continue
 
             quality_str, _ = _best_quality(tags)
             bonus = _QUALITY_BONUS.get(quality_str, 30)
@@ -209,8 +213,31 @@ def download_monochrome_track(source_url: str, output_path: Path) -> None:
     if not isrc:
         raise RuntimeError(f"Monochrome: no ISRC in source_url {source_url!r}")
 
-    fmt = _SOURCE_QUALITY_TO_QOBUZ_FORMAT.get(quality, 7)
-    cdn_url = _get_qobuz_stream_url(isrc, fmt)
+    # Step down through quality tiers if the requested one is unavailable on Qobuz.
+    # We start at the requested tier and walk downward; HI_RES → LOSSLESS → HIGH.
+    # If every tier fails, the caller's fallback machinery picks another source.
+    tier_order = ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH"]
+    if quality in tier_order:
+        candidates = tier_order[tier_order.index(quality):]
+    else:
+        candidates = tier_order
+    cdn_url = ""
+    last_error: Exception | None = None
+    for tier in candidates:
+        fmt = _SOURCE_QUALITY_TO_QOBUZ_FORMAT.get(tier, 7)
+        try:
+            cdn_url = _get_qobuz_stream_url(isrc, fmt)
+            if tier != quality:
+                print(f"Monochrome: requested {quality} unavailable, fell back to {tier} for ISRC {isrc}")
+            break
+        except Exception as exc:
+            last_error = exc
+            continue
+    if not cdn_url:
+        raise RuntimeError(
+            f"Monochrome: no Qobuz stream available for ISRC {isrc} at any quality tier "
+            f"(last error: {last_error})"
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
