@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.8.2**
+**v2.8.3**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix, zvu4no, Monochrome/Qobuz, and optional Soulseek, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -1047,7 +1047,7 @@ docker compose up -d
 
 MusicGrabber is human-directed and AI-assisted. At this point, pretty much any
 originally human-written starter code has been replaced or heavily rewritten,
-so the current codebase is roughly **90% AI-written code**.
+so the current codebase is roughly **90% AI-written code**, maybe more.
 
 The project direction, feature choices, code checks, manual QA testing, release
 decisions, and day-to-day use are all human. This is not a throwaway generated

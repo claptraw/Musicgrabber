@@ -834,6 +834,8 @@
             if (mp3QualityRow) mp3QualityRow.style.display = audioFormat === 'mp3' ? '' : 'none';
             const opusQualityRow = document.getElementById('opusQualityRow');
             if (opusQualityRow) opusQualityRow.style.display = audioFormat === 'opus' ? '' : 'none';
+            const alacQualityRow = document.getElementById('alacQualityRow');
+            if (alacQualityRow) alacQualityRow.style.display = audioFormat === 'alac' ? '' : 'none';
 
             // Keep hidden input in sync so settings save picks it up
             const hiddenInput = document.getElementById('settingAudioFormat');
@@ -868,6 +870,20 @@
             const input = document.getElementById('settingOpusBitrate');
             if (input) input.value = val;
             localStorage.setItem(userStorageKey('opusBitrate'), val);
+        }
+
+        function setAlacBitrate(val) {
+            const valid = ['lossless', '320k', '256k', '192k', '128k'];
+            if (!valid.includes(val)) val = 'lossless';
+            const ids = { 'lossless': 'alacQualityBtnLossless', '320k': 'alacQualityBtn320',
+                          '256k': 'alacQualityBtn256', '192k': 'alacQualityBtn192', '128k': 'alacQualityBtn128' };
+            for (const [k, id] of Object.entries(ids)) {
+                const btn = document.getElementById(id);
+                if (btn) btn.classList.toggle('active', k === val);
+            }
+            const input = document.getElementById('settingAlacBitrate');
+            if (input) input.value = val;
+            localStorage.setItem(userStorageKey('alacBitrate'), val);
         }
 
         const versionLabel = document.getElementById('versionLabel');
@@ -6310,6 +6326,7 @@
             'audio_format': 'settingAudioFormat',
             'mp3_bitrate': 'settingMp3Bitrate',
             'opus_bitrate': 'settingOpusBitrate',
+            'alac_bitrate': 'settingAlacBitrate',
             'min_audio_bitrate': 'settingMinBitrate',
             'singles_subdir': 'settingSinglesSubdir',
             'playlists_subdir': 'settingPlaylistsSubdir',
@@ -6411,6 +6428,7 @@
                         if (key === 'audio_format') setAudioFormat(value);
                         if (key === 'mp3_bitrate')  setMp3Bitrate(value);
                         if (key === 'opus_bitrate') setOpusBitrate(value);
+                        if (key === 'alac_bitrate') setAlacBitrate(value);
                     }
 
                     // Mark fields locked by env vars

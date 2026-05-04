@@ -565,7 +565,7 @@
                             <button type="button" id="formatBtnMp3"  class="format-option" onclick="setAudioFormat('mp3');  saveSettings();">MP3</button>
                         </div>
                         <span class="settings-hint settings-hint-full">The format all downloads are converted to. FLAC and ALAC are lossless. Opus is high-quality lossy (smaller files). MP3 for maximum compatibility.</span>
-                        <span id="alacFormatNote" style="display:none;" class="mp3-format-note">ALAC is lossless, saved as .m4a. Good for modded iPods and Apple devices.</span>
+                        <span id="alacFormatNote" style="display:none;" class="mp3-format-note">ALAC (.m4a) is lossless. Lower bitrates here actually fall back to AAC inside the same .m4a container, so anything below "Lossless" is lossy.</span>
                         <span id="mp3FormatNote" style="display:none;" class="mp3-format-note">MP3 may cause quality loss if the source is already lossy (e.g. from YouTube).</span>
                         <div id="mp3QualityRow" style="display:none;margin-top:6px;">
                             <span class="settings-label-sub">MP3 Quality</span>
@@ -589,10 +589,22 @@
                                 <button type="button" id="opusQualityBtn96"  class="format-option"        onclick="setOpusBitrate('96k');  saveSettings();">96k</button>
                             </div>
                         </div>
+                        <div id="alacQualityRow" style="display:none;margin-top:6px;">
+                            <span class="settings-label-sub">ALAC Quality</span>
+                            <div class="format-btn-group">
+                                <button type="button" id="alacQualityBtnLossless" class="format-option active" onclick="setAlacBitrate('lossless'); saveSettings();">Lossless</button>
+                                <button type="button" id="alacQualityBtn320"      class="format-option"        onclick="setAlacBitrate('320k');     saveSettings();">320k</button>
+                                <button type="button" id="alacQualityBtn256"      class="format-option"        onclick="setAlacBitrate('256k');     saveSettings();">256k</button>
+                                <button type="button" id="alacQualityBtn192"      class="format-option"        onclick="setAlacBitrate('192k');     saveSettings();">192k</button>
+                                <button type="button" id="alacQualityBtn128"      class="format-option"        onclick="setAlacBitrate('128k');     saveSettings();">128k</button>
+                            </div>
+                            <span class="settings-hint settings-hint-full">Lossless gives you proper Apple Lossless. The kbps options switch the encoder to AAC inside the same .m4a wrapper, so they are lossy but iPod-friendly.</span>
+                        </div>
                         <input type="checkbox" id="settingDefaultFlac" checked style="display:none;">
                         <input type="text" id="settingAudioFormat" value="flac" style="display:none;">
                         <input type="hidden" id="settingMp3Bitrate" value="v2">
                         <input type="hidden" id="settingOpusBitrate" value="320k">
+                        <input type="hidden" id="settingAlacBitrate" value="lossless">
                     </label>
                     <label class="settings-label settings-label-wrap">
                         <span>Organise by Artist</span>

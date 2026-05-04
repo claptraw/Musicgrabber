@@ -85,7 +85,10 @@ class SettingsUpdate(BaseModel):
     enable_musicbrainz: Optional[bool] = None
     enable_lyrics: Optional[bool] = None
     default_convert_to_flac: Optional[bool] = None
-    audio_format: Optional[str] = None  # "flac" or "opus"
+    audio_format: Optional[str] = None  # "flac", "alac", "opus", or "mp3"
+    mp3_bitrate: Optional[str] = None    # "v0", "v2", or "320k"/"256k"/"192k"/"128k"
+    opus_bitrate: Optional[str] = None   # "320k"/"256k"/"192k"/"128k"/"96k"
+    alac_bitrate: Optional[str] = None   # "lossless" (true ALAC) or AAC kbps "320k"/"256k"/"192k"/"128k"
     min_audio_bitrate: Optional[int] = None
     singles_subdir: Optional[str] = None
     playlists_subdir: Optional[str] = None

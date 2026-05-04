@@ -7,6 +7,23 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.3": {
+        title: "What's New in v2.8.3",
+        sections: [
+            {
+                heading: "ALAC quality picker, MP3-style",
+                items: [
+                    "The Audio Format selector grows a quality row when ALAC is chosen, just like MP3 and Opus already do. 'Lossless' gives you proper Apple Lossless inside an .m4a wrapper, exactly as before. The new 320k / 256k / 192k / 128k options quietly switch the encoder to AAC inside the same .m4a, for anyone who wants iPod-friendly files but can live with lossy audio. The UI is honest that anything below Lossless is technically AAC; ALAC purists, look away.",
+                ]
+            },
+            {
+                heading: "MP3 320k actually means 320k now",
+                items: [
+                    "Two layered bugs were conspiring to give you ~192 kbps no matter what you picked. First, the MP3 and Opus bitrate fields had never been added to the settings API, so saving them silently did nothing and the default of V2 (~190 kbps) was used forever. Second, even when the value did sneak through, yt-dlp was misparsing '320K' and falling back to the libmp3lame default. Both fixed. Pick 320, get 320.",
+                ]
+            },
+        ]
+    },
     "2.8.2": {
         title: "What's New in v2.8.2",
         sections: [

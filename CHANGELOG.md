@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.8.3 (2026-05-04)
+
+### Added
+- **ALAC quality picker, MP3-style**: the Audio Format selector now grows an ALAC quality row when ALAC is the chosen format. "Lossless" gives you proper Apple Lossless inside an .m4a, exactly as before. The new 320k / 256k / 192k / 128k options quietly switch the encoder to AAC inside the same .m4a wrapper, for anyone who wants iPod-friendly files but can live with lossy audio. ALAC purists, look away. Yes, AAC-in-m4a is technically not ALAC; the UI is honest about it.
+
+### Fixed
+- **MP3 and Opus bitrate pickers never actually saved**: choosing "MP3 320k" in Settings appeared to take, but the PUT to `/api/settings` was silently discarding `mp3_bitrate` and `opus_bitrate` because neither field had ever been added to the Pydantic `SettingsUpdate` model. Same Pydantic-shrug-and-drop pattern that bit Monochrome in v2.8.1. The DB therefore kept the default of `v2` forever, so every "320 kbps" download came out at the libmp3lame V2 default of around 192 kbps. Fields added; settings now persist.
+- **Even when MP3/Opus CBR did get through, yt-dlp dropped the bitrate**: the CBR path was passing `--audio-quality 320K` to yt-dlp, whose audio postprocessor runs the value through `float_or_none()`. The trailing "K" makes that return None, so ffmpeg quietly fell back to its libmp3lame default. VBR (`v0`/`v2`) escaped because those pass a bare digit. Stripped the "k" before handing the value off, so 320k now actually means 320k. Belt-and-braces with the Pydantic fix above.
+
+
+
 ## v2.8.2 (2026-05-04)
 
 ### Added

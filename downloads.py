@@ -969,20 +969,31 @@ def _build_ytdlp_download_cmd(
     if convert_to_flac:
         fmt = get_setting("audio_format", "flac")  # Global default; per-user override applied at call site
         fmt = fmt if fmt in ("flac", "opus", "mp3", "alac") else "flac"
-        format_args = ["--audio-format", fmt]
+        # ALAC with a non-lossless bitrate means "lossy AAC in an .m4a container".
+        # yt-dlp has no first-class option for that, so we ask it for "m4a" and
+        # let the AAC encoder do its thing at the chosen kbps.
+        if fmt == "alac" and get_setting("alac_bitrate", "lossless") != "lossless":
+            format_args = ["--audio-format", "m4a"]
+        else:
+            format_args = ["--audio-format", fmt]
     else:
         fmt = None
         format_args = []  # Keep original format from source
-    # yt-dlp passes --audio-quality straight to ffmpeg: a digit (0-9) for VBR,
-    # or a bitrate like "320K" for CBR. We read the user's setting and translate accordingly.
+    # yt-dlp's FFmpegExtractAudioPP runs float_or_none() on this, then treats
+    # values >10 as kbps and 0-10 as a VBR quality digit. So a trailing "k" is
+    # poison; strip it. "v2" -> "2" (VBR), "320k" -> "320" (CBR kbps).
     if fmt == "mp3":
         q = get_setting("mp3_bitrate", "v2")
-        audio_quality = q[1] if q.startswith("v") else q.upper()  # "v2"->"2", "320k"->"320K"
+        audio_quality = q[1] if q.startswith("v") else q.rstrip("kK")
     elif fmt == "opus":
         q = get_setting("opus_bitrate", "320k")
-        audio_quality = q.upper()  # "320k" -> "320K"
+        audio_quality = q.rstrip("kK")
+    elif fmt == "alac":
+        q = get_setting("alac_bitrate", "lossless")
+        # "lossless" -> best (true ALAC); kbps -> CBR for the AAC fallback.
+        audio_quality = "0" if q == "lossless" else q.rstrip("kK")
     else:
-        audio_quality = "0"  # best for FLAC/ALAC
+        audio_quality = "0"  # best for FLAC
     base_args = _ytdlp_base_args() if use_cookies else []
     url = source_url or f"https://www.youtube.com/watch?v={video_id}"
     return [
@@ -1625,6 +1636,14 @@ def _get_lossy_codec_args(fmt: str, user_id: str | None = None) -> tuple[str, li
     if fmt == "opus":
         q = get_setting("opus_bitrate", "320k", user_id=user_id)
         return "libopus", ["-b:a", q], ".opus"
+    if fmt == "alac":
+        # Sneaky little dual-purpose: "alac" plus a kbps means lossy AAC in an .m4a
+        # wrapper (the user asked for ALAC-style ergonomics, ALAC's lossless nature
+        # be damned). "lossless" gets you proper Apple Lossless.
+        q = get_setting("alac_bitrate", "lossless", user_id=user_id)
+        if q == "lossless":
+            return "alac", [], ".m4a"
+        return "aac", ["-b:a", q], ".m4a"
     return _FORMAT_CODEC_MAP[fmt]
 
 

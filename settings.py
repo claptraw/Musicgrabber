@@ -163,6 +163,7 @@ SETTINGS_SCHEMA = {
     "audio_format": {"type": "str", "default": "flac", "env": "AUDIO_FORMAT"},
     "mp3_bitrate": {"type": "str", "default": "v2", "env": "MP3_BITRATE"},
     "opus_bitrate": {"type": "str", "default": "320k", "env": "OPUS_BITRATE"},
+    "alac_bitrate": {"type": "str", "default": "lossless", "env": "ALAC_BITRATE"},
     "min_audio_bitrate": {"type": "int", "default": 0, "env": "MIN_AUDIO_BITRATE"},
     "singles_subdir": {"type": "str", "default": "Singles", "env": "SINGLES_SUBDIR"},
     "playlists_subdir": {"type": "str", "default": "", "env": "PLAYLISTS_SUBDIR"},
