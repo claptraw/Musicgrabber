@@ -1,7 +1,7 @@
 # Music Grabber
 **v2.8.2**
 
-A self-hosted music acquisition service. Search YouTube, SoundCloud, Soulseek, and MP3Phoenix, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
+A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix, zvu4no, Monochrome/Qobuz, and optional Soulseek, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
 If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 
@@ -21,20 +21,23 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 ## Features
 
-- **Multi-source search:** YouTube, SoundCloud, MP3Phoenix, zvu4no, and optional Soulseek searched in parallel; quality-ranked results with source badges and score explanations
-- **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
+- **Multi-source search:** YouTube, SoundCloud, MP3Phoenix, zvu4no, optional Soulseek, and optional Monochrome/Qobuz searched in parallel; quality-ranked results with source badges and score explanations
+- **Monochrome/Qobuz source:** searches the Tidal catalogue via hifi-api metadata, then resolves matching Qobuz FLAC streams by ISRC. It can serve proper lossless when the proxy gods are smiling. Disabled by default, enable it in Search Sources
+- **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
 - **Watched Artists:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles only: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Tracks already on disk are recognised immediately. Per-artist check interval, convert-to-FLAC toggle, pause/resume, missing and track list panels
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
-- **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches all sources in parallel and grabs the best result for each
+- **Album mode:** browse MusicBrainz artists, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Search results can also jump straight to the matching album when MusicBrainz can identify it
+- **Auto-album routing for singles:** optional setting to file single-track downloads into artist/album folders when MusicBrainz resolves an album, either under Singles or the Albums directory
+- **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches enabled sources in parallel and grabs the best result for each. It can also create a playlist and route files into the Playlists directory or a custom watched-playlist folder
 - **Similar artist discovery:** hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
 - **Apprise notifications:** one URL covers Gotify, ntfy, Discord, Pushover, Slack, and about 50 others. Also supports Telegram webhook and SMTP email
 - **Navidrome pre-download duplicate check:** queries the Subsonic API before downloading; if the track is already in your library, the existing path is used for playlist routing without re-downloading
-- **Best quality audio:** output format is configurable (FLAC, Opus, or MP3 ~192 kbps VBR)
+- **Best quality audio:** output format is configurable (FLAC, Opus, or MP3), with MP3 and Opus quality settings
 - **Enhanced metadata:** AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source tags. For "Artist - Title" queries, MusicBrainz expected duration is used as a scoring signal at search time, so a 1:41 DJ edit won't outrank the 3:31 original
 - **Synced lyrics:** automatic lyrics fetching from LRClib, saved as `.lrc` files
-- **Auto-organise:** `Singles/Artist/Title.flac` (or flat `Singles/Artist - Title.flac` with "Organise by Artist" off). Optional track-number filenames produce `Singles/Artist/1 - Title.flac` when metadata includes a track number
+- **Auto-organise:** `Singles/Artist/Title.flac` (or flat `Singles/Artist - Title.flac` with "Organise by Artist" off). Optional track-number filenames produce `Singles/Artist/1 - Title.flac` when metadata includes a track number. Album mode uses `Albums/Artist/Album/Track.flac`
 - **Duplicate detection:** local filesystem check plus optional Navidrome Subsonic API check
-- **Trash bin:** deleted files move to `.trash/` instead of being permanently removed; restore with one click to skip re-downloading. Files that fail mismatch or duration checks also land in the trash so you can listen before they vanish
+- **Trash bin:** deleted files move to `/data/.trash/` instead of being permanently removed; restore with one click to skip re-downloading. Files that fail mismatch or duration checks also land in the trash so you can listen before they vanish
 - **In-queue playback:** play button on completed queue cards and trashed files for instant preview without leaving the tab
 - **Job queue:** track progress, retry failures, re-download or delete files, see metadata provenance
 - **Statistics dashboard:** download counts, success rate, daily chart, top artists, search analytics
@@ -43,19 +46,19 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Dark/light theme:** toggle in the header; preference saved per browser
 - **Mobile-friendly UI:** designed for quick searches from your phone
 - **Settings tab:** configure all integrations via UI; no docker-compose editing required
-- **Multi-user support:** create user accounts with role-based access. Admins manage global settings; each user gets their own queue, watched playlists/artists, notifications, and credentials. Single-user installs work exactly as before with no configuration changes
+- **Multi-user support:** create user accounts with role-based access. Admins manage global settings; standard users get their own queue, watched playlists/artists, notifications, and credentials. Peon users get the stripped-back tabs and inherit global conversion/source settings, for when you want "download this song", not "reconfigure the mothership". Single-user installs work exactly as before with no configuration changes
 - **Optional API authentication:** protect your instance with an API key
 - **YouTube cookie support:** upload browser cookies in Settings to bypass bot detection
 - **Spotify cookie support:** upload cookies from `open.spotify.com` to access private playlists, saved albums, and personal library playlists
 - **Minimum bitrate enforcement:** optionally reject downloads below a configurable threshold
 - **PUID/PGID support:** run as a specific user for correct file ownership on NAS/SMB shares
-- **Optional Navidrome/Jellyfin integration:** auto-triggers library rescan after downloads
-- **Soulseek integration:** optional slskd support for P2P sources *(in progress)*
+- **Optional Navidrome/Jellyfin/Lidarr integration:** auto-triggers library rescan after downloads
+- **Soulseek integration:** optional slskd support for P2P search and downloads
 - **Report/blacklist:** flag bad results from the queue; blacklisted videos and uploaders are suppressed from future searches
 
 ## Why FLAC?
 
-For YouTube, SoundCloud, and MP3Phoenix, FLAC conversion is primarily for standardisation and consistent tagging. It does not improve audio quality beyond the source; it only preserves what is already there. If you prefer to keep the original format where possible, disable FLAC conversion and files will be saved as-is.
+For YouTube, SoundCloud, MP3Phoenix, and zvu4no, FLAC conversion is primarily for standardisation and consistent tagging. It does not improve audio quality beyond the source; it only preserves what is already there. Monochrome and Soulseek may already provide proper FLAC, in which case MusicGrabber keeps the good stuff and tags it properly. If you prefer to keep the original format where possible, disable conversion and files will be saved as-is.
 
 ## Screenshots
 
@@ -144,7 +147,7 @@ For manual setup, or if you want a reference for the XML config, here's a workin
 <Config Name="PGID" Target="PGID" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">100</Config>
 ```
 
-PUID `99` and PGID `100` are Unraid's standard `nobody`/`users` — these give the container correct write access to your shares. Adjust if your setup differs.
+PUID `99` and PGID `100` are Unraid's standard `nobody`/`users`, these give the container correct write access to your shares. Adjust if your setup differs.
 
 ### Option C: Build from Source
 
@@ -213,9 +216,14 @@ Both scripts are copied to `%APPDATA%\MusicGrabber` during setup. You can also p
 The easiest way to configure MusicGrabber is via the **Settings tab** in the UI. You can configure:
 
 - **General**: MusicBrainz metadata, lyrics fetching, default FLAC conversion, minimum audio bitrate, artist subfolder organisation
+- **Audio format**: FLAC, Opus, or MP3, including MP3/Opus quality presets
+- **Library layout**: Singles, Playlists, and Albums subfolders, track-number filenames, auto-album routing, singles-only mode, and file permissions
+- **Search sources**: enable/disable YouTube, SoundCloud, MP3Phoenix, zvu4no, Soulseek, and Monochrome
+- **Monochrome**: hifi-api URL and Qobuz proxy URL
 - **Soulseek (slskd)**: enable toggle, URL, credentials, downloads path
 - **Navidrome**: URL and credentials for library refresh
 - **Jellyfin**: URL and API key for library refresh
+- **Lidarr**: URL and API key for library refresh
 - **Notifications**: Apprise URL, Telegram webhook, generic webhook URL, and SMTP settings
 - **YouTube**: Upload browser cookies for authenticated downloads
 - **Spotify**: Upload browser cookies to access private playlists
@@ -242,9 +250,21 @@ Settings are stored in the database and persist across container restarts.
 | `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
 | `ACOUSTID_API_KEY` | *(shared built-in)* | AcoustID API key for audio fingerprinting. A shared key is built in but **may hit rate limits**. Register a free key at [acoustid.org](https://acoustid.org/login) and set it here (or via Settings tab) to avoid sharing quota |
 | `DEFAULT_CONVERT_TO_FLAC` | `true` | Convert downloads to FLAC by default (can be toggled per-download in UI) |
+| `AUDIO_FORMAT` | `flac` | Output format when conversion is enabled: `flac`, `opus`, or `mp3` |
+| `MP3_BITRATE` | `v2` | MP3 quality preset: `v2`, `v0`, `320k`, `256k`, `192k`, or `128k` |
+| `OPUS_BITRATE` | `320k` | Opus bitrate: `320k`, `256k`, `192k`, `128k`, or `96k` |
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
+| `SINGLES_SUBDIR` | `Singles` | Subfolder under `MUSIC_DIR` for normal single-track downloads. Use `.` for the music root |
+| `PLAYLISTS_SUBDIR` | *(empty)* | Optional subfolder under `MUSIC_DIR` for playlist-routed downloads. Empty means playlist files use the Singles layout |
+| `ALBUMS_SUBDIR` | `Albums` | Subfolder under `MUSIC_DIR` for album-mode downloads. Use `.` for the music root |
 | `ORGANISE_BY_ARTIST` | `true` | Create artist subfolders under Singles. Set to `false` for a flat directory |
 | `INCLUDE_TRACK_NUMBER_IN_FILENAME` | `false` | Prefix saved filenames with the resolved track number when one is available, e.g. `Singles/Artist/1 - Title.flac` |
+| `AUTO_ALBUM_SINGLES` | `false` | If MusicBrainz finds album context for a single, move it into `Artist/Album/` automatically |
+| `AUTO_ALBUM_SINGLES_USE_ALBUMS_DIR` | `false` | Put auto-routed singles under the Albums directory instead of under Singles |
+| `SINGLES_ONLY_MODE` | `false` | Hide the Albums tab while keeping single-track auto-album routing available |
+| `FILE_PERMISSIONS` | `666` | File mode applied after downloads. `777` is available for stubborn NAS/share setups |
+| `SKIP_DUPES` | `true` | Skip downloads when a matching local file is already found |
+| `NAVIDROME_DUPE_CHECK` | `true` | Use Navidrome/Subsonic as part of duplicate detection when Navidrome is configured |
 | `WEBHOOK_URL` | - | Generic webhook URL; receives JSON POST on download completion/failure |
 | `YTDLP_PLAYER_CLIENT` | *(empty)* | Override yt-dlp YouTube player client (expert-only, e.g. `android`, `web,android`) |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
@@ -252,7 +272,16 @@ Settings are stored in the database and persist across container restarts.
 | `NAVIDROME_PASS` | - | Navidrome password for API |
 | `JELLYFIN_URL` | - | Jellyfin server URL (e.g., `http://jellyfin:8096`) |
 | `JELLYFIN_API_KEY` | - | Jellyfin API key for library refresh |
+| `LIDARR_URL` | - | Lidarr server URL |
+| `LIDARR_API_KEY` | - | Lidarr API key for library refresh |
+| `SOURCE_YOUTUBE_ENABLED` | `true` | Enable YouTube search results |
+| `SOURCE_MP3PHOENIX_ENABLED` | `true` | Enable MP3Phoenix search results |
+| `SOURCE_SOUNDCLOUD_ENABLED` | `true` | Enable SoundCloud search results |
+| `SOURCE_ZVU4NO_ENABLED` | `true` | Enable zvu4no search results |
 | `SOURCE_SOULSEEK_ENABLED` | `false` | Enable Soulseek/slskd search results. Credentials alone do not enable Soulseek |
+| `SOURCE_MONOCHROME_ENABLED` | `false` | Enable Monochrome/Qobuz search results |
+| `MONOCHROME_HIFI_API_URL` | `https://eu-central.monochrome.tf` | hifi-api compatible endpoint used for Tidal metadata/ISRC lookups |
+| `MONOCHROME_QOBUZ_PROXY_URL` | `https://qobuz.kennyy.com.br` | Qobuz proxy used to resolve direct audio streams |
 | `SLSKD_URL` | - | slskd API URL (e.g., `http://slskd:5030`) |
 | `SLSKD_USER` | - | slskd username |
 | `SLSKD_PASS` | - | slskd password |
@@ -273,9 +302,19 @@ Settings are stored in the database and persist across container restarts.
 | `SMTP_TO` | - | Recipient address(es), comma-separated |
 | `SMTP_TLS` | `true` | Use STARTTLS |
 | `API_KEY` | - | API key for authentication (see Security section) |
+| `HTTPS_ONLY` | `false` | Reject non-HTTPS API requests. Useful behind a correctly configured reverse proxy |
+| `HSTS_MAX_AGE` | `31536000` | HSTS max-age sent on HTTPS responses |
+| `ALLOW_API_KEY_QUERY_PARAM` | `false` | Allow `?api_key=` fallback for legacy scripts. Prefer headers unless you enjoy secrets in logs |
+| `LOGIN_MAX_ATTEMPTS` | `5` | Failed login attempts before temporary lockout |
+| `LOGIN_LOCKOUT_SECONDS` | `900` | Login lockout duration |
+| `LOGIN_ATTEMPT_WINDOW` | `900` | Window for counting failed logins |
+| `DOWNLOAD_TOKEN_TTL_SECONDS` | `60` | Single-use browser download token lifetime |
+| `MAX_CONCURRENT_DOWNLOADS` | `3` | Number of concurrent download workers |
 | `TIMEOUT_YTDLP_DOWNLOAD` | `300` | Timeout in seconds for yt-dlp to download a single track. Increase for long mixes or slow connections |
 | `TIMEOUT_FFMPEG_CONVERT` | `120` | Timeout in seconds for ffmpeg format conversion. Increase if long tracks are producing broken files |
 | `TIMEOUT_MP3PHOENIX_DOWNLOAD` | `120` | Timeout in seconds for MP3Phoenix HTTP stream downloads |
+| `TIMEOUT_ZVU4NO_DOWNLOAD` | `120` | Timeout in seconds for zvu4no direct MP3 downloads |
+| `TIMEOUT_MONOCHROME_DOWNLOAD` | `300` | Timeout in seconds for Monochrome/Qobuz FLAC downloads |
 
 ### Navidrome Integration
 
@@ -309,7 +348,34 @@ environment:
   - JELLYFIN_API_KEY=your-api-key-here
 ```
 
-Get your API key from Jellyfin: Dashboard → API Keys → Add.
+Get your API key from Jellyfin: Dashboard, API Keys, Add.
+
+### Lidarr Auto-Rescan
+
+MusicGrabber can also poke Lidarr after downloads so it notices new files sooner:
+
+```yaml
+environment:
+  - LIDARR_URL=http://lidarr:8686
+  - LIDARR_API_KEY=your-api-key-here
+```
+
+This is a refresh nudge, not a promise that Lidarr will suddenly become reasonable about singles. We can hope, though.
+
+### Monochrome/Qobuz Source (Optional)
+
+Monochrome is disabled by default. When enabled, MusicGrabber searches Tidal metadata through a hifi-api compatible endpoint, uses the ISRC to find the same recording through a Qobuz proxy, then downloads the best available stream, stepping down quality if the top tier is unavailable.
+
+Turn it on in Settings, Search Sources, or use:
+
+```yaml
+environment:
+  - SOURCE_MONOCHROME_ENABLED=true
+  - MONOCHROME_HIFI_API_URL=https://eu-central.monochrome.tf
+  - MONOCHROME_QOBUZ_PROXY_URL=https://qobuz.kennyy.com.br
+```
+
+You can point those URLs at self-hosted compatible services if you run them. Monochrome results without an ISRC are ignored, because Qobuz cannot resolve them and pretending otherwise just wastes everyone's afternoon.
 
 ### Notifications (Optional)
 
@@ -416,7 +482,7 @@ The right-hand paths (`:/downloads`) match, so both containers are looking at th
 
 ### Playlist Import
 
-MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, YouTube, SoundCloud, and ListenBrainz playlists. Paste a supported URL in the Bulk Import tab to fetch the track list, then import them via the enabled search sources.
+MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, YouTube, SoundCloud, Tidal, and ListenBrainz playlists. Paste a supported URL in the Bulk Import tab to fetch the track list, then import them via the enabled search sources.
 
 **How it works by source:**
 
@@ -424,19 +490,20 @@ MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, YouTube,
 - **Amazon Music**: Headless browser scraping via Playwright. Slower but reliable for most public playlists
 - **Spotify small playlists (under ~100 tracks)**: Uses Spotify's embed endpoint to quickly fetch track data
 - **Spotify large playlists (100+ tracks)**: Automatically falls back to headless browser scraping
+- **Tidal playlists**: Uses the Monochrome/hifi-api playlist path, then downloads can use any enabled source, including Monochrome itself if you have switched it on
 
 **Spotify private playlists and personal library:**
 
-By default, only public Spotify content is accessible. To unlock private playlists, liked songs playlists, and anything else that requires a login, upload your Spotify browser cookies in **Settings → Spotify**.
+By default, only public Spotify content is accessible. To unlock private playlists, liked songs playlists, and anything else that requires a login, upload your Spotify browser cookies in **Settings, Spotify**.
 
 1. Install a cookie export extension such as [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) (Chrome) or [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) (Firefox)
 2. Log in to [open.spotify.com](https://open.spotify.com) in your browser
 3. Use the extension to export cookies for `open.spotify.com` as a `cookies.txt` file (Netscape format)
-4. In MusicGrabber, go to **Settings → Spotify**, click **Upload cookies.txt**, and select the file
+4. In MusicGrabber, go to **Settings, Spotify**, click **Upload cookies.txt**, and select the file
 5. Click **Test Cookies** to confirm the session is active
 6. Private playlist URLs will now work in Bulk Import and Watched Playlists
 
-The `sp_dc` session cookie is what grants access. It has a long expiry (typically ~1 year) but will be invalidated if you log out of Spotify or change your password. If a private playlist suddenly returns an error, your cookies have expired — re-export and paste them in. MusicGrabber will show an amber warning banner in Settings when it detects the cookies have stopped working.
+The `sp_dc` session cookie is what grants access. It has a long expiry (typically ~1 year) but will be invalidated if you log out of Spotify or change your password. If a private playlist suddenly returns an error, your cookies have expired, re-export and paste them in. MusicGrabber will show an amber warning banner in Settings when it detects the cookies have stopped working.
 
 **Headless browser method:**
 
@@ -460,15 +527,21 @@ shm_size: '2gb'  # Required for Chromium
 
 ### Watched Playlists
 
-Automatically monitor Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, or ListenBrainz playlists for new tracks. When new songs are added to a watched playlist, MusicGrabber will detect them and queue them for download.
+Automatically monitor Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, or ListenBrainz playlists for new tracks. When new songs are added to a watched playlist, MusicGrabber will detect them and queue them for download.
 
 **How it works:**
 
 1. Add a playlist URL in the "Watched" tab
 2. MusicGrabber fetches the current tracklist and stores hashes of each track
 3. A built-in scheduler checks playlists periodically (default: daily)
-4. New tracks are queued for download, searching all sources for the best quality available
+4. New tracks are queued for download, searching all selected sources for the best quality available
 5. If "Generate M3U" is enabled, a `.m3u` file is created and updated on every refresh as new tracks are downloaded
+
+Each watched playlist can also:
+- Use Append or Mirror sync for its M3U
+- Limit preferred sources, useful when a SoundCloud set should stay on SoundCloud, or a playlist deserves Soulseek/Monochrome first
+- Route downloads into the standard Playlists directory or a custom subfolder under your music root
+- Show missing tracks, candidate search results, and manual retry controls when the automatic match is not good enough
 
 **Configuration:**
 
@@ -535,7 +608,7 @@ Notes:
 
 1. **Single tracks:** search for a song, tap/click the result to download. Searches all enabled sources in parallel
 2. **Preview:** on desktop, hover over a result for 2 seconds to hear a preview (works for all sources)
-3. **Playlists:** search for a playlist URL or name, tap the playlist result to download all tracks (YouTube playlists only)
+3. **Playlists:** paste a supported playlist URL in Bulk Import or Watched Playlists to fetch the track list, then queue downloads through your enabled sources
 4. **Processing feedback:** shows "Processing..." immediately when tapped, then "Added to queue"
 
 ### Bulk Import
@@ -548,10 +621,10 @@ Backstreet Boys – I Want It That Way
 ```
 
 The app will:
-- Search YouTube for each song automatically
-- Queue downloads for best matches
+- Search enabled sources for each song automatically
+- Queue downloads for the best matches
 - Show success/failure summary
-- All processing happens in-memory (files are not stored on server)
+- Optionally create a playlist and route files into Playlists or a custom watched-playlist folder
 
 Supports various dash formats: `-`, `–`, `--`
 
@@ -562,7 +635,10 @@ Supports various dash formats: `-`, `–`, `--`
 - **Play:** completed downloads have a play/stop button for instant in-browser preview
 - **Re-download:** re-queue any completed or failed download (overwrites existing file)
 - **Report bad tracks:** flag wrong tracks, ContentID dodges, or poor quality from the queue. Blacklisted videos are excluded from future searches
-- **Trash:** move audio files (and lyrics) to `.trash/` inside your music directory instead of permanently deleting them. Trashed files can be played and restored from the Trash Bin section at the bottom of the Queue tab
+- **Edit tags:** completed downloads can be retagged from the queue, including artist, title, album, album artist, year, and track number. MusicBrainz can have a guess too, which is handy when the filename is doing its best impression of a ransom note
+- **Why this result?:** automated downloads record the scorer's reasoning, including the winning score and a few near misses
+- **Force accept:** watched-playlist mismatches can be accepted manually when the source metadata is messy but your ears say it is the right track
+- **Trash:** move audio files (and lyrics) to `/data/.trash/` instead of permanently deleting them. Trashed files can be played and restored from the Trash Bin section at the bottom of the Queue tab
 - **Trash bin:** lists all trashed files with per-file Play, Restore, and permanent Delete buttons. "Empty Trash" clears the lot (admin only). Files that fail mismatch or duration checks during download also land here automatically
 - **Retry failed:** click retry on individual failed downloads
 - **Clear queue:** remove all remembered jobs with the "Clear Queue" button
@@ -572,17 +648,28 @@ Supports various dash formats: `-`, `–`, `--`
 Downloads are organised as:
 ```
 /music/
-└── Singles/
-    ├── Artist Name/              # When "Organise by Artist" is on (default)
-    │   └── Track Title.flac
-    │   └── 1 - Track Title.flac  # With "Include Track Number in Filename" on
-    ├── Artist Name - Track Title.flac  # When "Organise by Artist" is off
-    └── Playlist Name.m3u
+├── Singles/
+│   ├── Artist Name/              # When "Organise by Artist" is on (default)
+│   │   ├── Track Title.flac
+│   │   └── 1 - Track Title.flac  # With "Include Track Number in Filename" on
+│   ├── Artist Name - Track Title.flac  # When "Organise by Artist" is off
+│   └── Playlist Name.m3u
+├── Playlists/                    # Optional, when PLAYLISTS_SUBDIR is set
+│   └── Playlist Name/
+│       └── Artist Name - Track Title.flac
+└── Albums/
+    └── Artist Name/
+        └── Album Name/
+            ├── 01 - Track Title.flac
+            ├── cover.jpg
+            └── Album Name.m3u
 ```
 
 - By default, tracks go into `Singles/Artist/` directories
 - Disable "Organise by Artist" in Settings to put all tracks directly in `Singles/` with `Artist - Title` filenames
 - Enable "Include Track Number in Filename" in Settings to prefix saved files with the resolved track number when MusicBrainz or source tags provide one
+- Set `PLAYLISTS_SUBDIR` or use the Settings tab to put playlist-routed downloads under a dedicated Playlists folder
+- Album downloads land under `Albums/Artist/Album/` by default, with MusicBrainz track context and optional album-local M3U files
 - Playlist downloads generate `.m3u` files with relative paths
 - Watched playlists with M3U enabled keep their `.m3u` file updated on every refresh cycle
 - Artist and title are extracted from source metadata, with YouTube and SoundCloud titles parsed when needed
@@ -597,22 +684,27 @@ With `ENABLE_MUSICBRAINZ=true`:
 3. Falls back to a text-based MusicBrainz search if fingerprinting fails or scores too low
 4. Falls back to cleaned source metadata if neither lookup finds anything
 5. Sets album to "Singles" by default when no album is found
-6. Embeds cover art from source thumbnails
+6. Fetches proper cover art using Cover Art Archive, then iTunes/Deezer fallbacks, keeping source thumbnails as the last resort
 
 ### Duplicate Detection
 
 Before downloading, checks if the track already exists:
 - Exact filename match
 - Case-insensitive matching
-- Skips download and reports as duplicate
+- One-level-deep artist/album folders created by auto-album routing
+- Optional Navidrome/Subsonic lookup, if configured
+- Skips download and reports as duplicate, while still using the existing path for playlist M3U routing when possible
 
 ## Security
 
-MusicGrabber includes **optional API key authentication** for protecting your instance.
+MusicGrabber has two layers of auth:
+
+- **Single-user mode:** no login by default, unless you set `API_KEY`
+- **Multi-user mode:** starts when you create two or more users. Requests use bearer session tokens from `/api/auth/login`; `X-API-Key` still works as an admin fallback for scripts
 
 ### API Key Authentication
 
-Enable API authentication by setting an API key in the Settings tab or via environment variable:
+Enable API key authentication by setting a key in the Settings tab or via environment variable:
 
 ```yaml
 environment:
@@ -620,18 +712,45 @@ environment:
 ```
 
 When enabled:
-- All API requests require the `X-API-Key` header
-- The frontend prompts for the key on first visit and stores it in browser localStorage
+- Single-user API requests require the `X-API-Key` header
+- In multi-user mode, normal browser/API clients should use `Authorization: Bearer <session-token>`
+- `X-API-Key` remains available for automation and is treated as admin access
 - Rate limiting applies: 200 requests per minute per IP address
 
 **Setting up:**
 
-1. Go to Settings → Security
+1. Go to Settings, Security
 2. Enter an API key (any string you choose)
 3. Save settings
 4. The browser will prompt you for the key
 
 **Environment variable override:** If `API_KEY` is set in the environment, it overrides the database value and cannot be changed via the UI.
+
+**curl examples:**
+
+```bash
+# API key mode
+curl -H "X-API-Key: your-secret-key-here" http://localhost:38274/api/jobs
+
+# Session mode
+TOKEN=$(curl -s -X POST http://localhost:38274/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"karl","password":"your-password"}' | jq -r .token)
+
+curl -H "Authorization: Bearer $TOKEN" http://localhost:38274/api/jobs
+```
+
+For browser-native file downloads in multi-user mode, the frontend asks `/api/auth/download-token` for a short-lived, single-use download token. The old `?api_key=` download trick is disabled by default because URLs end up in logs, browser history, proxy access logs, and other places secrets should not be having a wander. Set `ALLOW_API_KEY_QUERY_PARAM=true` only if you need backwards compatibility.
+
+### Roles
+
+| Role | What it can do |
+|------|----------------|
+| `admin` | Full access, global settings, users, stats reset, blacklist, trash emptying |
+| `user` | Own queue, watched playlists/artists, album workflows, personal credentials, notifications, and password |
+| `peon` | Search, Bulk Import, Queue, Albums, and Watched. No Settings or Stats, and conversion/source settings are inherited from admin |
+
+Single-user installs are still admin-equivalent and need no account unless you want multi-user mode.
 
 ### Additional Security Considerations
 
@@ -703,8 +822,9 @@ music.yourdomain.com {
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/sources` | List available search sources (for source selector UI) |
-| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "youtube/soundcloud/mp3phoenix/all"}`) |
+| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "all/youtube/soundcloud/mp3phoenix/zvu4no/monochrome"}`) |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
+| `GET` | `/api/search/artwork` | Find display artwork for a search result (`?artist=...&title=...`) |
 | `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for URL-based sources like SoundCloud/MP3Phoenix) |
 | `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
 
@@ -712,13 +832,17 @@ music.yourdomain.com {
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/mp3phoenix", "download_type": "single/playlist"}`) |
+| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/mp3phoenix/zvu4no/monochrome/soulseek", "download_type": "single/playlist"}`) |
 | `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` for provenance) |
 | `GET` | `/api/jobs/downloadable` | Paginated list of completed jobs available to save to device (`?page=1&per_page=50`) |
 | `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |
-| `GET` | `/api/jobs/{id}/download` | Download the audio file to browser (completed jobs only; accepts `?api_key=` for browser-native downloads) |
+| `GET` | `/api/jobs/{id}/download` | Download the audio file to browser (completed jobs only; use bearer auth, a short-lived `download_token`, or `X-API-Key`) |
 | `GET` | `/api/jobs/{id}/stream` | Stream audio file for in-browser playback (completed jobs only) |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
+| `POST` | `/api/jobs/{id}/force-accept` | Retry while skipping the watched-playlist mismatch check |
+| `PATCH` | `/api/jobs/{id}/tags` | Correct artist/title/album/year/track tags and rename the file |
+| `GET` | `/api/jobs/{id}/musicbrainz-guess` | Get a MusicBrainz tag suggestion for the tag editor (`?artist=...&title=...&offset=0`) |
+| `GET` | `/api/jobs/{id}/score-rationale` | Explain why an automated search picked this result |
 | `DELETE` | `/api/jobs/{id}/file` | Move downloaded file to trash bin (was permanent delete before v2.5.3) |
 | `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`), admin only |
 
@@ -734,7 +858,7 @@ music.yourdomain.com {
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/fetch-playlist` | Fetch tracks from playlist URL (Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, ListenBrainz) |
+| `POST` | `/api/fetch-playlist` | Fetch tracks from playlist URL (Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz) |
 | `POST` | `/api/spotify-playlist` | Backwards-compat alias for `/api/fetch-playlist` |
 
 ### Statistics and Reporting
@@ -745,6 +869,7 @@ music.yourdomain.com {
 | `DELETE` | `/api/stats?confirm=true` | Reset stats history (admin only; deletes completed/failed job history and search logs) |
 | `GET` | `/api/mismatches` | Get watched playlist track match mismatches (admin only) |
 | `DELETE` | `/api/mismatches` | Clear the mismatch log (admin only) |
+| `POST` | `/api/mismatches/{id}/accept` | Accept a watched-playlist mismatch and re-queue it with the mismatch check skipped |
 | `POST` | `/api/blacklist` | Report a bad track / block an uploader (admin only) |
 | `GET` | `/api/blacklist` | List all blacklist entries (admin only) |
 | `DELETE` | `/api/blacklist/{id}` | Remove a blacklist entry (admin only) |
@@ -858,13 +983,13 @@ docker compose up -d
 
 **Downloads failing with 403 errors?**
 - YouTube's bot detection may be blocking requests
-- Go to Settings → YouTube and upload browser cookies (export from a browser where you're signed into YouTube)
+- Go to Settings, YouTube and upload browser cookies (export from a browser where you're signed into YouTube)
 - Use a cookie export extension like "Get cookies.txt LOCALLY" (Chrome/Firefox)
 - Cookies expire periodically; re-export if downloads start failing again
 
 **Private Spotify playlist returns "not found" or "expired cookies" error?**
-- Private playlists require authentication cookies — see the Spotify private playlists section above
-- If you had working cookies and they've stopped, Spotify invalidated the session (logout, password change, or long inactivity). Re-export from `open.spotify.com` and paste them in Settings → Spotify
+- Private playlists require authentication cookies, see the Spotify private playlists section above
+- If you had working cookies and they've stopped, Spotify invalidated the session (logout, password change, or long inactivity). Re-export from `open.spotify.com` and paste them in Settings, Spotify
 - An amber warning banner appears in Settings when MusicGrabber detects the cookies have expired; it clears automatically when valid cookies are saved
 
 **Downloads failing for other reasons?**
@@ -907,7 +1032,7 @@ docker compose up -d
   print('Done')
   "
   ```
-- The app detects the change within 30 seconds — no restart needed. All your jobs, watched playlists, and settings are preserved.
+- The app detects the change within 30 seconds, no restart needed. All your jobs, watched playlists, and settings are preserved.
 - To go back fully from scratch, stop the container, delete `/data/music_grabber.db`, and start it again.
 
 **Metadata quality issues?**
@@ -918,13 +1043,21 @@ docker compose up -d
 - Obscure or newly released tracks may not be in AcoustID or MusicBrainz yet; metadata will come from YouTube/SoundCloud channel info instead
 - If fingerprinting stops working, the shared built-in AcoustID key may have hit its rate limit. Register a free personal key at [acoustid.org](https://acoustid.org/login) and enter it in Settings > General > AcoustID API Key (or set `ACOUSTID_API_KEY` env var)
 
+## AI Use
+
+MusicGrabber is human-directed and AI-assisted. At this point, pretty much any
+originally human-written starter code has been replaced or heavily rewritten,
+so the current codebase is roughly **90% AI-written code**.
+
+The project direction, feature choices, code checks, manual QA testing, release
+decisions, and day-to-day use are all human. This is not a throwaway generated
+demo; it is personally used and maintained.
+
 ## Contributors
 
-Built with a mix of human creativity and AI assistance.
-
-- **Karl:** Creator, Programmer and Maintainer
-- **Claude Opus 4.6 (Anthropic):** AI Pair Programmer
-- **Codex 5.3 (OpenAI):** AI Support Programmer
+- **Geekphreek:** Creator, Programmer and Maintainer
+- **Claude Opus 4.7 (Anthropic):** AI Pair Programmer
+- **Codex 5.5 (OpenAI):** AI Support Programmer
 
 ## License
 
