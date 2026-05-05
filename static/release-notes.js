@@ -7,6 +7,29 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.4": {
+        title: "What's New in v2.8.4",
+        sections: [
+            {
+                heading: "Spotify playlists work again",
+                items: [
+                    "Spotify added some new fields to their embed page that broke the regex we were using to pull out the track list. Every playlist was coming back with exactly one track, which is arguably a setlist but not what you asked for. We now parse the structured JSON Spotify already embed for their own frontend, which handles any nesting they throw at it. Should be considerably more resilient going forward.",
+                ]
+            },
+            {
+                heading: "Large Spotify playlists: proper warning, no more 30-second hang",
+                items: [
+                    "Playlists over 100 tracks trigger a headless browser fallback to fetch the rest. Without a Spotify cookie the browser was hitting a bot-detection wall, stalling for 30 seconds, and then returning a cryptic error about page structure. Now: if you have no cookie configured, the stall is skipped and you get a clear warning straight away explaining that you need to add your Spotify cookies in Settings to get the full list. The warning shows up on both the Fetch Playlist and Add Watched Playlist flows.",
+                ]
+            },
+            {
+                heading: "Headless browser sneaks past Spotify's bot detection",
+                items: [
+                    "Even without a Spotify cookie, the headless browser now masks the fingerprints Spotify use to identify automated browsers. Large playlists should fetch fully without needing a cookie in most cases.",
+                ]
+            },
+        ]
+    },
     "2.8.3": {
         title: "What's New in v2.8.3",
         sections: [

@@ -4801,13 +4801,21 @@
                 }
 
                 const data = await response.json();
-                showToast(`Now watching "${data.name}" (${data.track_count} tracks)`);
+                if (data.warning) {
+                    watchedError.textContent = `Warning: ${data.warning}`;
+                    watchedError.style.color = 'var(--warning, #f59e0b)';
+                    watchedError.style.display = 'block';
+                    showToast(`Now watching "${data.name}" (${data.track_count} tracks, truncated)`, true);
+                } else {
+                    showToast(`Now watching "${data.name}" (${data.track_count} tracks)`);
+                }
                 watchedUrlInput.value = '';
                 const customSubdirInput = document.getElementById('watchedCustomSubdir');
                 if (customSubdirInput) { customSubdirInput.value = ''; clearWatchedCustomSubdir(); }
                 loadWatchedPlaylists();
             } catch (error) {
                 watchedError.textContent = error.message;
+                watchedError.style.color = 'var(--error)';
                 watchedError.style.display = 'block';
             } finally {
                 clearInterval(timerInterval);

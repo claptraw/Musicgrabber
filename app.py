@@ -3041,9 +3041,12 @@ def fetch_playlist(request: Request, body: PlaylistFetchRequest):
     # fetch_playlist_tracks returns (artist, title) tuples - reformat to the
     # "Artist - Title" strings the bulk import UI expects, plus a playlist name.
     user_id = request.state.user_id
-    tracks_tuples, playlist_name = fetch_playlist_tracks(url, platform, user_id=user_id)
+    tracks_tuples, playlist_name, warning = fetch_playlist_tracks(url, platform, user_id=user_id)
     tracks = [f"{artist} - {title}" for artist, title in tracks_tuples]
-    return {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks), "platform": platform}
+    resp = {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks), "platform": platform}
+    if warning:
+        resp["warning"] = warning
+    return resp
 
 
 # =============================================================================
@@ -3152,7 +3155,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
 
         # Fetch playlist to get name and initial tracks
         try:
-            tracks, playlist_name = fetch_playlist_tracks(body.url, platform, user_id=user_id)
+            tracks, playlist_name, fetch_warning = fetch_playlist_tracks(body.url, platform, user_id=user_id)
         except HTTPException:
             raise
 
@@ -3193,7 +3196,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
             custom_subdir=(body.custom_subdir or "").strip() or None,
         )
 
-    return {
+    resp = {
         "id": playlist_id,
         "name": playlist_name,
         "platform": platform,
@@ -3202,6 +3205,9 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
         "import_id": import_id,
         "message": f"Now watching '{playlist_name}' with {len(tracks)} tracks queued for download"
     }
+    if fetch_warning:
+        resp["warning"] = fetch_warning
+    return resp
 
 
 @app.get("/api/watched-playlists")

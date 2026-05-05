@@ -266,76 +266,71 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
 
     html_content = response.text
     expected_total = None
-    total_match = re.search(r'"totalCount":\s*(\d+)', html_content)
-    if total_match:
-        try:
-            expected_total = int(total_match.group(1))
-        except ValueError:
-            expected_total = None
-
-    # Extract name
     playlist_name = f"Spotify {spotify_type.title()}"
-    title_matches = re.findall(r'"title":"([^"]+)"', html_content)
-    if title_matches:
-        playlist_name = title_matches[0]
-
-    # Extract tracks from the trackList JSON array embedded in the page.
-    # Each entry is a JSON object with title, subtitle (artist), and entityType fields.
-    # Track objects contain a nested audioPreview object, so we extract title/subtitle
-    # with targeted regexes scoped to the trackList slice rather than the whole page.
     tracks = []
-    tracklist_match = re.search(r'"trackList":\[(.+?)\](?=,"|\})', html_content, re.DOTALL)
-    if tracklist_match:
-        tracklist_content = tracklist_match.group(1)
-        # Extract parallel title/subtitle/entityType arrays scoped to this slice
-        tl_titles = re.findall(r'"title":"([^"]*)"', tracklist_content)
-        tl_subtitles = re.findall(r'"subtitle":"([^"]*)"', tracklist_content)
-        tl_entity_types = re.findall(r'"entityType":"([^"]*)"', tracklist_content)
 
-        for i, (raw_title, raw_artist) in enumerate(zip(tl_titles, tl_subtitles)):
-            entity_type = tl_entity_types[i] if i < len(tl_entity_types) else "track"
-            try:
-                raw_title = json.loads(f'"{raw_title}"')
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                pass
-            try:
-                raw_artist = json.loads(f'"{raw_artist}"')
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                pass
+    # Primary: parse the __NEXT_DATA__ JSON blob Spotify embeds in the page.
+    # Previously we scraped this with regexes, but Spotify added nested arrays
+    # (e.g. "contentRatings":{"labels":[]}) which broke the non-greedy trackList
+    # regex. Proper JSON parsing handles any nesting depth.
+    next_data_match = re.search(
+        r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
+        html_content,
+        re.DOTALL,
+    )
+    if next_data_match:
+        try:
+            next_data = json.loads(next_data_match.group(1))
+            entity = next_data["props"]["pageProps"]["state"]["data"]["entity"]
+            playlist_name = entity.get("title") or entity.get("name") or playlist_name
+            for track in entity.get("trackList", []):
+                raw_title = track.get("title", "").strip()
+                raw_artist = track.get("subtitle", "").strip()
+                entity_type = track.get("entityType", "track")
+                if not raw_title:
+                    continue
+                # Subtitle separator is sometimes a non-breaking space — normalise it
+                raw_artist = raw_artist.replace(" ", " ")
+                if raw_artist.lower() == "music video" or entity_type == "music_video":
+                    from utils import extract_artist_title
+                    artist, title = extract_artist_title(raw_title, channel="")
+                    if artist and title and artist.lower() not in ("unknown artist", ""):
+                        tracks.append(f"{artist} - {title}")
+                    continue
+                if raw_artist:
+                    tracks.append(f"{raw_artist} - {raw_title}")
+        except (KeyError, TypeError, json.JSONDecodeError):
+            tracks = []
 
-            if not raw_title:
-                continue
-
-            # For music video entries Spotify puts "Music Video" as the subtitle
-            # rather than the artist name. Try to salvage the artist from the
-            # title field, which often comes through as "Artist - Title".
-            if raw_artist.lower() == "music video" or entity_type == "music_video":
-                from utils import extract_artist_title
-                artist, title = extract_artist_title(raw_title, channel="")
-                if artist and title and artist.lower() not in ("unknown artist", ""):
-                    tracks.append(f"{artist} - {title}")
-                # If we can't parse an artist out, skip rather than emit garbage
-                continue
-
-            if raw_artist:
-                tracks.append(f"{raw_artist} - {raw_title}")
-
-    # Fall back to whole-page regex if trackList wasn't found (page structure change)
+    # Fallback: old regex approach, kept in case Spotify ever drops __NEXT_DATA__
     if not tracks:
-        titles = re.findall(r'"title":"([^"]+)"', html_content)
-        subtitles = re.findall(r'"subtitle":"([^"]+)"', html_content)
-        if len(titles) > 1 and len(subtitles) > 1:
-            for title, artist in zip(titles[1:], subtitles[1:]):
+        print("Spotify __NEXT_DATA__ parse failed, falling back to regex scrape")
+        tracklist_match = re.search(r'"trackList":\[(.+?)\](?=,"|\})', html_content, re.DOTALL)
+        if tracklist_match:
+            tracklist_content = tracklist_match.group(1)
+            tl_titles = re.findall(r'"title":"([^"]*)"', tracklist_content)
+            tl_subtitles = re.findall(r'"subtitle":"([^"]*)"', tracklist_content)
+            tl_entity_types = re.findall(r'"entityType":"([^"]*)"', tracklist_content)
+            for i, (raw_title, raw_artist) in enumerate(zip(tl_titles, tl_subtitles)):
+                entity_type = tl_entity_types[i] if i < len(tl_entity_types) else "track"
                 try:
-                    title = json.loads(f'"{title}"')
+                    raw_title = json.loads(f'"{raw_title}"')
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     pass
                 try:
-                    artist = json.loads(f'"{artist}"')
+                    raw_artist = json.loads(f'"{raw_artist}"')
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     pass
-                if artist.strip().lower() != "music video" and artist and title:
-                    tracks.append(f"{artist} - {title}")
+                if not raw_title:
+                    continue
+                if raw_artist.lower() == "music video" or entity_type == "music_video":
+                    from utils import extract_artist_title
+                    artist, title = extract_artist_title(raw_title, channel="")
+                    if artist and title and artist.lower() not in ("unknown artist", ""):
+                        tracks.append(f"{artist} - {title}")
+                    continue
+                if raw_artist:
+                    tracks.append(f"{raw_artist} - {raw_title}")
 
     if not tracks:
         raise HTTPException(
@@ -343,9 +338,22 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
             detail=f"Could not extract tracks from {spotify_type}. It may be empty or Spotify's page structure may have changed."
         )
 
-    # If near the embed limit, try headless browser for full list
+    # If at the embed limit, attempt the headless browser to get the full playlist.
+    # Without sp_dc the browser hits a bot-detection wall, so skip it and warn immediately.
     if len(tracks) >= 95:
-        print(f"Spotify embed returned {len(tracks)} tracks (near limit), trying headless browser...")
+        if not sp_dc:
+            print(f"Spotify embed returned {len(tracks)} tracks (at limit), no sp_dc - skipping browser")
+            return {
+                "tracks": tracks,
+                "playlist_name": playlist_name,
+                "count": len(tracks),
+                "warning": (
+                    f"Only the first {len(tracks)} tracks were fetched. "
+                    "This playlist may have more - add your Spotify cookies in Settings to download the full list."
+                ),
+            }
+
+        print(f"Spotify embed returned {len(tracks)} tracks (at limit), trying headless browser...")
         browser_error = None
         try:
             browser_result = fetch_spotify_playlist_via_browser(
@@ -361,6 +369,8 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
                         "Some tracks may still be missing."
                     )
                 return browser_result
+            # Browser confirmed same count as embed - playlist is probably complete
+            print(f"Headless browser confirmed {browser_result['count']} tracks, playlist looks complete")
         except HTTPException as e:
             browser_error = e.detail
             print(f"Headless browser failed ({e.detail}), using embed results")
@@ -368,18 +378,18 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
             browser_error = str(e)
             print(f"Headless browser error: {e}, using embed results")
 
-        expected_note = f" (Spotify reports {expected_total})" if expected_total else ""
-        warning = (
-            f"Playlist truncated at {len(tracks)} tracks{expected_note} - headless browser failed"
-            + (f": {browser_error}" if browser_error else "")
-            + ". Check that shm_size: '2gb' is set in docker-compose.yml."
-        )
-        return {
-            "tracks": tracks,
-            "playlist_name": playlist_name,
-            "count": len(tracks),
-            "warning": warning,
-        }
+        if browser_error:
+            expected_note = f" (Spotify reports {expected_total})" if expected_total else ""
+            return {
+                "tracks": tracks,
+                "playlist_name": playlist_name,
+                "count": len(tracks),
+                "warning": (
+                    f"Only the first {len(tracks)} tracks were fetched{expected_note}. "
+                    f"Headless browser failed: {browser_error}. "
+                    "Check that shm_size: '2gb' is set in docker-compose.yml."
+                ),
+            }
 
     return {
         "tracks": tracks,
@@ -548,10 +558,10 @@ def _fetch_soundcloud_playlist(url: str) -> tuple[list[tuple[str, str]], str]:
     return tracks, playlist_name
 
 
-def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -> tuple[list[tuple[str, str]], str]:
+def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -> tuple[list[tuple[str, str]], str, str | None]:
     """Fetch tracks from a playlist URL
 
-    Returns (list of (artist, title) tuples, playlist_name)
+    Returns (list of (artist, title) tuples, playlist_name, warning_or_None)
     """
     if platform == "spotify_likes":
         spotify_cookies_text = get_setting("spotify_cookies", "", user_id=user_id)
@@ -571,7 +581,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
                 tracks.append((artist.strip(), title.strip()))
             else:
                 tracks.append(("Unknown", track_str.strip()))
-        return tracks, result["playlist_name"]
+        return tracks, result["playlist_name"], result.get("warning")
 
     if platform == "spotify":
         spotify_cookies_text = get_setting("spotify_cookies", "", user_id=user_id)
@@ -587,7 +597,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             else:
                 tracks.append(("Unknown", track_str.strip()))
 
-        return tracks, result["playlist_name"]
+        return tracks, result["playlist_name"], result.get("warning")
 
     elif platform == "youtube":
         # Use yt-dlp to get playlist info
@@ -643,7 +653,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
         if not tracks:
             raise HTTPException(status_code=422, detail="No tracks found in YouTube playlist")
 
-        return tracks, playlist_name
+        return tracks, playlist_name, None
 
     elif platform == "apple":
         result = fetch_apple_music_playlist(url)
@@ -656,7 +666,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             else:
                 tracks.append(("Unknown", track_str.strip()))
 
-        return tracks, result["playlist_name"]
+        return tracks, result["playlist_name"], None
 
     elif platform == "amazon":
         result = fetch_amazon_playlist(url)
@@ -669,14 +679,15 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             else:
                 tracks.append(("Unknown", track_str.strip()))
 
-        return tracks, result["playlist_name"]
+        return tracks, result["playlist_name"], None
 
     elif platform == "listenbrainz":
         # Single LB playlist by UUID  -  regular refresh path
         m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', url, re.IGNORECASE)
         if not m:
             raise HTTPException(status_code=400, detail="Invalid ListenBrainz playlist URL: no UUID found")
-        return _fetch_listenbrainz_playlist(m.group(1))
+        tracks, name = _fetch_listenbrainz_playlist(m.group(1))
+        return tracks, name, None
 
     elif platform == "listenbrainz_user":
         # Username URLs are handled at the add-watched level (fan-out to multiple playlists).
@@ -687,12 +698,14 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
         )
 
     elif platform == "soundcloud":
-        return _fetch_soundcloud_playlist(url)
+        tracks, name = _fetch_soundcloud_playlist(url)
+        return tracks, name, None
 
     elif platform == "tidal":
         from monochrome import fetch_tidal_playlist_tracks
         try:
-            return fetch_tidal_playlist_tracks(url)
+            tracks, name = fetch_tidal_playlist_tracks(url)
+            return tracks, name, None
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Failed to fetch Tidal playlist: {e}")
 
@@ -869,13 +882,13 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     tracks = _lb_reresolution_fetch(prefer_latest=True)
                 else:
                     try:
-                        tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
+                        tracks, _, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
                     except HTTPException as e:
                         if e.status_code != 404:
                             raise
                         tracks = _lb_reresolution_fetch(prefer_latest=False)
             else:
-                tracks, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
+                tracks, _, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
 
             # Build a set of hashes for what the upstream playlist currently contains
             current_hashes = {hash_track(artist, title) for artist, title in tracks}
