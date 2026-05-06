@@ -45,3 +45,8 @@ Thumbs.db
 
 # Working docs (project notes, plans, code reviews)
 docs/
+
+# Test Suite -- keep the suite, but exclude local credential files
+tests/sp_dc.txt
+tests/.venv/
+

@@ -1,8 +1,9 @@
 # Changelog
 
-## v2.8.4 (Dev)
+## v2.8.4 (2026-05-06)
 
 ### Fixed
+- **Album routing now applies inside playlist folders**: when "Auto-route to album folder" was on, tracks downloaded as part of a playlist stubbornly landed flat in `Playlists/Name/Artist - Title.flac`, ignoring the setting entirely. They now land in `Playlists/Name/Artist/Album/Title.flac`, consistent with how singles behave. Track numbers in filenames also work correctly here; the artist prefix is dropped from the filename since the folder structure already provides the context.
 - **Spotify playlist parsing was broken**: Spotify quietly added `"contentRatings":{"labels":[]}` to each track object in their embed page. The non-greedy regex we were using to extract the `trackList` array stopped dead at the first `]` followed by `}`, so every fetch came back with exactly one track. The fix was to stop wrestling with regex and parse the `__NEXT_DATA__` JSON blob that Spotify already embeds for their own Next.js frontend, which gives us a clean, properly structured track list regardless of what nested arrays Spotify add in future. Old regex kept as a fallback.
 - **Large Spotify playlists silently truncated with a confusing error**: playlists over 100 tracks would attempt the headless browser fallback, but Playwright was being identified as a bot and served a login wall rather than track listings. This produced a 30-second stall followed by a misleading "page structure may have changed" error. Two fixes: without a Spotify cookie the headless browser attempt is now skipped immediately (no point waiting) and a clear warning is shown instead ("add your Spotify cookies in Settings"); with a cookie it still works as before. The warning now surfaces in the GUI on both the Fetch Playlist and the Add Watched Playlist paths.
 - **Playwright bot detection on Spotify**: added `--disable-blink-features=AutomationControlled` and masked `navigator.webdriver`, which is the main fingerprint Spotify use to distinguish headless browsers from real ones. Large playlists now fetch fully without needing a cookie at all.

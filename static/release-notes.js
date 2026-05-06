@@ -11,6 +11,12 @@ const RELEASE_NOTES = {
         title: "What's New in v2.8.4",
         sections: [
             {
+                heading: "Album routing now works inside playlist folders",
+                items: [
+                    "If you had 'Auto-route to album folder' enabled, it was quietly doing nothing for playlist downloads. Tracks landed flat in Playlists/Name/Artist - Title.flac and ignored the setting entirely. They now land in Playlists/Name/Artist/Album/Title.flac, consistent with how singles behave. Track numbers in filenames work correctly here too, and the artist prefix is dropped from the filename since the folder structure already provides that context.",
+                ]
+            },
+            {
                 heading: "Spotify playlists work again",
                 items: [
                     "Spotify added some new fields to their embed page that broke the regex we were using to pull out the track list. Every playlist was coming back with exactly one track, which is arguably a setlist but not what you asked for. We now parse the structured JSON Spotify already embed for their own frontend, which handles any nesting they throw at it. Should be considerably more resilient going forward.",

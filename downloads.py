@@ -1499,6 +1499,68 @@ def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artis
     return new_path
 
 
+def _auto_route_playlist_to_album(
+    audio_file: Path, artist: str, title: str,
+    mb_metadata: dict, job_id: str, playlist_base: Path,
+    user_id: str | None = None,
+) -> tuple[Path, bool]:
+    """If auto_album_singles is enabled and MB returned an album name, move the file
+    from Playlists/Name/ into Playlists/Name/Artist/Album/.
+
+    Returns (new_path, routed) — routed is True if the file was actually moved.
+    """
+    if not get_setting_bool("auto_album_singles", False, user_id=user_id):
+        return audio_file, False
+
+    album = (mb_metadata.get("album") or "").strip()
+    if not album:
+        return audio_file, False
+
+    safe_artist = sanitize_filename(artist)
+    safe_album  = sanitize_filename(album)
+    album_dir = playlist_base / safe_artist / safe_album
+
+    if audio_file.parent == album_dir:
+        return audio_file, True
+
+    album_dir.mkdir(parents=True, exist_ok=True)
+    new_path = album_dir / audio_file.name
+
+    if new_path.exists():
+        print(f"Playlist album routing: target already exists, skipping move: {new_path}")
+        return audio_file, False
+
+    _move_completed_file(audio_file, new_path)
+    set_file_permissions(new_path)
+
+    old_lrc = audio_file.with_suffix(".lrc")
+    if old_lrc.exists():
+        new_lrc = new_path.with_suffix(".lrc")
+        _move_completed_file(old_lrc, new_lrc)
+        set_file_permissions(new_lrc)
+
+    track_number = mb_metadata.get("track_number")
+    track_total  = mb_metadata.get("track_total")
+    if track_number or track_total:
+        apply_metadata_to_file(
+            new_path, artist, title, album,
+            mb_metadata.get("year"),
+            track_number=track_number,
+            track_total=track_total,
+        )
+
+    old_dir = audio_file.parent
+    try:
+        if old_dir.exists() and not any(old_dir.iterdir()):
+            old_dir.rmdir()
+    except OSError:
+        pass
+
+    _update_job(job_id, override_dir=str(album_dir))
+    print(f"Playlist album routing: {artist} - {title} → {safe_artist}/{safe_album}/")
+    return new_path, True
+
+
 def _auto_route_single_to_album(
     audio_file: Path, artist: str, title: str,
     mb_metadata: dict, job_id: str, user_id: str | None
@@ -3760,6 +3822,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             if cover:
                 album_art_bytes, album_art_mime = cover
 
+        playlist_album_routed = False
         if mb_metadata:
             metadata_source = mb_metadata.get("metadata_source", metadata_source)
             mb_artist = mb_metadata.get("artist", artist)
@@ -3786,12 +3849,18 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                     audio_file = _relocate_for_normalised_artist(audio_file, artist, mb_artist, user_id=user_id)
                 artist = mb_artist
             title = tag_title
-            # Auto-route to Singles/Artist/Album/ if the setting is on and we're not
-            # already going to a specific album/playlist destination.
-            if not override_dir and not playlists_dir:
-                audio_file = _auto_route_single_to_album(
-                    audio_file, artist, title, mb_metadata, job_id, user_id
-                )
+            # Auto-route to Artist/Album/ when the setting is on.
+            # For singles: Singles/Artist/Album/ (or Albums/Artist/Album/).
+            # For playlists: Playlists/Name/Artist/Album/ — stays inside the playlist folder.
+            if not override_dir:
+                if playlists_dir:
+                    audio_file, playlist_album_routed = _auto_route_playlist_to_album(
+                        audio_file, artist, title, mb_metadata, job_id, artist_dir, user_id
+                    )
+                else:
+                    audio_file = _auto_route_single_to_album(
+                        audio_file, artist, title, mb_metadata, job_id, user_id
+                    )
             _update_job(job_id, artist=artist, title=title)
         else:
             tag_title = forced_track_title or title
@@ -3814,7 +3883,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         audio_file = _rename_with_track_number_if_enabled(
             audio_file, artist, title, video_id,
             tag_track_num, user_id=user_id,
-            playlist_routed=bool(playlists_dir),
+            # Album-routed playlist tracks sit in Artist/Album/ so no artist prefix needed.
+            playlist_routed=bool(playlists_dir) and not playlist_album_routed,
         )
 
         # Fetch and save lyrics
