@@ -7,6 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.5": {
+        title: "What's New in v2.8.5",
+        sections: [
+            {
+                heading: "Playlist album routing now works for Soulseek and MP3Phoenix too",
+                items: [
+                    "The v2.8.4 fix for 'Auto-route to album folder' inside playlist folders only wired up YouTube downloads. Soulseek and MP3Phoenix both had the old guard that skipped the routing entirely, so tracks from those sources still landed flat in Rock/Artist - Title.flac. All three sources now route consistently to Rock/Artist/Album/Artist - Title.flac when the setting is on.",
+                ]
+            },
+        ]
+    },
     "2.8.4": {
         title: "What's New in v2.8.4",
         sections: [

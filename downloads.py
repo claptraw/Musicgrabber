@@ -2975,10 +2975,15 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                     final_file = _relocate_for_normalised_artist(final_file, artist, mb_artist, user_id=user_id)
                 artist = mb_artist
             title = tag_title
-            if not override_dir and not playlists_dir:
-                final_file = _auto_route_single_to_album(
-                    final_file, artist, title, mb_metadata, job_id, user_id
-                )
+            if not override_dir:
+                if playlists_dir:
+                    final_file, _ = _auto_route_playlist_to_album(
+                        final_file, artist, title, mb_metadata, job_id, artist_dir, user_id
+                    )
+                else:
+                    final_file = _auto_route_single_to_album(
+                        final_file, artist, title, mb_metadata, job_id, user_id
+                    )
             _update_job(job_id, artist=artist, title=title)
         else:
             tag_track_num, tag_track_total = _resolve_track_number(
@@ -3346,10 +3351,15 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             album_artist=forced_album_artist,
         )
 
-        if not override_dir and not playlists_dir and mb_metadata:
-            output_path = _auto_route_single_to_album(
-                output_path, artist, title, mb_metadata, job_id, user_id
-            )
+        if not override_dir and mb_metadata:
+            if playlists_dir:
+                output_path, _ = _auto_route_playlist_to_album(
+                    output_path, artist, title, mb_metadata, job_id, artist_dir, user_id
+                )
+            else:
+                output_path = _auto_route_single_to_album(
+                    output_path, artist, title, mb_metadata, job_id, user_id
+                )
 
         output_path = _rename_with_track_number_if_enabled(
             output_path, artist, title, job_id,

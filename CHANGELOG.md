@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.8.5 (2026-05-08)
+
+### Fixed
+- **Playlist album routing missed Soulseek and MP3Phoenix sources**: the v2.8.4 fix for `Playlists/Name/Artist/Album/` routing only wired up the YouTube download path. Soulseek and MP3Phoenix both had the old `not playlists_dir` guard that skipped the routing call entirely, so tracks from those sources still landed flat. Both now call `_auto_route_playlist_to_album` consistently with the YouTube path.
+
 ## v2.8.4 (2026-05-06)
 
 ### Fixed
