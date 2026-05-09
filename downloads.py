@@ -1524,7 +1524,10 @@ def _auto_route_playlist_to_album(
         return audio_file, True
 
     album_dir.mkdir(parents=True, exist_ok=True)
-    new_path = album_dir / audio_file.name
+    # Use _output_stem so the file lands as Title.flac (or Artist - Title.flac in flat mode),
+    # matching how singles are named inside their Artist/Album/ subfolder.
+    new_stem = _output_stem(artist, title, audio_file.stem, user_id=user_id)
+    new_path = album_dir / f"{new_stem}{audio_file.suffix}"
 
     if new_path.exists():
         print(f"Playlist album routing: target already exists, skipping move: {new_path}")
@@ -2975,9 +2978,10 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                     final_file = _relocate_for_normalised_artist(final_file, artist, mb_artist, user_id=user_id)
                 artist = mb_artist
             title = tag_title
+            playlist_album_routed = False
             if not override_dir:
                 if playlists_dir:
-                    final_file, _ = _auto_route_playlist_to_album(
+                    final_file, playlist_album_routed = _auto_route_playlist_to_album(
                         final_file, artist, title, mb_metadata, job_id, artist_dir, user_id
                     )
                 else:
@@ -2986,6 +2990,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                     )
             _update_job(job_id, artist=artist, title=title)
         else:
+            playlist_album_routed = False
             tag_track_num, tag_track_total = _resolve_track_number(
                 final_file, album_track_number, album_track_total, None
             )
@@ -3005,7 +3010,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         final_file = _rename_with_track_number_if_enabled(
             final_file, artist, title, Path(filename).stem or job_id,
             tag_track_num, user_id=user_id,
-            playlist_routed=bool(playlists_dir),
+            playlist_routed=bool(playlists_dir) and not playlist_album_routed,
         )
 
         # Fetch and save lyrics
@@ -3351,9 +3356,10 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             album_artist=forced_album_artist,
         )
 
+        playlist_album_routed = False
         if not override_dir and mb_metadata:
             if playlists_dir:
-                output_path, _ = _auto_route_playlist_to_album(
+                output_path, playlist_album_routed = _auto_route_playlist_to_album(
                     output_path, artist, title, mb_metadata, job_id, artist_dir, user_id
                 )
             else:
@@ -3364,7 +3370,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         output_path = _rename_with_track_number_if_enabled(
             output_path, artist, title, job_id,
             tag_track_num, user_id=user_id,
-            playlist_routed=bool(playlists_dir),
+            playlist_routed=bool(playlists_dir) and not playlist_album_routed,
         )
 
         _update_job(job_id, progress_stage="Fetching lyrics")

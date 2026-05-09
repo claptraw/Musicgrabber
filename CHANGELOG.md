@@ -3,7 +3,8 @@
 ## v2.8.5 (2026-05-08)
 
 ### Fixed
-- **Playlist album routing missed Soulseek and MP3Phoenix sources**: the v2.8.4 fix for `Playlists/Name/Artist/Album/` routing only wired up the YouTube download path. Soulseek and MP3Phoenix both had the old `not playlists_dir` guard that skipped the routing call entirely, so tracks from those sources still landed flat. Both now call `_auto_route_playlist_to_album` consistently with the YouTube path.
+- **Playlist album routing missed Soulseek and MP3Phoenix sources**: the v2.8.4 fix for `Playlists/Name/Artist/Album/` routing only wired up the YouTube download path. Soulseek and MP3Phoenix both had the old `not playlists_dir` guard that skipped the routing call entirely, so tracks from those sources still landed flat. All three sources now route consistently.
+- **Filename inside the album subfolder still included the artist prefix**: even when routing correctly moved the file to `Rock/Creedence Clearwater Revival/Pendulum/`, the filename was `Creedence Clearwater Revival - Have You Ever Seen The Rain.flac` instead of `Have You Ever Seen The Rain.flac`. It now matches the singles convention: artist is in the folder, not repeated in the name. Track-number filenames (`5 - Title.flac`) also no longer include the redundant artist prefix once inside an artist subfolder.
 
 ## v2.8.4 (2026-05-06)
 
