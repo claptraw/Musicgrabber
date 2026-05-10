@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.8.8 (DEV)
+
+### Fixed
+- **Watched playlist add now shows the real server error**, not a cryptic "Unexpected token 'I' is not valid JSON" tantrum. The frontend was confidently `await response.json()`-ing a plain-text 500 body; it now checks `Content-Type` first and surfaces the actual status and message so you have a fighting chance of knowing what broke.
+
 ## v2.8.7 (2026-05-10)
 
 ### Added

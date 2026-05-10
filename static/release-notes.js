@@ -7,6 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.8": {
+        title: "What's New in v2.8.8",
+        sections: [
+            {
+                heading: "Fixed",
+                items: [
+                    "Watched playlist add now surfaces the actual server error instead of a cryptic 'Unexpected token I is not valid JSON'. The frontend was trying to parse a plain-text 500 body as JSON; it now checks Content-Type first and shows the real status and message."
+                ]
+            }
+        ]
+    },
     "2.8.7": {
         title: "What's New in v2.8.7",
         sections: [

@@ -26,7 +26,7 @@ def test_mb_artist_search(api, base_url):
     assert "results" in d
     assert len(d["results"]) >= 1
     first = d["results"][0]
-    for key in ("id", "name"):
+    for key in ("mbid", "name"):
         assert key in first, f"artist search result missing key: {key}"
 
 
@@ -35,8 +35,12 @@ def test_watched_artist_crud(api, base_url):
     """Add Radiohead, verify they appear, then delete them."""
     r = api.post(
         f"{base_url}/api/watched-artists",
-        json={"mbid": _RADIOHEAD_MBID, "name": _RADIOHEAD_NAME},
-        timeout=20,
+        json={
+            "mbid": _RADIOHEAD_MBID,
+            "name": _RADIOHEAD_NAME,
+            "from_date": "2099-01-01",  # future date so the seed refresh doesn't queue real downloads
+        },
+        timeout=60,  # first refresh hits MB to seed the back-catalogue
     )
     assert r.status_code == 200
     artist_id = r.json().get("id")

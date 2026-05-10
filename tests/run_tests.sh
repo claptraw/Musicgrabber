@@ -19,6 +19,7 @@ fi
 PYTEST="$VENV/bin/pytest"
 
 if [[ "$1" == "--slow" || "$1" == "--all" ]]; then
+    shift  # consume our flag so it doesn't reach pytest, which has no idea what --slow means
     echo "Running ALL tests (including slow external-service tests)..."
     "$PYTEST" "$SCRIPT_DIR" "$@"
 else

@@ -4793,11 +4793,16 @@
                 });
 
                 if (!response.ok) {
-                    const error = await response.json();
-                    if (error.detail === 'spotify_cookies_expired') {
-                        throw new Error('Spotify cookies have expired. Go to Settings to update them.');
+                    const ct = response.headers.get('content-type') || '';
+                    if (ct.includes('application/json')) {
+                        const error = await response.json();
+                        if (error.detail === 'spotify_cookies_expired') {
+                            throw new Error('Spotify cookies have expired. Go to Settings to update them.');
+                        }
+                        throw new Error(error.detail || 'Failed to add playlist');
                     }
-                    throw new Error(error.detail || 'Failed to add playlist');
+                    const text = (await response.text()).slice(0, 200);
+                    throw new Error(`Server error ${response.status}: ${text || response.statusText}`);
                 }
 
                 const data = await response.json();
@@ -4875,8 +4880,13 @@
                 });
 
                 if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.detail || 'Failed to add ListenBrainz playlists');
+                    const ct = response.headers.get('content-type') || '';
+                    if (ct.includes('application/json')) {
+                        const error = await response.json();
+                        throw new Error(error.detail || 'Failed to add ListenBrainz playlists');
+                    }
+                    const text = (await response.text()).slice(0, 200);
+                    throw new Error(`Server error ${response.status}: ${text || response.statusText}`);
                 }
 
                 const data = await response.json();
