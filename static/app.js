@@ -4394,7 +4394,7 @@
             // URL validation - Spotify playlists/albums, Amazon Music playlists, Apple Music, YouTube/YT Music playlists, SoundCloud sets/likes, ListenBrainz
             const isSpotify = url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//);
             const isAmazon = url.match(/^https?:\/\/music\.amazon\.[a-z.]+\/(user-playlists|playlists)\//);
-            const isApple = url.match(/^https?:\/\/music\.apple\.com\/[a-z]{2}\/(playlist|album)\//i);
+            const isApple = url.match(/^https?:\/\/music\.apple\.com\/(?:[a-z]{2}|library)\/(playlist|album)\//i);
             const isYouTube = url.match(/^https?:\/\/(www\.|music\.)?youtube\.com\/(playlist|watch)\?[^"]*list=/i);
             const isSoundCloud = url.match(/^https?:\/\/soundcloud\.com\/[^/]+\/(sets\/[^/?]+|likes)/i);
             const isListenBrainz = url.match(/^https?:\/\/listenbrainz\.org\/(playlist|user)\//i) || url.match(/^[a-zA-Z0-9_-]+$/);
@@ -6376,6 +6376,7 @@
             'smtp_tls': 'settingSmtpTls',
             'youtube_cookies': 'settingYoutubeCookies',
             'spotify_cookies': 'settingSpotifyCookies',
+            'apple_music_user_token': 'settingAppleMusicUserToken',
             'spotify_browser_timeout_seconds': 'settingSpotifyBrowserTimeout',
             'spotify_browser_stall_seconds': 'settingSpotifyBrowserStall',
             'file_permissions': 'settingFilePermissions',

@@ -16,10 +16,10 @@ import httpx
 from constants import (
     TIMEOUT_HTTP_REQUEST, TIMEOUT_SLSKD_API, TIMEOUT_SLSKD_SEARCH,
     TIMEOUT_SLSKD_DOWNLOAD, SLSKD_MAX_RESULTS, SLSKD_MIN_QUALITY_SCORE,
-    SLSKD_REQUIRE_FREE_SLOT,
+    SLSKD_REQUIRE_FREE_SLOT, SLSKD_MATCH_CONFIDENCE_FLOOR,
 )
 from settings import get_setting, get_setting_bool
-from youtube import score_search_result_with_breakdown
+from matching import score_track_against_filename, parse_query
 
 
 # slskd auth token cache, keyed by (url, user) so different users
@@ -305,6 +305,15 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
             skipped_locked = 0
             skipped_quality = 0
             skipped_no_slot = 0
+            skipped_low_match = 0
+
+            # Pull artist/title hints out of the query so the path-segment
+            # scorer has something to work against. Watched playlist queries
+            # come in as "Artist - Title" already; bare-text searches fall
+            # back to title-only and lean on the basename.
+            query_artist, query_title = parse_query(query)
+            if not query_title:
+                query_title = query
 
             for response in responses:
                 username = response.get("username", "")
@@ -337,17 +346,35 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                         continue
                     seen_tracks.add(track_key)
 
-                    # Blend relevance + quality, then apply Soulseek-specific bonuses.
                     duration_secs = file_info.get("length")
                     duration_secs = duration_secs if isinstance(duration_secs, (int, float)) and duration_secs > 0 else None
-                    relevance_score, score_breakdown = score_search_result_with_breakdown(
-                        title,
-                        artist,
-                        query,
-                        duration_seconds=duration_secs,
-                        view_count=None,
+
+                    # Path-aware match confidence (0.0-1.0). Splits the slskd
+                    # filename on path separators and scores artist, album,
+                    # and title against each segment independently. Stops
+                    # "muse" matching "museum" and stops Various-Artists
+                    # folders from winning the auction.
+                    confidence, match_breakdown = score_track_against_filename(
+                        expected_artist=query_artist or artist,
+                        expected_title=query_title,
+                        filename=filepath,
+                        candidate_duration_s=duration_secs,
+                        query=query,
                     )
-                    adjusted_score = relevance_score + quality_score
+
+                    if confidence < SLSKD_MATCH_CONFIDENCE_FLOOR:
+                        skipped_low_match += 1
+                        continue
+
+                    score_breakdown = list(match_breakdown)
+
+                    # Confidence is 0.0-1.0; scale to a 0-200 base so right-
+                    # title slskd matches stay competitive with the YouTube
+                    # scorer's typical 100-220 range plus its own +120 hi-res
+                    # quality bonus on Monochrome. A perfect match earns 200
+                    # of relevance before the quality and source bonuses
+                    # below stack on top.
+                    adjusted_score = int(confidence * 200) + quality_score
                     if quality_score:
                         score_breakdown.append(f"source_quality=+{quality_score}")
                     # Soulseek users often share properly ripped files. Give
@@ -390,7 +417,8 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
             print(
                 "slskd: Skipped "
                 f"{skipped_locked} locked, {skipped_quality} low quality, "
-                f"{skipped_no_slot} no free slot, kept {len(results)}"
+                f"{skipped_no_slot} no free slot, "
+                f"{skipped_low_match} low match, kept {len(results)}"
             )
 
             # Clean up search

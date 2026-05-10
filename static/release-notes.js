@@ -7,6 +7,53 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.7": {
+        title: "What's New in v2.8.7",
+        sections: [
+            {
+                heading: "Apple Music private library playlists",
+                items: [
+                    "Pop your Music-User-Token into Settings under Apple Music and MusicGrabber can now fetch playlists from your personal library (music.apple.com/library/...). The web bearer token is still pulled automatically from Apple's public JS bundle, so only the user token needs supplying. Bulk Import also stops rejecting library URLs for not having a country code, which was an inconsistency it had been smug about for far too long.",
+                ]
+            },
+            {
+                heading: "New song matching engine for Soulseek",
+                items: [
+                    "Soulseek results were being scored by the YouTube-shaped scorer, which knows about channels and view counts but nothing about path segments. They are now scored by a proper path-aware confidence engine that splits the slskd filename into Artist/Album/Track and matches each piece independently. Beyoncé finds Beyonce, Pig & Dan finds Pig&Dan, Kraftwerk survives a typo as Kraftwork, and Muse no longer wins inside a folder called Museum Of Sound. Results below the new SLSKD_MATCH_CONFIDENCE_FLOOR (default 0.55, env-tunable) are dropped rather than shipped as the least-bad option, and Various Artists / VA / Unknown folders are rejected outright. Affects bulk imports and watched playlist downloads, since both share the same search pipeline.",
+                ]
+            },
+            {
+                heading: "YouTube, MP3Phoenix, and Monochrome ride the same matching engine",
+                items: [
+                    "The YouTube scorer's old token-overlap title/artist block has been retired in favour of a unified SequenceMatcher-based confidence calculation. Beyoncé finds Beyonce instead of taking a -12 artist mismatch for not having an accent. Don't Stop finds Dont Stop via the new core-title fast path instead of getting tripped up by an apostrophe. Stay (Remix) no longer silently merges with Stay because parens-stripping had discarded the version word before the comparison. The classic YouTube channel suffixes - Topic and VEVO are stripped before artist matching so BritneySpearsVEVO reads as Britney Spears. The regex stack for live/cover/karaoke/copyright-dodge/official/MusicBrainz-duration is preserved untouched, since those are real YouTube-specific signals worth keeping. MP3Phoenix and Monochrome benefit automatically.",
+                ]
+            },
+            {
+                heading: "Version-aware matching: original mix wins by default",
+                items: [
+                    "A search for Stay no longer politely settles for Stay (Live in Tokyo) or Stay (R3hab Remix). Remix, live, and acoustic suffixes drop the score below threshold so the original mix takes the top spot. Remasters get a light penalty only, since they are the same recording wearing a slightly nicer coat.",
+                ]
+            },
+            {
+                heading: "Wrong-song-by-right-artist no longer climbs the rankings",
+                items: [
+                    "Searching Machine Head - silver was pulling up ØUTSIDER, Circle The Drain, and other Machine Head tracks above the right Silver matches because the artist match was overpowering the title penalty (especially for Monochrome HI_RES candidates whose +120 quality bonus could outweigh a soft title mismatch). Two fixes: a title hard-gate scales confidence down proportionally when title similarity is below 0.4, and a no-shared-token guard in the fuzzy similarity check stops silver and utsider scoring 0.6 just because they happen to share s/i/e/r. Penalty bumps for poor and mismatched candidates have also been cranked up so a wrong-song match cannot beat a right-song match no matter how lossless the wrong song is.",
+                ]
+            },
+            {
+                heading: "Metal track names with Ø, Æ, Þ no longer get butchered",
+                items: [
+                    "ØUTSIDER was collapsing to UTSIDER and Mötley Crüe to mtley cre because NFKD doesn't decompose those characters (the diacritic is part of the glyph, not a combining mark). Added an explicit Latin-extended mapping so Ø/Æ/Œ/Þ/Ð/ß/Ł fold to ASCII the way users actually expect.",
+                ]
+            },
+            {
+                heading: "Unit tests for the matching engine",
+                items: [
+                    "48 unit tests covering normalisation, version detection, junk-folder rejection, path-segment matching, CJK preservation, streaming-source confidence, and the title hard-gate. Runs as part of the fast suite. Future tweaks to the scorer can no longer silently regress Don't Stop, Beyoncé, or anything in a heavy metal umlaut.",
+                ]
+            },
+        ]
+    },
     "2.8.6": {
         title: "What's New in v2.8.6",
         sections: [

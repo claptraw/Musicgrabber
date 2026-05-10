@@ -153,6 +153,8 @@ class SettingsUpdate(BaseModel):
     spotify_browser_stall_seconds: Optional[int] = None
     # Spotify
     spotify_cookies: Optional[str] = None
+    # Apple Music
+    apple_music_user_token: Optional[str] = None
     # Security
     api_key: Optional[str] = None
 

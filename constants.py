@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.8.6"
+VERSION = "2.8.7"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -63,6 +63,7 @@ SEARCH_MAX_PER_SOURCE_ZVU4NO = 4
 SEARCH_MAX_PER_SOURCE_SOULSEEK = 6
 SEARCH_MAX_PER_SOURCE_MONOCHROME = 6
 SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
+SLSKD_MATCH_CONFIDENCE_FLOOR = float(os.getenv("SLSKD_MATCH_CONFIDENCE_FLOOR", "0.55"))  # 0.0-1.0; reject worse than this
 MAX_SEARCH_QUERY_LENGTH = 512    # Max characters allowed in search input
 SEARCH_LOG_RETENTION_DAYS = 90   # Keep search analytics for N days
 

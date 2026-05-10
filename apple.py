@@ -32,18 +32,33 @@ _HEADERS = {
 _WEB_ORIGIN = "https://music.apple.com"
 _AMP_API_ORIGIN = "https://amp-api.music.apple.com"
 _AMP_PAGE_LIMIT = 300
+_LIBRARY_PAGE_LIMIT = 100  # Library endpoint caps at 100
 
 
-def fetch_apple_music_playlist(url: str) -> dict:
-    """Fetch tracks from a public Apple Music playlist or album URL.
+def fetch_apple_music_playlist(url: str, music_user_token: str | None = None) -> dict:
+    """Fetch tracks from an Apple Music playlist or album URL.
 
     Returns dict with: tracks (list of "Artist - Title"), playlist_name, count.
 
-    Tries Apple's own public amp-api first, using the same web token their
-    frontend sends. Falls back to HTML scraping if token extraction or the API
-    call fails.
+    Public catalog playlists: scrapes the Apple web token from their JS bundle,
+    then pages through the amp-api. Falls back to HTML scraping on failure.
+
+    Private library playlists (music.apple.com/library/...): uses the user's
+    Music-User-Token from settings plus the same web bearer token.
     """
     print(f"Fetching Apple Music playlist: {url}")
+
+    if "/library/" in urllib.parse.urlparse(url).path:
+        if not music_user_token:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Apple Music private playlists require a Music-User-Token. "
+                    "Add it in Settings under Apple Music."
+                ),
+            )
+        return _fetch_library_playlist(url, music_user_token)
+
     html = _fetch_html(url)
     playlist_name = _extract_playlist_name(html)
 
@@ -59,6 +74,72 @@ def fetch_apple_music_playlist(url: str) -> dict:
         print(f"[Apple] API path failed ({exc}), falling back to HTML scraping")
 
     return _fetch_via_html(html, playlist_name)
+
+
+# ---------------------------------------------------------------------------
+# Private library playlist path
+# ---------------------------------------------------------------------------
+
+def _fetch_library_playlist(url: str, music_user_token: str) -> dict:
+    """Fetch tracks from a private Apple Music library playlist."""
+    item_id = urllib.parse.urlparse(url).path.rstrip("/").split("/")[-1]
+    token = _fetch_web_token_for_library()
+    auth_headers = {
+        "Authorization": f"Bearer {token}",
+        "Music-User-Token": music_user_token,
+        "Origin": _WEB_ORIGIN,
+    }
+    playlist_name = _fetch_library_playlist_name(item_id, auth_headers)
+    tracks = _fetch_library_tracks(item_id, auth_headers)
+    return {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks)}
+
+
+def _fetch_web_token_for_library() -> str:
+    """Extract the Apple Music web bearer token via the public homepage."""
+    html = _fetch_html(_WEB_ORIGIN)
+    bundle_url = _extract_web_bundle_url(_WEB_ORIGIN, html)
+    return _extract_web_token(bundle_url)
+
+
+def _fetch_library_playlist_name(item_id: str, auth_headers: dict) -> str:
+    try:
+        url = f"{_AMP_API_ORIGIN}/v1/me/library/playlists/{urllib.parse.quote(item_id)}"
+        payload = _fetch_json(url, headers=auth_headers)
+        data = payload.get("data") or []
+        if data:
+            name = ((data[0].get("attributes") or {}).get("name") or "").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return "Apple Music Playlist"
+
+
+def _fetch_library_tracks(item_id: str, auth_headers: dict) -> list[str]:
+    query = {"offset": "0", "limit": str(_LIBRARY_PAGE_LIMIT)}
+    next_url = (
+        f"{_AMP_API_ORIGIN}/v1/me/library/playlists/"
+        f"{urllib.parse.quote(item_id)}/tracks?{urllib.parse.urlencode(query)}"
+    )
+
+    tracks: list[str] = []
+    while next_url:
+        payload = _fetch_json(next_url, headers=auth_headers)
+        for item in (payload.get("data") or []):
+            attrs = item.get("attributes") or {}
+            artist = (attrs.get("artistName") or "").strip()
+            title = (attrs.get("name") or "").strip()
+            if artist and title:
+                tracks.append(f"{artist} - {title}")
+        next_path = payload.get("next")
+        next_url = urllib.parse.urljoin(_AMP_API_ORIGIN, next_path) if next_path else None
+
+    if not tracks:
+        raise HTTPException(
+            status_code=422,
+            detail="No tracks found in Apple Music library playlist. It may be empty or the token may have expired.",
+        )
+    return tracks
 
 
 # ---------------------------------------------------------------------------

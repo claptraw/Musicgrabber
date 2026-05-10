@@ -18,6 +18,7 @@ from constants import (
     YTDLP_PLAYER_CLIENT, MIN_SONG_DURATION_SECS,
 )
 from settings import get_setting, get_setting_int
+from matching import compute_match_confidence
 
 
 # YouTube bot/backoff state
@@ -544,9 +545,6 @@ def _score_search_result_with_breakdown(
         title_norm = _normalise_search_text(title)
         channel_norm = _normalise_search_text(channel)
         combined_norm = f"{title_norm} {channel_norm}".strip()
-        parsed_result_artist, parsed_result_title = _parse_result_artist_title(title)
-        title_match_norm = _normalise_search_title_text(parsed_result_title or title)
-        full_title_match_norm = _normalise_search_title_text(title)
 
         stopwords = {
             "official", "music", "video", "lyrics", "lyric", "audio",
@@ -563,45 +561,52 @@ def _score_search_result_with_breakdown(
             elif coverage < 0.4:
                 _bump(-15, "query_poor_coverage")
 
+        # Confidence-based title/artist matching (replaces the old token-overlap
+        # logic). Uses SequenceMatcher fuzzy similarity, version-aware penalty,
+        # and a core-title fast path so "Beyoncé"/"Beyonce", "Don't"/"Dont", and
+        # "Stay"/"Stay (Remix)" are all handled in one place rather than as a
+        # stack of post-hoc regex compensations.
         expected_artist, expected_title = _parse_query_artist_title(query)
+        if expected_title or expected_artist:
+            match_conf, _match_breakdown = compute_match_confidence(
+                expected_artist=expected_artist,
+                expected_title=expected_title or query,
+                candidate_title=title,
+                candidate_artist=channel,
+                candidate_duration_s=duration_seconds,
+                expected_duration_s=expected_duration_secs,
+                query=query,
+            )
+            # Map [0,1] confidence to a bump. The poor/mismatch tiers are
+            # deliberately huge because they need to exceed the maximum
+            # plausible quality bonus from any source. Monochrome HI_RES
+            # tops at +210, so a wrong-song penalty needs to dominate that
+            # plus the +35 official_audio and other regex bumps the same
+            # candidate might be racking up. A wrong-song match must NEVER
+            # beat a right-song match, regardless of how lossless and hi-res
+            # the wrong song is.
+            if match_conf >= 0.95:
+                _bump(50, f"match_perfect={match_conf:.2f}")
+            elif match_conf >= 0.85:
+                _bump(40, f"match_strong={match_conf:.2f}")
+            elif match_conf >= 0.70:
+                _bump(25, f"match_good={match_conf:.2f}")
+            elif match_conf >= 0.55:
+                _bump(5, f"match_ok={match_conf:.2f}")
+            elif match_conf >= 0.40:
+                _bump(-60, f"match_weak={match_conf:.2f}")
+            elif match_conf >= 0.25:
+                _bump(-280, f"match_poor={match_conf:.2f}")
+            else:
+                _bump(-400, f"match_mismatch={match_conf:.2f}")
+
+        # Verbatim "Artist Title" appearance is a strong concrete signal on top
+        # of the fuzzy confidence; keep it as an additive bonus.
         expected_artist_norm = _normalise_search_text(expected_artist or "")
         expected_title_norm = _normalise_search_title_text(expected_title or "")
-        if expected_title_norm:
-            title_strength = max(
-                _token_overlap_ratio(set(expected_title_norm.split()), set(title_match_norm.split())),
-                _token_overlap_ratio(set(expected_title_norm.split()), set(full_title_match_norm.split())),
-            )
-            if expected_title_norm in title_match_norm or expected_title_norm in full_title_match_norm:
-                _bump(25, "title_match")
-            elif title_strength >= 1.0:
-                _bump(15, "title_overlap_full")
-            elif title_strength >= 0.75:
-                _bump(8, "title_overlap_strong")
-            else:
-                _bump(-20, "title_mismatch")
-        if expected_artist_norm:
-            artist_strength = _artist_match_strength(expected_artist, parsed_result_artist or "", channel, title)
-            if expected_artist_norm in title_norm:
-                _bump(15, "artist_in_title")
-            elif expected_artist_norm in channel_norm:
-                _bump(10, "artist_in_channel")
-            elif artist_strength >= 1.0:
-                _bump(18, "artist_match")
-            elif artist_strength >= 0.6:
-                _bump(8, "artist_overlap")
-            else:
-                _bump(-12, "artist_mismatch")
         if expected_artist_norm and expected_title_norm:
             if f"{expected_artist_norm} {expected_title_norm}" in title_norm:
                 _bump(20, "artist_title_phrase")
-
-        if expected_title_norm and not _query_has_variation(query):
-            plain_bonus_target = parsed_result_title or title
-            if _result_has_plain_title_shape(plain_bonus_target, expected_title_norm):
-                _bump(18, "plain_title")
-            variant_penalty = _variant_penalty_from_title(plain_bonus_target, expected_title_norm)
-            if variant_penalty:
-                _bump(variant_penalty, "variant_suffix")
 
 
     # Penalty for reaction videos, compilations

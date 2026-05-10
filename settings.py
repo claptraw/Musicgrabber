@@ -126,7 +126,7 @@ def get_all_settings(user_id: str | None = None) -> dict:
 SENSITIVE_SETTINGS = {
     "slskd_pass", "navidrome_pass", "jellyfin_api_key", "lidarr_api_key",
     "smtp_pass", "telegram_webhook_url", "api_key", "youtube_cookies",
-    "spotify_cookies",
+    "spotify_cookies", "apple_music_user_token",
 }
 
 # Settings that belong to each user (stored in user_settings table)
@@ -139,6 +139,7 @@ USER_SETTINGS_KEYS = {
     "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "smtp_to", "smtp_tls",
     "youtube_cookies",
     "spotify_cookies", "spotify_cookies_expired",
+    "apple_music_user_token",
     "webhook_url",
 }
 
@@ -151,6 +152,7 @@ USER_PRIVATE_KEYS = {
     "webhook_url",
     "youtube_cookies",
     "spotify_cookies", "spotify_cookies_expired",
+    "apple_music_user_token",
 }
 
 # Define all configurable settings with their types and defaults
@@ -220,6 +222,8 @@ SETTINGS_SCHEMA = {
     # Spotify
     "spotify_cookies": {"type": "str", "default": "", "sensitive": True},
     "spotify_cookies_expired": {"type": "bool", "default": False},
+    # Apple Music
+    "apple_music_user_token": {"type": "str", "default": "", "sensitive": True},
     "youtube_bot_backoff_max": {"type": "int", "default": BOT_BACKOFF_MAX_SECONDS, "env": "YOUTUBE_BOT_BACKOFF_MAX"},
     "spotify_browser_timeout_seconds": {
         "type": "int",

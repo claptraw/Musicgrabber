@@ -143,10 +143,15 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if youtube_list:
         return "youtube", youtube_list.group(2)
 
-    # Apple Music playlist or album (any storefront)
+    # Apple Music playlist or album (public catalog, any storefront)
     apple_playlist = re.match(r'https?://music\.apple\.com/[a-z]{2}/(playlist|album)/', url, re.IGNORECASE)
     if apple_playlist:
         return "apple", url  # Full URL needed  -  storefront is part of the path
+
+    # Apple Music private library playlist
+    apple_library = re.match(r'https?://music\.apple\.com/library/(playlist|album)/', url, re.IGNORECASE)
+    if apple_library:
+        return "apple", url
 
     # Amazon Music playlist (user or curated, any regional TLD)
     amazon_playlist = re.match(r'https?://music\.amazon\.[a-z.]+/(user-playlists|playlists)/\S+', url)
@@ -656,7 +661,8 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
         return tracks, playlist_name, None
 
     elif platform == "apple":
-        result = fetch_apple_music_playlist(url)
+        music_user_token = get_setting("apple_music_user_token", "", user_id=user_id) or None
+        result = fetch_apple_music_playlist(url, music_user_token=music_user_token)
 
         tracks = []
         for track_str in result["tracks"]:
@@ -882,13 +888,13 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     tracks = _lb_reresolution_fetch(prefer_latest=True)
                 else:
                     try:
-                        tracks, _, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
+                        tracks, _, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"], user_id=user_id)
                     except HTTPException as e:
                         if e.status_code != 404:
                             raise
                         tracks = _lb_reresolution_fetch(prefer_latest=False)
             else:
-                tracks, _, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"])
+                tracks, _, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"], user_id=user_id)
 
             # Build a set of hashes for what the upstream playlist currently contains
             current_hashes = {hash_track(artist, title) for artist, title in tracks}
