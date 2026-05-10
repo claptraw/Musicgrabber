@@ -4408,6 +4408,20 @@
             fetchSpotifyBtn.disabled = true;
             fetchSpotifyBtn.textContent = isAmazon ? 'Scraping...' : 'Fetching...';
 
+            // For Spotify, the embed scrape returns in seconds; if the playlist
+            // is large or private, the server falls back to a headless browser
+            // which takes longer. Nudge the button text after a few seconds
+            // so the user knows we haven't ghosted them.
+            const slowHints = [];
+            if (isSpotify) {
+                slowHints.push(setTimeout(() => {
+                    fetchSpotifyBtn.textContent = 'Spinning up browser...';
+                }, 6000));
+                slowHints.push(setTimeout(() => {
+                    fetchSpotifyBtn.textContent = 'Scrolling playlist (large lists take a minute)...';
+                }, 15000));
+            }
+
             try {
                 const response = await apiFetch('/api/fetch-playlist', {
                     method: 'POST',
@@ -4466,6 +4480,7 @@
                 spotifyError.style.color = 'var(--error)';
                 spotifyError.style.display = 'block';
             } finally {
+                slowHints.forEach(clearTimeout);
                 fetchSpotifyBtn.disabled = false;
                 fetchSpotifyBtn.textContent = 'Fetch Playlist';
             }
