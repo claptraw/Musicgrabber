@@ -4,6 +4,7 @@
 
 ### Fixed
 - **Watched playlist add now shows the real server error**, not a cryptic "Unexpected token 'I' is not valid JSON" tantrum. The frontend was confidently `await response.json()`-ing a plain-text 500 body; it now checks `Content-Type` first and surfaces the actual status and message so you have a fighting chance of knowing what broke.
+- **Spotify private and embed-blocked playlists now fall back to the headless browser** for both watched playlists and bulk imports. Previously the embed scraper would catch a 401/403 (or get back zero tracks) and immediately surrender, even though the Playwright path with your `sp_dc` cookie could have walked right in. The browser was already used for 95+ track playlists; it now also covers the cases where the embed never gets a foot in the door.
 
 ## v2.8.7 (2026-05-10)
 

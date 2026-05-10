@@ -251,13 +251,22 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
                 cookies=cookies,
             )
             if response.status_code in (401, 403):
-                # Cookies have gone stale — flag it and tell the caller clearly
+                # Embed refused. Could be a private playlist or stale cookies.
+                # The headless browser handles both cases more gracefully
+                # when sp_dc is available, so try that before giving up.
                 if sp_dc:
-                    _flag_spotify_cookies_expired(user_id)
-                    raise HTTPException(
-                        status_code=401,
-                        detail="spotify_cookies_expired"
+                    print(
+                        f"Spotify embed returned {response.status_code} for "
+                        f"{spotify_type} {spotify_id}, trying headless browser..."
                     )
+                    try:
+                        return fetch_spotify_playlist_via_browser(
+                            spotify_id, spotify_type, sp_dc=sp_dc, user_id=user_id,
+                        )
+                    except HTTPException as browser_exc:
+                        if browser_exc.detail == "spotify_cookies_expired":
+                            _flag_spotify_cookies_expired(user_id)
+                        raise
                 raise HTTPException(status_code=403, detail=f"{spotify_type.title()} not found or is private")
             response.raise_for_status()
     except HTTPException:
@@ -338,6 +347,23 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
                     tracks.append(f"{raw_artist} - {raw_title}")
 
     if not tracks:
+        # Embed parsed cleanly but yielded zero tracks. With sp_dc we have a
+        # real shot via the browser (private playlists fall in here too), so
+        # try that before declaring the playlist empty.
+        if sp_dc:
+            print(
+                f"Spotify embed returned no tracks for {spotify_type} {spotify_id}, "
+                "trying headless browser..."
+            )
+            try:
+                return fetch_spotify_playlist_via_browser(
+                    spotify_id, spotify_type, expected_total=expected_total,
+                    sp_dc=sp_dc, user_id=user_id,
+                )
+            except HTTPException as browser_exc:
+                if browser_exc.detail == "spotify_cookies_expired":
+                    _flag_spotify_cookies_expired(user_id)
+                raise
         raise HTTPException(
             status_code=422,
             detail=f"Could not extract tracks from {spotify_type}. It may be empty or Spotify's page structure may have changed."

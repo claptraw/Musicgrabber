@@ -13,7 +13,8 @@ const RELEASE_NOTES = {
             {
                 heading: "Fixed",
                 items: [
-                    "Watched playlist add now surfaces the actual server error instead of a cryptic 'Unexpected token I is not valid JSON'. The frontend was trying to parse a plain-text 500 body as JSON; it now checks Content-Type first and shows the real status and message."
+                    "Watched playlist add now surfaces the actual server error instead of a cryptic 'Unexpected token I is not valid JSON'. The frontend was trying to parse a plain-text 500 body as JSON; it now checks Content-Type first and shows the real status and message.",
+                    "Spotify private and embed-blocked playlists now fall back to the headless browser for both watched playlists and bulk imports. Previously the embed scraper bailed on a 401/403 or zero-track result; it now tries the Playwright path with your sp_dc cookie before giving up, which is the same fallback that already handled 95+ track playlists."
                 ]
             }
         ]
