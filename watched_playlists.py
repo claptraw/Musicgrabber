@@ -370,21 +370,13 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
         )
 
     # If at the embed limit, attempt the headless browser to get the full playlist.
-    # Without sp_dc the browser hits a bot-detection wall, so skip it and warn immediately.
+    # The browser path works for public playlists without sp_dc; only private
+    # playlists actually need the cookie.
     if len(tracks) >= 95:
-        if not sp_dc:
-            print(f"Spotify embed returned {len(tracks)} tracks (at limit), no sp_dc - skipping browser")
-            return {
-                "tracks": tracks,
-                "playlist_name": playlist_name,
-                "count": len(tracks),
-                "warning": (
-                    f"Only the first {len(tracks)} tracks were fetched. "
-                    "This playlist may have more - add your Spotify cookies in Settings to download the full list."
-                ),
-            }
-
-        print(f"Spotify embed returned {len(tracks)} tracks (at limit), trying headless browser...")
+        print(
+            f"Spotify embed returned {len(tracks)} tracks (at limit), trying headless browser"
+            + (" with sp_dc..." if sp_dc else " without sp_dc...")
+        )
         browser_error = None
         try:
             browser_result = fetch_spotify_playlist_via_browser(
