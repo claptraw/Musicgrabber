@@ -692,6 +692,7 @@ def init_db():
                 stale_navidrome_paths INTEGER DEFAULT 0,
                 preferred_sources TEXT DEFAULT 'all',
                 lb_username TEXT,
+                custom_subdir TEXT,
                 refresh_state TEXT DEFAULT 'idle',
                 refresh_stage TEXT,
                 refresh_started_at TIMESTAMP,
@@ -703,22 +704,46 @@ def init_db():
                 UNIQUE(user_id, url)
             )
             """)
-            conn.execute("""
-            INSERT OR IGNORE INTO watched_playlists_new
-            SELECT id, url, name, platform, refresh_interval_hours, last_checked,
-                   last_track_count, enabled, convert_to_flac,
-                   COALESCE(make_m3u, 0),
-                   COALESCE(use_playlists_dir, 0),
-                   COALESCE(sync_mode, 'append'),
-                   COALESCE(stale_navidrome_paths, 0),
-                   COALESCE(preferred_sources, 'all'),
-                   lb_username,
-                   COALESCE(refresh_state, 'idle'),
-                   refresh_stage, refresh_started_at, refresh_completed_at,
-                   refresh_error, refresh_import_id,
-                   user_id, created_at
-            FROM watched_playlists
-            """)
+            # Older DBs may not have custom_subdir yet (the ALTER above adds it),
+            # but we still SELECT it explicitly so the column survives the copy.
+            # If somehow it's missing on the source table, fall back to NULL.
+            try:
+                conn.execute("""
+                INSERT OR IGNORE INTO watched_playlists_new
+                SELECT id, url, name, platform, refresh_interval_hours, last_checked,
+                       last_track_count, enabled, convert_to_flac,
+                       COALESCE(make_m3u, 0),
+                       COALESCE(use_playlists_dir, 0),
+                       COALESCE(sync_mode, 'append'),
+                       COALESCE(stale_navidrome_paths, 0),
+                       COALESCE(preferred_sources, 'all'),
+                       lb_username,
+                       custom_subdir,
+                       COALESCE(refresh_state, 'idle'),
+                       refresh_stage, refresh_started_at, refresh_completed_at,
+                       refresh_error, refresh_import_id,
+                       user_id, created_at
+                FROM watched_playlists
+                """)
+            except sqlite3.OperationalError:
+                # Source table lacks custom_subdir for some reason; copy without it.
+                conn.execute("""
+                INSERT OR IGNORE INTO watched_playlists_new
+                SELECT id, url, name, platform, refresh_interval_hours, last_checked,
+                       last_track_count, enabled, convert_to_flac,
+                       COALESCE(make_m3u, 0),
+                       COALESCE(use_playlists_dir, 0),
+                       COALESCE(sync_mode, 'append'),
+                       COALESCE(stale_navidrome_paths, 0),
+                       COALESCE(preferred_sources, 'all'),
+                       lb_username,
+                       NULL,
+                       COALESCE(refresh_state, 'idle'),
+                       refresh_stage, refresh_started_at, refresh_completed_at,
+                       refresh_error, refresh_import_id,
+                       user_id, created_at
+                FROM watched_playlists
+                """)
             conn.execute("DROP TABLE watched_playlists")
             conn.execute("ALTER TABLE watched_playlists_new RENAME TO watched_playlists")
 
@@ -770,6 +795,14 @@ def init_db():
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '1')"
             )
             print("DB migrated to version 1: multi-user unique constraints applied")
+
+        # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
+        # when recreating watched_playlists. Re-add it for any DB that already
+        # passed through that mangled migration. Harmless if the column is present.
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN custom_subdir TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         conn.commit()
 

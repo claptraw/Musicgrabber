@@ -2973,12 +2973,19 @@ def get_bulk_import_status(import_id: str, http_request: Request):
         )
         recent_tracks = [dict(row) for row in cursor.fetchall()]
 
-        # Count download statuses by joining bulk_import_tracks with jobs
+        # Count download statuses by joining bulk_import_tracks with jobs.
+        # dupe_skipped: completed jobs whose error field starts with "Already exists"
+        # (the duplicate-skip path in process_download marks the job completed and
+        # stuffs a human-readable reason into error). It's the only API-visible
+        # signal that the library dupe check actually short-circuited the work.
         cursor = conn.execute(
             """SELECT
                    SUM(CASE WHEN j.status IN ('completed', 'completed_with_errors') THEN 1 ELSE 0 END) as completed,
                    SUM(CASE WHEN j.status = 'failed' THEN 1 ELSE 0 END) as download_failed,
-                   SUM(CASE WHEN j.status IN ('queued', 'downloading') THEN 1 ELSE 0 END) as still_queued
+                   SUM(CASE WHEN j.status IN ('queued', 'downloading') THEN 1 ELSE 0 END) as still_queued,
+                   SUM(CASE WHEN j.status IN ('completed', 'completed_with_errors')
+                             AND (j.error LIKE 'Already exists%' OR j.error LIKE 'Already exists in %')
+                            THEN 1 ELSE 0 END) as dupe_skipped
                FROM bulk_import_tracks t
                JOIN jobs j ON t.job_id = j.id
                WHERE t.import_id = ?""",
@@ -2988,6 +2995,7 @@ def get_bulk_import_status(import_id: str, http_request: Request):
         completed_count = row[0] or 0
         download_failed_count = row[1] or 0
         still_queued_count = row[2] or 0
+        dupe_skipped_count = row[3] or 0
 
     total_failed = import_row["failed"] + download_failed_count
     search_done = import_row["status"] in ("completed", "error")
@@ -3002,6 +3010,7 @@ def get_bulk_import_status(import_id: str, http_request: Request):
         "completed": completed_count,
         "failed": total_failed,
         "skipped": import_row["skipped"],
+        "dupe_skipped": dupe_skipped_count,
         "rate_limited": import_row["rate_limited_until"] is not None,
         "error": import_row["error"],
         "recent_tracks": recent_tracks,

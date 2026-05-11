@@ -108,12 +108,15 @@ def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: s
         if use_playlists_dir and _playlist_file_exists(playlist_name, a, t, user_id=user_id):
             return True
 
-    # Last resort: check Navidrome. Accepts absolute paths only  -  synthetic
-    # relative paths ("Artist/Album/Track.mp3") are not a reliable signal that
-    # the file actually exists on MusicGrabber's filesystem.
+    # Last resort: check Navidrome. Any non-None return means Navidrome confirmed
+    # the track is in the library; absolute paths are real on-disk locations,
+    # while the relative sentinel (Path(title)) means "exists but no real-path
+    # mode". Both block re-downloads. Filtering by .is_absolute() here used to
+    # treat the sentinel as "missing", causing every track to re-download when a
+    # watched playlist was re-added.
     for a, t in pairs:
         nav_path = check_navidrome_duplicate(a, t, user_id=user_id)
-        if nav_path and nav_path.is_absolute():
+        if nav_path is not None:
             return True
 
     return False
@@ -347,27 +350,31 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
                     tracks.append(f"{raw_artist} - {raw_title}")
 
     if not tracks:
-        # Embed parsed cleanly but yielded zero tracks. With sp_dc we have a
-        # real shot via the browser (private playlists fall in here too), so
-        # try that before declaring the playlist empty.
-        if sp_dc:
-            print(
-                f"Spotify embed returned no tracks for {spotify_type} {spotify_id}, "
-                "trying headless browser..."
-            )
-            try:
-                return fetch_spotify_playlist_via_browser(
-                    spotify_id, spotify_type, expected_total=expected_total,
-                    sp_dc=sp_dc, user_id=user_id,
-                )
-            except HTTPException as browser_exc:
-                if browser_exc.detail == "spotify_cookies_expired":
-                    _flag_spotify_cookies_expired(user_id)
-                raise
-        raise HTTPException(
-            status_code=422,
-            detail=f"Could not extract tracks from {spotify_type}. It may be empty or Spotify's page structure may have changed."
+        # Embed parsed cleanly but yielded zero tracks. The browser path works
+        # for public playlists without sp_dc, so always try it before declaring
+        # the playlist empty. Private playlists still need sp_dc and will
+        # surface the proper "cookies expired" error if they're missing.
+        print(
+            f"Spotify embed returned no tracks for {spotify_type} {spotify_id}, "
+            "trying headless browser..."
         )
+        try:
+            return fetch_spotify_playlist_via_browser(
+                spotify_id, spotify_type, expected_total=expected_total,
+                sp_dc=sp_dc, user_id=user_id,
+            )
+        except HTTPException as browser_exc:
+            if browser_exc.detail == "spotify_cookies_expired":
+                _flag_spotify_cookies_expired(user_id)
+            # If the browser also couldn't find any tracks, give the user the
+            # original "page structure may have changed" message instead of
+            # the browser-specific error  -  it's the more accurate diagnosis.
+            if browser_exc.status_code == 422:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Could not extract tracks from {spotify_type}. It may be empty or Spotify's page structure may have changed."
+                )
+            raise
 
     # If at the embed limit, attempt the headless browser to get the full playlist.
     # The browser path works for public playlists without sp_dc; only private

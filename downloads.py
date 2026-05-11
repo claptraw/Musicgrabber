@@ -1763,20 +1763,36 @@ def _summarise_ytdlp_stderr(stderr: str) -> str:
         return "provider returned an unknown error"
     if "sign in to confirm your age" in lower or "age-restricted" in lower:
         return "age-restricted content requires valid account cookies"
-    if "private video" in lower:
-        return "video is private"
-    if "video unavailable" in lower:
-        return "video is unavailable or region-restricted"
+    if "private video" in lower or "private track" in lower:
+        return "track is private"
+    if "geo" in lower and ("restrict" in lower or "block" in lower):
+        return "track is geo-restricted"
+    if "drm" in lower or "preview-only" in lower or "preview only" in lower:
+        return "track is DRM/preview-only on this provider"
+    if "video unavailable" in lower or "track unavailable" in lower or "no longer available" in lower:
+        return "track is unavailable or region-restricted"
+    if "http error 404" in lower or " 404:" in lower:
+        return "track not found (404)"
+    if "http error 410" in lower or " 410:" in lower:
+        return "track removed by uploader (410)"
     if "http error 429" in lower or "too many requests" in lower:
-        return "rate-limited by YouTube"
+        return "rate-limited by provider"
     if _is_ytdlp_403(stderr):
         return "request blocked (403)"
     if "unable to extract" in lower or "failed to extract" in lower:
-        return "provider metadata extraction failed"
+        return "provider metadata extraction failed (yt-dlp may need an update)"
     if "unable to download webpage" in lower or "timed out" in lower:
         return "provider/network timeout"
     if "requested format is not available" in lower:
         return "format manifest unavailable for this request"
+    # Last-ditch: surface the first real ERROR line from yt-dlp so the user sees
+    # something actionable instead of the opaque "provider rejected" fallback.
+    for line in (stderr or "").splitlines():
+        line = line.strip()
+        if line.lower().startswith("error:"):
+            snippet = line[6:].strip()
+            if snippet:
+                return snippet[:160]
     return "provider rejected the request"
 
 
@@ -3569,7 +3585,13 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             if not is_url_source and _is_ytdlp_403(info_result.stderr) and has_cookies:
                 _note_cookie_failure()
             reason_msg = _format_info_lookup_error(source_label, info_result.stderr, has_cookies)
-            print(f"Job {job_id} info lookup failed ({source_label}:{video_id}): {reason_msg}")
+            # Always log the raw stderr so we can diagnose vague "provider
+            # rejected the request" messages without asking the user to repro.
+            raw_stderr = (info_result.stderr or "").strip()
+            if raw_stderr:
+                print(f"Job {job_id} info lookup failed ({source_label}:{video_id}): {reason_msg}\n  raw stderr: {raw_stderr[:800]}")
+            else:
+                print(f"Job {job_id} info lookup failed ({source_label}:{video_id}): {reason_msg} (no stderr)")
             raise Exception(reason_msg)
 
         info = json.loads(info_result.stdout)

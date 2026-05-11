@@ -11,8 +11,19 @@ const RELEASE_NOTES = {
         title: "What's New in v2.8.8",
         sections: [
             {
+                heading: "Added",
+                items: [
+                    "End-to-end QA test that drives the whole acquisition flow in one go: pull a single, pull a small album, import a 3-track Spotify playlist, add a watched playlist, manually trigger its scheduled refresh, then re-run the lot with Navidrome and Lidarr dupe checks toggled back on to prove the library dupe check is actually catching them at every layer. Cleans up after itself. Lives behind the slow marker so the fast test suite stays fast. Verified end to end in 3m26s against the test VM.",
+                    "dupe_skipped count on the bulk import status endpoint: counts jobs that completed via the 'Already exists' short-circuit, separately from fresh downloads. Until now there was no API-visible way to tell whether the library dupe check had actually engaged.",
+                ]
+            },
+            {
                 heading: "Fixed",
                 items: [
+                    "Watched playlists were rejecting every add with a 500 on older databases: the v1 multi-user migration recreated the watched_playlists table from a hard-coded schema that quietly forgot the custom_subdir column, so any DB that came through that migration blew up with 'table watched_playlists has no column named custom_subdir'. The migration now keeps the column on the way through, and a defensive ALTER TABLE runs after the migration so any database that already lost it gets it back on next start.",
+                    "Second Spotify fallback was still gated behind sp_dc: the v2.8.8 fix that dropped the cookie requirement on the 95+ track browser fallback missed its sibling code path. When the embed parser returned zero tracks (small public playlists), the code only tried the headless browser if sp_dc was set. Gate removed.",
+                    "Watched playlists were re-downloading every track on re-add: _has_local_track_file was filtering Navidrome's dupe-check result by .is_absolute(), which threw away the sentinel return that means 'exists but Navidrome real-path mode is off'. The refresher then treated every track as missing and queued the lot again. Sentinel is now honoured the way it was always supposed to be.",
+                    "SoundCloud info-lookup errors were uniformly opaque: yt-dlp could fail for half a dozen reasons and every one rendered as 'SoundCloud info lookup failed: provider rejected the request'. New patterns for 404/410/geo/DRM/private-track land, the first real ERROR line from yt-dlp is surfaced as a fallback, and the raw stderr now lands in the container log so future SoundCloud breakage is diagnosable.",
                     "Watched playlist add now surfaces the actual server error instead of a cryptic 'Unexpected token I is not valid JSON'. The frontend was trying to parse a plain-text 500 body as JSON; it now checks Content-Type first and shows the real status and message.",
                     "Spotify private and embed-blocked playlists now fall back to the headless browser for both watched playlists and bulk imports. Previously the embed scraper bailed on a 401/403 or zero-track result; it now tries the Playwright path with your sp_dc cookie before giving up, which is the same fallback that already handled 95+ track playlists.",
                     "Large public Spotify playlists no longer cap at 100 tracks without cookies. The 95+ track browser fallback was gated behind sp_dc; that gate is gone, so a 200-track public playlist now returns 200 tracks even with no cookies set.",
