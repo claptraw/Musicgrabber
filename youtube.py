@@ -495,7 +495,7 @@ def _score_search_result_with_breakdown(
     # Piano cover albums tag the track artist as the original artist, so the
     # album is often the only place the word "cover" appears.
     # Remix/edit penalties are waived when the query itself requests that version.
-    _cover_re = r'\b(cover|remix|instrumental|acoustic version|live session|piano version|tribute)\b'
+    _cover_re = r'\b(covers?|remix|instrumental|acoustic version|live session|piano( version| covers?)?|tribute|karaoke)\b'
     if re.search(_cover_re, title_lower) or re.search(_cover_re, album_lower):
         # Don't penalise a remix result when we're explicitly searching for a remix
         if not re.search(r'\b(remix|edit|mix)\b', query_lower):
@@ -508,7 +508,7 @@ def _score_search_result_with_breakdown(
     # Penalties for fan uploads or unofficial - no cell phone video, thanks
     if re.search(r'\b(fan|unofficial|tribute)\b', title_lower):
         _bump(-30, "unofficial_title")
-    if re.search(r'\b(fan|fanpage|tribute|cover)\b', channel_lower):
+    if re.search(r'\b(fan|fanpage|tribute|covers?|karaoke)\b', channel_lower):
         _bump(-25, "unofficial_channel")
 
     # Copyright-filtered uploads: audio muted, pitch-shifted, or otherwise butchered

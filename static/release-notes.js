@@ -9,7 +9,18 @@
 const RELEASE_NOTES = {
     "2.8.10": {
         title: "What's New in v2.8.10",
-        sections: []
+        sections: [
+            {
+                heading: "Fixed",
+                items: [
+                    "Monochrome search now picks the canonical studio version, not the piano cover or movie soundtrack. The old scoring handed a hefty +210 bonus to anything tagged HI_RES_LOSSLESS, so a piano-tribute album in hi-res could outrank the actual Nirvana master sitting at plain lossless. The hi-res bonus has been trimmed to a 15-point edge over lossless so it can still break ties, but cannot bulldoze relevance.",
+                    "Monochrome scoring now reads the Tidal track's `version` field (Live, Live Aid, Muppet version, Devonshire Mix, Boombox Rehearsals, Originally Performed by, etc.) and applies a penalty when it is set. A bare `Remastered 2011` style annotation is treated as neutral, because Tidal almost never carries the un-remastered original master.",
+                    "Monochrome scoring also pulls Tidal's own popularity score (0 to 100) and adds it as a small tiebreaker, up to +10. When several copies of a track tie on quality and relevance, the one everyone actually streams wins.",
+                    "Album-title penalties added for soundtrack, live, compilation, karaoke, and tribute releases. The studio album rises to the top; the soundtrack tie-in and the karaoke disc fall down the list.",
+                    "Every penalty has a query-aware waiver. If you actually want the Spawn soundtrack version, search `spawn soundtrack trip like i do` and the Filter collab comes out on top. Search `crystal method - trip like i do` with no soundtrack hint and you get the Vegas studio cut.",
+                ]
+            },
+        ]
     },
     "2.8.9": {
         title: "What's New in v2.8.9",

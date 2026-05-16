@@ -1,6 +1,9 @@
 # Changelog
 
-## v2.8.10 (DEV)
+## v2.8.10 (2026-05-16)
+
+### Fixed
+- **Monochrome top result now reliably the canonical studio album track**: the old scoring handed a +210 bonus to anything tagged HI_RES_LOSSLESS, so piano-cover albums and movie soundtracks could outrank the legitimate studio master purely on quality tier. The Tidal items also carry two excellent signals MusicGrabber was ignoring: a `version` field that explicitly names live/remix/demo/karaoke/muppet takes, and a `popularity` score that tracks how canonical a master is. Scoring now: trims the HI_RES bonus to a 15-point edge over LOSSLESS; applies version penalties for live, demo, karaoke, instrumental, remix, and tribute annotations (a bare "Remastered 2011" tag is kept neutral, because Tidal almost never carries the un-remastered original); applies album penalties for soundtrack, live, compilation, and karaoke albums; and adds a small popularity tiebreaker (up to +10). Each penalty has a query-aware waiver, so asking for "spawn soundtrack" or "live at wembley" or "karaoke" still surfaces the version you actually wanted. Searches for Come As You Are, Bohemian Rhapsody, Smells Like Teen Spirit, Thriller, and Wonderwall all top with the studio album; "crystal method - trip like i do" hits the Vegas master while "spawn soundtrack trip like i do" hits the Filter collab.
 
 ## v2.8.9 (2026-05-16)
 

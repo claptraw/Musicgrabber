@@ -14,6 +14,7 @@ source_url format: monochrome://tidal_id?isrc=ISRC&quality=HI_RES_LOSSLESS
 """
 
 import hashlib
+import re
 from pathlib import Path
 from urllib.parse import urlencode, urlparse, parse_qs
 
@@ -36,10 +37,12 @@ _QUALITY_MAP = {
 }
 _SOURCE_QUALITY_TO_QOBUZ_FORMAT = {source_quality: qobuz_fmt for source_quality, qobuz_fmt in _QUALITY_MAP.values()}
 
-# Score bonuses per quality tier — matched to Soulseek's hi-res/lossless stack
-# (Soulseek: 150 quality + 35 trust + 25 lossless = 210 for hi-res FLAC, 160 for FLAC)
+# Score bonuses per quality tier. Kept near Soulseek's stack so Monochrome can
+# compete on overall ranking, but the HIRES-over-LOSSLESS delta is deliberately
+# small (15). Anything more lets piano covers and tribute bands ride the HIRES
+# bonus straight over the legitimate studio master.
 _QUALITY_BONUS = {
-    "HI_RES_LOSSLESS": 210,
+    "HI_RES_LOSSLESS": 175,
     "LOSSLESS":        160,
     "HIGH":             30,
 }
@@ -68,6 +71,88 @@ def _cover_url(cover_uuid: str) -> str:
     if not cover_uuid:
         return ""
     return f"https://resources.tidal.com/images/{cover_uuid.replace('-', '/')}/320x320.jpg"
+
+
+# When several copies of a track sit at the same quality tier, prefer the
+# canonical studio version. Tidal exposes two signals that make this far easier
+# than guessing from album titles:
+#
+#   item.version     — non-empty for live/remix/demo/rehearsal/karaoke/etc.;
+#                      empty (or just a remaster note) on the canonical track.
+#   item.popularity  — Tidal's own popularity ranking. Canonical masters tend
+#                      to dominate. We use it as a small tiebreaker.
+#
+# Album titles are still a useful fallback (soundtracks, karaoke comps, tribute
+# albums often have clean version fields but obvious album names).
+
+# Track-version patterns. First match wins. A bare "remastered" tag is NOT
+# penalised: Tidal almost never carries the un-remastered original master, so
+# the remaster IS the canonical version.
+#
+# The third tuple element is a "waiver" pattern: if the user's own query
+# contains it, the penalty is dropped. That way someone searching for
+# "spawn soundtrack" or "live at wembley" or "instrumental version" isn't
+# punished for getting exactly what they asked for.
+_VERSION_PENALTIES = [
+    (re.compile(r"\b(karaoke|tribute|piano cover|originally performed)\b", re.I), -120, "version_karaoke_or_tribute",
+     re.compile(r"\b(karaoke|tribute)\b", re.I)),
+    (re.compile(r"\b(live|unplugged|rehearsal|boombox|in concert|live aid)\b", re.I), -60, "version_live",
+     re.compile(r"\b(live|unplugged|concert)\b", re.I)),
+    (re.compile(r"\b(demo|outtake|alternate|early|rough mix|work tape|monitor mix)\b", re.I), -45, "version_demo_or_alt",
+     re.compile(r"\b(demo|outtake|alternate)\b", re.I)),
+    (re.compile(r"\b(instrumental|a cappella|backing track)\b", re.I),  -45, "version_instrumental",
+     re.compile(r"\b(instrumental|a cappella|backing)\b", re.I)),
+    (re.compile(r"\b(remix|extended|edit|mix|dub|radio|single version)\b", re.I), -30, "version_remix_or_edit",
+     re.compile(r"\b(remix|edit|mix|dub|extended)\b", re.I)),
+    (re.compile(r"\b(muppet|orchestral|piano version|acoustic version)\b", re.I), -50, "version_arrangement",
+     re.compile(r"\b(muppet|orchestral|acoustic|piano)\b", re.I)),
+]
+
+_ALBUM_PENALTIES = [
+    (re.compile(r"\b(karaoke|tribute|piano covers?)\b", re.I), -80, "album_karaoke_or_tribute",
+     re.compile(r"\b(karaoke|tribute)\b", re.I)),
+    (re.compile(r"\b(soundtrack|original score|o\.?s\.?t\.?)\b", re.I), -50, "album_soundtrack",
+     re.compile(r"\b(soundtrack|score|ost|o\.s\.t)\b", re.I)),
+    (re.compile(r"\b(live|unplugged|in concert|at wembley|at reading|rehearsals?)\b", re.I), -40, "album_live",
+     re.compile(r"\b(live|unplugged|concert)\b", re.I)),
+    (re.compile(r"\b(greatest hits|best of|anthology|essentials?|the hits|compilation|disco night|pop classics|hits collection)\b", re.I), -35, "album_compilation",
+     re.compile(r"\b(greatest hits|best of|anthology|compilation|hits)\b", re.I)),
+]
+
+
+def _apply_penalty_set(text: str, query_lower: str, rules: list) -> tuple[int, str | None]:
+    if not text:
+        return 0, None
+    for pattern, penalty, reason, waiver in rules:
+        if pattern.search(text):
+            if waiver.search(query_lower):
+                return 0, None
+            return penalty, f"{reason}={penalty}"
+    return 0, None
+
+
+def _version_penalty(version: str, query: str) -> tuple[int, str | None]:
+    """Return (penalty, reason) from the Tidal track `version` field, query-aware."""
+    if not version:
+        return 0, None
+    if re.fullmatch(r"\s*(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?\s*", version, re.I):
+        return 0, None
+    return _apply_penalty_set(version, query.lower(), _VERSION_PENALTIES)
+
+
+def _album_edition_penalty(album_title: str, query: str) -> tuple[int, str | None]:
+    """Return (penalty, reason) for the Tidal album title, query-aware."""
+    return _apply_penalty_set(album_title, query.lower(), _ALBUM_PENALTIES)
+
+
+def _popularity_bonus(popularity: int | None) -> tuple[int, str | None]:
+    """Small tiebreaker. Maps Tidal popularity (0 to 100) to a 0 to +10 bump."""
+    if not popularity:
+        return 0, None
+    bonus = min(10, max(0, popularity // 10))
+    if not bonus:
+        return 0, None
+    return bonus, f"tidal_popularity=+{bonus}"
 
 
 def _best_quality(tags: list[str]) -> tuple[str, int]:
@@ -105,7 +190,10 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
             duration  = item.get("duration") or 0
             isrc      = item.get("isrc", "")
             tags      = (item.get("mediaMetadata") or {}).get("tags", [])
+            album     = (item.get("album") or {}).get("title", "")
             cover_id  = (item.get("album") or {}).get("cover", "")
+            version   = item.get("version") or ""
+            popularity = item.get("popularity") or 0
 
             if not (title and artist):
                 continue
@@ -122,9 +210,19 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
                 combined, artist, query,
                 duration_seconds=duration or None,
                 view_count=None,
+                album=album,
             )
             quality_score += bonus
             score_breakdown.append(f"source_quality=+{bonus}")
+
+            for delta, reason in (
+                _version_penalty(version, query),
+                _album_edition_penalty(album, query),
+                _popularity_bonus(popularity),
+            ):
+                if delta:
+                    quality_score += delta
+                    score_breakdown.append(reason)
 
             params = urlencode({"isrc": isrc, "quality": quality_str})
             source_url = f"monochrome://{tidal_id}?{params}"
