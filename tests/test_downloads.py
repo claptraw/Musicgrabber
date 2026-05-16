@@ -106,6 +106,83 @@ def _mb_skip_if_no_override(job, artist, title):
         )
 
 
+def _import_downloads_or_skip():
+    try:
+        import downloads
+    except ModuleNotFoundError as exc:
+        pytest.skip(f"downloads module dependencies unavailable: {exc.name}")
+    return downloads
+
+
+def test_auto_route_single_uses_album_artist_for_folder(tmp_path, monkeypatch):
+    downloads = _import_downloads_or_skip()
+
+    monkeypatch.setattr(downloads, "_update_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(downloads, "set_file_permissions", lambda *args, **kwargs: None)
+    monkeypatch.setattr(downloads, "get_singles_dir", lambda user_id=None: tmp_path / "Singles")
+    monkeypatch.setattr(downloads, "get_albums_dir", lambda user_id=None: tmp_path / "Albums")
+    monkeypatch.setattr(
+        downloads,
+        "get_setting_bool",
+        lambda key, default=False, user_id=None: {
+            "auto_album_singles": True,
+            "auto_album_singles_use_albums_dir": False,
+            "organise_by_artist": False,
+        }.get(key, default),
+    )
+
+    source_dir = tmp_path / "Singles" / "Luis Fonsi, Daddy Yankee, Justin Bieber"
+    source_dir.mkdir(parents=True)
+    audio_file = source_dir / "Despacito (Remix).flac"
+    audio_file.write_bytes(b"not real audio")
+
+    routed = downloads._auto_route_single_to_album(
+        audio_file,
+        "Luis Fonsi, Daddy Yankee, Justin Bieber",
+        "Despacito (Remix)",
+        {"album": "Vida", "album_artist": "Luis Fonsi"},
+        "job-id",
+        None,
+    )
+
+    assert routed == tmp_path / "Singles" / "Luis Fonsi" / "Vida" / "Luis Fonsi - Despacito (Remix).flac"
+    assert routed.exists()
+
+
+def test_auto_route_playlist_uses_album_artist_for_folder_and_flat_filename(tmp_path, monkeypatch):
+    downloads = _import_downloads_or_skip()
+
+    monkeypatch.setattr(downloads, "_update_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(downloads, "set_file_permissions", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        downloads,
+        "get_setting_bool",
+        lambda key, default=False, user_id=None: {
+            "auto_album_singles": True,
+            "organise_by_artist": False,
+        }.get(key, default),
+    )
+
+    playlist_dir = tmp_path / "Playlists" / "Test"
+    playlist_dir.mkdir(parents=True)
+    audio_file = playlist_dir / "Luis Fonsi, Daddy Yankee, Justin Bieber - Despacito (Remix).flac"
+    audio_file.write_bytes(b"not real audio")
+
+    routed, did_route = downloads._auto_route_playlist_to_album(
+        audio_file,
+        "Luis Fonsi, Daddy Yankee, Justin Bieber",
+        "Despacito (Remix)",
+        {"album": "Vida", "album_artist": "Luis Fonsi"},
+        "job-id",
+        playlist_dir,
+        None,
+    )
+
+    assert did_route is True
+    assert routed == playlist_dir / "Luis Fonsi" / "Vida" / "Luis Fonsi - Despacito (Remix).flac"
+    assert routed.exists()
+
+
 # ---------------------------------------------------------------------------
 # Fast: shape / creation tests
 # ---------------------------------------------------------------------------

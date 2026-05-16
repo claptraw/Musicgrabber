@@ -1,6 +1,9 @@
 # Changelog
 
-## v2.8.9 (DEV)
+## v2.8.9 (2026-05-16)
+
+### Fixed
+- **Album-routed filenames now use album artist, not every credited track artist**: when MusicBrainz returned a track artist credit like `Luis Fonsi, Daddy Yankee, Justin Bieber`, album-routed files could inherit that whole artist string in the filename/folder even though the album artist was just `Luis Fonsi`. That confused Lidarr-style layouts expecting `Album Artist - Album - Track` naming. Album routing now prefers `album_artist` for folders and flat filename prefixes, while keeping the full credited artist list in the audio metadata where featured artists belong.
 
 ## v2.8.8 (2026-05-11)
 

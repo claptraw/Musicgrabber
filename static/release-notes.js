@@ -9,7 +9,14 @@
 const RELEASE_NOTES = {
     "2.8.9": {
         title: "What's New in v2.8.9",
-        sections: []
+        sections: [
+            {
+                heading: "Fixed",
+                items: [
+                    "Album-routed filenames now use the album artist instead of every credited track artist. A track like Despacito (Remix) can still keep Luis Fonsi, Daddy Yankee, and Justin Bieber in the metadata, but the album folder/flat filename prefix uses Luis Fonsi when MusicBrainz provides that as the album artist. This keeps Lidarr-style album layouts tidy without throwing away featured-artist credits.",
+                ]
+            },
+        ]
     },
     "2.8.8": {
         title: "What's New in v2.8.8",

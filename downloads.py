@@ -1516,7 +1516,8 @@ def _auto_route_playlist_to_album(
     if not album:
         return audio_file, False
 
-    safe_artist = sanitize_filename(artist)
+    album_artist = (mb_metadata.get("album_artist") or artist or "").strip()
+    safe_artist = sanitize_filename(album_artist)
     safe_album  = sanitize_filename(album)
     album_dir = playlist_base / safe_artist / safe_album
 
@@ -1526,7 +1527,7 @@ def _auto_route_playlist_to_album(
     album_dir.mkdir(parents=True, exist_ok=True)
     # Use _output_stem so the file lands as Title.flac (or Artist - Title.flac in flat mode),
     # matching how singles are named inside their Artist/Album/ subfolder.
-    new_stem = _output_stem(artist, title, audio_file.stem, user_id=user_id)
+    new_stem = _output_stem(album_artist, title, audio_file.stem, user_id=user_id)
     new_path = album_dir / f"{new_stem}{audio_file.suffix}"
 
     if new_path.exists():
@@ -1550,6 +1551,7 @@ def _auto_route_playlist_to_album(
             mb_metadata.get("year"),
             track_number=track_number,
             track_total=track_total,
+            album_artist=album_artist,
         )
 
     old_dir = audio_file.parent
@@ -1581,7 +1583,8 @@ def _auto_route_single_to_album(
     if not album:
         return audio_file
 
-    safe_artist = sanitize_filename(artist)
+    album_artist = (mb_metadata.get("album_artist") or artist or "").strip()
+    safe_artist = sanitize_filename(album_artist)
     safe_album  = sanitize_filename(album)
     if get_setting_bool("auto_album_singles_use_albums_dir", False, user_id=user_id):
         base_dir = get_albums_dir(user_id=user_id)
@@ -1593,7 +1596,8 @@ def _auto_route_single_to_album(
         return audio_file  # Already there
 
     album_dir.mkdir(parents=True, exist_ok=True)
-    new_path = album_dir / audio_file.name
+    new_stem = _output_stem(album_artist, title, audio_file.stem, user_id=user_id)
+    new_path = album_dir / f"{new_stem}{audio_file.suffix}"
 
     if new_path.exists():
         print(f"Auto-album routing: target already exists, skipping move: {new_path}")
@@ -1618,6 +1622,7 @@ def _auto_route_single_to_album(
             mb_metadata.get("year"),
             track_number=track_number,
             track_total=track_total,
+            album_artist=album_artist,
         )
 
     # Tidy up the old artist dir if it's now empty
@@ -2607,6 +2612,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                         track_total=tag_track_total,
                         album_art_bytes=pl_cover_art_bytes,
                         album_art_mime=pl_cover_art_mime,
+                        album_artist=mb_metadata.get("album_artist"),
                     )
                     # Use canonical artist/title from MusicBrainz
                     if mb_artist != artist:
@@ -2883,9 +2889,9 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
         # Rename to our standard naming
         if playlists_dir:
-            sanitized_title = _playlist_stem(artist, forced_track_title or title, Path(filename).stem or job_id)
+            sanitized_title = _playlist_stem(forced_album_artist or artist, forced_track_title or title, Path(filename).stem or job_id)
         else:
-            sanitized_title = _output_stem(artist, forced_track_title or title, Path(filename).stem or job_id, user_id=user_id)
+            sanitized_title = _output_stem(forced_album_artist or artist, forced_track_title or title, Path(filename).stem or job_id, user_id=user_id)
         source_ext = downloaded_file.suffix.lower()
 
         # Probe the source file BEFORE conversion so we know the real quality
@@ -2969,12 +2975,14 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             if cover:
                 album_art_bytes, album_art_mime = cover
 
+        tag_album_artist = forced_album_artist
         if mb_metadata:
             metadata_source = mb_metadata.get("metadata_source", metadata_source)
             mb_artist = mb_metadata.get("artist", artist)
             mb_title = mb_metadata.get("title", title)
             tag_title = forced_track_title or mb_title
             tag_album = forced_album_name or mb_metadata.get("album", "")
+            tag_album_artist = forced_album_artist or mb_metadata.get("album_artist")
             tag_track_num, tag_track_total = _resolve_track_number(
                 final_file, album_track_number, album_track_total, mb_metadata
             )
@@ -2986,7 +2994,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
-                album_artist=forced_album_artist,
+                album_artist=tag_album_artist,
             )
             # Use canonical artist/title from MusicBrainz
             if mb_artist != artist:
@@ -3024,7 +3032,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             title = forced_track_title or title
 
         final_file = _rename_with_track_number_if_enabled(
-            final_file, artist, title, Path(filename).stem or job_id,
+            final_file, tag_album_artist or artist, title, Path(filename).stem or job_id,
             tag_track_num, user_id=user_id,
             playlist_routed=bool(playlists_dir) and not playlist_album_routed,
         )
@@ -3213,10 +3221,10 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             playlists_dir = None
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_filename(playlist_name)
-            safe_title = _playlist_stem(artist, forced_track_title or title, job_id)
+            safe_title = _playlist_stem(forced_album_artist or artist, forced_track_title or title, job_id)
         elif override_dir:
             artist_dir = Path(override_dir)
-            safe_title = _output_stem(artist, forced_track_title or title, job_id, user_id=user_id)
+            safe_title = _output_stem(forced_album_artist or artist, forced_track_title or title, job_id, user_id=user_id)
         else:
             artist_dir = get_download_dir(artist, user_id=user_id)
             safe_title = _output_stem(artist, forced_track_title or title, job_id, user_id=user_id)
@@ -3345,6 +3353,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             title = forced_track_title or title
         year  = mb_metadata.get("year") if mb_metadata else None
         album = forced_album_name or (mb_metadata.get("album") if mb_metadata else None)
+        tag_album_artist = forced_album_artist or ((mb_metadata or {}).get("album_artist"))
 
         # Cover art: direct MP3 files often arrive naked, so try the full chain
         _update_job(job_id, progress_stage="Tagging file")
@@ -3369,7 +3378,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             track_total=tag_track_total,
             album_art_bytes=album_art_bytes,
             album_art_mime=album_art_mime,
-            album_artist=forced_album_artist,
+            album_artist=tag_album_artist,
         )
 
         playlist_album_routed = False
@@ -3384,7 +3393,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                 )
 
         output_path = _rename_with_track_number_if_enabled(
-            output_path, artist, title, job_id,
+            output_path, tag_album_artist or artist, title, job_id,
             tag_track_num, user_id=user_id,
             playlist_routed=bool(playlists_dir) and not playlist_album_routed,
         )
@@ -3669,10 +3678,10 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             playlists_dir = None
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_filename(playlist_name)
-            safe_title = _playlist_stem(artist, forced_track_title or title, video_id)
+            safe_title = _playlist_stem(forced_album_artist or artist, forced_track_title or title, video_id)
         elif override_dir:
             artist_dir = Path(override_dir)
-            safe_title = _output_stem(artist, forced_track_title or title, video_id, user_id=user_id)
+            safe_title = _output_stem(forced_album_artist or artist, forced_track_title or title, video_id, user_id=user_id)
         else:
             artist_dir = get_download_dir(artist, user_id=user_id)
             safe_title = _output_stem(artist, forced_track_title or title, video_id, user_id=user_id)
@@ -3861,12 +3870,14 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 album_art_bytes, album_art_mime = cover
 
         playlist_album_routed = False
+        tag_album_artist = forced_album_artist
         if mb_metadata:
             metadata_source = mb_metadata.get("metadata_source", metadata_source)
             mb_artist = mb_metadata.get("artist", artist)
             mb_title = mb_metadata.get("title", title)
             tag_title = forced_track_title or mb_title
             tag_album = forced_album_name or mb_metadata.get("album", "")
+            tag_album_artist = forced_album_artist or mb_metadata.get("album_artist")
             tag_track_num, tag_track_total = _resolve_track_number(
                 audio_file, album_track_number, album_track_total, mb_metadata
             )
@@ -3878,7 +3889,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
-                album_artist=forced_album_artist,
+                album_artist=tag_album_artist,
             )
             # Use the canonical artist/title from MusicBrainz everywhere
             if mb_artist != artist:
@@ -3919,7 +3930,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             title = tag_title
 
         audio_file = _rename_with_track_number_if_enabled(
-            audio_file, artist, title, video_id,
+            audio_file, tag_album_artist or artist, title, video_id,
             tag_track_num, user_id=user_id,
             # Album-routed playlist tracks sit in Artist/Album/ so no artist prefix needed.
             playlist_routed=bool(playlists_dir) and not playlist_album_routed,
