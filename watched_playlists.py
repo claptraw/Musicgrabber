@@ -185,8 +185,8 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if soundcloud_likes:
         return "soundcloud", url
 
-    # Tidal playlist
-    tidal_playlist = re.match(r'https?://tidal\.com/browse/playlist/([0-9a-f-]{36})', url, re.IGNORECASE)
+    # Tidal playlist (both tidal.com/browse/playlist/UUID and tidal.com/playlist/UUID)
+    tidal_playlist = re.match(r'https?://tidal\.com/(?:browse/)?playlist/([0-9a-f-]{36})', url, re.IGNORECASE)
     if tidal_playlist:
         return "tidal", tidal_playlist.group(1)
 
