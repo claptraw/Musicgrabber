@@ -9,7 +9,15 @@
 const RELEASE_NOTES = {
     "2.8.11": {
         title: "What's New in v2.8.11",
-        sections: []
+        sections: [
+            {
+                heading: "Fixed",
+                items: [
+                    "Monochrome source is now enabled by default again. A regression had flipped it back to off, so fresh installs were only searching YouTube, SoundCloud, MP3Phoenix, and zvu4no until someone found the toggle.",
+                    "Monochrome and Qobuz proxy URLs are now correctly set for users who skip versions. If you had Monochrome before it was temporarily removed in v2.6.6 and then jumped straight to v2.8.x, those URL fields would be blank in the database and Monochrome searches would silently fail. A one-time migration now seeds the correct defaults for affected installs.",
+                ]
+            },
+        ]
     },
     "2.8.10": {
         title: "What's New in v2.8.10",

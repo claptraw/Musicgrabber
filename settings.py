@@ -213,7 +213,7 @@ SETTINGS_SCHEMA = {
     "source_soundcloud_enabled": {"type": "bool", "default": True, "env": "SOURCE_SOUNDCLOUD_ENABLED"},
     "source_zvu4no_enabled": {"type": "bool", "default": True, "env": "SOURCE_ZVU4NO_ENABLED"},
     "source_soulseek_enabled": {"type": "bool", "default": False, "env": "SOURCE_SOULSEEK_ENABLED"},
-    "source_monochrome_enabled": {"type": "bool", "default": False, "env": "SOURCE_MONOCHROME_ENABLED"},
+    "source_monochrome_enabled": {"type": "bool", "default": True, "env": "SOURCE_MONOCHROME_ENABLED"},
     "monochrome_hifi_api_url": {"type": "str", "default": MONOCHROME_HIFI_API_URL, "env": "MONOCHROME_HIFI_API_URL"},
     "monochrome_qobuz_proxy_url": {"type": "str", "default": MONOCHROME_QOBUZ_PROXY_URL, "env": "MONOCHROME_QOBUZ_PROXY_URL"},
     # YouTube

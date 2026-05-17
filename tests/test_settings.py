@@ -35,6 +35,18 @@ def test_settings_audio_format_is_valid(api, base_url):
     assert settings["audio_format"] in ("flac", "alac", "opus", "mp3")
 
 
+def test_settings_monochrome_enabled_by_default(api, base_url):
+    settings = api.get(f"{base_url}/api/settings", timeout=10).json()["settings"]
+    assert settings["source_monochrome_enabled"] is True
+
+
+def test_settings_monochrome_urls_non_empty(api, base_url):
+    """Monochrome URL settings must have non-empty defaults (migration guard)."""
+    settings = api.get(f"{base_url}/api/settings", timeout=10).json()["settings"]
+    assert settings.get("monochrome_hifi_api_url"), "monochrome_hifi_api_url is blank — migration may have failed"
+    assert settings.get("monochrome_qobuz_proxy_url"), "monochrome_qobuz_proxy_url is blank — migration may have failed"
+
+
 def test_settings_write_and_restore(api, base_url):
     """Toggle organise_by_artist, verify it persists, then restore."""
     original = api.get(f"{base_url}/api/settings", timeout=10).json()["settings"]

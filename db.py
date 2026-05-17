@@ -17,6 +17,8 @@ from constants import (
     LIBRARY_RECONCILE_INTERVAL,
     SEARCH_LOG_RETENTION_DAYS,
     WATCHED_REFRESH_STALE_SECONDS,
+    MONOCHROME_HIFI_API_URL,
+    MONOCHROME_QOBUZ_PROXY_URL,
 )
 
 
@@ -795,6 +797,25 @@ def init_db():
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '1')"
             )
             print("DB migrated to version 1: multi-user unique constraints applied")
+
+        # v2: Seed Monochrome URL settings for users upgrading across the removal/re-addition
+        # gap. Anyone with an empty or missing value gets the current defaults; anyone who
+        # deliberately changed them keeps their value (UPDATE ... WHERE value = '' only).
+        if db_version < 2:
+            for key, default in (
+                ("monochrome_hifi_api_url", MONOCHROME_HIFI_API_URL),
+                ("monochrome_qobuz_proxy_url", MONOCHROME_QOBUZ_PROXY_URL),
+            ):
+                conn.execute("""
+                    INSERT INTO settings (key, value, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE value = '' OR value IS NULL
+                """, (key, default, default))
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '2')"
+            )
+            print("DB migrated to version 2: Monochrome URL defaults seeded")
 
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already

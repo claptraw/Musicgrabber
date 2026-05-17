@@ -1,6 +1,10 @@
 # Changelog
 
-## v2.8.11 (DEV)
+## v2.8.11 (2026-05-17)
+
+### Fixed
+- **Monochrome is enabled out of the gate again**: the runtime default had drifted back to off, which meant fresh installs only searched YouTube, SoundCloud, MP3Phoenix, and zvu4no until the admin found the Search Sources toggle. The default is back to on, and the README now documents Monochrome/Qobuz as part of the standard source set with `SOURCE_MONOCHROME_ENABLED=false` available for anyone who wants to disable it.
+- **Monochrome URL settings now survive a version-skip upgrade**: users who had Monochrome before it was removed (v2.6.6) and then jumped straight to v2.8.x found the Monochrome and Qobuz proxy URL fields blank in the database, because an empty string stored from the old install beat the new schema defaults. A DB migration (version 2) now seeds both URLs with the correct defaults for anyone whose DB has them missing or empty, while leaving intentional custom values alone.
 
 ## v2.8.10 (2026-05-16)
 
