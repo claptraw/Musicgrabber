@@ -4605,8 +4605,9 @@
                     youtube: '<i class="fa-brands fa-youtube" title="YouTube"></i>',
                     apple: '<i class="fa-brands fa-apple" title="Apple Music"></i>',
                     amazon: '<i class="fa-brands fa-amazon" title="Amazon Music"></i>',
-                    listenbrainz: '<i class="fa-solid fa-music" title="ListenBrainz"></i>',
-                    soundcloud: '<i class="fa-brands fa-soundcloud" title="SoundCloud"></i>'
+                    listenbrainz: '<img src="/static/images/ListenBrainzLogo.svg" title="ListenBrainz" style="width:1em;height:1em;vertical-align:-0.125em;">',
+                    soundcloud: '<i class="fa-brands fa-soundcloud" title="SoundCloud"></i>',
+                    beatport: '<img src="/static/images/BeatPortLogo.svg" title="Beatport" style="width:1em;height:1em;vertical-align:-0.125em;">'
                 };
                 const platformIcon = platformIcons[p.platform] || '<i class="fa-solid fa-list"></i>';
                 const lastChecked = p.last_checked ? formatTimeAgo(p.last_checked) : 'Never';

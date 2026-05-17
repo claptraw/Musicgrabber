@@ -26,6 +26,7 @@ from db import db_conn
 from bulk_import import start_bulk_import_for_tracks
 from amazon import fetch_amazon_playlist
 from apple import fetch_apple_music_playlist
+from beatport import fetch_beatport_playlist
 from downloads import rebuild_watched_playlist_m3u
 from settings import get_playlists_dir, get_setting
 from spotify import fetch_spotify_playlist_via_browser
@@ -189,9 +190,17 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if tidal_playlist:
         return "tidal", tidal_playlist.group(1)
 
+    # Beatport Top 100, genre charts, and editorial/user charts
+    beatport = re.match(
+        r'https?://(?:www\.)?beatport\.com/(top-100|genre/[^/]+/\d+/top-100|chart/[^/]+/\d+)',
+        url, re.IGNORECASE
+    )
+    if beatport:
+        return "beatport", url
+
     raise HTTPException(
         status_code=400,
-        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, ListenBrainz playlists or usernames, SoundCloud sets/likes, Tidal playlists."
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, ListenBrainz playlists or usernames, SoundCloud sets/likes, Tidal playlists, Beatport charts/Top 100."
     )
 
 
@@ -739,6 +748,17 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             return tracks, name, None
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Failed to fetch Tidal playlist: {e}")
+
+    elif platform == "beatport":
+        result = fetch_beatport_playlist(url)
+        tracks = []
+        for track_str in result["tracks"]:
+            if " - " in track_str:
+                artist, title = track_str.split(" - ", 1)
+                tracks.append((artist.strip(), title.strip()))
+            else:
+                tracks.append(("Unknown", track_str.strip()))
+        return tracks, result["playlist_name"], None
 
     raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
 

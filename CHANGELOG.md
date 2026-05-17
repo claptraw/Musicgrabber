@@ -2,6 +2,9 @@
 
 ## v2.8.12 (DEV)
 
+### Added
+- **Beatport playlists**: Beatport Top 100, genre charts, and editorial charts can now be watched or imported as playlists. Paste a URL like `https://www.beatport.com/top-100` or `https://www.beatport.com/genre/techno/6/top-100` into the Watched Playlists box and MusicGrabber will pull the track list straight from the page's server-rendered JSON. Shiny vinyl icon included.
+
 ## v2.8.11 (2026-05-17)
 
 ### Fixed
