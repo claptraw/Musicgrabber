@@ -7,6 +7,7 @@
 
 ### Fixed
 - **Tidal playlist URLs without `/browse/`**: direct Tidal share links (`tidal.com/playlist/UUID`) were rejected as unrecognised. The regex now accepts both the `/browse/playlist/` and bare `/playlist/` forms.
+- **Tidal playlist fetch actually works now**: the UUID was never being extracted from the URL before passing to the Monochrome API, so it was sending the entire URL as the playlist ID. That'll teach us to test things.
 
 ## v2.8.11 (2026-05-17)
 

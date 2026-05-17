@@ -744,8 +744,13 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
     elif platform == "tidal":
         from monochrome import fetch_tidal_playlist_tracks
         try:
-            tracks, name = fetch_tidal_playlist_tracks(url)
+            m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', url, re.IGNORECASE)
+            if not m:
+                raise HTTPException(status_code=400, detail="Invalid Tidal playlist URL: no UUID found")
+            tracks, name = fetch_tidal_playlist_tracks(m.group(1))
             return tracks, name, None
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Failed to fetch Tidal playlist: {e}")
 
