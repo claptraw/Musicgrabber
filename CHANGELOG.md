@@ -7,7 +7,7 @@
 
 ### Fixed
 - **Tidal playlist URLs without `/browse/`**: direct Tidal share links (`tidal.com/playlist/UUID`) were rejected as unrecognised. The regex now accepts both the `/browse/playlist/` and bare `/playlist/` forms.
-- **Tidal playlist fetch actually works now**: the UUID was never being extracted from the URL before passing to the Monochrome API, so it was sending the entire URL as the playlist ID. That'll teach us to test things.
+- **Tidal playlist fetch actually works now**: replaced the dead Monochrome-proxy approach with a direct scrape of Tidal's embed player (`embed.tidal.com/playlists/UUID`), which server-renders the full track list as web components. Regex does the rest. Also now has its own `tidal.py` module.
 
 ## v2.8.11 (2026-05-17)
 

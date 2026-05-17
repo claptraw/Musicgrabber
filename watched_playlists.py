@@ -27,6 +27,7 @@ from bulk_import import start_bulk_import_for_tracks
 from amazon import fetch_amazon_playlist
 from apple import fetch_apple_music_playlist
 from beatport import fetch_beatport_playlist
+from tidal import fetch_tidal_playlist
 from downloads import rebuild_watched_playlist_m3u
 from settings import get_playlists_dir, get_setting
 from spotify import fetch_spotify_playlist_via_browser
@@ -742,17 +743,18 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
         return tracks, name, None
 
     elif platform == "tidal":
-        from monochrome import fetch_tidal_playlist_tracks
-        try:
-            m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', url, re.IGNORECASE)
-            if not m:
-                raise HTTPException(status_code=400, detail="Invalid Tidal playlist URL: no UUID found")
-            tracks, name = fetch_tidal_playlist_tracks(m.group(1))
-            return tracks, name, None
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to fetch Tidal playlist: {e}")
+        m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', url, re.IGNORECASE)
+        if not m:
+            raise HTTPException(status_code=400, detail="Invalid Tidal playlist URL: no UUID found")
+        result = fetch_tidal_playlist(m.group(1))
+        tracks = []
+        for track_str in result["tracks"]:
+            if " - " in track_str:
+                artist, title = track_str.split(" - ", 1)
+                tracks.append((artist.strip(), title.strip()))
+            else:
+                tracks.append(("Unknown", track_str.strip()))
+        return tracks, result["playlist_name"], None
 
     elif platform == "beatport":
         result = fetch_beatport_playlist(url)
