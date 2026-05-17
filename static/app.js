@@ -4607,6 +4607,7 @@
                     amazon: '<i class="fa-brands fa-amazon" title="Amazon Music"></i>',
                     listenbrainz: '<img src="/static/images/ListenBrainzLogo.svg" title="ListenBrainz" style="width:1em;height:1em;vertical-align:-0.125em;">',
                     soundcloud: '<i class="fa-brands fa-soundcloud" title="SoundCloud"></i>',
+                    tidal: '<img src="/static/images/tidal-round-black-icon.svg" title="Tidal" style="width:1em;height:1em;vertical-align:-0.125em;">',
                     beatport: '<img src="/static/images/BeatPortLogo.svg" title="Beatport" style="width:1em;height:1em;vertical-align:-0.125em;">'
                 };
                 const platformIcon = platformIcons[p.platform] || '<i class="fa-solid fa-list"></i>';
