@@ -9,7 +9,21 @@
 const RELEASE_NOTES = {
     "2.8.12": {
         title: "What's New in v2.8.12",
-        sections: []
+        sections: [
+            {
+                heading: "Added",
+                items: [
+                    "Beatport playlists are here. Top 100, genre charts, editorial charts — paste a Beatport URL into Watched Playlists and it pulls the track list straight from the page. Shiny vinyl icon included.",
+                ]
+            },
+            {
+                heading: "Fixed",
+                items: [
+                    "Tidal share links (tidal.com/playlist/UUID) were being rejected as unrecognised. The URL matcher now accepts both the /browse/playlist/ and bare /playlist/ forms.",
+                    "Tidal playlist fetching actually works again. The old Monochrome-proxy approach was dead, so it has been replaced with a direct scrape of Tidal's embed player, which server-renders the full track list. Tidal now lives in its own tidal.py module.",
+                ]
+            },
+        ]
     },
     "2.8.11": {
         title: "What's New in v2.8.11",
