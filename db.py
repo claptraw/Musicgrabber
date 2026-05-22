@@ -817,6 +817,23 @@ def init_db():
             )
             print("DB migrated to version 2: Monochrome URL defaults seeded")
 
+        # v3: The old qobuz.kennyy.com.br proxy went dark. The new official proxy
+        # (qdl-api.monochrome.tf) speaks the exact same API, so anyone still pointed
+        # at the dead host gets transparently migrated. Custom self-hosted URLs are
+        # untouched, because the WHERE clause only matches the specific dead host.
+        if db_version < 3:
+            conn.execute("""
+                UPDATE settings
+                SET value = 'https://qdl-api.monochrome.tf',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE key = 'monochrome_qobuz_proxy_url'
+                  AND value = 'https://qobuz.kennyy.com.br'
+            """)
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '3')"
+            )
+            print("DB migrated to version 3: stale kennyy Qobuz proxy URL retired")
+
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already
         # passed through that mangled migration. Harmless if the column is present.

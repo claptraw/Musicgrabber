@@ -9,7 +9,16 @@
 const RELEASE_NOTES = {
     "2.8.13": {
         title: "What's New in v2.8.13",
-        sections: []
+        sections: [
+            {
+                heading: "Fixed",
+                items: [
+                    "Beatport playlist folders are now named sensibly. The Top 100 page was using Beatport's SEO tagline as the folder name. It now reads 'Beatport Top 100', genre charts read 'Techno Top 100' and so on, and named charts still use the actual chart name.",
+                    "Monochrome downloads and previews work again. The Qobuz proxy we relied on (qobuz.kennyy.com.br) went dark, so we have switched to the new official one (qdl-api.monochrome.tf). Same API, same Akamai CDN, same FLACs. Existing installs are auto-migrated, the URL stays editable in Settings if you want to point at your own.",
+                    "Bulk Import's playlist URL field now accepts Beatport and Tidal links. Watched Playlists already did; the Bulk Import paste box was running a stricter allow-list and bouncing them with 'Unsupported URL'. Fixed.",
+                ]
+            },
+        ]
     },
     "2.8.12": {
         title: "What's New in v2.8.12",

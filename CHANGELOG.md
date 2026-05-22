@@ -1,6 +1,11 @@
 # Changelog
 
-## v2.8.13 (DEV)
+## v2.8.13 (2026-05-22)
+
+### Fixed
+- **Beatport playlist folder names**: the Top 100 and genre chart pages were being named after Beatport's SEO tagline ("Beatport Top 100 Songs & DJ Tracks Music Downloads & Streaming") rather than anything useful. The folder name is now derived from the URL: `/top-100` gives "Beatport Top 100", `/genre/techno/6/top-100` gives "Techno Top 100", and so on. Named charts still use the og:title, which is the actual chart name.
+- **Monochrome (Qobuz) proxy swap**: `qobuz.kennyy.com.br` went dark (502s on ISRC lookup, 401s on the download leg from upstream), which killed every Monochrome preview and download. The Monochrome frontend has switched to `qdl-api.monochrome.tf`, which speaks the exact same API and serves the same Akamai-hosted FLAC CDN. The default has moved with it, a v3 database migration retires the dead URL on existing installs (only when the stored value is still the kennyy host, so self-hosted overrides survive), and the URL remains user-editable in Settings for when this happens again. Because of course it will.
+- **Bulk import playlist URL field now accepts Beatport and Tidal links**: the Watched Playlists field happily took them, but the same paste box on the Bulk Import tab was running a frontend allow-list that hadn't been updated since 2.8.11, so Beatport and Tidal URLs got bounced with "Unsupported URL" before the backend ever saw them. The backend supported them all along.
 
 ## v2.8.12 (2026-05-19)
 

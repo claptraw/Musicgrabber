@@ -143,4 +143,4 @@ DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() =
 
 # Monochrome (Qobuz/Tidal) — configurable so you can point at a self-hosted hifi-api
 MONOCHROME_HIFI_API_URL = os.getenv("MONOCHROME_HIFI_API_URL", "https://eu-central.monochrome.tf")
-MONOCHROME_QOBUZ_PROXY_URL = os.getenv("MONOCHROME_QOBUZ_PROXY_URL", "https://qobuz.kennyy.com.br")
+MONOCHROME_QOBUZ_PROXY_URL = os.getenv("MONOCHROME_QOBUZ_PROXY_URL", "https://qdl-api.monochrome.tf")

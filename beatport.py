@@ -37,7 +37,7 @@ def fetch_beatport_playlist(url: str) -> dict:
     """
     print(f"[Beatport] Fetching: {url}")
     html = _fetch_html(url)
-    playlist_name = _extract_page_title(html)
+    playlist_name = _extract_page_title(html, url)
     tracks = _extract_tracks(html)
 
     if not tracks:
@@ -67,17 +67,28 @@ def _fetch_html(url: str) -> str:
         raise HTTPException(status_code=502, detail=f"Failed to fetch Beatport page: {exc}")
 
 
-def _extract_page_title(html: str) -> str:
-    # og:title is the most reliable source for chart/playlist names
+def _extract_page_title(html: str, url: str = "") -> str:
+    # For top-100 style URLs, derive a clean name from the URL itself rather than
+    # trusting og:title, which Beatport fills with SEO marketing guff.
+    if url:
+        genre_top100 = re.search(
+            r'beatport\.com/genre/([^/]+)/\d+/top-100', url, re.IGNORECASE
+        )
+        if genre_top100:
+            genre = genre_top100.group(1).replace("-", " ").title()
+            return f"{genre} Top 100"
+
+        if re.search(r'beatport\.com/top-100', url, re.IGNORECASE):
+            return "Beatport Top 100"
+
+    # For named charts, og:title has the actual chart name
     og = re.search(r'property="og:title"\s+content="([^"]+)"', html)
     if og:
         title = og.group(1).strip()
-        # Strip the " | Beatport" suffix Beatport appends
         title = re.sub(r"\s*\|\s*Beatport$", "", title, flags=re.IGNORECASE).strip()
         if title:
             return title
 
-    # Fall back to <title>
     title_tag = re.search(r"<title>([^<]+)</title>", html, re.IGNORECASE)
     if title_tag:
         title = title_tag.group(1).strip()
