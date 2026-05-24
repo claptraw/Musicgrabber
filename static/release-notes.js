@@ -7,6 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.14": {
+        title: "What's New in v2.8.14",
+        sections: [
+            {
+                heading: "Fixed",
+                items: [
+                    "Monochrome works again, take 47. The hifi-api default was pinned to a specific Render node (eu-central.monochrome.tf) and the owner has suspended it, which broke Tidal search, Monochrome previews and Tidal playlist fetching. We have switched to the CDN-routed apex (api.monochrome.tf) which picks a healthy node automatically. Existing installs are auto-migrated; if you have a custom self-hosted hifi-api set, it is left alone.",
+                ]
+            },
+        ]
+    },
     "2.8.13": {
         title: "What's New in v2.8.13",
         sections: [

@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.8.14 (2026-05-24)
+
+### Fixed
+- **Monochrome hifi-api swap, because of course it happened again**: the default hifi-api endpoint was pinned to `eu-central.monochrome.tf`, which is a single Render node, not a CDN. The owner has suspended that node, so every Tidal metadata lookup now comes back as a Cloudflare 503 ("Service Suspended"), which in turn breaks Monochrome search, Monochrome preview, and Tidal playlist fetch. The default has moved to the apex `https://api.monochrome.tf`, which sits behind Cloudflare and routes to whichever node is actually alive. A v4 database migration retires the dead node URL for anyone whose stored value still points at eu-central (custom self-hosted URLs are left alone). The httpx calls also now follow redirects, because the apex helpfully adds a trailing slash via 307.
+
 ## v2.8.13 (2026-05-22)
 
 ### Fixed

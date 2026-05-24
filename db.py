@@ -834,6 +834,22 @@ def init_db():
             )
             print("DB migrated to version 3: stale kennyy Qobuz proxy URL retired")
 
+        # v4: The eu-central Render node was suspended by its owner, so hifi-api lookups
+        # via that hostname now return 503. The apex api.monochrome.tf is CDN-routed and
+        # picks a healthy node automatically; switch anyone still pinned to the dead one.
+        if db_version < 4:
+            conn.execute("""
+                UPDATE settings
+                SET value = 'https://api.monochrome.tf',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE key = 'monochrome_hifi_api_url'
+                  AND value = 'https://eu-central.monochrome.tf'
+            """)
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '4')"
+            )
+            print("DB migrated to version 4: stale eu-central hifi-api URL retired")
+
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already
         # passed through that mangled migration. Harmless if the column is present.

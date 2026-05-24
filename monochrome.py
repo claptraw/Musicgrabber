@@ -172,6 +172,7 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
             params={"s": query, "limit": limit * 3},
             headers=_HEADERS,
             timeout=TIMEOUT_MONOCHROME_SEARCH,
+            follow_redirects=True,
         )
         resp.raise_for_status()
 
@@ -388,6 +389,7 @@ def fetch_tidal_playlist_tracks(playlist_uuid: str) -> tuple[list[tuple[str, str
         params={"id": playlist_uuid},
         headers=_HEADERS,
         timeout=30,
+        follow_redirects=True,
     )
     resp.raise_for_status()
 

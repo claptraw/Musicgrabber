@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.8.13"
+VERSION = "2.8.14"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -142,5 +142,5 @@ DEEZER_SEARCH_URL = "https://api.deezer.com/search"
 DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"
 
 # Monochrome (Qobuz/Tidal) — configurable so you can point at a self-hosted hifi-api
-MONOCHROME_HIFI_API_URL = os.getenv("MONOCHROME_HIFI_API_URL", "https://eu-central.monochrome.tf")
+MONOCHROME_HIFI_API_URL = os.getenv("MONOCHROME_HIFI_API_URL", "https://api.monochrome.tf")
 MONOCHROME_QOBUZ_PROXY_URL = os.getenv("MONOCHROME_QOBUZ_PROXY_URL", "https://qdl-api.monochrome.tf")
