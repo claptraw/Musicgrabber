@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
-from constants import BULK_IMPORT_SEARCH_DELAY
+from constants import BULK_IMPORT_SEARCH_DELAY, PRIORITY_SOURCE_BOOST
 from db import db_conn, upsert_album_track_lock
 from downloads import process_download, process_slskd_download, create_bulk_playlist
 from notifications import send_notification
@@ -115,6 +115,24 @@ def _candidate_channel_matches_expected_artist(candidate: dict, expected_artist:
     return any(channel_norm == f"{expected_norm}{suffix}" for suffix in compact_suffixes)
 
 
+def apply_priority_source_boost(results: list, priority_source: Optional[str]) -> list:
+    """Re-rank search results so the user-chosen source wins close calls.
+
+    Adds PRIORITY_SOURCE_BOOST to the quality_score of any result whose
+    source matches priority_source, then re-sorts descending. Mutates the
+    list in place and also returns it for convenience.
+    No-op when priority_source is empty/None or results is empty.
+    """
+    if not (priority_source and results):
+        return results
+    target = priority_source.strip().lower()
+    for r in results:
+        if (r.get("source") or "").lower() == target:
+            r["quality_score"] = (r.get("quality_score") or 0) + PRIORITY_SOURCE_BOOST
+    results.sort(key=lambda r: r.get("quality_score") or 0, reverse=True)
+    return results
+
+
 def clean_bulk_import_line(line: str) -> str:
     """Clean a line from bulk import text
 
@@ -158,20 +176,32 @@ def start_bulk_import_for_tracks(
     album_release_mbid: Optional[str] = None,
     album_total_tracks: Optional[int] = None,
     custom_subdir: Optional[str] = None,
+    priority_source: Optional[str] = None,
 ) -> str:
-    """Create a bulk import job from a list of (artist, title) tuples."""
+    """Create a bulk import job from a list of (artist, title) tuples.
+
+    priority_source, when set, applies a large quality-score bonus to results
+    from that source during selection, so the user's preferred indexer wins
+    nearly every close call (see PRIORITY_SOURCE_BOOST).
+    """
     import_id = str(uuid.uuid4())[:8]
+
+    # Normalise priority_source: empty string and "any" both mean "no preference".
+    _priority = (priority_source or "").strip().lower() or None
+    if _priority in ("any", "all", "none"):
+        _priority = None
 
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO bulk_imports
                (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac,
                 watch_playlist_id, use_playlists_dir, watch_artist_id, user_id, preferred_sources,
-                override_dir, album_release_mbid, album_total_tracks, custom_subdir)
-               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                override_dir, album_release_mbid, album_total_tracks, custom_subdir, priority_source)
+               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (import_id, len(tracks), int(convert_to_flac), watch_playlist_id,
              int(use_playlists_dir), watch_artist_id, user_id, preferred_sources or "all",
-             override_dir, album_release_mbid, album_total_tracks, custom_subdir or None)
+             override_dir, album_release_mbid, album_total_tracks, custom_subdir or None,
+             _priority)
         )
 
         for line_num, (artist, song) in enumerate(tracks, 1):
@@ -217,6 +247,13 @@ def process_bulk_import_worker(import_id: str):
             None if _preferred_sources_raw == "all"
             else [s.strip() for s in _preferred_sources_raw.split(",") if s.strip()]
         )
+        # priority_source is a single source ID that gets a quality_score bonus
+        # applied below, so it wins close calls against other sources.
+        try:
+            _priority_source = import_row["priority_source"]
+        except (IndexError, KeyError):
+            _priority_source = None  # Pre-migration row, column missing
+        priority_source = (_priority_source or "").strip().lower() or None
 
         # For watched playlist imports, playlist_name is stored as NULL in bulk_imports.
         # Fetch the actual name from watched_playlists so folder routing works correctly.
@@ -260,6 +297,11 @@ def process_bulk_import_worker(import_id: str):
             try:
                 search_query = f"{artist} - {song}"
                 search_results, _ = search_all(search_query, limit=10, sources=preferred_sources_list, include_soulseek=True)
+
+                # Apply the priority-source boost before logging so the ranked log
+                # reflects what the worker will actually pick.
+                search_results = apply_priority_source_boost(search_results, priority_source)
+
                 log_ranked_results(f"Bulk import {import_id}", search_query, search_results)
 
                 if not search_results:

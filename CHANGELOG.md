@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.8.15 (DEV)
+
+### Added
+- **Retries and a Retry button for MusicBrainz lookups on the Albums tab**: artist search, album list, and tracklist fetches now retry up to three times on timeout/connection error/HTTP 429/5xx with a gentle 1s then 3s backoff (so we do not insult MusicBrainz's one-request-per-second rate limit on the way back up). When all retries fail, the endpoints return a proper 503 with a "MusicBrainz unreachable" message instead of pretending the artist/album does not exist, and the Albums tab now renders an actual Retry button next to the error so you can have another go without typing the artist name in again. Partial album lists from prolific artists are kept rather than thrown away if MusicBrainz dies mid-pagination, on the basis that some Bowie is better than no Bowie.
+- **Preferred source for Bulk Import and Watched Playlists**: requested by Max S, who wanted Soulseek to be the primary indexer with YouTube as fallback, in the spirit of Sonarr's indexer priorities. There is now a "Preferred source" dropdown next to "Create M3U playlist" on the Bulk Import tab, and another next to the per-playlist source chips on each Watched Playlist card. Picking a source applies a heavy quality-score boost so it wins almost every close call against other indexers, but the strict-artist guardrails still get to veto a clearly-wrong match (so Soulseek does not get to ship "Despacito (live tribute karaoke)" just because it is preferred). Leaving the dropdown on "No preference" keeps the existing quality-score behaviour. The setting persists on watched playlists, so future refreshes honour it without re-selecting.
+
+### Fixed
+- **"Add to playlist" actually adds to the playlist now**: two adjacent paper-cuts were teaming up to swallow tracks. First, when retrying a missing track from the watched-playlist modal, the post-download M3U rebuild looked up the playlist via `bulk_imports`, which the missing-track retry path never populates. Result: `downloaded_at` got stamped (so the track vanished from the missing list), but the actual `.m3u` file on disk was never touched. The lookup now joins through `watched_playlist_tracks` directly, which covers both the refresh path and the retry path. Second, when using "Add to playlist" from the Results tab without a Playlists folder configured, the M3U append silently no-op'd, so the audio landed in Singles and no playlist file appeared anywhere. It now falls back to writing the `.m3u` at the Singles root, mirroring how bulk-import playlist M3Us behave. Reported by Aryan Ovalekar.
+
 ## v2.8.14 (2026-05-24)
 
 ### Fixed

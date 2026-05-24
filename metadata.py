@@ -23,6 +23,48 @@ from settings import get_setting, get_setting_bool
 from utils import set_file_permissions
 
 
+class MusicBrainzUnavailable(Exception):
+    """Raised when MusicBrainz is unreachable after retries (timeout, connect
+    error, or persistent 5xx/429). Distinct from "MB returned a valid empty
+    result" so the API layer can show a sensible 'try again' message instead
+    of pretending the artist or album simply doesn't exist."""
+
+
+def _mb_get_with_retry(url: str, *, params: dict, headers: dict, timeout: float, attempts: int = 3) -> httpx.Response:
+    """GET against MusicBrainz with retry on timeouts, connection errors and
+    transient HTTP statuses (429/5xx). Returns the final httpx.Response on
+    success, or raises MusicBrainzUnavailable if every attempt fails.
+
+    Backoff is 1s, then 3s -- gentle enough that we do not hammer MB's
+    one-request-per-second rate limit on the way back up.
+    """
+    import time as _time
+
+    retriable_statuses = {429, 500, 502, 503, 504}
+    last_error: Optional[str] = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.get(url, params=params, headers=headers)
+            if resp.status_code in retriable_statuses:
+                last_error = f"HTTP {resp.status_code}"
+            else:
+                return resp
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        except Exception:
+            # Anything weirder, let the caller decide -- do not swallow.
+            raise
+
+        if attempt < attempts:
+            _time.sleep(1 if attempt == 1 else 3)
+
+    raise MusicBrainzUnavailable(
+        f"MusicBrainz unreachable after {attempts} attempts ({last_error or 'unknown error'})"
+    )
+
+
 def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
     """Look up track metadata from MusicBrainz"""
     if not get_setting_bool("enable_musicbrainz", True):
@@ -1024,43 +1066,43 @@ def search_artist_mbid(name: str) -> list[dict]:
     """Search MusicBrainz for an artist by name.
 
     Returns up to MB_ARTIST_SEARCH_LIMIT candidates ordered by match score,
-    each as {mbid, name, disambiguation, score}. Empty list on failure.
-    The first result is an exact case-insensitive match if one exists,
-    otherwise results are ordered by MusicBrainz relevance score.
+    each as {mbid, name, disambiguation, score}. Empty list when MB returned
+    a valid empty result; raises MusicBrainzUnavailable when MB is unreachable
+    so the API layer can tell the user to retry instead of pretending the
+    artist does not exist.
     """
-    try:
-        headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
-        params = {
-            "query": name,
-            "limit": MB_ARTIST_SEARCH_LIMIT,
-            "fmt": "json",
-        }
-        with httpx.Client(timeout=TIMEOUT_MUSICBRAINZ_ARTIST) as client:
-            response = client.get("https://musicbrainz.org/ws/2/artist", params=params, headers=headers)
-        if response.status_code != 200:
-            return []
-        artists = response.json().get("artists", [])
-        results = []
-        for a in artists:
-            results.append({
-                "mbid": a.get("id", ""),
-                "name": a.get("name", ""),
-                "disambiguation": a.get("disambiguation", ""),
-                "score": int(a.get("score", 0)),
-            })
-        # Exact case match first, then case-insensitive, then MB relevance score.
-        # Matters for artists like "SiR" where lowercasing loses the distinction.
-        name_lower = name.lower()
-        results.sort(key=lambda r: (
-            0 if r["name"] == name else
-            1 if r["name"].lower() == name_lower else
-            2,
-            -r["score"]
-        ))
-        return results
-    except Exception as e:
-        print(f"MusicBrainz artist search failed for '{name}': {e}")
+    headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+    params = {
+        "query": name,
+        "limit": MB_ARTIST_SEARCH_LIMIT,
+        "fmt": "json",
+    }
+    response = _mb_get_with_retry(
+        "https://musicbrainz.org/ws/2/artist",
+        params=params, headers=headers, timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
+    )
+    if response.status_code != 200:
+        # 4xx (bad query etc) -- definitive, not a network problem.
         return []
+    artists = response.json().get("artists", [])
+    results = []
+    for a in artists:
+        results.append({
+            "mbid": a.get("id", ""),
+            "name": a.get("name", ""),
+            "disambiguation": a.get("disambiguation", ""),
+            "score": int(a.get("score", 0)),
+        })
+    # Exact case match first, then case-insensitive, then MB relevance score.
+    # Matters for artists like "SiR" where lowercasing loses the distinction.
+    name_lower = name.lower()
+    results.sort(key=lambda r: (
+        0 if r["name"] == name else
+        1 if r["name"].lower() == name_lower else
+        2,
+        -r["score"]
+    ))
+    return results
 
 
 def fetch_artist_singles(mbid: str) -> list[dict]:
@@ -1157,6 +1199,9 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
     Returns [{title, year, release_mbid}, ...] sorted by year ascending.
     Filters out compilations, live albums, soundtracks and other non-studio releases.
     Paginates automatically; sleeps 1 second between pages to respect rate limits.
+    Raises MusicBrainzUnavailable when MB is unreachable on the very first page
+    (so the UI can show a retry prompt). If MB dies partway through pagination
+    we keep whatever we already collected -- a partial list beats nothing.
     """
     import time as _time
     headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
@@ -1172,58 +1217,68 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
         "Demo",
     }
 
-    try:
-        while True:
-            params = {
-                "artist": mbid,
-                "type": "album",
-                "limit": limit,
-                "offset": offset,
-                "inc": "release-groups",
-                "fmt": "json",
-            }
-            with httpx.Client(timeout=TIMEOUT_MUSICBRAINZ_ARTIST) as client:
-                response = client.get("https://musicbrainz.org/ws/2/release", params=params, headers=headers)
-            if response.status_code != 200:
-                print(f"MusicBrainz albums fetch failed for {mbid}: HTTP {response.status_code}")
-                break
+    while True:
+        params = {
+            "artist": mbid,
+            "type": "album",
+            "limit": limit,
+            "offset": offset,
+            "inc": "release-groups",
+            "fmt": "json",
+        }
+        try:
+            response = _mb_get_with_retry(
+                "https://musicbrainz.org/ws/2/release",
+                params=params, headers=headers, timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
+            )
+        except MusicBrainzUnavailable:
+            if offset == 0:
+                # Nothing collected yet -- bubble up so the UI prompts a retry.
+                raise
+            # Partial data is better than none; stop here and return what we have.
+            print(f"MusicBrainz albums fetch for {mbid} stopped after partial pagination (offset={offset})")
+            break
+        if response.status_code != 200:
+            print(f"MusicBrainz albums fetch failed for {mbid}: HTTP {response.status_code}")
+            break
+        try:
             data = response.json()
-            if total is None:
-                total = data.get("release-count", 0)
-            releases = data.get("releases", [])
-            if not releases:
-                break
+        except Exception as e:
+            print(f"MusicBrainz albums fetch parse error for {mbid}: {e}")
+            break
+        if total is None:
+            total = data.get("release-count", 0)
+        releases = data.get("releases", [])
+        if not releases:
+            break
 
-            for release in releases:
-                rg = release.get("release-group") or {}
-                rg_id = rg.get("id", "")
-                secondary_types = rg.get("secondary-types") or []
-                if any(t in _EXCLUDED_SECONDARY_TYPES for t in secondary_types):
-                    continue
-                # One entry per release group — earliest release wins
-                if rg_id and rg_id in seen_release_groups:
-                    continue
-                if rg_id:
-                    seen_release_groups.add(rg_id)
+        for release in releases:
+            rg = release.get("release-group") or {}
+            rg_id = rg.get("id", "")
+            secondary_types = rg.get("secondary-types") or []
+            if any(t in _EXCLUDED_SECONDARY_TYPES for t in secondary_types):
+                continue
+            # One entry per release group — earliest release wins
+            if rg_id and rg_id in seen_release_groups:
+                continue
+            if rg_id:
+                seen_release_groups.add(rg_id)
 
-                title = release.get("title", "")
-                date = release.get("date") or release.get("first-release-date") or ""
-                year = date[:4] if date else ""
-                release_mbid = release.get("id", "")
-                if title:
-                    albums.append({
-                        "title": title,
-                        "year": year,
-                        "release_mbid": release_mbid,
-                    })
+            title = release.get("title", "")
+            date = release.get("date") or release.get("first-release-date") or ""
+            year = date[:4] if date else ""
+            release_mbid = release.get("id", "")
+            if title:
+                albums.append({
+                    "title": title,
+                    "year": year,
+                    "release_mbid": release_mbid,
+                })
 
-            offset += len(releases)
-            if offset >= total:
-                break
-            _time.sleep(1)  # MusicBrainz rate limit: 1 req/sec
-
-    except Exception as e:
-        print(f"MusicBrainz albums fetch error for {mbid}: {e}")
+        offset += len(releases)
+        if offset >= total:
+            break
+        _time.sleep(1)  # MusicBrainz rate limit: 1 req/sec
 
     albums.sort(key=lambda a: a["year"] or "9999")
     return albums
@@ -1234,29 +1289,28 @@ def fetch_album_tracks(release_mbid: str) -> list[dict]:
 
     Returns [{position, title}, ...] in track order.
     Position is a string (e.g. "1", "A1") as MusicBrainz provides it.
+    Raises MusicBrainzUnavailable when MB is unreachable after retries.
     """
     headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
-    try:
-        params = {"inc": "recordings", "fmt": "json"}
-        with httpx.Client(timeout=TIMEOUT_MUSICBRAINZ_ARTIST) as client:
-            response = client.get(
-                f"https://musicbrainz.org/ws/2/release/{release_mbid}",
-                params=params,
-                headers=headers,
-            )
-        if response.status_code != 200:
-            print(f"MusicBrainz tracklist fetch failed for {release_mbid}: HTTP {response.status_code}")
-            return []
-        data = response.json()
-        tracks: list[dict] = []
-        for medium in data.get("media", []):
-            for track in medium.get("tracks", []):
-                recording = track.get("recording") or {}
-                title = recording.get("title") or track.get("title", "")
-                position = str(track.get("position") or track.get("number") or "")
-                if title:
-                    tracks.append({"position": position, "title": title})
-        return tracks
-    except Exception as e:
-        print(f"MusicBrainz tracklist fetch error for {release_mbid}: {e}")
+    params = {"inc": "recordings", "fmt": "json"}
+    response = _mb_get_with_retry(
+        f"https://musicbrainz.org/ws/2/release/{release_mbid}",
+        params=params, headers=headers, timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
+    )
+    if response.status_code != 200:
+        print(f"MusicBrainz tracklist fetch failed for {release_mbid}: HTTP {response.status_code}")
         return []
+    try:
+        data = response.json()
+    except Exception as e:
+        print(f"MusicBrainz tracklist parse error for {release_mbid}: {e}")
+        return []
+    tracks: list[dict] = []
+    for medium in data.get("media", []):
+        for track in medium.get("tracks", []):
+            recording = track.get("recording") or {}
+            title = recording.get("title") or track.get("title", "")
+            position = str(track.get("position") or track.get("number") or "")
+            if title:
+                tracks.append({"position": position, "title": title})
+    return tracks

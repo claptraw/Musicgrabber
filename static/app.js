@@ -3329,6 +3329,10 @@
                         requestBody.use_playlists_dir = true;
                     }
                 }
+                const bulkPriority = document.getElementById('bulkPrioritySource');
+                if (bulkPriority && bulkPriority.value) {
+                    requestBody.priority_source = bulkPriority.value;
+                }
 
                 // Start the async import
                 const response = await apiFetch('/api/bulk-import-async', {
@@ -3773,6 +3777,32 @@
             }
         }
 
+        async function _readApiErrorDetail(resp) {
+            // FastAPI puts errors in {detail: "..."}. Fall back to the status line if
+            // the body is empty / not JSON.
+            try {
+                const data = await resp.json();
+                if (data && data.detail) return String(data.detail);
+            } catch {}
+            return `HTTP ${resp.status}`;
+        }
+
+        function _renderAlbumRetryError(containerEl, message, onRetry, asListItem = false) {
+            if (!containerEl) return;
+            const wrap = document.createElement(asListItem ? 'li' : 'p');
+            if (!asListItem) wrap.className = 'bulk-intro-text error-text';
+            else wrap.className = 'album-track-item album-track-error';
+            wrap.textContent = message + ' ';
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'album-retry-btn';
+            btn.textContent = 'Retry';
+            btn.addEventListener('click', () => { onRetry(); });
+            wrap.appendChild(btn);
+            containerEl.innerHTML = '';
+            containerEl.appendChild(wrap);
+        }
+
         async function searchAlbumArtist() {
             const input = document.getElementById('albumArtistInput');
             const resultsEl = document.getElementById('albumArtistResults');
@@ -3799,7 +3829,11 @@
 
             try {
                 const resp = await apiFetch(`/api/albums/search-artist?q=${encodeURIComponent(q)}`);
-                if (!resp.ok) throw new Error('Search failed');
+                if (!resp.ok) {
+                    const detail = await _readApiErrorDetail(resp);
+                    _renderAlbumRetryError(resultsEl, `Search failed: ${detail}`, searchAlbumArtist);
+                    return;
+                }
                 const data = await resp.json();
                 const artists = data.artists || [];
                 if (!artists.length) {
@@ -3816,7 +3850,7 @@
                     resultsEl.appendChild(btn);
                 }
             } catch (e) {
-                resultsEl.innerHTML = `<p class="bulk-intro-text error-text">Search failed: ${escapeHtml(e.message)}</p>`;
+                _renderAlbumRetryError(resultsEl, `Search failed: ${e.message}`, searchAlbumArtist);
             }
         }
 
@@ -3839,7 +3873,11 @@
 
             try {
                 const resp = await apiFetch(`/api/albums/artist/${encodeURIComponent(artist.mbid)}/albums`);
-                if (!resp.ok) throw new Error('Failed to load albums');
+                if (!resp.ok) {
+                    const detail = await _readApiErrorDetail(resp);
+                    _renderAlbumRetryError(listEl, `Failed to load albums: ${detail}`, () => selectAlbumArtist(artist, btn));
+                    return;
+                }
                 const data = await resp.json();
                 const albums = data.albums || [];
                 if (!listEl) return;
@@ -3849,15 +3887,15 @@
                 }
                 listEl.innerHTML = '';
                 for (const album of albums) {
-                    const btn = document.createElement('button');
-                    btn.className = 'album-list-btn';
-                    btn.innerHTML = `<span class="album-list-title">${escapeHtml(album.title)}</span>`
+                    const albumBtn = document.createElement('button');
+                    albumBtn.className = 'album-list-btn';
+                    albumBtn.innerHTML = `<span class="album-list-title">${escapeHtml(album.title)}</span>`
                         + (album.year ? ` <span class="album-list-year">${escapeHtml(album.year)}</span>` : '');
-                    btn.addEventListener('click', () => selectAlbum(album, btn));
-                    listEl.appendChild(btn);
+                    albumBtn.addEventListener('click', () => selectAlbum(album, albumBtn));
+                    listEl.appendChild(albumBtn);
                 }
             } catch (e) {
-                if (listEl) listEl.innerHTML = `<p class="bulk-intro-text error-text">Failed to load albums: ${escapeHtml(e.message)}</p>`;
+                _renderAlbumRetryError(listEl, `Failed to load albums: ${e.message}`, () => selectAlbumArtist(artist, btn));
             }
         }
 
@@ -3889,7 +3927,11 @@
 
             try {
                 const resp = await apiFetch(`/api/albums/release/${encodeURIComponent(album.release_mbid)}/tracks`);
-                if (!resp.ok) throw new Error('Failed to load tracklist');
+                if (!resp.ok) {
+                    const detail = await _readApiErrorDetail(resp);
+                    _renderAlbumRetryError(tracklistEl, `Failed to load tracklist: ${detail}`, () => selectAlbum(album, btn), true);
+                    return;
+                }
                 const data = await resp.json();
                 const tracks = data.tracks || [];
                 if (!tracklistEl) return;
@@ -3959,7 +4001,7 @@
                 }
                 if (downloadBtn) { downloadBtn.disabled = false; downloadBtn.textContent = 'Download Album'; }
             } catch (e) {
-                if (tracklistEl) tracklistEl.innerHTML = `<li>Failed: ${escapeHtml(e.message)}</li>`;
+                _renderAlbumRetryError(tracklistEl, `Failed to load tracklist: ${e.message}`, () => selectAlbum(album, btn), true);
             }
         }
 
@@ -4679,6 +4721,12 @@
                                     ${renderSourceChips(p.id, p.preferred_sources || 'all')}
                                 </div>
                             </label>
+                            <label class="watched-card-toggle" title="Give one source a huge score boost so it wins almost every close call. Useful when you want Soulseek to be primary and YouTube as fallback, for example.">
+                                Preferred
+                                <select onchange="updateWatchedPlaylistPrioritySource('${p.id}', this.value)" class="watched-card-select" data-priority-source="${escapeAttr(p.priority_source || '')}">
+                                    ${renderPrioritySourceOptions(p.priority_source || '')}
+                                </select>
+                            </label>
                         </div>
                         ${p.stale_navidrome_paths > 0 ? `
                         <div class="watched-card-stale-warning">
@@ -4807,6 +4855,7 @@
                         use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false,
                         sync_mode: document.getElementById('watchedSyncModeSelect') ? document.getElementById('watchedSyncModeSelect').value : 'append',
                         preferred_sources: getWatchedPreferredSources(),
+                        priority_source: (document.getElementById('watchedPrioritySource')?.value || '') || null,
                         custom_subdir: (document.getElementById('watchedCustomSubdir')?.value || '').trim() || null
                     })
                 });
@@ -5516,6 +5565,13 @@
                 const pref = el.dataset.preferred || 'all';
                 el.innerHTML = renderSourceChips(pid, pref);
             });
+            // Same dance for per-playlist priority-source dropdowns: they may have
+            // been rendered before _cachedSources populated, so the only option was
+            // "No preference". Re-fill them now using the stored value as the default.
+            document.querySelectorAll('select[data-priority-source]').forEach(sel => {
+                const current = sel.dataset.prioritySource || '';
+                sel.innerHTML = renderPrioritySourceOptions(current);
+            });
             // Populate the add-form selector (only globally-enabled sources, all on by default)
             const formSel = document.getElementById('watchedSourcesSelector');
             if (formSel && formSel.children.length === 0) {
@@ -5525,6 +5581,23 @@
                         onclick="this.classList.toggle('on'); this.classList.toggle('off')"
                         title="${escapeAttr(s.label)}">${escapeHtml(s.badge)}</button>`
                 ).join('');
+            }
+            // Populate priority-source dropdowns (one in bulk import, one in watched add form)
+            populatePrioritySourceDropdowns();
+        }
+
+        function populatePrioritySourceDropdowns() {
+            const sources = (_cachedSources || []).filter(s => s.enabled);
+            const targets = ['bulkPrioritySource', 'watchedPrioritySource'];
+            for (const id of targets) {
+                const sel = document.getElementById(id);
+                if (!sel || sel.options.length > 1) continue;  // already populated
+                for (const s of sources) {
+                    const opt = document.createElement('option');
+                    opt.value = s.id;
+                    opt.textContent = s.label;
+                    sel.appendChild(opt);
+                }
             }
         }
 
@@ -5570,6 +5643,32 @@
                 showToast(`Sources: ${label}`);
             } catch (error) {
                 showToast('Failed to update sources', true);
+                loadWatchedPlaylists();
+            }
+        }
+
+        function renderPrioritySourceOptions(current) {
+            const sources = (_cachedSources || []).filter(s => s.enabled);
+            const cur = (current || '').toLowerCase();
+            const opts = [`<option value="" ${cur ? '' : 'selected'}>No preference</option>`];
+            for (const s of sources) {
+                const sel = cur === s.id ? 'selected' : '';
+                opts.push(`<option value="${escapeAttr(s.id)}" ${sel}>${escapeHtml(s.label)}</option>`);
+            }
+            return opts.join('');
+        }
+
+        async function updateWatchedPlaylistPrioritySource(playlistId, priority) {
+            try {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ priority_source: priority || '' })
+                });
+                if (!response.ok) throw new Error('Update failed');
+                showToast(priority ? `Preferred source: ${priority}` : 'Preferred source cleared');
+            } catch (error) {
+                showToast('Failed to update preferred source', true);
                 loadWatchedPlaylists();
             }
         }

@@ -76,7 +76,7 @@ from watched_playlists import (
     fetch_listenbrainz_createdfor, start_scheduler,
 )
 from watched_artists import refresh_watched_artist, start_artist_scheduler
-from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks, apply_metadata_to_file, guess_musicbrainz_tags
+from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks, apply_metadata_to_file, guess_musicbrainz_tags, MusicBrainzUnavailable
 from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 from coverart import fetch_cover_art_url
 
@@ -2907,14 +2907,19 @@ def bulk_import_async(body: AsyncBulkImportRequest, http_request: Request):
     if not tracks_to_import:
         raise HTTPException(status_code=400, detail="No valid tracks found in input")
 
+    # Normalise priority_source: empty / "any" / "all" all mean "no preference".
+    _priority_source = (body.priority_source or "").strip().lower() or None
+    if _priority_source in ("any", "all", "none"):
+        _priority_source = None
+
     # Create bulk import record
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO bulk_imports
-               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, use_playlists_dir, user_id)
-               VALUES (?, 'pending', ?, ?, ?, ?, ?, ?)""",
+               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, use_playlists_dir, user_id, priority_source)
+               VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)""",
             (import_id, len(tracks_to_import), int(body.create_playlist),
-             body.playlist_name, int(body.convert_to_flac), int(body.use_playlists_dir), user_id)
+             body.playlist_name, int(body.convert_to_flac), int(body.use_playlists_dir), user_id, _priority_source)
         )
 
         # Insert all tracks
@@ -3103,14 +3108,17 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                     continue
 
                 playlist_id = str(uuid.uuid4())[:8]
+                _lb_priority = (body.priority_source or "").strip().lower() or None
+                if _lb_priority in ("any", "all", "none"):
+                    _lb_priority = None
                 conn.execute("""
                     INSERT INTO watched_playlists
-                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, lb_username, custom_subdir)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, lb_username, custom_subdir)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (playlist_id, lb["playlist_url"], lb["name"], "listenbrainz",
                       refresh_hours, int(body.convert_to_flac),
                       int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(lb["tracks"]), user_id,
-                      body.preferred_sources or "all", platform_id,
+                      body.preferred_sources or "all", _lb_priority, platform_id,
                       (body.custom_subdir or "").strip() or None))
 
                 for artist, title in lb["tracks"]:
@@ -3139,6 +3147,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                     use_playlists_dir=body.use_playlists_dir,
                     user_id=user_id,
                     preferred_sources=body.preferred_sources or "all",
+                    priority_source=body.priority_source,
                     custom_subdir=(body.custom_subdir or "").strip() or None,
                 )
 
@@ -3172,14 +3181,18 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
         playlist_id = str(uuid.uuid4())[:8]
 
         sync_mode = body.sync_mode if body.sync_mode in ("append", "mirror") else "append"
+        _new_priority = (body.priority_source or "").strip().lower() or None
+        if _new_priority in ("any", "all", "none"):
+            _new_priority = None
         conn.execute("""
             INSERT INTO watched_playlists
-            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, custom_subdir)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, custom_subdir)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (playlist_id, body.url, playlist_name, platform,
               body.refresh_interval_hours, int(body.convert_to_flac),
               int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(tracks), user_id,
               "soundcloud" if platform == "soundcloud" and (not body.preferred_sources or body.preferred_sources == "all") else (body.preferred_sources or "all"),
+              _new_priority,
               (body.custom_subdir or "").strip() or None))
 
         # Insert all current tracks as "seen"
@@ -3202,6 +3215,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
             use_playlists_dir=body.use_playlists_dir,
             user_id=user_id,
             preferred_sources=body.preferred_sources or "all",
+            priority_source=body.priority_source,
             custom_subdir=(body.custom_subdir or "").strip() or None,
         )
 
@@ -3331,6 +3345,14 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, ht
         if request.preferred_sources is not None:
             updates.append("preferred_sources = ?")
             params.append(request.preferred_sources or "all")
+
+        if request.priority_source is not None:
+            # Empty / "any" / "all" / "none" all clear the override.
+            _p = (request.priority_source or "").strip().lower() or None
+            if _p in ("any", "all", "none"):
+                _p = None
+            updates.append("priority_source = ?")
+            params.append(_p)
 
         if request.custom_subdir is not None:
             updates.append("custom_subdir = ?")
@@ -3476,7 +3498,7 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"SELECT id, name, convert_to_flac, use_playlists_dir, preferred_sources, custom_subdir FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            f"SELECT id, name, convert_to_flac, use_playlists_dir, preferred_sources, priority_source, custom_subdir FROM watched_playlists WHERE id = ? AND {_scope_frag}",
             (playlist_id, *_scope_params)
         ).fetchone()
 
@@ -3493,6 +3515,7 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
         use_playlists_dir=bool(playlist["use_playlists_dir"]),
         user_id=user_id,
         preferred_sources=playlist["preferred_sources"] or "all",
+        priority_source=playlist["priority_source"],
         custom_subdir=custom_subdir,
     )
 
@@ -4001,10 +4024,15 @@ def albums_search_artist(q: str):
     """Search MusicBrainz for an artist by name.
 
     Returns up to 5 candidates with mbid, name, disambiguation, and score.
+    Returns 503 when MB is unreachable so the UI can show a Retry button
+    instead of pretending the artist does not exist.
     """
     if not q or not q.strip():
         raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
-    results = search_artist_mbid(q.strip())
+    try:
+        results = search_artist_mbid(q.strip())
+    except MusicBrainzUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"MusicBrainz unreachable: {exc}. Try again in a moment.")
     return {"artists": results}
 
 
@@ -4013,10 +4041,14 @@ def albums_list_artist_albums(mbid: str):
     """Fetch studio albums for a MusicBrainz artist MBID.
 
     Returns [{title, year, release_mbid}, ...] sorted by year.
+    503 on MB unavailable.
     """
     if not mbid or not mbid.strip():
         raise HTTPException(status_code=400, detail="Artist MBID is required")
-    albums = fetch_artist_albums(mbid.strip())
+    try:
+        albums = fetch_artist_albums(mbid.strip())
+    except MusicBrainzUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"MusicBrainz unreachable: {exc}. Try again in a moment.")
     return {"albums": albums}
 
 
@@ -4025,10 +4057,14 @@ def albums_get_tracklist(release_mbid: str):
     """Fetch the tracklist for a MusicBrainz release MBID.
 
     Returns [{position, title}, ...] in track order.
+    503 on MB unavailable.
     """
     if not release_mbid or not release_mbid.strip():
         raise HTTPException(status_code=400, detail="Release MBID is required")
-    tracks = fetch_album_tracks(release_mbid.strip())
+    try:
+        tracks = fetch_album_tracks(release_mbid.strip())
+    except MusicBrainzUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"MusicBrainz unreachable: {exc}. Try again in a moment.")
     if not tracks:
         raise HTTPException(status_code=404, detail="No tracks found for this release")
     return {"tracks": tracks}

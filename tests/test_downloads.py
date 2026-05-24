@@ -184,6 +184,244 @@ def test_auto_route_playlist_uses_album_artist_for_folder_and_flat_filename(tmp_
 
 
 # ---------------------------------------------------------------------------
+# Regression guards for "Add to playlist" / watched-playlist M3U writes.
+# These cover two paper-cut bugs we shipped 2.8.15 to fix; if either of these
+# tests fails, the playlist .m3u file on disk is silently not being updated.
+# ---------------------------------------------------------------------------
+
+def test_append_to_physical_m3u_writes_to_playlists_dir_when_configured(tmp_path, monkeypatch):
+    """Happy path: playlists_subdir is set, M3U lands in Playlists/."""
+    downloads = _import_downloads_or_skip()
+
+    playlists_dir = tmp_path / "Playlists"
+    playlists_dir.mkdir()
+    monkeypatch.setattr(downloads, "get_playlists_dir", lambda user_id=None: playlists_dir)
+    monkeypatch.setattr(downloads, "get_singles_dir", lambda user_id=None: tmp_path / "Singles")
+
+    audio_file = playlists_dir / "Rock Mix" / "Some Track.flac"
+    audio_file.parent.mkdir(parents=True)
+    audio_file.write_bytes(b"not real audio")
+
+    downloads._append_to_physical_m3u(audio_file, "Rock Mix", use_playlists_dir=True)
+
+    m3u = playlists_dir / "Rock Mix.m3u"
+    assert m3u.exists(), "Expected Playlists/Rock Mix.m3u to be created"
+    contents = m3u.read_text(encoding="utf-8")
+    assert "#EXTM3U" in contents
+    # Relative path inside the playlist folder for portability.
+    assert "Rock Mix/Some Track.flac" in contents
+
+
+def test_append_to_physical_m3u_falls_back_to_singles_when_playlists_dir_unset(tmp_path, monkeypatch):
+    """Bug 2 regression guard: without a Playlists folder configured, the
+    M3U should still be written (to Singles), not silently dropped."""
+    downloads = _import_downloads_or_skip()
+
+    singles_dir = tmp_path / "Singles"
+    singles_dir.mkdir()
+    # Simulate playlists_subdir unset: get_playlists_dir returns None.
+    monkeypatch.setattr(downloads, "get_playlists_dir", lambda user_id=None: None)
+    monkeypatch.setattr(downloads, "get_singles_dir", lambda user_id=None: singles_dir)
+
+    audio_file = singles_dir / "Jawed" / "Me at the zoo.flac"
+    audio_file.parent.mkdir(parents=True)
+    audio_file.write_bytes(b"not real audio")
+
+    downloads._append_to_physical_m3u(audio_file, "My Faves", use_playlists_dir=True)
+
+    m3u = singles_dir / "My Faves.m3u"
+    assert m3u.exists(), "Expected Singles/My Faves.m3u as fallback when Playlists dir is unset"
+    contents = m3u.read_text(encoding="utf-8")
+    assert "#EXTM3U" in contents
+    assert str(audio_file) in contents
+
+
+def test_append_to_physical_m3u_does_not_duplicate_entries(tmp_path, monkeypatch):
+    downloads = _import_downloads_or_skip()
+
+    playlists_dir = tmp_path / "Playlists"
+    playlists_dir.mkdir()
+    monkeypatch.setattr(downloads, "get_playlists_dir", lambda user_id=None: playlists_dir)
+    monkeypatch.setattr(downloads, "get_singles_dir", lambda user_id=None: tmp_path / "Singles")
+
+    audio_file = playlists_dir / "Rock Mix" / "Track.flac"
+    audio_file.parent.mkdir(parents=True)
+    audio_file.write_bytes(b"not real audio")
+
+    downloads._append_to_physical_m3u(audio_file, "Rock Mix", use_playlists_dir=True)
+    downloads._append_to_physical_m3u(audio_file, "Rock Mix", use_playlists_dir=True)
+
+    m3u = playlists_dir / "Rock Mix.m3u"
+    body = m3u.read_text(encoding="utf-8")
+    assert body.count("Rock Mix/Track.flac") == 1, f"Expected one entry, got: {body!r}"
+
+
+def test_append_to_physical_m3u_noop_without_playlist_name(tmp_path, monkeypatch):
+    downloads = _import_downloads_or_skip()
+
+    singles_dir = tmp_path / "Singles"
+    singles_dir.mkdir()
+    monkeypatch.setattr(downloads, "get_playlists_dir", lambda user_id=None: None)
+    monkeypatch.setattr(downloads, "get_singles_dir", lambda user_id=None: singles_dir)
+
+    audio_file = singles_dir / "Jawed" / "Me at the zoo.flac"
+    audio_file.parent.mkdir(parents=True)
+    audio_file.write_bytes(b"not real audio")
+
+    downloads._append_to_physical_m3u(audio_file, "", use_playlists_dir=True)
+    downloads._append_to_physical_m3u(audio_file, None, use_playlists_dir=True)
+
+    # Nothing should land on disk when no playlist is named.
+    assert not any(p.suffix == ".m3u" for p in singles_dir.glob("**/*"))
+
+
+def _setup_watched_playlist_db(monkeypatch, downloads):
+    """Wire downloads.db_conn to an in-memory sqlite with the minimal schema
+    needed for _mark_watched_track_downloaded's watched-playlist lookup.
+
+    Returns the live connection so the test can seed and assert on it.
+    """
+    import sqlite3
+    from contextlib import contextmanager
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY,
+            artist TEXT,
+            title TEXT,
+            status TEXT,
+            error TEXT,
+            skip_mismatch_check INTEGER DEFAULT 0
+        );
+        CREATE TABLE watched_playlists (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            make_m3u INTEGER DEFAULT 1,
+            use_playlists_dir INTEGER DEFAULT 0,
+            sync_mode TEXT DEFAULT 'append',
+            custom_subdir TEXT,
+            user_id TEXT
+        );
+        CREATE TABLE watched_playlist_tracks (
+            playlist_id TEXT,
+            track_hash TEXT,
+            artist TEXT,
+            title TEXT,
+            downloaded_at TIMESTAMP,
+            resolved_path TEXT,
+            job_id TEXT,
+            PRIMARY KEY (playlist_id, track_hash)
+        );
+        CREATE TABLE bulk_imports (
+            id TEXT PRIMARY KEY,
+            watch_playlist_id TEXT
+        );
+        CREATE TABLE bulk_import_tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_id TEXT,
+            job_id TEXT
+        );
+    """)
+
+    @contextmanager
+    def fake_db_conn():
+        yield conn
+
+    monkeypatch.setattr(downloads, "db_conn", fake_db_conn)
+    return conn
+
+
+def test_mark_watched_track_downloaded_rebuilds_m3u_via_missing_tracks_retry(monkeypatch):
+    """Bug 1 regression guard: when a job was queued via the missing-tracks
+    retry endpoint, there is no bulk_imports row, only a watched_playlist_tracks
+    row. The post-download M3U rebuild must still find the playlist and fire."""
+    downloads = _import_downloads_or_skip()
+
+    conn = _setup_watched_playlist_db(monkeypatch, downloads)
+
+    conn.execute(
+        "INSERT INTO jobs (id, artist, title, status, skip_mismatch_check) VALUES (?, ?, ?, ?, ?)",
+        ("job-1", "Jawed", "Me at the zoo", "downloading", 1),
+    )
+    conn.execute(
+        "INSERT INTO watched_playlists (id, name, make_m3u, use_playlists_dir, sync_mode, user_id) "
+        "VALUES (?, ?, 1, 1, 'append', NULL)",
+        ("pl-1", "Rock Mix"),
+    )
+    conn.execute(
+        "INSERT INTO watched_playlist_tracks (playlist_id, track_hash, artist, title, job_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("pl-1", "hash-1", "Jawed", "Me at the zoo", "job-1"),
+    )
+    # Deliberately NO bulk_imports / bulk_import_tracks rows: this mirrors the
+    # state created by /api/watched-playlists/{id}/queue-track-candidate.
+    conn.commit()
+
+    calls = []
+    monkeypatch.setattr(
+        downloads, "rebuild_watched_playlist_m3u",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or None,
+    )
+
+    result = downloads._mark_watched_track_downloaded("job-1", resolved_path=None, skip_mismatch=True)
+
+    assert result is True
+    assert len(calls) == 1, (
+        "Expected rebuild_watched_playlist_m3u to fire for the missing-tracks "
+        "retry path; if this fails, the watched playlist .m3u is going stale "
+        "after every missing-track retry (see bug fixed in v2.8.15)."
+    )
+    args, kwargs = calls[0]
+    assert args[0] == "pl-1"
+    assert args[1] == "Rock Mix"
+
+
+def test_mark_watched_track_downloaded_rebuilds_m3u_via_bulk_import(monkeypatch):
+    """Sister test to the missing-tracks one: the bulk-import refresh path
+    (the original code path) must also continue to work."""
+    downloads = _import_downloads_or_skip()
+
+    conn = _setup_watched_playlist_db(monkeypatch, downloads)
+
+    conn.execute(
+        "INSERT INTO jobs (id, artist, title, status, skip_mismatch_check) VALUES (?, ?, ?, ?, ?)",
+        ("job-2", "Jawed", "Me at the zoo", "downloading", 1),
+    )
+    conn.execute(
+        "INSERT INTO watched_playlists (id, name, make_m3u, use_playlists_dir, sync_mode, user_id) "
+        "VALUES (?, ?, 1, 1, 'append', NULL)",
+        ("pl-2", "Pop Mix"),
+    )
+    conn.execute(
+        "INSERT INTO watched_playlist_tracks (playlist_id, track_hash, artist, title, job_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("pl-2", "hash-2", "Jawed", "Me at the zoo", "job-2"),
+    )
+    conn.execute("INSERT INTO bulk_imports (id, watch_playlist_id) VALUES (?, ?)", ("imp-1", "pl-2"))
+    conn.execute(
+        "INSERT INTO bulk_import_tracks (import_id, job_id) VALUES (?, ?)",
+        ("imp-1", "job-2"),
+    )
+    conn.commit()
+
+    calls = []
+    monkeypatch.setattr(
+        downloads, "rebuild_watched_playlist_m3u",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or None,
+    )
+
+    result = downloads._mark_watched_track_downloaded("job-2", resolved_path=None, skip_mismatch=True)
+
+    assert result is True
+    assert len(calls) == 1
+    args, _ = calls[0]
+    assert args[0] == "pl-2"
+    assert args[1] == "Pop Mix"
+
+
+# ---------------------------------------------------------------------------
 # Fast: shape / creation tests
 # ---------------------------------------------------------------------------
 

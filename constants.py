@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.8.14"
+VERSION = "2.8.15"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -44,6 +44,7 @@ LIBRARY_RECONCILE_INTERVAL = int(os.getenv("LIBRARY_RECONCILE_INTERVAL", "1800")
 
 # Bulk import settings
 BULK_IMPORT_SEARCH_DELAY = 1.0           # Seconds between searches (be courteous to all sources)
+PRIORITY_SOURCE_BOOST = 500              # Quality-score bonus applied to the user-chosen "preferred source" during bulk import / watched playlist refreshes. Big enough to win nearly every close call without nuking the strict-artist-match safety net.
 
 # Playlist creation
 PLAYLIST_WAIT_MAX = 3600         # Max seconds to wait for downloads to complete (1 hour)

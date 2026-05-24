@@ -198,10 +198,18 @@
                     <div id="lineCounter" class="line-counter">0 lines</div>
                 </div>
                 <div class="bulk-playlist-toggle">
-                    <label class="bulk-playlist-checkbox-label">
-                        <input type="checkbox" id="createPlaylistCheckbox" class="bulk-checkbox">
-                        <span>Create M3U playlist from these songs</span>
-                    </label>
+                    <div class="bulk-playlist-row-inline">
+                        <label class="bulk-playlist-checkbox-label">
+                            <input type="checkbox" id="createPlaylistCheckbox" class="bulk-checkbox">
+                            <span>Create M3U playlist from these songs</span>
+                        </label>
+                        <label class="bulk-playlist-checkbox-label" title="Give one source a huge score boost so it wins almost every close call. Useful when you want Soulseek to be primary and YouTube as fallback, for example.">
+                            <span>Preferred source:</span>
+                            <select id="bulkPrioritySource" class="watched-card-select">
+                                <option value="">No preference</option>
+                            </select>
+                        </label>
+                    </div>
                     <input
                         type="text"
                         id="playlistNameInput"
@@ -356,6 +364,12 @@
                     <div id="watchedSourcesSelector" class="watched-sources-selector">
                         <!-- Populated dynamically from /api/search/sources -->
                     </div>
+                    <label class="watched-control-label" title="Give one source a huge score boost so it wins almost every close call. Useful when you want Soulseek to be primary and YouTube as fallback, for example.">
+                        Preferred:
+                        <select id="watchedPrioritySource" class="watched-card-select">
+                            <option value="">No preference</option>
+                        </select>
+                    </label>
                 </div>
                 <div class="watched-controls-row" id="watchedDestRow">
                     <div class="watched-dest-add-row">

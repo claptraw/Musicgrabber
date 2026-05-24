@@ -57,6 +57,7 @@ class AsyncBulkImportRequest(BaseModel):
     playlist_name: Optional[str] = None
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
+    priority_source: Optional[str] = None  # One source ID that gets a huge score boost during selection
 
 class WatchedPlaylistRequest(BaseModel):
     url: str  # Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, etc. playlist URL
@@ -66,6 +67,7 @@ class WatchedPlaylistRequest(BaseModel):
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
     sync_mode: str = "append"  # "append" = grow forever; "mirror" = track upstream removals in M3U
     preferred_sources: str = "all"  # Comma-separated source IDs or "all"
+    priority_source: Optional[str] = None  # One source ID that gets a huge score boost during selection
     custom_subdir: Optional[str] = None  # Override destination folder (relative to music_dir)
 
 class WatchedPlaylistUpdate(BaseModel):
@@ -76,6 +78,7 @@ class WatchedPlaylistUpdate(BaseModel):
     use_playlists_dir: Optional[bool] = None
     sync_mode: Optional[str] = None  # "append" or "mirror"
     preferred_sources: Optional[str] = None  # Comma-separated source IDs or "all"
+    priority_source: Optional[str] = None  # One source ID that gets a huge score boost during selection; empty string clears it
     custom_subdir: Optional[str] = None  # Override destination folder (relative to music_dir)
 
 class SettingsUpdate(BaseModel):

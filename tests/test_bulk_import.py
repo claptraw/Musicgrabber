@@ -6,8 +6,71 @@ Slow tests submit real tracks and verify they get searched and queued,
 but do NOT wait for downloads to complete.
 """
 
+import os
+import sys
 import time
+
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _import_bulk_import_or_skip():
+    try:
+        import bulk_import
+    except ModuleNotFoundError as exc:
+        pytest.skip(f"bulk_import module dependencies unavailable: {exc.name}")
+    return bulk_import
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for the priority-source boost (no live server needed)
+# ---------------------------------------------------------------------------
+
+def test_priority_boost_lets_soulseek_win_close_call():
+    bulk_import = _import_bulk_import_or_skip()
+    results = [
+        {"source": "youtube",  "quality_score": 120, "title": "yt"},
+        {"source": "soulseek", "quality_score": 100, "title": "slsk"},
+    ]
+    out = bulk_import.apply_priority_source_boost(results, "soulseek")
+    assert out[0]["source"] == "soulseek", \
+        "Boosted source should overtake a higher-scoring non-priority result"
+    assert out[0]["quality_score"] == 100 + bulk_import.PRIORITY_SOURCE_BOOST
+
+
+def test_priority_boost_noop_when_priority_source_is_empty():
+    bulk_import = _import_bulk_import_or_skip()
+    results = [
+        {"source": "youtube",  "quality_score": 120},
+        {"source": "soulseek", "quality_score": 100},
+    ]
+    out = bulk_import.apply_priority_source_boost(list(results), None)
+    assert out[0]["source"] == "youtube"
+    out = bulk_import.apply_priority_source_boost(list(results), "")
+    assert out[0]["source"] == "youtube"
+
+
+def test_priority_boost_does_not_invent_results():
+    """If the priority source returned nothing, the next best wins."""
+    bulk_import = _import_bulk_import_or_skip()
+    results = [
+        {"source": "youtube",  "quality_score": 120},
+        {"source": "mp3phoenix", "quality_score": 80},
+    ]
+    out = bulk_import.apply_priority_source_boost(results, "soulseek")
+    assert out[0]["source"] == "youtube", \
+        "Boost should not magic up a Soulseek result that does not exist"
+
+
+def test_priority_boost_is_case_insensitive():
+    bulk_import = _import_bulk_import_or_skip()
+    results = [
+        {"source": "YouTube", "quality_score": 120},
+        {"source": "Soulseek", "quality_score": 100},
+    ]
+    out = bulk_import.apply_priority_source_boost(results, "SOULSEEK")
+    assert out[0]["source"] == "Soulseek"
 
 
 # Well-known tracks that should always be searchable

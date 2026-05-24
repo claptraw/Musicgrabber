@@ -214,6 +214,7 @@ def init_db():
             watch_artist_id TEXT,
             user_id TEXT,
             preferred_sources TEXT DEFAULT 'all',
+            priority_source TEXT,
             override_dir TEXT,
             album_release_mbid TEXT,
             album_total_tracks INTEGER,
@@ -275,6 +276,7 @@ def init_db():
             sync_mode TEXT DEFAULT 'append',
             stale_navidrome_paths INTEGER DEFAULT 0,
             preferred_sources TEXT DEFAULT 'all',
+            priority_source TEXT,
             lb_username TEXT,
             refresh_state TEXT DEFAULT 'idle',
             refresh_stage TEXT,
@@ -572,6 +574,14 @@ def init_db():
         except sqlite3.OperationalError:
             pass
         try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN priority_source TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_imports ADD COLUMN priority_source TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
             conn.execute("ALTER TABLE bulk_imports ADD COLUMN override_dir TEXT")
         except sqlite3.OperationalError:
             pass
@@ -855,6 +865,14 @@ def init_db():
         # passed through that mangled migration. Harmless if the column is present.
         try:
             conn.execute("ALTER TABLE watched_playlists ADD COLUMN custom_subdir TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # Same shape as the custom_subdir backstop: the v1 table recreate predates
+        # priority_source, so a fresh DB initialised in one go loses the column.
+        # Idempotent; harmless on DBs that already have it.
+        try:
+            conn.execute("ALTER TABLE watched_playlists ADD COLUMN priority_source TEXT")
         except sqlite3.OperationalError:
             pass
 

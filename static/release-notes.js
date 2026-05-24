@@ -7,6 +7,24 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.15": {
+        title: "What's New in v2.8.15",
+        sections: [
+            {
+                heading: "Added",
+                items: [
+                    "Preferred source dropdown for Bulk Import and Watched Playlists. Pick a single source (Soulseek, YouTube, whatever) and it gets a huge score boost so it wins nearly every close call. Useful when you want lossless from Soulseek as primary and YouTube only as a fallback. The strict-artist guardrails still get to reject a clearly-wrong match, so you will not get a karaoke cover just because Soulseek had one. Leave it on 'No preference' to keep the existing best-quality-wins behaviour. Requested by Max S.",
+                    "Albums tab now retries MusicBrainz lookups on timeout (up to three attempts with a gentle backoff) and shows a Retry button when it gives up, instead of pretending the artist or album does not exist. A partial album list is kept if MusicBrainz dies mid-pagination on prolific artists.",
+                ]
+            },
+            {
+                heading: "Fixed",
+                items: [
+                    "'Add to playlist' now actually adds the track to the playlist. Two separate bugs were teaming up: retrying a missing track from a watched playlist marked it as downloaded but never rewrote the .m3u file on disk, and using 'Add to playlist' from the Results tab silently no-op'd if you had not configured a Playlists folder. Both paths now do the right thing: watched-playlist M3Us get rebuilt the moment a track lands, and ad-hoc playlists fall back to writing the .m3u in the Singles folder if no Playlists folder is set. Reported by Aryan Ovalekar.",
+                ]
+            },
+        ]
+    },
     "2.8.14": {
         title: "What's New in v2.8.14",
         sections: [

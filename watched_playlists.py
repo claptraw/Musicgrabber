@@ -1078,6 +1078,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     use_playlists_dir=use_playlists_dir,
                     user_id=user_id,
                     preferred_sources=playlist.get("preferred_sources") or "all",
+                    priority_source=playlist.get("priority_source"),
                     custom_subdir=custom_subdir,
                 )
 

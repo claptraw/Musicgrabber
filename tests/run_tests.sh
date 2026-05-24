@@ -14,6 +14,9 @@ if [ ! -d "$VENV" ]; then
     echo "Creating venv..."
     python3 -m venv "$VENV"
     "$VENV/bin/pip" install -q pytest requests
+    # Project deps needed for unit tests that import the downloads / db / settings
+    # modules directly (otherwise those tests silently skip).
+    "$VENV/bin/pip" install -q httpx mutagen bcrypt fastapi pydantic apprise
 fi
 
 PYTEST="$VENV/bin/pytest"

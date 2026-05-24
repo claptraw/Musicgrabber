@@ -1400,13 +1400,14 @@ def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = 
         conn.commit()
 
         # Rebuild the M3U immediately if this job belongs to a watched playlist
-        # so the file grows track-by-track rather than waiting for the next full refresh
+        # so the file grows track-by-track rather than waiting for the next full refresh.
+        # Join via watched_playlist_tracks so both the bulk-import refresh path and the
+        # missing-tracks retry path are covered (the latter never creates a bulk_import row).
         row = conn.execute(
             """SELECT wp.id, wp.name, wp.make_m3u, wp.use_playlists_dir, wp.sync_mode,
                       wp.custom_subdir, wp.user_id
                FROM watched_playlists wp
-               JOIN bulk_imports bi ON bi.watch_playlist_id = wp.id
-               JOIN bulk_import_tracks bt ON bt.import_id = bi.id AND bt.job_id = ?
+               JOIN watched_playlist_tracks wpt ON wpt.playlist_id = wp.id AND wpt.job_id = ?
                WHERE wp.make_m3u = 1
                LIMIT 1""",
             (job_id,)
@@ -3453,28 +3454,41 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
 def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_dir: bool, user_id: str | None = None, custom_subdir: str | None = None) -> None:
     """Append a downloaded track's path to a physical .m3u file.
 
-    Only runs when use_playlists_dir is True (or custom_subdir is set) and playlist_name is set.
-    Skips silently if the Playlists directory is not configured.
+    Runs whenever a playlist_name is supplied. When a Playlists folder (or custom
+    subdir) is configured, the M3U lives there alongside the audio; otherwise we
+    fall back to writing the M3U at the Singles root so the playlist still gets
+    a file, matching how generate_playlist_m3u behaves for bulk imports.
     Avoids duplicating entries that are already in the file.
     """
-    if not (playlist_name and (use_playlists_dir or custom_subdir)):
+    if not playlist_name:
         return
 
     if custom_subdir:
         playlists_dir = resolve_custom_subdir(custom_subdir, user_id=user_id)
-    else:
+    elif use_playlists_dir:
         playlists_dir = get_playlists_dir(user_id=user_id)
-    if not playlists_dir:
-        return
+    else:
+        playlists_dir = None
 
     safe_playlist = sanitize_filename(playlist_name)
-    m3u_path = playlists_dir / f"{safe_playlist}.m3u"
-    track_dir = playlists_dir / safe_playlist
-    # Keep paths inside the playlist folder relative (Rock Mix/Track.ext) so the M3U
-    # remains portable and consistent after full rebuilds.
-    if audio_file.is_absolute() and str(audio_file).startswith(str(track_dir) + "/"):
-        relative_path = f"{safe_playlist}/{audio_file.name}"
+    if playlists_dir:
+        m3u_path = playlists_dir / f"{safe_playlist}.m3u"
+        track_dir = playlists_dir / safe_playlist
+        # Keep paths inside the playlist folder relative (Rock Mix/Track.ext) so the M3U
+        # remains portable and consistent after full rebuilds.
+        if audio_file.is_absolute() and str(audio_file).startswith(str(track_dir) + "/"):
+            relative_path = f"{safe_playlist}/{audio_file.name}"
+        else:
+            relative_path = str(audio_file)
+        try:
+            playlists_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
     else:
+        # No Playlists folder configured. Drop the M3U into Singles so the user
+        # still gets a playlist file rather than a silent no-op.
+        singles_dir = get_singles_dir(user_id=user_id)
+        m3u_path = singles_dir / f"{safe_playlist}.m3u"
         relative_path = str(audio_file)
 
     try:

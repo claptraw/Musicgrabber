@@ -2711,6 +2711,13 @@ h1 {
     margin-bottom: 12px;
 }
 
+.bulk-playlist-row-inline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px;
+}
+
 .bulk-playlist-checkbox-label {
     display: flex;
     align-items: center;
@@ -2816,6 +2823,27 @@ h1 {
 
 .album-artist-name {
     font-weight: 600;
+}
+
+.album-retry-btn {
+    margin-left: 8px;
+    padding: 4px 12px;
+    background: var(--accent);
+    color: var(--accent-text, #000);
+    border: none;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.album-retry-btn:hover {
+    opacity: 0.85;
+}
+
+.album-track-error {
+    color: var(--text-error, #ff6b6b);
 }
 
 .album-artist-disambig {
