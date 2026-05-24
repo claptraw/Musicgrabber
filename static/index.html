@@ -6,9 +6,8 @@
     <meta name="musicgrabber-root-path" content="__ROOT_PATH__">
     <title>Music Grabber</title>
     <link rel="icon" type="image/png" href="__ROOT_PATH__/static/favicon.png">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="__ROOT_PATH__/static/fonts/elms-sans-400-latin.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="__ROOT_PATH__/static/fonts/suse-mono-400-latin.woff2">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg==" crossorigin="anonymous" referrerpolicy="no-referrer">
     <link rel="stylesheet" href="__ROOT_PATH__/static/style.css?v=__CACHE_BUST__">
 </head>
@@ -23,7 +22,7 @@
             <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password"
                    class="auth-input mb-16"
                    onkeydown="if(event.key==='Enter') doLogin()">
-            <button id="loginBtn" onclick="doLogin()" class="auth-submit-btn">
+            <button id="loginBtn" onclick="doLogin()" class="btn btn-primary btn-block auth-submit-btn">
                 Sign In
             </button>
             <div id="loginError" style="display:none;" class="auth-error"></div>
@@ -44,7 +43,7 @@
             <input id="changePasswordConfirm" type="password" placeholder="Confirm new password"
                    class="auth-input mb-16"
                    onkeydown="if(event.key==='Enter') doChangePassword()">
-            <button onclick="doChangePassword()" class="auth-submit-btn">
+            <button onclick="doChangePassword()" class="btn btn-primary btn-block auth-submit-btn">
                 Update Password
             </button>
             <div id="changePasswordError" style="display:none;" class="auth-error"></div>
@@ -66,7 +65,7 @@
                 <button id="themeToggle" class="theme-toggle-btn" title="Toggle light/dark theme"><i class="fa-solid fa-moon"></i></button>
                 <span id="versionLabel" class="version-label"></span>
                 <span id="currentUserDisplay" style="display:none;" class="header-user-text"></span>
-                <button id="logoutBtn" style="display:none;" class="logout-btn" onclick="doLogout()">Sign out</button>
+                <button id="logoutBtn" style="display:none;" class="btn btn-ghost logout-btn" onclick="doLogout()">Sign out</button>
             </div>
         </header>
 
@@ -86,7 +85,7 @@
                 <button class="source-option active" data-source="all" title="Search all sources">All</button>
             </div>
             <button class="search-clear-btn" id="searchClearBtn" title="Clear search" aria-label="Clear search" style="display:none">&#x2715;</button>
-            <button class="search-btn" id="searchBtn">Search</button>
+            <button class="btn btn-primary search-btn" id="searchBtn">Search</button>
             <div class="search-history" id="searchHistory"></div>
         </div>
 
@@ -154,14 +153,14 @@
                     Upload a text file or paste your song list below (one per line in format: Artist - Song Title).
                 </p>
                 <div class="bulk-file-row">
-                    <label class="file-upload">
+                    <label class="btn file-upload">
                         <input type="file" id="fileUpload" accept=".txt">
                         Choose File
                     </label>
                     <span id="fileName" class="bulk-file-name"></span>
                 </div>
                 <div class="bulk-url-row">
-                    <div class="bulk-url-flex">
+                    <div class="bulk-url-flex input-action">
                         <input
                             type="text"
                             id="spotifyUrlInput"
@@ -170,7 +169,7 @@
                         >
                         <button
                             id="fetchSpotifyBtn"
-                            class="bulk-fetch-btn"
+                            class="btn btn-primary input-action-btn bulk-fetch-btn"
                         >
                             Fetch Playlist
                         </button>
@@ -224,7 +223,7 @@
                 </div>
                 <button
                     id="bulkImportBtn"
-                    class="bulk-import-btn"
+                    class="btn btn-primary btn-lg btn-block bulk-import-btn"
                 >
                     Import & Download All
                 </button>
@@ -239,7 +238,7 @@
 
             <div class="search-box">
                 <input type="text" id="albumArtistInput" class="search-input" placeholder="Search for an artist…" autocomplete="off">
-                <button id="albumArtistSearchBtn" class="search-btn">Search</button>
+                <button id="albumArtistSearchBtn" class="btn btn-primary search-btn">Search</button>
             </div>
             <div class="album-search-note">
                 Album mode uses best-effort single-track matching, not full release mirroring. It will try to source each track intelligently, but it may not produce a perfect 1:1 album copy. For exact album hunting, use Lidarr (with Usenet/torrents) or Soulseek.
@@ -262,10 +261,10 @@
                     <label for="albumMakeM3u">Generate M3U playlist</label>
                 </div>
                 <div id="albumM3uHint" class="album-m3u-hint" style="display:none;"></div>
-                <button id="albumDownloadBtn" class="bulk-import-btn" style="margin-top: 12px;">
+                <button id="albumDownloadBtn" class="btn btn-primary btn-lg btn-block bulk-import-btn" style="margin-top: 12px;">
                     Download Album
                 </button>
-                <button id="albumResetBtn" class="bulk-import-btn album-reset-btn" type="button">
+                <button id="albumResetBtn" class="btn btn-ghost album-reset-btn" type="button">
                     Search Another Album
                 </button>
             </div>
@@ -276,14 +275,14 @@
         <div id="watchedTabContainer" class="tab-panel">
             <div class="queue-header">
                 <h2 class="queue-section-heading">Watched Playlists / <a href="#watchedArtists" title="Jump to Watched Artists">Watched Artists &#8595;</a></h2>
-                <button class="clear-btn accent-btn" id="refreshAllWatchedBtn">Check All Now</button>
+                <button class="btn accent-btn" id="refreshAllWatchedBtn">Check All Now</button>
             </div>
             <div class="watched-add-panel">
                 <p class="watched-panel-text">
                     Add a Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, or ListenBrainz playlist to automatically download new tracks when they're added.
                 </p>
                 <p id="watchedScheduleInfo" class="watched-schedule-info"></p>
-                <div class="watched-url-row">
+                <div class="watched-url-row input-action">
                     <input
                         type="text"
                         id="watchedUrlInput"
@@ -292,7 +291,7 @@
                     >
                     <button
                         id="addWatchedBtn"
-                        class="panel-action-btn"
+                        class="btn btn-primary input-action-btn panel-action-btn"
                     >
                         Watch
                     </button>
@@ -300,7 +299,7 @@
                 <div class="lb-toggle-row">
                     <button type="button" id="lbToggleBtn" onclick="toggleLbRow()" class="lb-toggle-btn">+ ListenBrainz "Created for You" playlists</button>
                 </div>
-                <div id="lbRow" style="display: none;" class="lb-row">
+                <div id="lbRow" style="display: none;" class="lb-row input-action">
                     <input
                         type="text"
                         id="lbUsernameInput"
@@ -310,7 +309,7 @@
                     <button
                         id="addLbBtn"
                         onclick="addListenBrainzPlaylists()"
-                        class="panel-action-btn"
+                        class="btn btn-primary input-action-btn panel-action-btn"
                     >
                         Add
                     </button>
@@ -390,13 +389,13 @@
             <!-- Watched Artists section -->
             <div id="watchedArtists" class="queue-header section-with-top-margin">
                 <h2 class="queue-section-heading">Watched Artists</h2>
-                <button class="clear-btn accent-btn" id="refreshAllArtistsBtn">Check All Now</button>
+                <button class="btn accent-btn" id="refreshAllArtistsBtn">Check All Now</button>
             </div>
             <div class="watched-add-panel">
                 <p class="watched-panel-text">
                     Follow an artist on MusicBrainz and new singles will be downloaded automatically as they're released.
                 </p>
-                <div class="watched-url-row">
+                <div class="watched-url-row input-action">
                     <input
                         type="text"
                         id="artistSearchInput"
@@ -405,7 +404,7 @@
                     >
                     <button
                         id="searchArtistBtn"
-                        class="panel-action-btn"
+                        class="btn btn-primary input-action-btn panel-action-btn"
                     >Find Artist</button>
                 </div>
                 <div id="artistSearchResults" style="display: none;" class="artist-search-results"></div>
@@ -434,9 +433,9 @@
                     </div>
                     <button
                         id="addArtistBtn"
-                        class="artist-add-btn"
+                        class="btn btn-primary artist-add-btn"
                     >Watch Artist</button>
-                    <button class="clear-btn artist-cancel-btn" id="cancelArtistBtn">Cancel</button>
+                    <button class="btn btn-ghost artist-cancel-btn" id="cancelArtistBtn">Cancel</button>
                 </div>
                 <div id="artistAddStatus" style="display: none;" class="watched-status-box"></div>
             </div>
@@ -446,13 +445,13 @@
         <div id="queueTabContainer" class="tab-panel">
             <div class="queue-header">
                 <h2 class="queue-section-heading">Download Queue / <a href="#downloadableSection" title="Jump to Downloadable to Device">Downloadable to Device &#8595;</a></h2>
-                <button class="clear-btn peon-hide" id="clearQueueBtn">Clear Queue</button>
+                <button class="btn btn-danger peon-hide" id="clearQueueBtn">Clear Queue</button>
             </div>
             <div id="queueTab" class="results"></div>
             <div id="queuePager" style="display:none;" class="downloadable-pager">
-                <button class="clear-btn" id="queuePrevBtn" onclick="changeQueuePage(-1)" disabled>&#8592; Prev</button>
+                <button class="btn btn-ghost" id="queuePrevBtn" onclick="changeQueuePage(-1)" disabled>&#8592; Prev</button>
                 <span id="queuePagerInfo" class="pager-info"></span>
-                <button class="clear-btn" id="queueNextBtn" onclick="changeQueuePage(1)">Next &#8594;</button>
+                <button class="btn btn-ghost" id="queueNextBtn" onclick="changeQueuePage(1)">Next &#8594;</button>
             </div>
 
             <div id="downloadableSection" class="section-with-top-margin">
@@ -462,16 +461,16 @@
                 <p class="downloadable-intro-text">All completed downloads available to save locally, newest first.</p>
                 <div id="downloadableList" class="results"></div>
                 <div id="downloadablePager" style="display:none;" class="downloadable-pager">
-                    <button class="clear-btn" id="downloadablePrevBtn" onclick="loadDownloadable(-1)" disabled>&#8592; Prev</button>
+                    <button class="btn btn-ghost" id="downloadablePrevBtn" onclick="loadDownloadable(-1)" disabled>&#8592; Prev</button>
                     <span id="downloadablePagerInfo" class="pager-info"></span>
-                    <button class="clear-btn" id="downloadableNextBtn" onclick="loadDownloadable(1)">Next &#8594;</button>
+                    <button class="btn btn-ghost" id="downloadableNextBtn" onclick="loadDownloadable(1)">Next &#8594;</button>
                 </div>
             </div>
 
             <div id="trashSection" class="section-with-top-margin" style="display:none;">
                 <div class="queue-header">
                     <h2 class="queue-section-heading"><i class="fa-solid fa-trash-can"></i> Trash Bin</h2>
-                    <button class="clear-btn" id="emptyTrashBtn" style="color: var(--error);">Empty Trash</button>
+                    <button class="btn btn-danger" id="emptyTrashBtn">Empty Trash</button>
                 </div>
                 <p class="downloadable-intro-text">Deleted files waiting in the bin. Restore them to skip re-downloading, or empty the bin to reclaim space.</p>
                 <div id="trashList" class="results"></div>
@@ -481,13 +480,13 @@
         <div id="statsTabContainer" class="tab-panel">
             <div class="queue-header">
                 <h2 class="queue-section-heading">Statistics</h2>
-                <button class="clear-btn warning-btn" id="resetStatsBtn">Reset Stats</button>
+                <button class="btn warning-btn" id="resetStatsBtn">Reset Stats</button>
             </div>
             <div id="statsContent" class="results"></div>
             <div id="mismatchSection" style="display:none;">
                 <div class="queue-header" style="margin-top:20px;">
                     <h2 class="queue-section-heading">Watch Mismatches</h2>
-                    <button class="clear-btn" id="clearMismatchesBtn">Clear Log</button>
+                    <button class="btn btn-danger" id="clearMismatchesBtn">Clear Log</button>
                 </div>
                 <p class="mismatch-intro">Tracks that downloaded successfully but didn't match what the watched playlist expected. Useful for spotting normalisation gaps.</p>
                 <div id="mismatchContent"></div>
@@ -747,7 +746,7 @@
                             <button type="button" class="password-toggle" data-target="settingNavidromePass">Show</button>
                         </div>
                     </div>
-                    <button type="button" class="test-btn" id="testNavidromeBtn">Test Connection</button>
+                    <button type="button" class="btn test-btn" id="testNavidromeBtn">Test Connection</button>
                     <div id="navidromeTestResult" class="test-result"></div>
                     <div id="navidromeRealPathStatus" class="test-result" style="display:none;"></div>
                     <span class="settings-hint">For accurate M3U playlist entries, add <code>ND_SUBSONIC_DEFAULTREPORTREALPATH: "true"</code> to your Navidrome docker-compose environment. Test Connection will check whether this is enabled.</span>
@@ -768,7 +767,7 @@
                             <button type="button" class="password-toggle" data-target="settingJellyfinApiKey">Show</button>
                         </div>
                     </div>
-                    <button type="button" class="test-btn" id="testJellyfinBtn">Test Connection</button>
+                    <button type="button" class="btn test-btn" id="testJellyfinBtn">Test Connection</button>
                     <div id="jellyfinTestResult" class="test-result"></div>
                     <span class="settings-hint">When configured, MusicGrabber triggers a Jellyfin library scan after each download so new tracks appear immediately. Only the music library is refreshed.</span>
                 </div>
@@ -788,7 +787,7 @@
                             <button type="button" class="password-toggle" data-target="settingLidarrApiKey">Show</button>
                         </div>
                     </div>
-                    <button type="button" class="test-btn" id="testLidarrBtn">Test Connection</button>
+                    <button type="button" class="btn test-btn" id="testLidarrBtn">Test Connection</button>
                     <div id="lidarrTestResult" class="test-result"></div>
                     <span class="settings-hint">When configured, MusicGrabber checks Lidarr for existing tracks before downloading. Tracks already in your Lidarr library are skipped automatically.</span>
                 </div>
@@ -804,9 +803,9 @@
                         <span id="cookieExpiryHint" style="display:none;" class="cookie-expiry-hint"></span>
                     </div>
                     <input type="file" id="youtubeCookiesFile" accept=".txt,text/plain" style="display:none">
-                    <button type="button" class="test-btn" id="uploadYoutubeCookiesBtn">Upload cookies.txt</button>
-                    <button type="button" class="test-btn" id="clearYoutubeCookiesBtn">Clear Cookies</button>
-                    <button type="button" class="test-btn" id="testYoutubeCookiesBtn">Test Cookies</button>
+                    <button type="button" class="btn test-btn" id="uploadYoutubeCookiesBtn">Upload cookies.txt</button>
+                    <button type="button" class="btn test-btn" id="clearYoutubeCookiesBtn">Clear Cookies</button>
+                    <button type="button" class="btn test-btn" id="testYoutubeCookiesBtn">Test Cookies</button>
                     <div id="youtubeCookiesTestResult" class="test-result"></div>
                 </div>
             </div>
@@ -824,9 +823,9 @@
                         <span id="spotifyCookieExpiryHint" style="display:none;" class="cookie-expiry-hint"></span>
                     </div>
                     <input type="file" id="spotifyCookiesFile" accept=".txt,text/plain" style="display:none">
-                    <button type="button" class="test-btn" id="uploadSpotifyCookiesBtn">Upload cookies.txt</button>
-                    <button type="button" class="test-btn" id="clearSpotifyCookiesBtn">Clear Cookies</button>
-                    <button type="button" class="test-btn" id="testSpotifyCookiesBtn">Test Cookies</button>
+                    <button type="button" class="btn test-btn" id="uploadSpotifyCookiesBtn">Upload cookies.txt</button>
+                    <button type="button" class="btn test-btn" id="clearSpotifyCookiesBtn">Clear Cookies</button>
+                    <button type="button" class="btn test-btn" id="testSpotifyCookiesBtn">Test Cookies</button>
                     <div id="spotifyCookiesTestResult" class="test-result"></div>
                 </div>
             </div>
@@ -883,7 +882,7 @@
                         <span class="settings-hint">Supports 50+ services: Gotify, ntfy, Discord, Pushover, Slack, and more. See <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noopener">Apprise docs</a> for URL formats.</span>
                     </div>
                     <div class="apprise-test-row">
-                        <button type="button" class="test-btn" id="testAppriseBtn">Test Apprise</button>
+                        <button type="button" class="btn test-btn" id="testAppriseBtn">Test Apprise</button>
                         <div id="appriseTestResult" class="test-result"></div>
                     </div>
                 </div>
@@ -961,7 +960,7 @@
                         <input type="text" id="settingSlskdDownloads" placeholder="/downloads">
                         <span class="settings-hint-sm">The path slskd writes completed downloads to, as seen from MusicGrabber's container. This is usually a Docker volume mount, not the host path and not necessarily slskd's <code>/downloads</code> path.</span>
                     </div>
-                    <button type="button" class="test-btn" id="testSlskdBtn">Test Connection</button>
+                    <button type="button" class="btn test-btn" id="testSlskdBtn">Test Connection</button>
                     <div id="slskdTestResult" class="test-result"></div>
                 </div>
             </div>
@@ -1012,7 +1011,7 @@
                         </select>
                     </div>
                     <div id="createUserError" style="display:none;" class="user-create-error"></div>
-                    <button onclick="createUser()" class="user-add-btn">
+                    <button onclick="createUser()" class="btn btn-primary user-add-btn">
                         Add User
                     </button>
                 </div>
@@ -1049,14 +1048,14 @@
                         <label>Session / Auth</label>
                         <div class="session-auth-row">
                             <span id="browserApiKeyStatus" class="browser-api-key-status"></span>
-                            <button type="button" id="clearApiKeyBtn" class="clear-btn clear-stored-key-btn" style="display:none;">Clear Stored Key</button>
+                            <button type="button" id="clearApiKeyBtn" class="btn btn-ghost clear-stored-key-btn" style="display:none;">Clear Stored Key</button>
                         </div>
                         <span class="settings-hint-sm">In API key mode, MusicGrabber stores your key in this browser for future visits. "Clear Stored Key" removes it from this browser only — you'll be prompted to re-enter it next time.</span>
                     </div>
                     <!-- Change My Password (shown in session mode only) -->
                     <div id="changePasswordSection" style="display:none;">
                         <h4 class="change-password-heading">Change My Password</h4>
-                        <button onclick="showChangePasswordScreen(false)" class="change-password-btn">
+                        <button onclick="showChangePasswordScreen(false)" class="btn btn-ghost change-password-btn">
                             Change Password
                         </button>
                     </div>
@@ -1071,7 +1070,7 @@
     <!-- Floating settings save bar - visible only when settings tab is active -->
     <div id="settingsFloatingBar" class="settings-floating-bar" style="display:none;">
         <div class="settings-floating-bar-inner">
-            <button type="button" class="save-btn" id="saveSettingsBtn">Save Settings</button>
+            <button type="button" class="btn btn-primary save-btn" id="saveSettingsBtn">Save Settings</button>
             <a
                 class="donation-link"
                 href="https://ko-fi.com/geekphreek"
@@ -1081,7 +1080,7 @@
             >
                 <i class="fa-solid fa-mug-hot"></i> Buy me a coffee
             </a>
-            <button type="button" class="release-notes-btn" onclick="showReleaseNotes(serverConfig.version)" title="View release notes and what's new">Release Notes</button>
+            <button type="button" class="btn btn-ghost release-notes-btn" onclick="showReleaseNotes(serverConfig.version)" title="View release notes and what's new">Release Notes</button>
         </div>
     </div>
 
@@ -1098,7 +1097,7 @@
                     <button type="button" id="releaseNotesOlderBtn" class="release-notes-nav-btn" onclick="showOlderReleaseNotes()" title="Older release notes" aria-label="Older release notes">&#x2039;</button>
                     <button type="button" id="releaseNotesNewerBtn" class="release-notes-nav-btn" onclick="showNewerReleaseNotes()" title="Newer release notes" aria-label="Newer release notes">&#x203A;</button>
                 </div>
-                <button onclick="closeReleaseNotes()" class="modal-confirm-btn">Got it</button>
+                <button onclick="closeReleaseNotes()" class="btn btn-primary modal-confirm-btn">Got it</button>
             </div>
         </div>
     </div>
@@ -1152,12 +1151,12 @@
 
             <div class="tag-editor-actions">
                 <div class="tag-editor-actions-left">
-                    <button type="button" id="tagEditorGuessBtn" class="tag-editor-secondary-btn">Guess from MusicBrainz</button>
-                    <button type="button" id="tagEditorResetBtn" class="tag-editor-secondary-btn">Reset</button>
+                    <button type="button" id="tagEditorGuessBtn" class="btn btn-ghost tag-editor-secondary-btn">Guess from MusicBrainz</button>
+                    <button type="button" id="tagEditorResetBtn" class="btn btn-ghost tag-editor-secondary-btn">Reset</button>
                 </div>
                 <div class="tag-editor-actions-right">
-                    <button type="button" onclick="closeTagEditor()" class="tag-editor-secondary-btn">Cancel</button>
-                    <button type="button" id="tagEditorSaveBtn" class="tag-editor-primary-btn">Save Tags</button>
+                    <button type="button" onclick="closeTagEditor()" class="btn btn-ghost tag-editor-secondary-btn">Cancel</button>
+                    <button type="button" id="tagEditorSaveBtn" class="btn btn-primary tag-editor-primary-btn">Save Tags</button>
                 </div>
             </div>
         </div>
@@ -1195,8 +1194,8 @@
             </div>
 
             <div class="report-actions">
-                <button onclick="closeReportDialog()" class="report-btn report-cancel-btn">Cancel</button>
-                <button onclick="submitReport()" id="reportSubmitBtn" class="report-btn report-submit-btn">Report</button>
+                <button onclick="closeReportDialog()" class="btn btn-ghost report-btn report-cancel-btn">Cancel</button>
+                <button onclick="submitReport()" id="reportSubmitBtn" class="btn warning-btn report-btn report-submit-btn">Report</button>
             </div>
         </div>
     </div>
@@ -1212,7 +1211,7 @@
             </div>
 
             <div class="missing-track-modal-toolbar">
-                <button type="button" id="missingTrackVersionsRefreshBtn" class="tag-editor-secondary-btn">Refresh Results</button>
+                <button type="button" id="missingTrackVersionsRefreshBtn" class="btn btn-ghost tag-editor-secondary-btn">Refresh Results</button>
             </div>
 
             <div id="missingTrackVersionsBody" class="missing-track-modal-body"></div>
@@ -1237,8 +1236,8 @@
                 <input type="text" id="destPickerCustomInput" class="dest-picker-custom-input" placeholder="e.g. Friends or Discovery/Weekly" oninput="destPickerOnCustomInput(this.value)">
             </div>
             <div class="modal-footer">
-                <button onclick="closeDestPicker()" class="tag-editor-secondary-btn">Cancel</button>
-                <button onclick="confirmDestPicker()" class="modal-confirm-btn" id="destPickerConfirmBtn">Select</button>
+                <button onclick="closeDestPicker()" class="btn btn-ghost tag-editor-secondary-btn">Cancel</button>
+                <button onclick="confirmDestPicker()" class="btn btn-primary modal-confirm-btn" id="destPickerConfirmBtn">Select</button>
             </div>
         </div>
     </div>

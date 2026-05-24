@@ -11,6 +11,12 @@ const RELEASE_NOTES = {
         title: "What's New in v2.8.15",
         sections: [
             {
+                heading: "Looks Different",
+                items: [
+                    "Full CSS overhaul. The app now uses self-hosted Elms Sans and SUSE Mono (no Google Fonts call, no first-paint delay, works offline). Buttons across every tab share one design system: primary actions are filled green, secondary actions are outlined, destructive actions go red on hover, warning actions stay amber. The Search, Bulk Import, Watched, ListenBrainz, and Watched Artists boxes all use the same inside-button search-pill layout at the same size, instead of the three different patterns we had before. Native checkboxes and radio buttons are now accent green instead of browser blue. Same features, more consistent surface.",
+                ]
+            },
+            {
                 heading: "Added",
                 items: [
                     "Preferred source dropdown for Bulk Import and Watched Playlists. Pick a single source (Soulseek, YouTube, whatever) and it gets a huge score boost so it wins nearly every close call. Useful when you want lossless from Soulseek as primary and YouTube only as a fallback. The strict-artist guardrails still get to reject a clearly-wrong match, so you will not get a karaoke cover just because Soulseek had one. Leave it on 'No preference' to keep the existing best-quality-wins behaviour. Requested by Max S.",

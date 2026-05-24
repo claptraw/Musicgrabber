@@ -7066,7 +7066,7 @@
 
                 const clearBtn = document.createElement('button');
                 clearBtn.type = 'button';
-                clearBtn.className = 'setting-clear-btn';
+                clearBtn.className = 'btn btn-sm btn-danger setting-clear-btn';
                 clearBtn.textContent = 'Clear';
 
                 // Find the settings key for this input
