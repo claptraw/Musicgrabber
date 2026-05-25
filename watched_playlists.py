@@ -186,6 +186,16 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
     if soundcloud_likes:
         return "soundcloud", url
 
+    # Monochrome playlist shares are Tidal playlist UUIDs behind hifi-api, but
+    # the public URL uses Monochrome's own host.
+    monochrome_playlist = re.match(
+        r'https?://(?:www\.)?(?:monochrome\.tf|monochrome\.samidy\.com)/playlist/([0-9a-f-]{36})',
+        url,
+        re.IGNORECASE,
+    )
+    if monochrome_playlist:
+        return "monochrome", monochrome_playlist.group(1)
+
     # Tidal playlist (both tidal.com/browse/playlist/UUID and tidal.com/playlist/UUID)
     tidal_playlist = re.match(r'https?://tidal\.com/(?:browse/)?playlist/([0-9a-f-]{36})', url, re.IGNORECASE)
     if tidal_playlist:
@@ -201,7 +211,7 @@ def detect_playlist_platform(url: str) -> tuple[str, str]:
 
     raise HTTPException(
         status_code=400,
-        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, ListenBrainz playlists or usernames, SoundCloud sets/likes, Tidal playlists, Beatport charts/Top 100."
+        detail="Invalid playlist URL. Supported: Spotify playlists/albums/liked songs, YouTube/YouTube Music playlists, Apple Music playlists/albums, Amazon Music playlists, ListenBrainz playlists or usernames, SoundCloud sets/likes, Tidal/Monochrome playlists, Beatport charts/Top 100."
     )
 
 
@@ -755,6 +765,16 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             else:
                 tracks.append(("Unknown", track_str.strip()))
         return tracks, result["playlist_name"], None
+
+    elif platform == "monochrome":
+        m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', url, re.IGNORECASE)
+        if not m:
+            raise HTTPException(status_code=400, detail="Invalid Monochrome playlist URL: no UUID found")
+        from monochrome import fetch_tidal_playlist_tracks
+        tracks, name = fetch_tidal_playlist_tracks(m.group(1))
+        if not tracks:
+            raise HTTPException(status_code=422, detail="No tracks found in Monochrome playlist")
+        return tracks, name, None
 
     elif platform == "beatport":
         result = fetch_beatport_playlist(url)

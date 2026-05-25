@@ -372,7 +372,7 @@ h1 {
 .track-list-section-header {
     font-weight: 600;
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     margin: 10px 0 4px;
@@ -404,7 +404,7 @@ h1 {
 }
 
 .track-status-chip {
-    font-size: 11px;
+    font-size: 12px;
     padding: 2px 6px;
     border-radius: 4px;
     white-space: nowrap;
@@ -958,7 +958,7 @@ h1 {
 }
 
 .source-badge {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     padding: 2px 6px;
     border-radius: 3px;
@@ -1006,7 +1006,7 @@ h1 {
 }
 
 .quality-badge {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     padding: 2px 6px;
     border-radius: 3px;
@@ -1087,7 +1087,7 @@ h1 {
 .job-status.failed { background: var(--error); }
 
 .job-warning-badge {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     padding: 2px 6px;
     border-radius: 3px;
@@ -1376,7 +1376,7 @@ h1 {
     align-items: center;
     gap: var(--space-1);
     padding: 2px var(--space-2);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
@@ -1395,7 +1395,7 @@ h1 {
 .watched-card-dest-path {
     font-family: var(--font-mono);
     font-weight: normal;
-    font-size: 11px;
+    font-size: 12px;
 }
 
 /* --------------------------------------------------------------------------
@@ -1415,7 +1415,7 @@ h1 {
 }
 
 .dest-picker-breadcrumb {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
     margin-top: 4px;
     display: flex;
@@ -1543,7 +1543,7 @@ h1 {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--accent);
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
@@ -1622,7 +1622,7 @@ h1 {
 
 .source-chip {
     padding: 2px 7px;
-    font-size: 11px;
+    font-size: 12px;
     font-family: inherit;
     font-weight: 600;
     border-radius: 4px;
@@ -1890,7 +1890,7 @@ h1 {
     color: var(--accent);
 }
 
-/* Lift tiny helper copy in Settings where inline styles were 10-11px */
+/* Lift tiny helper copy in Settings where inline styles were 10-12px */
 #settingsTabContainer .settings-row > span {
     font-size: 13px !important;
     line-height: 1.45;
@@ -2283,8 +2283,8 @@ h1 {
     /* Lift tiny inline helper copy without touching desktop */
     #settingsTabContainer [style*="font-size:10px"],
     #settingsTabContainer [style*="font-size: 10px"],
-    #settingsTabContainer [style*="font-size:11px"],
-    #settingsTabContainer [style*="font-size: 11px"],
+    #settingsTabContainer [style*="font-size:12px"],
+    #settingsTabContainer [style*="font-size: 12px"],
     #settingsTabContainer [style*="font-size:12px"],
     #settingsTabContainer [style*="font-size: 12px"] {
         font-size: 14px !important;
@@ -2528,7 +2528,7 @@ h1 {
 }
 
 .version-label {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
 }
 
@@ -2605,7 +2605,7 @@ h1 {
 }
 
 .bulk-services-hint {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
 }
 
@@ -2619,13 +2619,13 @@ h1 {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 11px;
+    font-size: 12px;
     cursor: help;
 }
 
 .bulk-services-note {
     margin-top: 6px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
 }
 
@@ -2638,7 +2638,7 @@ h1 {
     position: absolute;
     bottom: 8px;
     right: 12px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
     background: var(--bg-tertiary);
     padding: 4px 8px;
@@ -2842,7 +2842,7 @@ h1 {
 
 .album-track-legend {
     margin: 0 0 8px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
 }
 
@@ -2857,7 +2857,7 @@ h1 {
 
 .album-m3u-hint {
     margin-top: 6px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
 }
 
@@ -2954,7 +2954,7 @@ h1 {
 }
 
 .watched-schedule-info {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
     margin-bottom: 12px;
     opacity: 0.8;
@@ -2983,7 +2983,7 @@ h1 {
     background: none;
     border: none;
     padding: 0;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
     cursor: pointer;
     text-decoration: underline;
@@ -3130,7 +3130,7 @@ h1 {
 /* Sub-label for quality rows within the format selector */
 .settings-label-sub {
     display: block;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
     margin-bottom: 4px;
@@ -3183,14 +3183,14 @@ h1 {
 }
 
 .settings-path-preview {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
     font-family: var(--font-mono);
     margin-top: 2px;
 }
 
 .settings-hint-sm {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
 }
 
@@ -3276,7 +3276,7 @@ h1 {
 }
 
 .mismatch-date {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
 }
 
@@ -3307,7 +3307,7 @@ h1 {
 .mismatch-got .mismatch-tag      { color: var(--error); }
 
 .mismatch-normalised {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
 }
 
@@ -3371,7 +3371,7 @@ h1 {
 
 .score-rationale-header .score-rationale-query {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 12px;
     font-style: italic;
 }
 
@@ -3400,7 +3400,7 @@ h1 {
 
 .score-rationale-label {
     font-weight: 600;
-    font-size: 11px;
+    font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.3px;
     flex-shrink: 0;
@@ -3421,14 +3421,14 @@ h1 {
 
 .score-rationale-score {
     color: var(--text-secondary);
-    font-size: 11px;
+    font-size: 12px;
     margin-left: auto;
     flex-shrink: 0;
 }
 
 .score-rationale-reasons {
     margin-top: 4px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
     line-height: 1.6;
 }
@@ -3443,13 +3443,13 @@ h1 {
 
 .score-rationale-raw {
     margin-top: 6px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-muted);
 }
 
 .score-rationale-raw summary {
     cursor: pointer;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
 }
 
@@ -3699,6 +3699,43 @@ h1 {
     gap: 12px;
 }
 
+.release-notes-footer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+
+.release-notes-donate-btn {
+    justify-self: center;
+    white-space: nowrap;
+}
+
+.modal-confirm-btn {
+    justify-self: end;
+}
+
+@media (max-width: 480px) {
+    .release-notes-footer {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+            "donate donate"
+            "nav confirm";
+    }
+
+    .release-notes-footer .release-notes-nav {
+        grid-area: nav;
+    }
+
+    .release-notes-donate-btn {
+        grid-area: donate;
+        width: 100%;
+        justify-content: center;
+    }
+
+    .release-notes-footer .modal-confirm-btn {
+        grid-area: confirm;
+    }
+}
+
 /* .modal-confirm-btn now driven by .btn .btn-primary. */
 
 /* --------------------------------------------------------------------------
@@ -3752,7 +3789,7 @@ h1 {
 
 .tag-editor-input {
     width: 100%;
-    padding: 11px 12px;
+    padding: 12px 12px;
     font-size: 14px;
     font-family: inherit;
     background: var(--bg-tertiary);
@@ -4029,7 +4066,7 @@ h1 {
 -------------------------------------------------------------------------- */
 
 .cookie-expiry-hint {
-    font-size: 11px;
+    font-size: 12px;
     font-family: var(--font-mono);
     margin-top: 2px;
 }
@@ -4271,7 +4308,7 @@ h1 {
     align-items: center;
     gap: var(--space-1);
     padding: 2px var(--space-2);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     background: var(--bg-tertiary);
     color: var(--text-secondary);

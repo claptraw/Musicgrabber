@@ -77,7 +77,7 @@ from watched_playlists import (
 )
 from watched_artists import refresh_watched_artist, start_artist_scheduler
 from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks, apply_metadata_to_file, guess_musicbrainz_tags, MusicBrainzUnavailable
-from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
+from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 from coverart import fetch_cover_art_url
 
 URL_BASED_SOURCES = {"soundcloud", "mp3phoenix", "zvu4no", "monochrome"}
@@ -2911,15 +2911,21 @@ def bulk_import_async(body: AsyncBulkImportRequest, http_request: Request):
     _priority_source = (body.priority_source or "").strip().lower() or None
     if _priority_source in ("any", "all", "none"):
         _priority_source = None
+    _preferred_sources = (body.preferred_sources or "all").strip().lower() or "all"
+    if _preferred_sources in ("any", "none"):
+        _preferred_sources = "all"
+    _playlist_name = body.playlist_name
+    if body.create_playlist:
+        _playlist_name = sanitize_playlist_name(body.playlist_name, body.playlist_source_url or import_id)
 
     # Create bulk import record
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO bulk_imports
-               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, use_playlists_dir, user_id, priority_source)
-               VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)""",
+               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, use_playlists_dir, user_id, preferred_sources, priority_source)
+               VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)""",
             (import_id, len(tracks_to_import), int(body.create_playlist),
-             body.playlist_name, int(body.convert_to_flac), int(body.use_playlists_dir), user_id, _priority_source)
+             _playlist_name, int(body.convert_to_flac), int(body.use_playlists_dir), user_id, _preferred_sources, _priority_source)
         )
 
         # Insert all tracks
@@ -3056,6 +3062,7 @@ def fetch_playlist(request: Request, body: PlaylistFetchRequest):
     # "Artist - Title" strings the bulk import UI expects, plus a playlist name.
     user_id = request.state.user_id
     tracks_tuples, playlist_name, warning = fetch_playlist_tracks(url, platform, user_id=user_id)
+    playlist_name = sanitize_playlist_name(playlist_name, url)
     tracks = [f"{artist} - {title}" for artist, title in tracks_tuples]
     resp = {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks), "platform": platform}
     if warning:
@@ -3174,6 +3181,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
         # Fetch playlist to get name and initial tracks
         try:
             tracks, playlist_name, fetch_warning = fetch_playlist_tracks(body.url, platform, user_id=user_id)
+            playlist_name = sanitize_playlist_name(playlist_name, body.url)
         except HTTPException:
             raise
 
@@ -4397,7 +4405,7 @@ def albums_download(body: AlbumDownloadRequest, http_request: Request):
         playlist_label = m3u_name or f"{artist} - {album_title}"
         if playlist_label.lower().endswith(".m3u"):
             playlist_label = playlist_label[:-4]
-        playlist_label = playlist_label.strip() or f"{artist} - {album_title}"
+        playlist_label = sanitize_playlist_name(playlist_label, f"{artist} - {album_title}")
         with db_conn() as conn:
             conn.execute(
                 "UPDATE bulk_imports SET create_playlist = 1, playlist_name = ? WHERE id = ?",

@@ -860,6 +860,22 @@ def init_db():
             )
             print("DB migrated to version 4: stale eu-central hifi-api URL retired")
 
+        # v5: The apex hifi-api endpoint also moved to a Render suspension page
+        # in May 2026. Monochrome's live frontend still advertises the Samidy
+        # instance, and it returns Tidal search metadata for the same API shape.
+        if db_version < 5:
+            conn.execute("""
+                UPDATE settings
+                SET value = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE key = 'monochrome_hifi_api_url'
+                  AND value IN ('https://api.monochrome.tf', 'https://eu-central.monochrome.tf')
+            """, (MONOCHROME_HIFI_API_URL,))
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '5')"
+            )
+            print("DB migrated to version 5: suspended Monochrome hifi-api URL retired")
+
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already
         # passed through that mangled migration. Harmless if the column is present.

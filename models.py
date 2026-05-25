@@ -55,8 +55,10 @@ class AsyncBulkImportRequest(BaseModel):
     songs: str  # Multi-line text with "Artist - Song" format
     create_playlist: bool = False
     playlist_name: Optional[str] = None
+    playlist_source_url: Optional[str] = None
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
+    preferred_sources: Optional[str] = None  # Comma-separated source IDs or "all"
     priority_source: Optional[str] = None  # One source ID that gets a huge score boost during selection
 
 class WatchedPlaylistRequest(BaseModel):

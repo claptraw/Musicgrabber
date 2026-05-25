@@ -11,6 +11,7 @@ import secrets
 import threading
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qs, unquote, urlparse
 
 import shutil
 
@@ -25,6 +26,41 @@ def sanitize_filename(name: str) -> str:
     name = re.sub(r'[<>:"/\\|?*]', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
     return name[:MAX_FILENAME_LENGTH]
+
+
+def _fallback_name_from_url(value: str) -> str:
+    """Return a short label from a playlist/import URL for filesystem fallback."""
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return value
+    if not parsed.scheme or not parsed.netloc:
+        return value
+
+    query = parse_qs(parsed.query)
+    for key in ("list", "id"):
+        if query.get(key):
+            return unquote(query[key][0])
+
+    path_parts = [unquote(p) for p in parsed.path.split("/") if p]
+    if path_parts:
+        return path_parts[-1]
+    return parsed.netloc.removeprefix("www.")
+
+
+def sanitize_playlist_name(name: str | None, fallback: str | None = None) -> str:
+    """Return a non-empty filesystem-safe playlist/M3U stem.
+
+    `fallback` can be an import URL, playlist ID, or other stable label. It is
+    only used when the user/upstream name sanitizes to empty.
+    """
+    safe = sanitize_filename(name or "")
+    if safe:
+        return safe
+
+    fallback_label = _fallback_name_from_url(fallback or "")
+    safe = sanitize_filename(fallback_label)
+    return safe or "Playlist"
 
 
 def is_valid_youtube_id(video_id: str) -> bool:

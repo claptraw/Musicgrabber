@@ -275,6 +275,24 @@ def test_append_to_physical_m3u_noop_without_playlist_name(tmp_path, monkeypatch
     assert not any(p.suffix == ".m3u" for p in singles_dir.glob("**/*"))
 
 
+def test_append_to_physical_m3u_falls_back_when_name_sanitizes_empty(tmp_path, monkeypatch):
+    downloads = _import_downloads_or_skip()
+
+    singles_dir = tmp_path / "Singles"
+    singles_dir.mkdir()
+    monkeypatch.setattr(downloads, "get_playlists_dir", lambda user_id=None: None)
+    monkeypatch.setattr(downloads, "get_singles_dir", lambda user_id=None: singles_dir)
+
+    audio_file = singles_dir / "Artist" / "Track.flac"
+    audio_file.parent.mkdir(parents=True)
+    audio_file.write_bytes(b"not real audio")
+
+    downloads._append_to_physical_m3u(audio_file, "///", use_playlists_dir=False)
+
+    m3u = singles_dir / "Playlist.m3u"
+    assert m3u.exists(), "Expected empty-after-sanitizing playlist names to fall back"
+
+
 def _setup_watched_playlist_db(monkeypatch, downloads):
     """Wire downloads.db_conn to an in-memory sqlite with the minimal schema
     needed for _mark_watched_track_downloaded's watched-playlist lookup.

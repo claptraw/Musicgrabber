@@ -981,6 +981,7 @@
 
             // Single-user mode OR successful session — apply role-based UI
             applyUserRoleToUI();
+            populateSourceChips();
         })();
 
         // Restore convert on/off from localStorage (namespaced per user)
@@ -1263,6 +1264,10 @@
                 } else if (watchedRefreshPollInterval) {
                     clearInterval(watchedRefreshPollInterval);
                     watchedRefreshPollInterval = null;
+                }
+
+                if (currentTab === 'bulk') {
+                    populateSourceChips();
                 }
 
                 if (currentTab === 'stats') {
@@ -3324,6 +3329,9 @@
                 if (createPlaylist) {
                     requestBody.create_playlist = true;
                     requestBody.playlist_name = playlistName;
+                    if (playlistNameInput.dataset.sourceUrl) {
+                        requestBody.playlist_source_url = playlistNameInput.dataset.sourceUrl;
+                    }
                     const usePlaylistsDirCheckbox = document.getElementById('usePlaylistsDirCheckbox');
                     if ((usePlaylistsDirCheckbox && usePlaylistsDirCheckbox.checked) || (!usePlaylistsDirCheckbox && serverConfig.playlists_subdir)) {
                         requestBody.use_playlists_dir = true;
@@ -3332,6 +3340,7 @@
                 const bulkPriority = document.getElementById('bulkPrioritySource');
                 if (bulkPriority && bulkPriority.value) {
                     requestBody.priority_source = bulkPriority.value;
+                    requestBody.preferred_sources = bulkPriority.value;
                 }
 
                 // Start the async import
@@ -3352,6 +3361,7 @@
                 // Clear the textarea
                 bulkInput.value = '';
                 playlistNameInput.value = '';
+                delete playlistNameInput.dataset.sourceUrl;
                 createPlaylistCheckbox.checked = false;
                 playlistNameInput.style.display = 'none';
                 const usePlaylistsDirCheckboxCleared = document.getElementById('usePlaylistsDirCheckbox');
@@ -4433,7 +4443,7 @@
                 return;
             }
 
-            // URL validation - Spotify playlists/albums, Amazon Music playlists, Apple Music, YouTube/YT Music playlists, SoundCloud sets/likes, ListenBrainz, Tidal, Beatport
+            // URL validation - Spotify playlists/albums, Amazon Music playlists, Apple Music, YouTube/YT Music playlists, SoundCloud sets/likes, ListenBrainz, Tidal/Monochrome, Beatport
             const isSpotify = url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//);
             const isAmazon = url.match(/^https?:\/\/music\.amazon\.[a-z.]+\/(user-playlists|playlists)\//);
             const isApple = url.match(/^https?:\/\/music\.apple\.com\/(?:[a-z]{2}|library)\/(playlist|album)\//i);
@@ -4441,9 +4451,10 @@
             const isSoundCloud = url.match(/^https?:\/\/soundcloud\.com\/[^/]+\/(sets\/[^/?]+|likes)/i);
             const isListenBrainz = url.match(/^https?:\/\/listenbrainz\.org\/(playlist|user)\//i) || url.match(/^[a-zA-Z0-9_-]+$/);
             const isTidal = url.match(/^https?:\/\/tidal\.com\/(?:browse\/)?playlist\//i);
+            const isMonochrome = url.match(/^https?:\/\/(?:www\.)?(?:monochrome\.tf|monochrome\.samidy\.com)\/playlist\//i);
             const isBeatport = url.match(/^https?:\/\/(?:www\.)?beatport\.com\/(top-100|genre\/[^/]+\/\d+\/top-100|chart\/[^/]+\/\d+)/i);
-            if (!isSpotify && !isAmazon && !isApple && !isYouTube && !isSoundCloud && !isListenBrainz && !isTidal && !isBeatport) {
-                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, SoundCloud sets/likes, ListenBrainz, Tidal, or Beatport link.';
+            if (!isSpotify && !isAmazon && !isApple && !isYouTube && !isSoundCloud && !isListenBrainz && !isTidal && !isMonochrome && !isBeatport) {
+                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, SoundCloud sets/likes, ListenBrainz, Tidal, Monochrome, or Beatport link.';
                 spotifyError.style.display = 'block';
                 return;
             }
@@ -4496,6 +4507,7 @@
                     // Auto-fill playlist name if checkbox is checked
                     if (createPlaylistCheckbox.checked && data.playlist_name) {
                         playlistNameInput.value = data.playlist_name;
+                        playlistNameInput.dataset.sourceUrl = url;
                     }
 
                     // For SoundCloud playlists, default source chips to SC only - the tracks
@@ -4652,6 +4664,7 @@
                     listenbrainz: '<img src="/static/images/ListenBrainzLogo.svg" title="ListenBrainz" style="width:1em;height:1em;vertical-align:-0.125em;">',
                     soundcloud: '<i class="fa-brands fa-soundcloud" title="SoundCloud"></i>',
                     tidal: '<img src="/static/images/tidal-round-black-icon.svg" title="Tidal" style="width:1em;height:1em;vertical-align:-0.125em;">',
+                    monochrome: '<span title="Monochrome" style="font-size:0.75em;font-weight:700;">MONO</span>',
                     beatport: '<img src="/static/images/BeatPortLogo.svg" title="Beatport" style="width:1em;height:1em;vertical-align:-0.125em;">'
                 };
                 const platformIcon = platformIcons[p.platform] || '<i class="fa-solid fa-list"></i>';

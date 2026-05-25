@@ -1,5 +1,5 @@
 # Music Grabber
-**v2.8.15**
+**v2.8.16**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix, zvu4no, Monochrome/Qobuz, and optional Soulseek, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -283,8 +283,8 @@ Settings are stored in the database and persist across container restarts.
 | `SOURCE_ZVU4NO_ENABLED` | `true` | Enable zvu4no search results |
 | `SOURCE_SOULSEEK_ENABLED` | `false` | Enable Soulseek/slskd search results. Credentials alone do not enable Soulseek |
 | `SOURCE_MONOCHROME_ENABLED` | `true` | Enable Monochrome/Qobuz search results |
-| `MONOCHROME_HIFI_API_URL` | `https://eu-central.monochrome.tf` | hifi-api compatible endpoint used for Tidal metadata/ISRC lookups |
-| `MONOCHROME_QOBUZ_PROXY_URL` | `https://qobuz.kennyy.com.br` | Qobuz proxy used to resolve direct audio streams |
+| `MONOCHROME_HIFI_API_URL` | `https://monochrome-api.samidy.com,https://api.monochrome.tf,https://eu-central.monochrome.tf` | hifi-api compatible endpoint(s) used for Tidal metadata/ISRC lookups. Comma or newline separated lists are tried in order |
+| `MONOCHROME_QOBUZ_PROXY_URL` | `https://qdl-api.monochrome.tf` | Qobuz proxy used to resolve direct audio streams |
 | `SLSKD_URL` | - | slskd API URL (e.g., `http://slskd:5030`) |
 | `SLSKD_USER` | - | slskd username |
 | `SLSKD_PASS` | - | slskd password |
@@ -377,8 +377,8 @@ You can turn it off in Settings, Search Sources, or use:
 ```yaml
 environment:
   - SOURCE_MONOCHROME_ENABLED=false
-  - MONOCHROME_HIFI_API_URL=https://eu-central.monochrome.tf
-  - MONOCHROME_QOBUZ_PROXY_URL=https://qobuz.kennyy.com.br
+  - MONOCHROME_HIFI_API_URL=https://monochrome-api.samidy.com,https://api.monochrome.tf,https://eu-central.monochrome.tf
+  - MONOCHROME_QOBUZ_PROXY_URL=https://qdl-api.monochrome.tf
 ```
 
 You can point those URLs at self-hosted compatible services if you run them. Monochrome results without an ISRC are ignored, because Qobuz cannot resolve them and pretending otherwise just wastes everyone's afternoon.

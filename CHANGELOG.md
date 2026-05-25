@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.8.16 (2026-05-25)
+
+### Added
+- **Ko-fi support button in the release-notes pop-up**: the "What's New" modal now has a centered "Donate a coffee" button in the same green primary-button style as the rest of the app, linking to `https://ko-fi.com/geekphreek`.
+- **Monochrome playlist imports**: Bulk Import and Watched Playlists now accept public Monochrome playlist URLs such as `https://monochrome.tf/playlist/...`. These use the hifi-api playlist endpoint, so they benefit from the same endpoint fallback list as Monochrome search.
+
+### Fixed
+- **Bulk Import preferred-source dropdown no longer waits for the Watched tab**: the source list was only fetched through the Watched Playlists rendering path, so the Bulk Import "Preferred source" dropdown could sit on "No preference" until you visited Watched or otherwise caused source chips to render. Sources are now loaded during app startup and again on Bulk tab activation, so the dropdown is ready where it is used.
+- **M3U names now survive empty-after-sanitising playlist titles**: playlist/M3U names already stripped path separators like `/`, but a name made entirely of illegal filename characters could collapse to an empty stem and create `.m3u` or an empty playlist folder. Playlist names now use a shared non-empty sanitizer. Imported playlist URLs are kept as a fallback label, so a hostile or silly upstream title falls back to the playlist ID instead of an empty filename.
+- **Bulk Import preferred source now behaves like a source choice for that import**: choosing Monochrome in the Bulk Import dropdown now stores `preferred_sources=monochrome` on the import instead of only giving Monochrome a score boost. That means the importer will not silently fall back to YouTube or MP3Phoenix when the user has explicitly picked Monochrome for a run.
+- **Monochrome bulk-import searches now survive Spotify punctuation and hifi-api 503s**: Spotify playlist imports produce search strings like `Artist1, Artist2 - Track Name`, and the Monochrome hifi-api search endpoint is pickier about commas and dash separators than the other providers. With only Monochrome enabled, those punctuation-heavy queries could come back as "No results found" even though the track was on Qobuz and the same search worked after manually stripping punctuation. Monochrome now searches both the exact query and a punctuation-softened variant (`Artist1 Artist2 Track Name`), dedupes the Tidal results, and then runs the normal scorer. If the exact punctuation-heavy query throws a 503, the cleaned variant is still tried instead of abandoning the source. Manual search behaviour stays intact, and other providers keep their existing query path.
+- **Default Monochrome hifi-api endpoint moved again, with fallback this time**: `https://api.monochrome.tf` is now returning a Render "Service Suspended" page (`x-render-routing: suspend-by-user`), so fresh installs and existing installs still on the old default are moved to a comma-separated endpoint list headed by `https://monochrome-api.samidy.com`, the working hifi-api endpoint currently referenced by the Monochrome frontend. MusicGrabber now treats `MONOCHROME_HIFI_API_URL` / the Settings field as a comma-or-newline separated list, tries candidates in order, and caches the first endpoint that answers for the rest of the process. Custom self-hosted hifi-api URLs are left as a single-candidate list unless you explicitly add more.
+
 ## v2.8.15 (2026-05-24)
 
 ### Changed

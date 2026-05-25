@@ -7,6 +7,28 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.16": {
+        title: "What's New in v2.8.16",
+        sections: [
+            {
+                heading: "Added",
+                items: [
+                    "The release-notes pop-up now has a centered 'Donate a coffee' button at the bottom, using the same green primary-button style as the rest of MusicGrabber. Gotta get the kid some new some new flipflops for summer some how :)",
+                    "Bulk Import and Watched Playlists now accept public Monochrome playlist links, including `monochrome.tf/playlist/...` shares.",
+                ]
+            },
+            {
+                heading: "Fixed",
+                items: [
+                    "Bulk Import's Preferred source dropdown now populates on app startup and when the Bulk tab opens. It no longer waits for the Watched tab to load source chips first.",
+                    "M3U playlist names now have a non-empty fallback. If a playlist name is just slashes or other filename-hostile characters, MusicGrabber falls back to a stable import URL/playlist ID label instead of creating `.m3u`.",
+                    "Bulk Import's Preferred source dropdown now acts as the source choice for that import. If you pick Monochrome, the run stays on Monochrome instead of falling back to YouTube or MP3Phoenix when another source scores.",
+                    "Monochrome bulk imports now handle Spotify's punctuation-heavy track strings. Queries like `Artist1, Artist2 - Track Name` are searched exactly as shown and with punctuation softened to spaces, then the Tidal results are deduped before scoring. If the exact query gets a 503 from hifi-api, the cleaned query is still tried.",
+                    "The default Monochrome hifi-api setting now supports a comma-or-newline separated fallback list. Existing installs still using the suspended `api.monochrome.tf` host are migrated to a list headed by `monochrome-api.samidy.com`, and MusicGrabber caches the first endpoint that answers during a run.",
+                ]
+            },
+        ]
+    },
     "2.8.15": {
         title: "What's New in v2.8.15",
         sections: [

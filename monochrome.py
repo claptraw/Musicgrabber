@@ -51,6 +51,13 @@ _HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
 }
 
+_KNOWN_PUBLIC_HIFI_API_URLS = {
+    "https://monochrome-api.samidy.com",
+    "https://api.monochrome.tf",
+    "https://eu-central.monochrome.tf",
+}
+_hifi_api_url_cache = None
+
 
 def monochrome_enabled() -> bool:
     return get_setting_bool("source_monochrome_enabled", False)
@@ -59,6 +66,65 @@ def monochrome_enabled() -> bool:
 def _hifi_api_url() -> str:
     from settings import get_setting
     return get_setting("monochrome_hifi_api_url", MONOCHROME_HIFI_API_URL).rstrip("/")
+
+
+def _split_endpoint_urls(value: str) -> list[str]:
+    urls = []
+    seen = set()
+    for part in re.split(r"[\s,]+", value or ""):
+        url = part.strip().rstrip("/")
+        if not url or not re.match(r"https?://", url, re.I) or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
+def _hifi_api_urls() -> list[str]:
+    configured = _split_endpoint_urls(_hifi_api_url())
+    defaults = _split_endpoint_urls(MONOCHROME_HIFI_API_URL)
+
+    if not configured:
+        candidates = defaults
+    elif len(configured) == 1 and configured[0] in _KNOWN_PUBLIC_HIFI_API_URLS:
+        candidates = configured + defaults
+    else:
+        candidates = configured
+
+    if _hifi_api_url_cache and _hifi_api_url_cache in candidates:
+        candidates = [_hifi_api_url_cache] + [url for url in candidates if url != _hifi_api_url_cache]
+
+    deduped = []
+    seen = set()
+    for url in candidates:
+        if url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    return deduped or defaults
+
+
+def _remember_hifi_api_url(base: str) -> None:
+    global _hifi_api_url_cache
+    _hifi_api_url_cache = base
+
+
+def _hifi_api_get(path: str, params: dict, timeout: int | float = TIMEOUT_MONOCHROME_SEARCH) -> httpx.Response:
+    errors = []
+    for base in _hifi_api_urls():
+        try:
+            resp = httpx.get(
+                f"{base}{path}",
+                params=params,
+                headers=_HEADERS,
+                timeout=timeout,
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            _remember_hifi_api_url(base)
+            return resp
+        except Exception as exc:
+            errors.append(f"{base}: {exc}")
+    raise RuntimeError("; ".join(errors))
 
 
 def _qobuz_proxy_url() -> str:
@@ -163,20 +229,70 @@ def _best_quality(tags: list[str]) -> tuple[str, int]:
     return ("HIGH", 6)
 
 
+def _normalise_query_for_hifi_api(query: str) -> str:
+    """Return a Monochrome/Tidal search query with punctuation softened.
+
+    The hifi-api search endpoint is much less forgiving of separator punctuation
+    than the other providers. Bulk imports naturally produce queries such as
+    "Artist1, Artist2 - Track", which can return zero results even though
+    "Artist1 Artist2 Track" succeeds.
+    """
+    normalised = re.sub(r"[\W_]+", " ", query or "", flags=re.UNICODE)
+    return re.sub(r"\s+", " ", normalised).strip()
+
+
+def _monochrome_search_queries(query: str) -> list[str]:
+    """Return hifi-api query variants, preserving the user's exact query first."""
+    queries = []
+    original = (query or "").strip()
+    if original:
+        queries.append(original)
+
+    normalised = _normalise_query_for_hifi_api(original)
+    if normalised and normalised.lower() != original.lower():
+        queries.append(normalised)
+
+    return queries
+
+
 def search_monochrome(query: str, limit: int) -> list[dict]:
     """Search Tidal via hifi-api and return normalised result dicts."""
     try:
-        base = _hifi_api_url()
-        resp = httpx.get(
-            f"{base}/search",
-            params={"s": query, "limit": limit * 3},
-            headers=_HEADERS,
-            timeout=TIMEOUT_MONOCHROME_SEARCH,
-            follow_redirects=True,
-        )
-        resp.raise_for_status()
+        items = []
+        seen_raw_ids = set()
+        search_errors = []
 
-        items = resp.json().get("data", {}).get("items", [])
+        for base in _hifi_api_urls():
+            endpoint_had_success = False
+            for hifi_query in _monochrome_search_queries(query):
+                try:
+                    resp = httpx.get(
+                        f"{base}/search",
+                        params={"s": hifi_query, "limit": limit * 3},
+                        headers=_HEADERS,
+                        timeout=TIMEOUT_MONOCHROME_SEARCH,
+                        follow_redirects=True,
+                    )
+                    resp.raise_for_status()
+                    endpoint_had_success = True
+                    _remember_hifi_api_url(base)
+                except Exception as exc:
+                    search_errors.append(f"{base} {hifi_query!r}: {exc}")
+                    continue
+
+                for item in resp.json().get("data", {}).get("items", []):
+                    tidal_id = item.get("id")
+                    if not tidal_id or tidal_id in seen_raw_ids:
+                        continue
+                    seen_raw_ids.add(tidal_id)
+                    items.append(item)
+
+            if items or endpoint_had_success:
+                break
+
+        if not items and search_errors:
+            print(f"Monochrome search error: {'; '.join(search_errors)}")
+
         results = []
         seen_ids = set()
 
@@ -383,22 +499,35 @@ def fetch_tidal_playlist_tracks(playlist_uuid: str) -> tuple[list[tuple[str, str
 
     Returns ([(artist, title), ...], playlist_name).
     """
-    base = _hifi_api_url()
-    resp = httpx.get(
-        f"{base}/playlist",
-        params={"id": playlist_uuid},
-        headers=_HEADERS,
-        timeout=30,
-        follow_redirects=True,
-    )
-    resp.raise_for_status()
+    def _playlist_payload(offset: int = 0) -> dict:
+        resp = _hifi_api_get(
+            "/playlist/",
+            params={"id": playlist_uuid, "offset": offset},
+            timeout=30,
+        )
+        body = resp.json()
+        return body.get("data") or body
 
-    data  = resp.json().get("data", {})
-    name  = data.get("title") or "Tidal Playlist"
-    items = (data.get("tracks") or {}).get("items", [])
+    data = _playlist_payload()
+    playlist = data.get("playlist") or data
+    name = playlist.get("title") or "Monochrome Playlist"
+    items = data.get("items") or (data.get("tracks") or {}).get("items", [])
+    total = playlist.get("numberOfTracks") or len(items)
+
+    offset = len(items)
+    while offset < total:
+        page = _playlist_payload(offset)
+        page_items = page.get("items") or (page.get("tracks") or {}).get("items", [])
+        if not page_items:
+            break
+        items.extend(page_items)
+        offset += len(page_items)
 
     tracks = []
     for item in items:
+        item = item.get("item") if isinstance(item, dict) and "item" in item else item
+        if not isinstance(item, dict):
+            continue
         track_title = item.get("title", "").strip()
         artist_name = (item.get("artist") or {}).get("name", "").strip()
         if track_title and artist_name:

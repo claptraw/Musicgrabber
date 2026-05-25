@@ -44,6 +44,7 @@ from slskd import (
 )
 from utils import (
     sanitize_filename,
+    sanitize_playlist_name,
     extract_artist_title,
     check_duplicate,
     move_to_trash,
@@ -1928,7 +1929,7 @@ def rebuild_album_m3u(album_dir: Path, playlist_name: str | None = None) -> Path
         playlist_base = (playlist_name or "").strip()
         if playlist_base.lower().endswith(".m3u"):
             playlist_base = playlist_base[:-4]
-        safe_playlist = sanitize_filename(playlist_base) or sanitize_filename(album_dir.name) or "Album"
+        safe_playlist = sanitize_playlist_name(playlist_base, album_dir.name)
         m3u_path = album_dir / f"{safe_playlist}.m3u"
         with open(m3u_path, 'w', encoding='utf-8') as f:
             f.write("#EXTM3U\n")
@@ -2021,7 +2022,7 @@ def create_bulk_playlist(
 
     # Determine whether to write into the Playlists folder
     playlists_dir = get_playlists_dir(user_id=user_id) if use_playlists_dir else None
-    safe_playlist = sanitize_filename(playlist_name)
+    safe_playlist = sanitize_playlist_name(playlist_name, bulk_import_id)
 
     # Build M3U playlist
     playlist_files = []
@@ -2192,7 +2193,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         playlists_dir = get_playlists_dir(user_id=user_id)
     else:
         playlists_dir = None
-    safe_playlist = sanitize_filename(playlist_name)
+    safe_playlist = sanitize_playlist_name(playlist_name, playlist_id)
 
     playlist_files = []
     seen_paths = set()
@@ -2438,7 +2439,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
         # Resolve the download directory for this playlist
         playlists_dir = get_playlists_dir(user_id=user_id) if use_playlists_dir else None
-        safe_playlist = sanitize_filename(playlist_name)
+        safe_playlist = sanitize_playlist_name(playlist_name, playlist_id)
         if playlists_dir:
             playlist_track_dir = playlists_dir / safe_playlist
             playlist_track_dir.mkdir(parents=True, exist_ok=True)
@@ -2806,7 +2807,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             playlists_dir = None
 
         if playlists_dir:
-            artist_dir = playlists_dir / sanitize_filename(playlist_name)
+            artist_dir = playlists_dir / sanitize_playlist_name(playlist_name, playlist_name)
         elif override_dir:
             artist_dir = Path(override_dir)
         else:
@@ -3221,7 +3222,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         else:
             playlists_dir = None
         if playlists_dir:
-            artist_dir = playlists_dir / sanitize_filename(playlist_name)
+            artist_dir = playlists_dir / sanitize_playlist_name(playlist_name, playlist_name)
             safe_title = _playlist_stem(forced_album_artist or artist, forced_track_title or title, job_id)
         elif override_dir:
             artist_dir = Path(override_dir)
@@ -3470,7 +3471,7 @@ def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_
     else:
         playlists_dir = None
 
-    safe_playlist = sanitize_filename(playlist_name)
+    safe_playlist = sanitize_playlist_name(playlist_name, playlist_name)
     if playlists_dir:
         m3u_path = playlists_dir / f"{safe_playlist}.m3u"
         track_dir = playlists_dir / safe_playlist
@@ -3691,7 +3692,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         else:
             playlists_dir = None
         if playlists_dir:
-            artist_dir = playlists_dir / sanitize_filename(playlist_name)
+            artist_dir = playlists_dir / sanitize_playlist_name(playlist_name, playlist_name)
             safe_title = _playlist_stem(forced_album_artist or artist, forced_track_title or title, video_id)
         elif override_dir:
             artist_dir = Path(override_dir)
