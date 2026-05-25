@@ -23,7 +23,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 - **Multi-source search:** YouTube, SoundCloud, MP3Phoenix, zvu4no, Monochrome/Qobuz, and optional Soulseek searched in parallel; quality-ranked results with source badges and score explanations
 - **Monochrome/Qobuz source:** searches the Tidal catalogue via hifi-api metadata, then resolves matching Qobuz FLAC streams by ISRC. It can serve proper lossless when the proxy gods are smiling. Enabled by default and configurable in Search Sources
-- **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
+- **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
 - **Watched Artists:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles only: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Tracks already on disk are recognised immediately. Per-artist check interval, convert-to-FLAC toggle, pause/resume, missing and track list panels
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
 - **Album mode:** browse MusicBrainz artists, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Search results can also jump straight to the matching album when MusicBrainz can identify it
@@ -488,7 +488,7 @@ The right-hand paths (`:/downloads`) match, so both containers are looking at th
 
 ### Playlist Import
 
-MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, YouTube, SoundCloud, Tidal, and ListenBrainz playlists. Paste a supported URL in the Bulk Import tab to fetch the track list, then import them via the enabled search sources.
+MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, YouTube, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists. Paste a supported URL in the Bulk Import tab to fetch the track list, then import them via the enabled search sources.
 
 **How it works by source:**
 
@@ -496,7 +496,9 @@ MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, YouTube,
 - **Amazon Music**: Headless browser scraping via Playwright. Slower but reliable for most public playlists
 - **Spotify small playlists (under ~100 tracks)**: Uses Spotify's embed endpoint to quickly fetch track data
 - **Spotify large playlists (100+ tracks)**: Automatically falls back to headless browser scraping
-- **Tidal playlists**: Uses the Monochrome/hifi-api playlist path, then downloads can use any enabled source, including Monochrome itself if you have switched it on
+- **Tidal playlists**: Direct scrape of Tidal's embed player (`embed.tidal.com/playlists/UUID`), which server-renders the full track list. Downloads can use any enabled source
+- **Beatport playlists**: Top 100, genre charts, and editorial charts read straight from the page's server-rendered JSON. Folder names are derived from the URL (`/top-100` becomes "Beatport Top 100", `/genre/techno/6/top-100` becomes "Techno Top 100")
+- **Monochrome playlists**: Public `monochrome.tf/playlist/...` URLs are fetched via the same hifi-api fallback list as Monochrome search, so the playlist importer benefits from the endpoint rotation when one host wanders off
 
 **Spotify private playlists and personal library:**
 
@@ -544,7 +546,7 @@ shm_size: '2gb'  # Required for Chromium
 
 ### Watched Playlists
 
-Automatically monitor Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, or ListenBrainz playlists for new tracks. When new songs are added to a watched playlist, MusicGrabber will detect them and queue them for download.
+Automatically monitor Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, Beatport, Monochrome, or ListenBrainz playlists for new tracks. When new songs are added to a watched playlist, MusicGrabber will detect them and queue them for download.
 
 **How it works:**
 
@@ -875,7 +877,7 @@ music.yourdomain.com {
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/fetch-playlist` | Fetch tracks from playlist URL (Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz) |
+| `POST` | `/api/fetch-playlist` | Fetch tracks from playlist URL (Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, Beatport, Monochrome, ListenBrainz) |
 | `POST` | `/api/spotify-playlist` | Backwards-compat alias for `/api/fetch-playlist` |
 
 ### Statistics and Reporting
