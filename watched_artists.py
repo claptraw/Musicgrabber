@@ -131,7 +131,7 @@ def refresh_watched_artist(artist_id: str) -> dict:
             set_refresh_stage("diffing")
             track_rows = conn.execute(
                 """SELECT wat.track_hash, wat.downloaded_at, wat.job_id,
-                          wat.artist, wat.title, j.status as job_status
+                          wat.artist, wat.title, wat.release_date, j.status as job_status
                    FROM watched_artist_tracks wat
                    LEFT JOIN jobs j ON wat.job_id = j.id
                    WHERE wat.artist_id = ?""",
@@ -204,7 +204,12 @@ def refresh_watched_artist(artist_id: str) -> dict:
                 job_status = existing.get("job_status")
                 if job_status in ("queued", "downloading"):
                     continue  # In flight, don't double-queue
-                # Failed, missing job, or no job  -  retry
+                # Failed, missing job, or no job  -  retry, but respect from_date.
+                # Without this check, pre-date tracks inserted as seeds (no job_id,
+                # no downloaded_at) get re-queued on every subsequent refresh.
+                stored_release_date = existing.get("release_date") or ""
+                if from_date and stored_release_date and stored_release_date < from_date:
+                    continue
                 tracks_to_import.append((track_artist, track_title))
 
             conn.commit()
