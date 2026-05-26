@@ -52,6 +52,7 @@ _HEADERS = {
 }
 
 _KNOWN_PUBLIC_HIFI_API_URLS = {
+    "https://us-west.monochrome.tf",
     "https://monochrome-api.samidy.com",
     "https://api.monochrome.tf",
     "https://eu-central.monochrome.tf",

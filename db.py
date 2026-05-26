@@ -876,6 +876,57 @@ def init_db():
             )
             print("DB migrated to version 5: suspended Monochrome hifi-api URL retired")
 
+        # v6: Rebuild every user's hifi-api URL list from scratch. Most of the
+        # known public instances are now dead (api/eu-central suspended, entire
+        # qqdl.site cluster down). Rather than matching exact strings we just
+        # strip confirmed-dead entries from whatever the user had, then prepend
+        # the current live defaults. Custom self-hosted URLs survive if they're
+        # not on the dead list.
+        if db_version < 6:
+            import re as _re
+            _DEAD_HIFI_URLS = {
+                "https://api.monochrome.tf",
+                "https://eu-central.monochrome.tf",
+                "https://hifi.geeked.wtf",
+                "https://maus.qqdl.site",
+                "https://vogel.qqdl.site",
+                "https://katze.qqdl.site",
+                "https://hund.qqdl.site",
+                "https://wolf.qqdl.site",
+                "https://tidal.kinoplus.online",
+                "https://mono.scavengerfurs.net",
+            }
+            _NEW_LIVE = ["https://us-west.monochrome.tf", "https://monochrome-api.samidy.com"]
+
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'monochrome_hifi_api_url'"
+            ).fetchone()
+            current = (row[0] if row else "") or ""
+
+            existing = []
+            seen_e = set()
+            for part in _re.split(r"[\s,]+", current):
+                url = part.strip().rstrip("/")
+                if not url or not _re.match(r"https?://", url, _re.I) or url in seen_e:
+                    continue
+                seen_e.add(url)
+                existing.append(url)
+
+            # Surviving custom URLs: not dead, not already in the new live defaults
+            custom = [u for u in existing if u not in _DEAD_HIFI_URLS and u not in _NEW_LIVE]
+            new_value = ",".join(_NEW_LIVE + custom)
+
+            conn.execute("""
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('monochrome_hifi_api_url', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                               updated_at = excluded.updated_at
+            """, (new_value,))
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '6')"
+            )
+            print(f"DB migrated to version 6: Monochrome hifi-api URLs rebuilt → {new_value}")
+
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already
         # passed through that mangled migration. Harmless if the column is present.

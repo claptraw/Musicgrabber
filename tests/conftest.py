@@ -29,7 +29,7 @@ def api(base_url):
     s.headers["Content-Type"] = "application/json"
 
     cfg = s.get(f"{base_url}/api/config", timeout=10).json()
-    if cfg.get("auth_required") and MG_USERNAME:
+    if cfg.get("users_exist") and MG_USERNAME:
         resp = s.post(
             f"{base_url}/api/auth/login",
             json={"username": MG_USERNAME, "password": MG_PASSWORD},

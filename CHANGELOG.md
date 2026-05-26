@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.8.17 (2026-05-26)
+
+### Fixed
+- **Monochrome hifi-api default endpoints updated**: we now mirror the same live-instance list that Monochrome.tf itself checks. All of the qqdl.site cluster and both apex instances (`api.monochrome.tf`, `eu-central.monochrome.tf`) were returning 503 or 502 as of 26 May 2026. The new primary is `us-west.monochrome.tf` (proper HTTPS, no redirect) with `monochrome-api.samidy.com` as backup. DB migration v6 sweeps stale URLs out of existing installs.
+
 ## v2.8.16 (2026-05-25)
 
 ### Added

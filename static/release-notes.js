@@ -7,13 +7,24 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.17": {
+        title: "What's New in v2.8.17",
+        sections: [
+            {
+                heading: "Fixed",
+                items: [
+                    "Monochrome endpoint hotfix: the entire qqdl.site cluster and both apex instances went down simultaneously (as Monochrome infrastructure tends to do). The new primary is us-west.monochrome.tf, which is proper HTTPS with no redirect shenanigans. Existing installs are migrated automatically.",
+                ]
+            },
+        ]
+    },
     "2.8.16": {
         title: "What's New in v2.8.16",
         sections: [
             {
                 heading: "Added",
                 items: [
-                    "The release-notes pop-up now has a centered 'Donate a coffee' button at the bottom, using the same green primary-button style as the rest of MusicGrabber. Gotta get the kid some new some new flipflops for summer some how :)",
+                    "The release-notes pop-up now has a centered 'Donate a coffee' button at the bottom, using the same green primary-button style as the rest of MusicGrabber. Gotta get the kid some new flipflops for summer some how :)",
                     "Bulk Import and Watched Playlists now accept public Monochrome playlist links, including `monochrome.tf/playlist/...` shares.",
                 ]
             },

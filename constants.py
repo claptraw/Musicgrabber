@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.8.16"
+VERSION = "2.8.17"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -145,6 +145,6 @@ DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() =
 # Monochrome (Qobuz/Tidal) — configurable so you can point at a self-hosted hifi-api
 MONOCHROME_HIFI_API_URL = os.getenv(
     "MONOCHROME_HIFI_API_URL",
-    "https://monochrome-api.samidy.com,https://api.monochrome.tf,https://eu-central.monochrome.tf",
+    "https://us-west.monochrome.tf,https://monochrome-api.samidy.com",
 )
 MONOCHROME_QOBUZ_PROXY_URL = os.getenv("MONOCHROME_QOBUZ_PROXY_URL", "https://qdl-api.monochrome.tf")
