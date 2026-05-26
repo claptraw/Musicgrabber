@@ -1,8 +1,242 @@
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import httpx
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_qobuz_search_response(track_id=33933680, isrc="GBAYE9200070"):
+    """Minimal /api/get-music response that passes the ISRC filter."""
+    return {
+        "success": True,
+        "data": {
+            "tracks": {
+                "items": [{"id": track_id, "isrc": isrc}]
+            }
+        },
+    }
+
+
+def _make_qobuz_download_response(url="https://streaming-qobuz-std.akamaized.net/test.flac"):
+    return {"success": True, "data": {"url": url}}
+
+
+class _FakeHTTPResponse:
+    """Pretend httpx.Response for proxy tests."""
+    def __init__(self, json_body, status_code=200):
+        self._body = json_body
+        self.status_code = status_code
+
+    @property
+    def is_success(self):
+        return self.status_code < 400
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            req = httpx.Request("GET", "https://example.test")
+            resp = httpx.Response(self.status_code, request=req)
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}", request=req, response=resp
+            )
+
+    def json(self):
+        return self._body
+
+
+# ---------------------------------------------------------------------------
+# Qobuz proxy URL ordering
+# ---------------------------------------------------------------------------
+
+def test_qobuz_proxy_urls_returns_all_defaults(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())  # suppress probe
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
+    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+
+    urls = monochrome._qobuz_proxy_urls()
+    assert "https://qobuz.kennyy.com.br" in urls
+    assert "https://mono.scavengerfurs.net" in urls
+    assert "https://qdl-api.monochrome.tf" in urls
+
+
+def test_qobuz_proxy_urls_puts_cached_first(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", "https://mono.scavengerfurs.net")
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
+    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+
+    urls = monochrome._qobuz_proxy_urls()
+    assert urls[0] == "https://mono.scavengerfurs.net"
+
+
+def test_qobuz_proxy_urls_deprioritises_recently_failed(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures",
+                        {"https://qdl-api.monochrome.tf": time.time()})
+    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+
+    urls = monochrome._qobuz_proxy_urls()
+    assert urls[-1] == "https://qdl-api.monochrome.tf"
+
+
+def test_mark_qobuz_proxy_failed_invalidates_cache(monkeypatch):
+    import monochrome
+    failures = {}
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", "https://qdl-api.monochrome.tf")
+
+    monochrome._mark_qobuz_proxy_failed("https://qdl-api.monochrome.tf")
+
+    assert monochrome._qobuz_proxy_url_cache is None
+    assert "https://qdl-api.monochrome.tf" in failures
+
+
+def test_remember_qobuz_proxy_clears_failure(monkeypatch):
+    import monochrome
+    failures = {"https://qobuz.kennyy.com.br": time.time() - 10}
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
+
+    monochrome._remember_qobuz_proxy_url("https://qobuz.kennyy.com.br")
+
+    assert "https://qobuz.kennyy.com.br" not in failures
+    assert monochrome._qobuz_proxy_url_cache == "https://qobuz.kennyy.com.br"
+
+
+# ---------------------------------------------------------------------------
+# _get_qobuz_stream_url fallback chain
+# ---------------------------------------------------------------------------
+
+def test_get_qobuz_stream_url_uses_first_healthy_proxy(monkeypatch):
+    import monochrome
+
+    calls = []
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
+    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
+    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+
+    def fake_get(url, params, headers, timeout):
+        calls.append(url)
+        if "api/get-music" in url:
+            return _FakeHTTPResponse(_make_qobuz_search_response())
+        return _FakeHTTPResponse(_make_qobuz_download_response())
+
+    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
+
+    cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
+
+    assert cdn_url == "https://streaming-qobuz-std.akamaized.net/test.flac"
+    # Should have used the first proxy (kennyy) and not tried others
+    assert all("kennyy" in u for u in calls)
+
+
+def test_get_qobuz_stream_url_falls_back_on_http_error(monkeypatch):
+    import monochrome
+
+    failures = {}
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
+    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
+    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+
+    calls = []
+
+    def fake_get(url, params, headers, timeout):
+        calls.append(url)
+        if "kennyy" in url:
+            return _FakeHTTPResponse({}, status_code=400)
+        if "api/get-music" in url:
+            return _FakeHTTPResponse(_make_qobuz_search_response())
+        return _FakeHTTPResponse(_make_qobuz_download_response())
+
+    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
+
+    cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
+
+    assert cdn_url == "https://streaming-qobuz-std.akamaized.net/test.flac"
+    # kennyy got blacklisted
+    assert "https://qobuz.kennyy.com.br" in failures
+    # scavengerfurs (second) returned the URL
+    assert monochrome._qobuz_proxy_url_cache == "https://mono.scavengerfurs.net"
+
+
+def test_get_qobuz_stream_url_raises_when_all_fail(monkeypatch):
+    import monochrome
+
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
+    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
+    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+
+    def fake_get(url, params, headers, timeout):
+        return _FakeHTTPResponse({}, status_code=401)
+
+    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
+
+    with pytest.raises(RuntimeError, match="all instances failed"):
+        monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
+
+
+def test_get_qobuz_stream_url_connection_error_does_not_blacklist(monkeypatch):
+    import monochrome
+
+    failures = {}
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
+    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
+    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+
+    def fake_get(url, params, headers, timeout):
+        if "kennyy" in url:
+            raise httpx.ConnectError("connection refused")
+        if "api/get-music" in url:
+            return _FakeHTTPResponse(_make_qobuz_search_response())
+        return _FakeHTTPResponse(_make_qobuz_download_response())
+
+    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
+
+    cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
+
+    assert cdn_url  # scavengerfurs succeeded
+    # Connection error must NOT blacklist kennyy
+    assert "https://qobuz.kennyy.com.br" not in failures
+
+
+# ---------------------------------------------------------------------------
+# Source default enabled
+# ---------------------------------------------------------------------------
+
+def test_monochrome_enabled_defaults_to_true_with_no_db_row(monkeypatch):
+    """Fresh install has no DB row; monochrome_enabled() must return True."""
+    import monochrome
+    monkeypatch.setattr("settings.get_setting_bool",
+                        lambda key, default=False, **kw: default)
+
+    assert monochrome.monochrome_enabled() is True
+
+
+def test_source_registry_has_monochrome_default_enabled_true():
+    import search
+    cfg = search.SOURCE_REGISTRY.get("monochrome", {})
+    assert cfg.get("default_enabled") is True, (
+        "Monochrome must default to enabled so fresh installs show results"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Legacy search tests (unchanged)
+# ---------------------------------------------------------------------------
 
 def test_monochrome_search_retries_with_punctuation_normalised(monkeypatch):
     import monochrome

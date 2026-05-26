@@ -189,7 +189,7 @@ SOURCE_REGISTRY = {
         "colour": "#0f766e",
         "search_fn": search_monochrome_source,
         "has_preview": True,
-        "default_enabled": False,
+        "default_enabled": True,
     },
 }
 

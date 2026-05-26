@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.8.18 (DEV)
+
+### Fixed
+- **Monochrome silently disabled on fresh installs**: the `default_enabled` flag in the source registry and the fallback in `monochrome_enabled()` both said `False`, so a brand-new install with no DB row for `source_monochrome_enabled` would have Monochrome turned off despite the settings schema defaulting it to `True`. Fixed by making both fall back to `True`, which is what the schema has always said.
+- **Monochrome downloads failing on all installs**: `qdl-api.monochrome.tf` expired its Qobuz credentials (returns 400/401 for every track). The Qobuz proxy URL is now a comma-separated fallback list, matching how the hifi-api URLs work. Two working community proxies (`qobuz.kennyy.com.br`, `mono.scavengerfurs.net`) are prepended to the default list so downloads succeed when the primary is down. DB migration v7 rebuilds existing installs' proxy list. Proxies are also health-checked: HTTP 4xx/5xx marks a proxy as deprioritised for 30 minutes, a background thread probes all proxies once per hour and re-promotes ones that recover, and connection failures (transient network) don't blacklist.
+
 ## v2.8.17 (2026-05-26)
 
 ### Fixed

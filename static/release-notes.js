@@ -7,6 +7,19 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.18": {
+        title: "What's New in v2.8.18",
+        sections: [
+            {
+                heading: "Fixed",
+                items: [
+                    "Monochrome broken on fresh installs: two separate bugs conspired — the source was silently disabled by default (wrong fallback in the code), and the Qobuz proxy (qdl-api.monochrome.tf) had its credentials expire so every download failed with a 400. Both fixed.",
+                    "Monochrome Qobuz proxy is now a fallback list, just like the hifi-api endpoints. Two working community proxies (qobuz.kennyy.com.br, mono.scavengerfurs.net) are tried first. Existing installs are migrated automatically (DB migration v7).",
+                    "Proxy health checking: a background thread probes all Qobuz proxies once per hour. A 4xx/5xx marks a proxy as deprioritised for 30 minutes; it recovers automatically if it starts working again. Connection errors don't blacklist.",
+                ]
+            }
+        ]
+    },
     "2.8.17": {
         title: "What's New in v2.8.17",
         sections: [

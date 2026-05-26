@@ -15,6 +15,8 @@ source_url format: monochrome://tidal_id?isrc=ISRC&quality=HI_RES_LOSSLESS
 
 import hashlib
 import re
+import threading
+import time
 from pathlib import Path
 from urllib.parse import urlencode, urlparse, parse_qs
 
@@ -59,9 +61,26 @@ _KNOWN_PUBLIC_HIFI_API_URLS = {
 }
 _hifi_api_url_cache = None
 
+_KNOWN_PUBLIC_QOBUZ_PROXY_URLS = {
+    "https://qobuz.kennyy.com.br",
+    "https://mono.scavengerfurs.net",
+    "https://qdl-api.monochrome.tf",
+}
+_qobuz_proxy_url_cache: str | None = None
+
+# Per-proxy failure tracking. A 4xx/5xx records a timestamp here; the proxy is
+# deprioritised until _QOBUZ_FAILURE_TTL seconds have passed.
+_qobuz_proxy_failures: dict[str, float] = {}
+_QOBUZ_FAILURE_TTL = 1800  # 30 minutes
+
+# Background health-probe state.
+_qobuz_probe_last_run: float = 0.0
+_QOBUZ_PROBE_INTERVAL = 3600  # probe all proxies once per hour
+_PROBE_ISRC = "GBAYE9200070"  # Radiohead - Creep; reliably indexed on Qobuz
+
 
 def monochrome_enabled() -> bool:
-    return get_setting_bool("source_monochrome_enabled", False)
+    return get_setting_bool("source_monochrome_enabled", True)
 
 
 def _hifi_api_url() -> str:
@@ -128,9 +147,108 @@ def _hifi_api_get(path: str, params: dict, timeout: int | float = TIMEOUT_MONOCH
     raise RuntimeError("; ".join(errors))
 
 
-def _qobuz_proxy_url() -> str:
+def _qobuz_proxy_urls() -> list[str]:
+    _maybe_probe_qobuz_proxies_bg()
+
     from settings import get_setting
-    return get_setting("monochrome_qobuz_proxy_url", MONOCHROME_QOBUZ_PROXY_URL).rstrip("/")
+    configured = _split_endpoint_urls(
+        get_setting("monochrome_qobuz_proxy_url", MONOCHROME_QOBUZ_PROXY_URL)
+    )
+    defaults = _split_endpoint_urls(MONOCHROME_QOBUZ_PROXY_URL)
+
+    if not configured:
+        candidates = defaults
+    elif len(configured) == 1 and configured[0] in _KNOWN_PUBLIC_QOBUZ_PROXY_URLS:
+        candidates = configured + [u for u in defaults if u != configured[0]]
+    else:
+        candidates = configured
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for url in candidates:
+        if url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    if not deduped:
+        deduped = defaults
+
+    # Sort: last-known-good first, recently-failed last, unknown in between
+    def _health_key(url: str) -> int:
+        if url == _qobuz_proxy_url_cache:
+            return 0
+        if _qobuz_proxy_recently_failed(url):
+            return 2
+        return 1
+
+    deduped.sort(key=_health_key)
+    return deduped
+
+
+def _remember_qobuz_proxy_url(base: str) -> None:
+    global _qobuz_proxy_url_cache
+    _qobuz_proxy_url_cache = base
+    _qobuz_proxy_failures.pop(base, None)  # clear any stale failure mark
+
+
+def _mark_qobuz_proxy_failed(url: str) -> None:
+    global _qobuz_proxy_url_cache
+    _qobuz_proxy_failures[url] = time.time()
+    if _qobuz_proxy_url_cache == url:
+        _qobuz_proxy_url_cache = None  # force re-selection next call
+
+
+def _qobuz_proxy_recently_failed(url: str) -> bool:
+    ts = _qobuz_proxy_failures.get(url)
+    return ts is not None and (time.time() - ts) < _QOBUZ_FAILURE_TTL
+
+
+def _probe_qobuz_proxies() -> None:
+    """Probe all configured Qobuz proxies and update health state. Meant for a background thread."""
+    global _qobuz_probe_last_run
+    _qobuz_probe_last_run = time.time()
+
+    try:
+        from settings import get_setting
+        configured = _split_endpoint_urls(
+            get_setting("monochrome_qobuz_proxy_url", MONOCHROME_QOBUZ_PROXY_URL)
+        )
+    except Exception:
+        configured = []
+    defaults = _split_endpoint_urls(MONOCHROME_QOBUZ_PROXY_URL)
+    urls = list(dict.fromkeys(configured + defaults))  # configured first, deduped
+
+    found_healthy = False
+    for url in urls:
+        try:
+            resp = httpx.get(
+                f"{url}/api/get-music",
+                params={"q": _PROBE_ISRC, "offset": 0},
+                headers=_HEADERS,
+                timeout=8,
+            )
+            if resp.is_success:
+                items = (((resp.json().get("data") or {}).get("tracks") or {}).get("items")) or []
+                if items:
+                    _remember_qobuz_proxy_url(url)
+                    if not found_healthy:
+                        print(f"Monochrome: Qobuz proxy healthy: {url}")
+                    found_healthy = True
+                    continue
+            _mark_qobuz_proxy_failed(url)
+            print(f"Monochrome: Qobuz proxy unhealthy ({resp.status_code}): {url}")
+        except Exception as exc:
+            # Connection errors: don't blacklist (might be transient network), just note
+            print(f"Monochrome: Qobuz proxy unreachable: {url} ({exc})")
+
+    if not found_healthy:
+        print("Monochrome: all Qobuz proxies are currently unhealthy")
+
+
+def _maybe_probe_qobuz_proxies_bg() -> None:
+    """Kick off a background proxy probe if one hasn't run recently."""
+    if time.time() - _qobuz_probe_last_run < _QOBUZ_PROBE_INTERVAL:
+        return
+    threading.Thread(target=_probe_qobuz_proxies, daemon=True, name="mono-qobuz-probe").start()
 
 
 def _cover_url(cover_uuid: str) -> str:
@@ -373,44 +491,65 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
 
 
 def _get_qobuz_stream_url(isrc: str, quality_fmt: int) -> str:
-    """Look up ISRC on the Qobuz proxy, then get a time-limited CDN stream URL."""
-    base = _qobuz_proxy_url()
+    """Look up ISRC on the Qobuz proxy, then get a time-limited CDN stream URL.
 
-    resp = httpx.get(
-        f"{base}/api/get-music",
-        params={"q": isrc, "offset": 0},
-        headers=_HEADERS,
-        timeout=TIMEOUT_MONOCHROME_SEARCH,
+    Tries each configured proxy in turn; the first one that returns a usable
+    CDN URL wins and is remembered for future calls this process lifetime.
+    """
+    errors = []
+    for base in _qobuz_proxy_urls():
+        try:
+            resp = httpx.get(
+                f"{base}/api/get-music",
+                params={"q": isrc, "offset": 0},
+                headers=_HEADERS,
+                timeout=TIMEOUT_MONOCHROME_SEARCH,
+            )
+            resp.raise_for_status()
+
+            body = resp.json()
+            items = (((body.get("data") or {}).get("tracks") or {}).get("items")) or []
+            if not items:
+                errors.append(f"{base}: no results for ISRC {isrc!r}")
+                continue
+
+            qobuz_id = items[0].get("id")
+            if not qobuz_id:
+                errors.append(f"{base}: result missing track ID")
+                continue
+
+            resp2 = httpx.get(
+                f"{base}/api/download-music",
+                params={"track_id": qobuz_id, "quality": quality_fmt},
+                headers=_HEADERS,
+                timeout=TIMEOUT_MONOCHROME_SEARCH,
+            )
+            resp2.raise_for_status()
+
+            body2 = resp2.json()
+            if not body2.get("success"):
+                errors.append(f"{base}: download-music failed: {body2}")
+                continue
+
+            url = (body2.get("data") or {}).get("url", "")
+            if not url:
+                errors.append(f"{base}: no URL in response")
+                continue
+
+            _remember_qobuz_proxy_url(base)
+            return url
+        except httpx.HTTPStatusError as exc:
+            _mark_qobuz_proxy_failed(base)
+            errors.append(f"{base}: HTTP {exc.response.status_code}")
+            continue
+        except Exception as exc:
+            errors.append(f"{base}: {exc}")
+            continue
+
+    raise RuntimeError(
+        f"Qobuz proxy: all instances failed for ISRC {isrc!r} quality {quality_fmt}: "
+        f"{'; '.join(errors)}"
     )
-    resp.raise_for_status()
-
-    body = resp.json()
-    items = (((body.get("data") or {}).get("tracks") or {}).get("items")) or []
-    if not items:
-        raise RuntimeError(f"Qobuz proxy: no results for ISRC {isrc!r}")
-
-    # Take the first result; Tidal ISRCs map to a unique recording
-    qobuz_id = items[0].get("id")
-    if not qobuz_id:
-        raise RuntimeError("Qobuz proxy: result missing track ID")
-
-    resp2 = httpx.get(
-        f"{base}/api/download-music",
-        params={"track_id": qobuz_id, "quality": quality_fmt},
-        headers=_HEADERS,
-        timeout=TIMEOUT_MONOCHROME_SEARCH,
-    )
-    resp2.raise_for_status()
-
-    body2 = resp2.json()
-    if not body2.get("success"):
-        raise RuntimeError(f"Qobuz proxy: download-music failed: {body2}")
-
-    url = (body2.get("data") or {}).get("url", "")
-    if not url:
-        raise RuntimeError("Qobuz proxy: no URL in response")
-
-    return url
 
 
 def download_monochrome_track(source_url: str, output_path: Path) -> None:

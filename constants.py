@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.8.17"
+VERSION = "2.8.18"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -147,4 +147,7 @@ MONOCHROME_HIFI_API_URL = os.getenv(
     "MONOCHROME_HIFI_API_URL",
     "https://us-west.monochrome.tf,https://monochrome-api.samidy.com",
 )
-MONOCHROME_QOBUZ_PROXY_URL = os.getenv("MONOCHROME_QOBUZ_PROXY_URL", "https://qdl-api.monochrome.tf")
+MONOCHROME_QOBUZ_PROXY_URL = os.getenv(
+    "MONOCHROME_QOBUZ_PROXY_URL",
+    "https://qobuz.kennyy.com.br,https://mono.scavengerfurs.net,https://qdl-api.monochrome.tf",
+)

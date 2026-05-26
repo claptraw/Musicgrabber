@@ -927,6 +927,53 @@ def init_db():
             )
             print(f"DB migrated to version 6: Monochrome hifi-api URLs rebuilt → {new_value}")
 
+        # v7: The qdl-api.monochrome.tf Qobuz proxy expired its Qobuz credentials
+        # (returns HTTP 400 wrapping a Qobuz 401). Two community proxies that speak
+        # the same API are live: kennyy.com.br and mono.scavengerfurs.net.
+        # We prepend these to whatever the user had, keeping any custom self-hosted
+        # URLs, and strip the now-dead qdl-api entry from front-runner position.
+        if db_version < 7:
+            import re as _re7
+            _DEAD_QOBUZ_URLS = {"https://qdl-api.monochrome.tf"}
+            _NEW_QOBUZ_LIVE = [
+                "https://qobuz.kennyy.com.br",
+                "https://mono.scavengerfurs.net",
+                "https://qdl-api.monochrome.tf",  # keep at the back, may recover
+            ]
+
+            row7 = conn.execute(
+                "SELECT value FROM settings WHERE key = 'monochrome_qobuz_proxy_url'"
+            ).fetchone()
+            current7 = (row7[0] if row7 else "") or ""
+
+            existing7 = []
+            seen7: set[str] = set()
+            for part in _re7.split(r"[\s,]+", current7):
+                url = part.strip().rstrip("/")
+                if not url or not _re7.match(r"https?://", url, _re7.I) or url in seen7:
+                    continue
+                seen7.add(url)
+                existing7.append(url)
+
+            # Custom URLs: anything that isn't one of our known public proxies
+            custom7 = [u for u in existing7 if u not in {
+                "https://qdl-api.monochrome.tf",
+                "https://qobuz.kennyy.com.br",
+                "https://mono.scavengerfurs.net",
+            }]
+            new_qobuz_value = ",".join(_NEW_QOBUZ_LIVE + custom7)
+
+            conn.execute("""
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('monochrome_qobuz_proxy_url', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                               updated_at = excluded.updated_at
+            """, (new_qobuz_value,))
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '7')"
+            )
+            print(f"DB migrated to version 7: Qobuz proxy list rebuilt → {new_qobuz_value}")
+
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already
         # passed through that mangled migration. Harmless if the column is present.
