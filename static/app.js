@@ -6326,7 +6326,8 @@
             const scCount = data.sources.soundcloud || 0;
             const zvCount = data.sources.zvu4no || 0;
             const slkCount = data.sources.soulseek || 0;
-            const sourceTotal = ytCount + pxCount + scCount + zvCount + slkCount || 1;
+            const monoCount = data.sources.monochrome || 0;
+            const sourceTotal = ytCount + pxCount + scCount + zvCount + slkCount + monoCount || 1;
 
             let html = `
                 <!-- Summary cards -->
@@ -6382,6 +6383,7 @@
                         ${ytCount > 0 ? `<div style="flex: ${ytCount}; background: #ff0000; border-radius: 4px;"></div>` : ''}
                         ${pxCount > 0 ? `<div style="flex: ${pxCount}; background: #e05c00; border-radius: 4px;"></div>` : ''}
                         ${scCount > 0 ? `<div style="flex: ${scCount}; background: #ff5500; border-radius: 4px;"></div>` : ''}
+                        ${monoCount > 0 ? `<div style="flex: ${monoCount}; background: #0f766e; border-radius: 4px;"></div>` : ''}
                         ${slkCount > 0 ? `<div style="flex: ${slkCount}; background: #4a9eff; border-radius: 4px;"></div>` : ''}
                     </div>
                     <div style="display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap;">
@@ -6389,6 +6391,7 @@
                         ${pxCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #e05c00; border-radius: 2px; margin-right: 4px;"></span>MP3Phoenix: ${pxCount}</span>` : ''}
                         ${scCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff5500; border-radius: 2px; margin-right: 4px;"></span>SoundCloud: ${scCount}</span>` : ''}
                         ${zvCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #7a6aee; border-radius: 2px; margin-right: 4px;"></span>zvu4no: ${zvCount}</span>` : ''}
+                        ${monoCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #0f766e; border-radius: 2px; margin-right: 4px;"></span>Monochrome: ${monoCount}</span>` : ''}
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #4a9eff; border-radius: 2px; margin-right: 4px;"></span>Soulseek: ${slkCount}</span>
                     </div>
                 </div>
