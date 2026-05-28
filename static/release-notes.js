@@ -13,6 +13,7 @@ const RELEASE_NOTES = {
             {
                 heading: "Fixed",
                 items: [
+                    "Watched artists no longer re-download old tracks on every refresh: tracks released before an artist's start date were being mistaken for failed downloads and re-queued endlessly. They now stay in the past where they belong.",
                     "Monochrome broken on fresh installs: two separate bugs conspired — the source was silently disabled by default (wrong fallback in the code), and the Qobuz proxy (qdl-api.monochrome.tf) had its credentials expire so every download failed with a 400. Both fixed.",
                     "Monochrome Qobuz proxy is now a fallback list, just like the hifi-api endpoints. Two working community proxies (qobuz.kennyy.com.br, mono.scavengerfurs.net) are tried first. Existing installs are migrated automatically (DB migration v7).",
                     "Proxy health checking: a background thread probes all Qobuz proxies once per hour. A 4xx/5xx marks a proxy as deprioritised for 30 minutes; it recovers automatically if it starts working again. Connection errors don't blacklist.",
