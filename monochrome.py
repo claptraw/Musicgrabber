@@ -204,8 +204,12 @@ def _qobuz_proxy_recently_failed(url: str) -> bool:
     return ts is not None and (time.time() - ts) < _QOBUZ_FAILURE_TTL
 
 
-def _probe_qobuz_proxies() -> None:
-    """Probe all configured Qobuz proxies and update health state. Meant for a background thread."""
+def _probe_qobuz_proxies() -> bool:
+    """Probe all configured Qobuz proxies and update health state.
+
+    Returns True if at least one proxy is currently serving streams. Meant for a
+    background thread, but also called synchronously by the source health check.
+    """
     global _qobuz_probe_last_run
     _qobuz_probe_last_run = time.time()
 
@@ -244,6 +248,23 @@ def _probe_qobuz_proxies() -> None:
 
     if not found_healthy:
         print("Monochrome: all Qobuz proxies are currently unhealthy")
+    return found_healthy
+
+
+def download_leg_healthy() -> tuple[bool, str]:
+    """Health check for the source layer: can Monochrome actually stream a FLAC?
+
+    The search leg (hifi-api) being up is worthless if the Qobuz download leg is
+    dead, so we gate Monochrome's availability on the leg that serves bytes. Runs
+    a live proxy sweep and reports the verdict for servicecheck.py.
+    """
+    try:
+        healthy = _probe_qobuz_proxies()
+    except Exception as exc:
+        return False, f"Qobuz proxy probe error: {exc}"
+    if healthy:
+        return True, ""
+    return False, "all Qobuz proxies down"
 
 
 def _maybe_probe_qobuz_proxies_bg() -> None:

@@ -3269,6 +3269,12 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                 # path try YouTube / Soulseek / friends. Belt and braces: nuke any partial file too.
                 source_path.unlink(missing_ok=True)
                 download_failed_reason = f"{source_label} source unavailable: {dl_exc}"
+                if source_label == "monochrome":
+                    try:
+                        from servicecheck import mark_unhealthy
+                        mark_unhealthy(source_label, str(dl_exc))
+                    except Exception as health_exc:
+                        print(f"servicecheck mark_unhealthy failed: {health_exc}")
                 print(download_failed_reason)
                 break
             valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(source_path)

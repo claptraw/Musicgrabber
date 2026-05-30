@@ -26,6 +26,7 @@ from monochrome import search_monochrome, monochrome_enabled
 from mp3phoenix import search_mp3phoenix
 from slskd import slskd_enabled, search_slskd
 from zvu4no import search_zvu4no
+import servicecheck
 from youtube import (
     search_youtube, score_search_result_with_breakdown, format_score_breakdown, parse_duration,
     _normalise_search_text, _parse_query_artist_title, _query_has_variation,
@@ -377,6 +378,13 @@ def search_all(query: str, limit: int, sources: list[str] | None = None, include
         # Intersect requested sources with enabled ones; fall back to all if none survive
         filtered = {k: v for k, v in active.items() if k in sources}
         active = filtered if filtered else active
+    # Lazily refresh stale health checks before deciding which multi-source
+    # results are safe to show.
+    servicecheck.check_sources(set(active))
+    # Hide sources currently parked in a failure cooldown so their results don't
+    # show up only to fall over at play or download time. Single-source explicit
+    # search deliberately skips this; if the user asks for it, they get it.
+    active = {name: cfg for name, cfg in active.items() if servicecheck.is_source_available(name)}
     futures = {}
     with ThreadPoolExecutor(max_workers=len(active) + 2) as pool:
         for name, cfg in active.items():

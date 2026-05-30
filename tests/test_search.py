@@ -75,3 +75,16 @@ def test_search_empty_query_rejected(api, base_url):
 def test_search_invalid_body(api, base_url):
     r = api.post(f"{base_url}/api/search", json={}, timeout=10)
     assert r.status_code == 422
+
+
+@pytest.mark.slow
+def test_search_response_includes_unavailable_sources(api, base_url):
+    r = api.post(
+        f"{base_url}/api/search",
+        json={"query": "shape check", "limit": 1, "source": "all"},
+        timeout=30,
+    )
+    assert r.status_code == 200
+    d = r.json()
+    assert "unavailable_sources" in d
+    assert isinstance(d["unavailable_sources"], list)

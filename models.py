@@ -120,6 +120,9 @@ class SettingsUpdate(BaseModel):
     source_soulseek_enabled: Optional[bool] = None
     source_monochrome_enabled: Optional[bool] = None
     source_offline_fallback: Optional[bool] = None
+    source_health_checks_enabled: Optional[bool] = None
+    source_health_check_interval_minutes: Optional[int] = None
+    source_health_cooldown_minutes: Optional[int] = None
     # Monochrome (Qobuz / Tidal via hifi-api)
     monochrome_hifi_api_url: Optional[str] = None
     monochrome_qobuz_proxy_url: Optional[str] = None

@@ -10,6 +10,20 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV="$SCRIPT_DIR/.venv"
 
+# Load local credentials (MG_BASE_URL / MG_USERNAME / MG_PASSWORD) if present.
+# This file is gitignored; the suite authenticates with it when the target
+# instance is in multi-user mode. Without it, tests assume single-user mode.
+CREDS="$SCRIPT_DIR/.test-credentials"
+if [ -f "$CREDS" ]; then
+    # shellcheck disable=SC1090
+    source "$CREDS"
+fi
+
+# NOTE: always restart the local docker container before running the suite, so
+# it's serving the current code rather than a stale image. e.g.
+#   docker compose up -d --build music-grabber   (or: docker restart music-grabber)
+echo "Reminder: restart the local container first so tests run against current code (docker restart music-grabber)."
+
 if [ ! -d "$VENV" ]; then
     echo "Creating venv..."
     python3 -m venv "$VENV"

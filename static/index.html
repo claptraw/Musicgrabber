@@ -524,50 +524,74 @@
                     <label class="settings-label settings-label-top admin-only">
                         <span>Search Sources</span>
                         <div class="source-toggle-list">
-                            <label class="source-toggle-item">
-                                YouTube
+                            <label class="source-toggle-item" title="Search YouTube via yt-dlp. Broad coverage, usually lossy audio, good fallback source.">
+                                <span class="source-toggle-text">YouTube <i class="fa-solid fa-circle-info source-toggle-help" aria-label="YouTube help"></i></span>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="settingSourceYoutube" checked>
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
-                            <label class="source-toggle-item">
-                                MP3Phoenix
+                            <label class="source-toggle-item" title="Search MP3Phoenix for direct MP3 downloads. Fast when available, but coverage varies.">
+                                <span class="source-toggle-text">MP3Phoenix <i class="fa-solid fa-circle-info source-toggle-help" aria-label="MP3Phoenix help"></i></span>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="settingSourceMp3phoenix" checked>
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
-                            <label class="source-toggle-item">
-                                SoundCloud
+                            <label class="source-toggle-item" title="Search SoundCloud via yt-dlp. Useful for remixes, DJ uploads, and tracks not on mainstream catalogues.">
+                                <span class="source-toggle-text">SoundCloud <i class="fa-solid fa-circle-info source-toggle-help" aria-label="SoundCloud help"></i></span>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="settingSourceSoundcloud" checked>
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
-                            <label class="source-toggle-item">
-                                zvu4no
+                            <label class="source-toggle-item" title="Search zvu4no for direct MP3 downloads. Another quick fallback source with variable catalogue quality.">
+                                <span class="source-toggle-text">zvu4no <i class="fa-solid fa-circle-info source-toggle-help" aria-label="zvu4no help"></i></span>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="settingSourceZvu4no" checked>
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
-                            <label class="source-toggle-item">
-                                Soulseek
+                            <label class="source-toggle-item" title="Search Soulseek through slskd. Requires slskd credentials and a mounted completed-downloads folder.">
+                                <span class="source-toggle-text">Soulseek <i class="fa-solid fa-circle-info source-toggle-help" aria-label="Soulseek help"></i></span>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="settingSourceSoulseek">
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
-                            <label class="source-toggle-item">
-                                Monochrome
+                            <label class="source-toggle-item" title="Search Monochrome for lossless Qobuz FLAC via the Tidal catalogue. Depends on public hifi-api and Qobuz proxy availability.">
+                                <span class="source-toggle-text">Monochrome <i class="fa-solid fa-circle-info source-toggle-help" aria-label="Monochrome help"></i></span>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="settingSourceMonochrome">
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
+                            <label class="source-toggle-item" title="When a download fails because the selected source is offline, try the same track from another enabled source instead of failing the job.">
+                                <span class="source-toggle-text">Fallback <i class="fa-solid fa-circle-info source-toggle-help" aria-label="Fallback help"></i></span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="settingSourceOfflineFallback" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
+                            <label class="source-toggle-item" title="Check sources at startup and before stale searches. Sources that look down are hidden temporarily, then retried after the cooldown.">
+                                <span class="source-toggle-text">Health checks <i class="fa-solid fa-circle-info source-toggle-help" aria-label="Health checks help"></i></span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="settingSourceHealthChecks" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
                         </div>
-                        <span class="settings-hint settings-hint-full">Controls which sources appear in search results. YouTube, MP3Phoenix, SoundCloud, and zvu4no are also used for automatic matching. Soulseek needs slskd credentials; Monochrome uses Qobuz lossless via the hifi-api proxy.</span>
+                        <span class="settings-hint settings-hint-full">Controls which sources appear in search results. Fallback retries a failed download on another source. Health checks temporarily hide sources that are down.</span>
+                        <div class="settings-inline-grid">
+                            <label>
+                                <span>Check interval (min)</span>
+                                <input type="number" id="settingSourceHealthInterval" min="1" max="1440" value="10" class="settings-input-sm">
+                            </label>
+                            <label>
+                                <span>Cooldown (min)</span>
+                                <input type="number" id="settingSourceHealthCooldown" min="1" max="1440" value="10" class="settings-input-sm">
+                            </label>
+                        </div>
                     </label>
                     <label class="settings-label format-selector-wrap admin-only">
                         <span>Audio Format</span>

@@ -1,9 +1,14 @@
 # Changelog
 
-## v2.8.19 (DEV)
+## v2.9.0 (2026-05-30)
 
 ### Added
+- **Sources that are down now get parked automatically instead of filling search with dead results**: MusicGrabber checks source health at startup and refreshes stale checks during multi-source searches. If a source fails its check, its results are hidden for a configurable cooldown and the search response tells the UI which source was skipped. Monochrome is checked against the fragile Qobuz download leg, not just the search API, so lossless results stop appearing when they cannot actually stream. Settings now include a health-check toggle plus interval/cooldown controls.
+- **Cross-source fallback when a whole source is offline, now a proper toggle**: when every Monochrome proxy is down (502s, "no route to host", the usual Qobuz-proxy circus), the job used to either fail outright or, worse, burn its retry budget picking three more Monochrome results from the same dead infrastructure. Two fixes. First, the alternate-candidate search now excludes the dead source entirely, so it jumps straight to YouTube, SoundCloud, or Soulseek instead of headbutting the same wall. Second, there's a new "Fall back across sources" setting (default on) in Settings under Search Sources, so anyone who would rather a job fail loudly than quietly land a lower-quality copy can switch it off. Controlled by `SOURCE_OFFLINE_FALLBACK`.
 - **Vanished watched playlists now get auto-paused with a note, instead of failing forever in silence**: when an upstream playlist is deleted (or yanked private), the refresh just kept throwing a "not found" every cycle and nobody was any the wiser. Now a 404 counts as a strike, and after three consecutive strikes (configurable via `WATCHED_GONE_STRIKES_BEFORE_PAUSE`) the playlist is paused, not deleted, with a plain-English note explaining it looks deleted or made private upstream (or the platform login token expired). We wait for several strikes precisely because a private playlist with an expired token can also 404, and we would rather not pause a perfectly good playlist over one bad afternoon. The note shows on the card, a notification fires, and hitting Resume wipes the strike count for a clean retry. A successful refresh also clears everything, so the odd transient blip self-heals. DB migration v8 adds the tracking columns.
+
+### Changed
+- **Monochrome no longer gives up on the proxies after one half-hearted attempt**: the Qobuz proxies are gloriously flaky (502 one second, 200 the next), but the downloader only swept the proxy list once before declaring the source dead. It now sweeps all proxies, has a brief lie down, and sweeps again up to five times (configurable via `MONOCHROME_PROXY_RETRY_ROUNDS` / `MONOCHROME_PROXY_RETRY_WAIT`) before handing off to the fallback machinery. Crucially, it only retries when the failures were transport-level (proxy unreachable); a track that genuinely isn't on Qobuz still fails fast instead of making you wait fifteen seconds for bad news.
 
 ## v2.8.18 (2026-05-28)
 

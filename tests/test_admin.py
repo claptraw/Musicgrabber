@@ -43,3 +43,15 @@ def test_bulk_imports_list(api, base_url):
     assert r.status_code == 200
     d = r.json()
     assert "imports" in d or "bulk_imports" in d, f"unexpected shape: {list(d.keys())}"
+
+
+def test_sources_health_shape(api, base_url):
+    r = api.get(f"{base_url}/api/sources/health", timeout=10)
+    assert r.status_code == 200
+    d = r.json()
+    assert "sources" in d
+    assert isinstance(d["sources"], list)
+    if d["sources"]:
+        item = d["sources"][0]
+        for key in ("id", "label", "healthy", "reason", "checked_at", "retry_at", "available"):
+            assert key in item, f"source health missing key: {key}"

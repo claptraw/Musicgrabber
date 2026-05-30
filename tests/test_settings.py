@@ -14,6 +14,10 @@ EXPECTED_KEYS = [
     "organise_by_artist",
     "include_track_number_in_filename",
     "skip_dupes",
+    "source_offline_fallback",
+    "source_health_checks_enabled",
+    "source_health_check_interval_minutes",
+    "source_health_cooldown_minutes",
     "notify_on",
 ]
 

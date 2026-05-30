@@ -215,6 +215,9 @@ SETTINGS_SCHEMA = {
     "source_soulseek_enabled": {"type": "bool", "default": False, "env": "SOURCE_SOULSEEK_ENABLED"},
     "source_monochrome_enabled": {"type": "bool", "default": True, "env": "SOURCE_MONOCHROME_ENABLED"},
     "source_offline_fallback": {"type": "bool", "default": True, "env": "SOURCE_OFFLINE_FALLBACK"},
+    "source_health_checks_enabled": {"type": "bool", "default": True, "env": "SOURCE_HEALTH_CHECKS_ENABLED"},
+    "source_health_check_interval_minutes": {"type": "int", "default": 10, "env": "SOURCE_HEALTH_CHECK_INTERVAL_MINUTES"},
+    "source_health_cooldown_minutes": {"type": "int", "default": 10, "env": "SOURCE_HEALTH_COOLDOWN_MINUTES"},
     "monochrome_hifi_api_url": {"type": "str", "default": MONOCHROME_HIFI_API_URL, "env": "MONOCHROME_HIFI_API_URL"},
     "monochrome_qobuz_proxy_url": {"type": "str", "default": MONOCHROME_QOBUZ_PROXY_URL, "env": "MONOCHROME_QOBUZ_PROXY_URL"},
     # YouTube

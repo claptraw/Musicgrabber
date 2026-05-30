@@ -1287,6 +1287,20 @@
         });
 
         // Search
+        let lastSourceHealthToastAt = 0;
+
+        function showUnavailableSourcesToast(sources) {
+            if (!Array.isArray(sources) || sources.length === 0) return;
+            const now = Date.now();
+            if (now - lastSourceHealthToastAt < 30000) return;
+            lastSourceHealthToastAt = now;
+            const first = sources[0];
+            const retryMs = first.retry_at ? Math.max(0, first.retry_at * 1000 - now) : 0;
+            const retryText = retryMs ? `, retrying in ~${Math.max(1, Math.ceil(retryMs / 60000))} min` : '';
+            const moreText = sources.length > 1 ? ` (+${sources.length - 1} more)` : '';
+            showToast(`${first.label || first.id} unavailable${moreText}${retryText}`);
+        }
+
         async function search() {
             if (searchBtn.disabled) return;
             const query = searchInput.value.trim();
@@ -1326,6 +1340,7 @@
                 }
                 lastResults = data.results;
                 currentSearchLogToken = data.search_token || null;
+                showUnavailableSourcesToast(data.unavailable_sources);
                 renderResults(data.results);
                 showRelatedSuggestions(data.results, data.album_suggestion);
 
@@ -6494,6 +6509,10 @@
             'source_zvu4no_enabled': 'settingSourceZvu4no',
             'source_soulseek_enabled': 'settingSourceSoulseek',
             'source_monochrome_enabled': 'settingSourceMonochrome',
+            'source_offline_fallback': 'settingSourceOfflineFallback',
+            'source_health_checks_enabled': 'settingSourceHealthChecks',
+            'source_health_check_interval_minutes': 'settingSourceHealthInterval',
+            'source_health_cooldown_minutes': 'settingSourceHealthCooldown',
             'monochrome_hifi_api_url': 'settingMonochromeHifiUrl',
             'monochrome_qobuz_proxy_url': 'settingMonochromeQobuzUrl',
             'slskd_url': 'settingSlskdUrl',

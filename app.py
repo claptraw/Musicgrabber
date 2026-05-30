@@ -64,6 +64,7 @@ from youtube import (
     get_cookies_expiry,
 )
 from search import search_source, search_all, get_available_sources, SOURCE_REGISTRY
+import servicecheck
 from slskd import slskd_enabled, search_slskd
 from downloads import (
     process_download, process_playlist_download, process_slskd_download,
@@ -152,6 +153,7 @@ cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
 start_stale_job_monitor()
 start_scheduler()
 start_artist_scheduler()
+servicecheck.start_health_checks()  # initial background health sweep at boot
 
 # Sync cookies file from settings at startup
 _sync_cookies_file()
@@ -1631,6 +1633,12 @@ def list_sources():
     return {"sources": get_available_sources()}
 
 
+@app.get("/api/sources/health")
+def sources_health():
+    """Per-source health snapshot; parked sources carry their cooldown reason."""
+    return {"sources": servicecheck.health_snapshot()}
+
+
 @app.post("/api/search")
 def search(request: SearchRequest, http_request: Request):
     """Search for music across configured sources."""
@@ -1670,7 +1678,20 @@ def search(request: SearchRequest, http_request: Request):
         except Exception as log_error:
             print(f"search log error: {log_error}")
 
-        resp = {"results": final_results, "slskd_enabled": slskd_enabled(), "search_token": search_token}
+        # Surface any enabled-but-parked sources so the UI can explain the gaps.
+        parked = [
+            u for u in servicecheck.unavailable_sources()
+            if get_setting_bool(
+                f"source_{u['id']}_enabled",
+                SOURCE_REGISTRY.get(u["id"], {}).get("default_enabled", True),
+            )
+        ]
+        resp = {
+            "results": final_results,
+            "slskd_enabled": slskd_enabled(),
+            "search_token": search_token,
+            "unavailable_sources": parked,
+        }
         if album_suggestion:
             resp["album_suggestion"] = album_suggestion
         return resp

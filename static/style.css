@@ -3108,8 +3108,40 @@ h1 {
     min-width: 180px;
 }
 
+.source-toggle-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.source-toggle-help {
+    font-size: 11px;
+    color: var(--text-secondary);
+    opacity: 0.75;
+}
+
+.source-toggle-item:hover .source-toggle-help {
+    opacity: 1;
+}
+
 .settings-hint-full {
     width: 100%;
+}
+
+.settings-inline-grid {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+}
+
+.settings-inline-grid label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
 }
 
 /* Audio format selector */

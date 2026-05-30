@@ -7,14 +7,22 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
-    "2.8.19": {
-        title: "What's New in v2.8.19",
+    "2.9.0": {
+        title: "What's New in v2.9.0",
         sections: [
             {
                 heading: "Added",
                 items: [
+                    "MusicGrabber now parks sources that are down instead of showing results that cannot preview or download. It checks source health at startup and during multi-source searches, hides parked sources for a configurable cooldown, and shows a toast when results were skipped.",
+                    "If a source goes offline mid-download (Monochrome's proxies love doing this), MusicGrabber now automatically retries the track on another source instead of failing. The dead source is skipped so it can't keep handing you its own broken results. There's a new 'Fall back across sources' toggle in Settings (on by default) if you'd rather a job fail loudly than quietly grab a lower-quality copy from elsewhere.",
                     "Watched playlists that vanish upstream now get paused with an explanation, instead of quietly failing forever. If a playlist is deleted or made private, its refresh keeps returning 'not found' — after three of those in a row, MusicGrabber pauses (not deletes) the playlist and adds a note to the card so you know to check the source.",
                     "We deliberately wait for a few strikes before pausing, because a private playlist with an expired login token can also return 'not found' and we'd rather not pause a healthy playlist over a one-off blip. Hit Resume once you've sorted the source out, and the slate is wiped clean.",
+                ]
+            },
+            {
+                heading: "Changed",
+                items: [
+                    "Monochrome now tries its flaky Qobuz proxies several times (sweep all, wait a beat, repeat) before giving up and falling back to another source. A proxy that's down for a couple of seconds no longer kills your download. Tracks that genuinely aren't on Qobuz still fail fast, so you're not left waiting for bad news.",
                 ]
             }
         ]

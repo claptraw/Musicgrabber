@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.8.19"
+VERSION = "2.9.0"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -161,3 +161,10 @@ MONOCHROME_QOBUZ_PROXY_URL = os.getenv(
 # before declaring the source dead and letting the fallback machinery take over.
 MONOCHROME_PROXY_RETRY_ROUNDS = int(os.getenv("MONOCHROME_PROXY_RETRY_ROUNDS", "5"))
 MONOCHROME_PROXY_RETRY_WAIT = float(os.getenv("MONOCHROME_PROXY_RETRY_WAIT", "3"))
+
+# Source health checks: living the pirate lifestyle means free services come and
+# go, so we check whether each source can actually deliver before showing its
+# results. A failed check parks the source for a cooldown, then we re-check.
+SOURCE_HEALTH_CHECK_INTERVAL = int(os.getenv("SOURCE_HEALTH_CHECK_INTERVAL", "600"))  # re-check a source's health at most this often (seconds)
+SOURCE_HEALTH_COOLDOWN = int(os.getenv("SOURCE_HEALTH_COOLDOWN", "600"))              # how long a failed source stays auto-disabled (seconds)
+SERVICECHECK_TIMEOUT = int(os.getenv("SERVICECHECK_TIMEOUT", "8"))                    # per-source health probe timeout (seconds)
