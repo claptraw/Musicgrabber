@@ -2,7 +2,7 @@
 Test fixtures for MusicGrabber integration tests.
 
 Talks to a running MusicGrabber instance. Configure via env vars:
-  MG_BASE_URL    - default: http://192.168.122.109:38274
+  MG_BASE_URL    - default: http://localhost:38274 (the local docker container built from this repo)
   MG_USERNAME    - only needed in multi-user mode
   MG_PASSWORD    - only needed in multi-user mode
 """
@@ -12,7 +12,7 @@ import pytest
 import requests
 
 
-BASE_URL = os.environ.get("MG_BASE_URL", "http://192.168.122.109:38274").rstrip("/")
+BASE_URL = os.environ.get("MG_BASE_URL", "http://localhost:38274").rstrip("/")
 MG_USERNAME = os.environ.get("MG_USERNAME", "")
 MG_PASSWORD = os.environ.get("MG_PASSWORD", "")
 

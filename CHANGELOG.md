@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.8.19 (DEV)
+
+### Added
+- **Vanished watched playlists now get auto-paused with a note, instead of failing forever in silence**: when an upstream playlist is deleted (or yanked private), the refresh just kept throwing a "not found" every cycle and nobody was any the wiser. Now a 404 counts as a strike, and after three consecutive strikes (configurable via `WATCHED_GONE_STRIKES_BEFORE_PAUSE`) the playlist is paused, not deleted, with a plain-English note explaining it looks deleted or made private upstream (or the platform login token expired). We wait for several strikes precisely because a private playlist with an expired token can also 404, and we would rather not pause a perfectly good playlist over one bad afternoon. The note shows on the card, a notification fires, and hitting Resume wipes the strike count for a clean retry. A successful refresh also clears everything, so the odd transient blip self-heals. DB migration v8 adds the tracking columns.
+
 ## v2.8.18 (2026-05-28)
 
 ### Fixed

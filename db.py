@@ -284,6 +284,9 @@ def init_db():
             refresh_completed_at TIMESTAMP,
             refresh_error TEXT,
             refresh_import_id TEXT,
+            gone_strikes INTEGER DEFAULT 0,
+            auto_paused INTEGER DEFAULT 0,
+            pause_reason TEXT,
             user_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(user_id, url)
@@ -973,6 +976,23 @@ def init_db():
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '7')"
             )
             print(f"DB migrated to version 7: Qobuz proxy list rebuilt → {new_qobuz_value}")
+
+        # v8: Track when a watched playlist keeps coming back "not found" so we can
+        # auto-pause vanished playlists with a note instead of retrying forever.
+        if db_version < 8:
+            for _col8, _ddl8 in (
+                ("gone_strikes", "ALTER TABLE watched_playlists ADD COLUMN gone_strikes INTEGER DEFAULT 0"),
+                ("auto_paused", "ALTER TABLE watched_playlists ADD COLUMN auto_paused INTEGER DEFAULT 0"),
+                ("pause_reason", "ALTER TABLE watched_playlists ADD COLUMN pause_reason TEXT"),
+            ):
+                try:
+                    conn.execute(_ddl8)
+                except sqlite3.OperationalError:
+                    pass  # Column already present (fresh DB built from the new schema)
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '8')"
+            )
+            print("DB migrated to version 8: watched playlists gain gone-strike auto-pause tracking")
 
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already

@@ -27,6 +27,8 @@ from constants import (
     TIMEOUT_MONOCHROME_DOWNLOAD,
     MONOCHROME_HIFI_API_URL,
     MONOCHROME_QOBUZ_PROXY_URL,
+    MONOCHROME_PROXY_RETRY_ROUNDS,
+    MONOCHROME_PROXY_RETRY_WAIT,
 )
 from settings import get_setting_bool
 from youtube import score_search_result_with_breakdown, parse_duration
@@ -490,6 +492,20 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
         return []
 
 
+class QobuzProxyError(RuntimeError):
+    """Raised when no proxy could serve a stream URL.
+
+    `transport_failure` is True when at least one proxy died at the transport/HTTP
+    level (connection refused, no route to host, 5xx, 4xx) rather than cleanly
+    reporting "no track for this ISRC". That distinction tells the caller whether
+    it's worth waiting and retrying (flaky infra) or pointless (track genuinely
+    missing), so we don't burn retry rounds on tracks Qobuz simply doesn't have.
+    """
+    def __init__(self, message: str, transport_failure: bool):
+        super().__init__(message)
+        self.transport_failure = transport_failure
+
+
 def _get_qobuz_stream_url(isrc: str, quality_fmt: int) -> str:
     """Look up ISRC on the Qobuz proxy, then get a time-limited CDN stream URL.
 
@@ -497,6 +513,7 @@ def _get_qobuz_stream_url(isrc: str, quality_fmt: int) -> str:
     CDN URL wins and is remembered for future calls this process lifetime.
     """
     errors = []
+    had_transport_failure = False
     for base in _qobuz_proxy_urls():
         try:
             resp = httpx.get(
@@ -541,14 +558,17 @@ def _get_qobuz_stream_url(isrc: str, quality_fmt: int) -> str:
         except httpx.HTTPStatusError as exc:
             _mark_qobuz_proxy_failed(base)
             errors.append(f"{base}: HTTP {exc.response.status_code}")
+            had_transport_failure = True
             continue
         except Exception as exc:
             errors.append(f"{base}: {exc}")
+            had_transport_failure = True
             continue
 
-    raise RuntimeError(
+    raise QobuzProxyError(
         f"Qobuz proxy: all instances failed for ISRC {isrc!r} quality {quality_fmt}: "
-        f"{'; '.join(errors)}"
+        f"{'; '.join(errors)}",
+        transport_failure=had_transport_failure,
     )
 
 
@@ -576,18 +596,44 @@ def download_monochrome_track(source_url: str, output_path: Path) -> None:
         candidates = tier_order[tier_order.index(quality):]
     else:
         candidates = tier_order
+
+    def _resolve_cdn_url() -> tuple[str, Exception | None, bool]:
+        """One sweep down the quality tiers. Returns (url, last_error, transport_failure)."""
+        last_err: Exception | None = None
+        transport = False
+        for tier in candidates:
+            fmt = _SOURCE_QUALITY_TO_QOBUZ_FORMAT.get(tier, 7)
+            try:
+                url = _get_qobuz_stream_url(isrc, fmt)
+                if tier != quality:
+                    print(f"Monochrome: requested {quality} unavailable, fell back to {tier} for ISRC {isrc}")
+                return url, None, False
+            except QobuzProxyError as exc:
+                last_err = exc
+                transport = transport or exc.transport_failure
+                continue
+            except Exception as exc:
+                last_err = exc
+                transport = True
+                continue
+        return "", last_err, transport
+
+    # The proxies are flaky, so sweep all tiers, and if every proxy died at the
+    # transport level (not a clean "track missing"), wait a beat and sweep again
+    # a few times before giving up. A genuinely-missing track fails fast instead.
     cdn_url = ""
     last_error: Exception | None = None
-    for tier in candidates:
-        fmt = _SOURCE_QUALITY_TO_QOBUZ_FORMAT.get(tier, 7)
-        try:
-            cdn_url = _get_qobuz_stream_url(isrc, fmt)
-            if tier != quality:
-                print(f"Monochrome: requested {quality} unavailable, fell back to {tier} for ISRC {isrc}")
+    rounds = max(1, MONOCHROME_PROXY_RETRY_ROUNDS)
+    for attempt in range(1, rounds + 1):
+        cdn_url, last_error, transport_failure = _resolve_cdn_url()
+        if cdn_url or not transport_failure:
             break
-        except Exception as exc:
-            last_error = exc
-            continue
+        if attempt < rounds:
+            print(
+                f"Monochrome: all proxies unreachable for ISRC {isrc} "
+                f"(round {attempt}/{rounds}), retrying in {MONOCHROME_PROXY_RETRY_WAIT}s"
+            )
+            time.sleep(MONOCHROME_PROXY_RETRY_WAIT)
     if not cdn_url:
         raise RuntimeError(
             f"Monochrome: no Qobuz stream available for ISRC {isrc} at any quality tier "

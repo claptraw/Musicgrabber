@@ -590,10 +590,20 @@ def _note_blacklist_entry(
         print(f"Blacklist write skipped: {e}")
 
 
-def _find_alternate_search_candidate(query: str, attempted_ids: set[str]) -> dict | None:
-    """Search across sources and return the best untried candidate."""
+def _find_alternate_search_candidate(
+    query: str,
+    attempted_ids: set[str],
+    exclude_sources: set[str] | None = None,
+) -> dict | None:
+    """Search across sources and return the best untried candidate.
+
+    `exclude_sources` skips entire sources, used when a source is offline so we
+    don't keep picking more results from the same dead platform (e.g. three
+    Monochrome hits in a row when the Qobuz proxies are all down).
+    """
     if not query.strip():
         return None
+    exclude_sources = exclude_sources or set()
     try:
         from search import search_all, log_ranked_results
 
@@ -602,6 +612,8 @@ def _find_alternate_search_candidate(query: str, attempted_ids: set[str]) -> dic
         for cand in results:
             cand_id = (cand.get("video_id") or "").strip()
             if not cand_id or cand_id in attempted_ids:
+                continue
+            if cand.get("source") in exclude_sources:
                 continue
             return cand
     except Exception as e:
@@ -3136,13 +3148,20 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
     if video_id:
         attempted_ids.add(video_id)
 
-    def _try_alternate_candidate(reason: str) -> bool:
-        """Search for an untried candidate and continue the same job with it."""
+    def _try_alternate_candidate(reason: str, exclude_source: str | None = None) -> bool:
+        """Search for an untried candidate and continue the same job with it.
+
+        `exclude_source` drops a whole platform from the running, used when that
+        source is offline rather than just serving one bad track.
+        """
         if len(attempted_ids) >= _AUDIO_RESEARCH_MAX_ALTERNATES + 1:
             return False
 
         query = f"{artist} - {title}".strip(" -")
-        alternate = _find_alternate_search_candidate(query, attempted_ids)
+        alternate = _find_alternate_search_candidate(
+            query, attempted_ids,
+            exclude_sources={exclude_source} if exclude_source else None,
+        )
         if not alternate:
             return False
 
@@ -3274,10 +3293,13 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             raise Exception(f"{source_label} download failed integrity checks: {integrity_reason}")
 
         # Source said "no" before we ever got bytes (e.g. Qobuz had nothing for this ISRC).
-        # Hand off to the alternate-candidate machinery so YouTube/Soulseek can have a go.
+        # Hand off to the alternate-candidate machinery so YouTube/Soulseek can have a go,
+        # excluding the dead source so we don't just pick another result from it. Gated on
+        # the cross-source fallback setting; off means the job fails loudly on this source.
         if download_failed_reason:
-            if _try_alternate_candidate(download_failed_reason):
-                return
+            if get_setting_bool("source_offline_fallback", True, user_id=user_id):
+                if _try_alternate_candidate(download_failed_reason, exclude_source=source_label):
+                    return
             raise Exception(download_failed_reason)
 
         # Convert to the user's chosen format if requested.

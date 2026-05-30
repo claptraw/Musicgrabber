@@ -3333,6 +3333,13 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, ht
         if request.enabled is not None:
             updates.append("enabled = ?")
             params.append(int(request.enabled))
+            if request.enabled:
+                # Resuming gives the playlist a clean slate: drop any auto-pause
+                # note and reset the gone-strike counter so it isn't re-paused on
+                # the next single hiccup.
+                updates.append("auto_paused = 0")
+                updates.append("pause_reason = NULL")
+                updates.append("gone_strikes = 0")
 
         if request.convert_to_flac is not None:
             updates.append("convert_to_flac = ?")

@@ -113,8 +113,12 @@ def test_fetch_apple_music_count_field(api, base_url):
 # Amazon Music
 # ---------------------------------------------------------------------------
 
-# Amazon UK Hot Hits - Playwright-based, slow
-_AMAZON_URL = "https://music.amazon.co.uk/playlists/B08JJLT4L8"
+# Amazon UK editorial playlist - Playwright-based, slow.
+# NB: Amazon retires curated playlists over time (the old B08JJLT4L8 now
+# redirects to the homepage with "this playlist is no longer available").
+# If this test starts failing with 0 tracks, check the playlist still exists
+# before suspecting the scraper, and swap in a fresh editorial ASIN.
+_AMAZON_URL = "https://music.amazon.co.uk/playlists/B09ZHBTLFF"  # HITS by Topsify
 
 
 @pytest.mark.slow

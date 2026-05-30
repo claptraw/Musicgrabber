@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.8.18"
+VERSION = "2.8.19"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -111,6 +111,11 @@ SLSKD_REQUIRE_FREE_SLOT = os.getenv("SLSKD_REQUIRE_FREE_SLOT", "true").lower() =
 SLSKD_MAX_RETRIES = int(os.getenv("SLSKD_MAX_RETRIES", "5"))
 WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24"))
 WATCHED_REFRESH_STALE_SECONDS = int(os.getenv("WATCHED_REFRESH_STALE_SECONDS", "1800"))
+# How many consecutive "not found" (404) refreshes before we assume a watched
+# playlist has genuinely vanished upstream and auto-pause it. We wait for a few
+# strikes so a transient blip, a private playlist, or an expired login token
+# doesn't get a playlist paused on the strength of one bad fetch.
+WATCHED_GONE_STRIKES_BEFORE_PAUSE = int(os.getenv("WATCHED_GONE_STRIKES_BEFORE_PAUSE", "3"))
 
 # AcoustID audio fingerprinting  -  because guessing metadata from titles
 # is about as reliable as asking YouTube commenters for facts.
@@ -151,3 +156,8 @@ MONOCHROME_QOBUZ_PROXY_URL = os.getenv(
     "MONOCHROME_QOBUZ_PROXY_URL",
     "https://qobuz.kennyy.com.br,https://mono.scavengerfurs.net,https://qdl-api.monochrome.tf",
 )
+# The Qobuz proxies are gloriously flaky (502 one second, 200 the next), so we
+# sweep the whole list, have a little lie down, then sweep again a few times
+# before declaring the source dead and letting the fallback machinery take over.
+MONOCHROME_PROXY_RETRY_ROUNDS = int(os.getenv("MONOCHROME_PROXY_RETRY_ROUNDS", "5"))
+MONOCHROME_PROXY_RETRY_WAIT = float(os.getenv("MONOCHROME_PROXY_RETRY_WAIT", "3"))

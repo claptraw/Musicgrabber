@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from constants import (
     TIMEOUT_YTDLP_PLAYLIST, TIMEOUT_HTTP_SPOTIFY,
     WATCHED_PLAYLIST_CHECK_HOURS, WATCHED_REFRESH_STALE_SECONDS,
+    WATCHED_GONE_STRIKES_BEFORE_PAUSE,
     LISTENBRAINZ_API_URL, TIMEOUT_LISTENBRAINZ, TIMEOUT_LISTENBRAINZ_PLAYLIST,
     AUDIO_EXTENSIONS,
 )
@@ -857,13 +858,18 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             conn.commit()
 
         def finish_refresh_success(import_id: str | None) -> None:
+            # A clean fetch means the playlist is alive and well, so wipe any
+            # accumulated "gone" strikes and clear a stale auto-pause note.
             conn.execute(
                 """UPDATE watched_playlists
                    SET refresh_state = 'idle',
                        refresh_stage = 'done',
                        refresh_error = NULL,
                        refresh_import_id = ?,
-                       refresh_completed_at = datetime('now')
+                       refresh_completed_at = datetime('now'),
+                       gone_strikes = 0,
+                       auto_paused = 0,
+                       pause_reason = NULL
                    WHERE id = ?""",
                 (import_id, playlist_id)
             )
@@ -1165,11 +1171,58 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                 (playlist_id,)
             )
             conn.commit()
+
+            # A 404 means the upstream playlist came back "not found": it's been
+            # deleted, made private, or the login token for that platform expired.
+            # We can't tell which from one fetch, so we count consecutive strikes
+            # and only auto-pause once it's clearly not a one-off blip. Pausing
+            # (not deleting) leaves the user free to fix the source and Resume.
+            auto_paused = False
+            if e.status_code == 404:
+                new_strikes = (playlist.get("gone_strikes") or 0) + 1
+                if new_strikes >= WATCHED_GONE_STRIKES_BEFORE_PAUSE:
+                    auto_paused = True
+                    pause_note = (
+                        f"Auto-paused after {new_strikes} consecutive 'not found' checks, "
+                        "so this playlist looks deleted or made private upstream (or the login "
+                        "token for that platform has expired). Check the source and your cookies, "
+                        "then Resume to retry."
+                    )
+                    conn.execute(
+                        """UPDATE watched_playlists
+                           SET enabled = 0, auto_paused = 1, pause_reason = ?, gone_strikes = ?
+                           WHERE id = ?""",
+                        (pause_note, new_strikes, playlist_id)
+                    )
+                    conn.commit()
+                    err_msg = pause_note
+                    try:
+                        from notifications import send_notification
+                        send_notification(
+                            "error", playlist["name"], status="failed",
+                            error=pause_note, playlist_name=playlist["name"],
+                            user_id=user_id,
+                        )
+                    except Exception:
+                        pass
+                    print(f"Watched playlist '{playlist['name']}' auto-paused: {pause_note}")
+                else:
+                    conn.execute(
+                        "UPDATE watched_playlists SET gone_strikes = ? WHERE id = ?",
+                        (new_strikes, playlist_id)
+                    )
+                    conn.commit()
+                    print(
+                        f"Watched playlist '{playlist['name']}' returned 'not found' "
+                        f"(strike {new_strikes}/{WATCHED_GONE_STRIKES_BEFORE_PAUSE})"
+                    )
+
             finish_refresh_error(err_msg)
             return {
                 "playlist_id": playlist_id,
                 "name": playlist["name"],
                 "error": err_msg,
+                "auto_paused": auto_paused,
                 "refresh_state": "error",
                 "refresh_stage": "failed",
             }

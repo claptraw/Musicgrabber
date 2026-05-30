@@ -7,6 +7,18 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "2.8.19": {
+        title: "What's New in v2.8.19",
+        sections: [
+            {
+                heading: "Added",
+                items: [
+                    "Watched playlists that vanish upstream now get paused with an explanation, instead of quietly failing forever. If a playlist is deleted or made private, its refresh keeps returning 'not found' — after three of those in a row, MusicGrabber pauses (not deletes) the playlist and adds a note to the card so you know to check the source.",
+                    "We deliberately wait for a few strikes before pausing, because a private playlist with an expired login token can also return 'not found' and we'd rather not pause a healthy playlist over a one-off blip. Hit Resume once you've sorted the source out, and the slate is wiped clean.",
+                ]
+            }
+        ]
+    },
     "2.8.18": {
         title: "What's New in v2.8.18",
         sections: [

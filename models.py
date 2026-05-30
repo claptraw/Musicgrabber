@@ -119,6 +119,7 @@ class SettingsUpdate(BaseModel):
     source_zvu4no_enabled: Optional[bool] = None
     source_soulseek_enabled: Optional[bool] = None
     source_monochrome_enabled: Optional[bool] = None
+    source_offline_fallback: Optional[bool] = None
     # Monochrome (Qobuz / Tidal via hifi-api)
     monochrome_hifi_api_url: Optional[str] = None
     monochrome_qobuz_proxy_url: Optional[str] = None
