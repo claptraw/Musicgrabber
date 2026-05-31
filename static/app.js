@@ -5856,10 +5856,13 @@
                 document.getElementById('artistSearchInput').value = '';
                 selectedArtistMbid = null;
                 selectedArtistName = null;
-                const msg = data.queued > 0
-                    ? `Now watching ${data.name}. Queued ${data.queued} single(s) for download.`
-                    : `Now watching ${data.name}. No new singles since ${fromDate}.`;
-                showToast(msg);
+                // Seeding now runs in the background. Mark it as refreshing so the
+                // card shows progress and polling kicks in (avoids a race with the
+                // background thread setting refresh_state).
+                if (data.id) {
+                    artistRefreshPending.set(data.id, { stage: 'starting', startedAt: new Date().toISOString() });
+                }
+                showToast(`Now watching ${data.name}. Fetching the back-catalogue from MusicBrainz...`);
                 loadWatchedArtists();
             } catch (e) {
                 statusEl.textContent = `Error: ${e.message}`;
@@ -5888,6 +5891,18 @@
             }
             let anyRunning = false;
             listEl.innerHTML = artists.map(artist => {
+                // Reconcile the optimistic "pending" flag against backend state.
+                // Once the backend reports the refresh as running it's authoritative,
+                // so drop the optimistic flag (otherwise it would linger after the
+                // refresh finishes and spin the card forever). A safety timeout
+                // covers refreshes so quick we never caught them "running".
+                const pend = artistRefreshPending.get(artist.id);
+                if (pend) {
+                    const pendAgeMs = Date.now() - new Date(pend.startedAt).getTime();
+                    if (artist.refresh_state === 'running' || pendAgeMs > 20000) {
+                        artistRefreshPending.delete(artist.id);
+                    }
+                }
                 const isRunning = artist.refresh_state === 'running' || artistRefreshPending.has(artist.id);
                 if (isRunning) anyRunning = true;
                 const isError = artist.refresh_state === 'error';
@@ -5989,15 +6004,14 @@
                 const data = await res.json();
                 if (data.already_running) {
                     showToast('Refresh already in progress');
-                } else if (data.new_tracks > 0) {
-                    showToast(`Found ${data.new_tracks} new single(s) for download`);
                 } else {
-                    showToast('No new singles found');
+                    // Refresh runs in the background now; the card polls for progress.
+                    showToast('Refresh started');
                 }
             } catch (e) {
                 showToast('Refresh failed', true);
-            } finally {
                 artistRefreshPending.delete(artistId);
+            } finally {
                 loadWatchedArtists();
             }
         }
@@ -6094,38 +6108,64 @@
             }
         }
 
+        const ARTIST_TRACKS_PAGE_SIZE = 50;
+
         async function toggleArtistTrackList(artistId, artistName) {
             const panel = document.getElementById(`artist-tracks-${artistId}`);
             if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
             panel.style.display = 'block';
+            await loadArtistTrackPage(artistId, 0);
+        }
+
+        // Prolific artists run to hundreds of singles, so the track list is paged
+        // ('cycles'). Prev/Next reload the panel at a new offset.
+        async function loadArtistTrackPage(artistId, offset) {
+            const panel = document.getElementById(`artist-tracks-${artistId}`);
+            if (!panel) return;
+            offset = Math.max(0, offset);
             panel.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
             try {
-                const res = await apiFetch(`/api/watched-artists/${artistId}/tracks`);
+                const res = await apiFetch(`/api/watched-artists/${artistId}/tracks?limit=${ARTIST_TRACKS_PAGE_SIZE}&offset=${offset}`);
                 const data = await res.json();
-                if (!data.tracks || data.tracks.length === 0) {
+                const total = data.total || 0;
+                if (total === 0) {
                     panel.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);padding:8px 0;">No tracks tracked yet.</p>';
                     return;
                 }
-                panel.innerHTML = `<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">${data.tracks.length} single(s) tracked:</div>` +
-                    data.tracks.map(t => {
-                        const statusIcon = t.downloaded_at
-                            ? '<i class="fa-solid fa-check" style="color:var(--success);"></i>'
-                            : t.job_status === 'queued' || t.job_status === 'downloading'
-                                ? '<i class="fa-solid fa-clock" style="color:var(--text-secondary);"></i>'
-                                : '<i class="fa-solid fa-xmark" style="color:var(--error);"></i>';
-                        const dlBtn = t.downloaded_at && t.job_id
-                            ? `<button type="button"
-                                data-action="save-job-to-device"
-                                data-job-id="${escapeAttr(t.job_id)}"
-                                style="padding:2px 8px;font-size:11px;font-family:inherit;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;cursor:pointer;white-space:nowrap;"><i class="fa-solid fa-download"></i></button>`
-                            : '';
-                        return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;">
-                            ${statusIcon}
-                            <span style="flex:1;">${escapeHtml(t.artist || '')} &ndash; ${escapeHtml(t.title)}</span>
-                            ${t.release_date ? `<span style="color:var(--text-secondary);font-size:11px;">${t.release_date}</span>` : ''}
-                            ${dlBtn}
-                        </div>`;
-                    }).join('');
+                const tracksHtml = (data.tracks || []).map(t => {
+                    const statusIcon = t.downloaded_at
+                        ? '<i class="fa-solid fa-check" style="color:var(--success);"></i>'
+                        : t.job_status === 'queued' || t.job_status === 'downloading'
+                            ? '<i class="fa-solid fa-clock" style="color:var(--text-secondary);"></i>'
+                            : '<i class="fa-solid fa-xmark" style="color:var(--error);"></i>';
+                    const dlBtn = t.downloaded_at && t.job_id
+                        ? `<button type="button"
+                            data-action="save-job-to-device"
+                            data-job-id="${escapeAttr(t.job_id)}"
+                            style="padding:2px 8px;font-size:11px;font-family:inherit;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;cursor:pointer;white-space:nowrap;"><i class="fa-solid fa-download"></i></button>`
+                        : '';
+                    return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;">
+                        ${statusIcon}
+                        <span style="flex:1;">${escapeHtml(t.artist || '')} &ndash; ${escapeHtml(t.title)}</span>
+                        ${t.release_date ? `<span style="color:var(--text-secondary);font-size:11px;">${t.release_date}</span>` : ''}
+                        ${dlBtn}
+                    </div>`;
+                }).join('');
+
+                const start = offset + 1;
+                const end = Math.min(offset + ARTIST_TRACKS_PAGE_SIZE, total);
+                const hasPrev = offset > 0;
+                const hasNext = end < total;
+                const btnStyle = 'padding:3px 10px;font-size:11px;font-family:inherit;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;cursor:pointer;';
+                const pager = total > ARTIST_TRACKS_PAGE_SIZE
+                    ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;">
+                            <button type="button" ${hasPrev ? '' : 'disabled'} onclick="loadArtistTrackPage('${artistId}', ${offset - ARTIST_TRACKS_PAGE_SIZE})" style="${btnStyle}${hasPrev ? '' : 'opacity:0.4;cursor:default;'}">&larr; Prev</button>
+                            <span style="font-size:11px;color:var(--text-secondary);">${start}&ndash;${end} of ${total}</span>
+                            <button type="button" ${hasNext ? '' : 'disabled'} onclick="loadArtistTrackPage('${artistId}', ${offset + ARTIST_TRACKS_PAGE_SIZE})" style="${btnStyle}${hasNext ? '' : 'opacity:0.4;cursor:default;'}">Next &rarr;</button>
+                        </div>`
+                    : '';
+
+                panel.innerHTML = `<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">${total} single(s) tracked:</div>` + tracksHtml + pager;
             } catch (e) {
                 panel.innerHTML = '<p style="font-size:12px;color:var(--error);">Failed to load tracks.</p>';
             }
@@ -6515,6 +6555,7 @@
             'source_health_cooldown_minutes': 'settingSourceHealthCooldown',
             'monochrome_hifi_api_url': 'settingMonochromeHifiUrl',
             'monochrome_qobuz_proxy_url': 'settingMonochromeQobuzUrl',
+            'monochrome_qbdlx_fallback_enabled': 'settingMonochromeQbdlxFallback',
             'slskd_url': 'settingSlskdUrl',
             'slskd_user': 'settingSlskdUser',
             'slskd_pass': 'settingSlskdPass',

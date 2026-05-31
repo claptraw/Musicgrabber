@@ -166,6 +166,25 @@ app.add_middleware(AuthMiddleware)
 # Basic Routes
 # =============================================================================
 
+def _static_cache_bust() -> str:
+    """Cache-bust token for static assets.
+
+    VERSION alone is not enough: within a (DEV) cycle the version stays put while
+    app.js / index.html change repeatedly, so the browser would happily serve a
+    stale cached app.js against the same ?v=. We fold in the newest static-file
+    mtime (set fresh by the Docker COPY on every build) so any change to the
+    served files busts the cache, version bump or not.
+    """
+    try:
+        static_dir = Path("static")
+        names = ("app.js", "index.html", "release-notes.js")
+        mtimes = [(static_dir / n).stat().st_mtime for n in names if (static_dir / n).exists()]
+        stamp = int(max(mtimes)) if mtimes else 0
+        return f"{VERSION}.{stamp}"
+    except Exception:
+        return VERSION
+
+
 @app.get("/", response_class=HTMLResponse)
 def root(request: Request):
     """Serve the main UI"""
@@ -173,7 +192,7 @@ def root(request: Request):
     root_path = _request_root_path(request)
     html = html.replace("__ROOT_PATH__", root_path)
     # Cache-bust static assets so browser fetches fresh files after an update
-    html = html.replace("__CACHE_BUST__", VERSION)
+    html = html.replace("__CACHE_BUST__", _static_cache_bust())
     return HTMLResponse(content=html)
 
 
@@ -1977,7 +1996,6 @@ def _ensure_utc_suffix(timestamp: str | None) -> str | None:
 @app.get("/api/jobs")
 def get_jobs(limit: int = 20, http_request: Request = None):
     """Get recent jobs"""
-    from utils import check_duplicate
     from pathlib import Path as _Path
     user_id = http_request.state.user_id if http_request else None
     is_admin = http_request.state.is_admin if http_request else True
@@ -2010,15 +2028,14 @@ def get_jobs(limit: int = 20, http_request: Request = None):
             job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
             job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
 
-            # Sync file_deleted flag with reality for completed jobs
+            # Keep the queue API cheap. Full library reconciliation can walk a
+            # large/remote music tree and is handled by the background monitor;
+            # here we only verify exact paths already stored on watched rows.
             if (job.get('status') in ('completed', 'completed_with_errors')
                     and not job.get('file_deleted')
                     and job.get('artist') and job.get('title')):
                 rp = resolved_paths.get(job['id'])
-                file_exists = (
-                    rp and _Path(rp).is_absolute() and _Path(rp).exists()
-                ) or bool(check_duplicate(job['artist'], job['title']))
-                if not file_exists:
+                if rp and _Path(rp).is_absolute() and not _Path(rp).exists():
                     job['file_deleted'] = 1
                     stale_ids.append(job['id'])
 
@@ -3809,14 +3826,19 @@ def add_watched_artist(body: WatchedArtistRequest, http_request: Request):
         )
         conn.commit()
 
-    # First refresh seeds the back-catalogue and queues tracks >= from_date
-    result = refresh_watched_artist(artist_id)
+    # The first refresh seeds the entire back-catalogue from MusicBrainz, which
+    # for a prolific artist (Radiohead, looking at you) can take a couple of
+    # minutes. Run it in the background so the request returns immediately; the UI
+    # already polls refresh_state/refresh_stage to show progress. Running it inline
+    # would leave the HTTP request hanging long enough to trip client/proxy timeouts.
+    spawn_daemon_thread(refresh_watched_artist, artist_id)
     return {
         "id": artist_id,
         "name": body.name,
         "mbid": body.mbid,
         "from_date": body.from_date,
-        **result,
+        "refresh_state": "running",
+        "seeding": True,
     }
 
 
@@ -3908,14 +3930,26 @@ def refresh_single_artist(artist_id: str, http_request: Request):
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Artist not found")
-    return refresh_watched_artist(artist_id)
+    # Background, same as create: a manual refresh of a prolific artist would
+    # otherwise hang the request for minutes. The UI polls refresh_state.
+    spawn_daemon_thread(refresh_watched_artist, artist_id)
+    return {"artist_id": artist_id, "refresh_state": "running", "started": True}
 
 
 @app.get("/api/watched-artists/{artist_id}/tracks")
-def get_watched_artist_tracks(artist_id: str, http_request: Request):
-    """Return all tracked singles for a watched artist with job status."""
+def get_watched_artist_tracks(artist_id: str, http_request: Request, limit: int = 50, offset: int = 0):
+    """Return a page of tracked singles for a watched artist with job status.
+
+    Prolific artists run to hundreds of singles, so the list is paginated for
+    display ('cycles'). limit<=0 means "everything" for callers that still want
+    the lot. Always returns the total so the UI can render a pager.
+    """
     user_id = http_request.state.user_id
     is_admin = http_request.state.is_admin
+    # Clamp to sane bounds; limit<=0 is the "give me all of it" escape hatch.
+    paged = limit > 0
+    limit = min(limit, 500) if paged else -1
+    offset = max(offset, 0)
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
@@ -3925,16 +3959,28 @@ def get_watched_artist_tracks(artist_id: str, http_request: Request):
         ).fetchone()
         if not artist:
             raise HTTPException(status_code=404, detail="Artist not found")
-        tracks = conn.execute(
-            """SELECT wat.artist, wat.title, wat.release_date, wat.downloaded_at,
+        total = conn.execute(
+            "SELECT COUNT(*) FROM watched_artist_tracks WHERE artist_id = ?",
+            (artist_id,)
+        ).fetchone()[0]
+        query = """SELECT wat.artist, wat.title, wat.release_date, wat.downloaded_at,
                       wat.resolved_path, wat.job_id, j.status as job_status, j.error as job_error
                FROM watched_artist_tracks wat
                LEFT JOIN jobs j ON wat.job_id = j.id
                WHERE wat.artist_id = ?
-               ORDER BY wat.release_date DESC NULLS LAST, wat.title""",
-            (artist_id,)
-        ).fetchall()
-    return {"artist": artist[0], "tracks": [dict(t) for t in tracks]}
+               ORDER BY wat.release_date DESC NULLS LAST, wat.title"""
+        params: tuple = (artist_id,)
+        if paged:
+            query += " LIMIT ? OFFSET ?"
+            params = (artist_id, limit, offset)
+        tracks = conn.execute(query, params).fetchall()
+    return {
+        "artist": artist[0],
+        "tracks": [dict(t) for t in tracks],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @app.get("/api/watched-artists/{artist_id}/missing")

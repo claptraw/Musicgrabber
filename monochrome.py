@@ -264,7 +264,21 @@ def download_leg_healthy() -> tuple[bool, str]:
         return False, f"Qobuz proxy probe error: {exc}"
     if healthy:
         return True, ""
-    return False, "all Qobuz proxies down"
+
+    # Proxies are all down, but the qbdlx direct-Qobuz fallback might still be
+    # able to serve bytes. If it can, Monochrome is still deliverable, so don't
+    # park it.
+    try:
+        from qbdlx import qbdlx_enabled, download_leg_healthy as qbdlx_healthy
+        if qbdlx_enabled():
+            ok, _reason = qbdlx_healthy()
+            if ok:
+                print("Monochrome: proxies down but qbdlx direct-Qobuz fallback is healthy")
+                return True, ""
+    except Exception as exc:
+        print(f"Monochrome: qbdlx health probe errored: {exc}")
+
+    return False, "all Qobuz proxies down (qbdlx fallback also unavailable)"
 
 
 def _maybe_probe_qobuz_proxies_bg() -> None:
@@ -655,6 +669,24 @@ def download_monochrome_track(source_url: str, output_path: Path) -> None:
                 f"(round {attempt}/{rounds}), retrying in {MONOCHROME_PROXY_RETRY_WAIT}s"
             )
             time.sleep(MONOCHROME_PROXY_RETRY_WAIT)
+
+    # Proxies all face-down? Sign the official Qobuz API ourselves with a shared
+    # qbdlx token. No proxy middleman, so this survives when the whole proxy list
+    # is dead. It tops out at 16/44.1 lossless, but a real FLAC beats a failure.
+    if not cdn_url:
+        from qbdlx import resolve_qobuz_stream_url
+        for tier in candidates:
+            fmt = _SOURCE_QUALITY_TO_QOBUZ_FORMAT.get(tier, 7)
+            try:
+                fallback_url = resolve_qobuz_stream_url(isrc, fmt)
+            except Exception as exc:
+                print(f"Monochrome: qbdlx fallback errored for ISRC {isrc}: {exc}")
+                fallback_url = None
+            if fallback_url:
+                print(f"Monochrome: proxies down, served ISRC {isrc} via qbdlx direct Qobuz")
+                cdn_url = fallback_url
+                break
+
     if not cdn_url:
         raise RuntimeError(
             f"Monochrome: no Qobuz stream available for ISRC {isrc} at any quality tier "
@@ -694,11 +726,41 @@ def get_monochrome_preview_url(isrc: str) -> str:
     The Tidal hifi-api /track endpoint has been returning "Upstream API error",
     so we go via the Qobuz proxy instead. The Akamai-hosted FLAC plays back fine
     in modern browsers, and we ask for LOSSLESS (16-bit) so we don't push
-    24-bit/192kHz at users who only wanted to hear a few seconds.
+    24-bit/192kHz at users who only wanted to hear a few seconds. If every
+    proxy is down but the qbdlx direct-Qobuz fallback is healthy, use that path
+    too; source health may keep Monochrome visible based on qbdlx availability.
     """
     if not isrc:
         raise RuntimeError("Monochrome preview requires an ISRC")
-    return _get_qobuz_stream_url(isrc, 7)
+    try:
+        return _get_qobuz_stream_url(isrc, 7)
+    except Exception as proxy_exc:
+        try:
+            from qbdlx import resolve_qobuz_stream_url
+            fallback_errors = []
+            fallback_url = None
+            for fmt in (7, 6):
+                try:
+                    fallback_url = resolve_qobuz_stream_url(isrc, fmt)
+                except Exception as exc:
+                    fallback_errors.append(f"format {fmt}: {exc}")
+                    fallback_url = None
+                if fallback_url:
+                    break
+        except Exception as fallback_exc:
+            raise RuntimeError(
+                f"Monochrome preview unavailable via proxy ({proxy_exc}) "
+                f"or qbdlx fallback ({fallback_exc})"
+            ) from proxy_exc
+        if fallback_url:
+            print(f"Monochrome: preview served ISRC {isrc} via qbdlx direct Qobuz")
+            return fallback_url
+        if fallback_errors:
+            raise RuntimeError(
+                f"Monochrome preview unavailable via proxy ({proxy_exc}) "
+                f"or qbdlx fallback ({'; '.join(fallback_errors)})"
+            ) from proxy_exc
+        raise proxy_exc
 
 
 def fetch_tidal_playlist_tracks(playlist_uuid: str) -> tuple[list[tuple[str, str]], str]:

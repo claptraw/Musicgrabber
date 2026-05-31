@@ -8,8 +8,9 @@ CRUD tests only touch the DB, so they're fast.
 import pytest
 
 
-# A short, stable YouTube playlist for testing
-_YT_PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLbZIPy20-1pM_ByRF4R8bIEZUEVJnREjU"  # YouTube Rewind 2012 (3 videos)
+# A stable, YouTube-curated playlist for testing (the old "YouTube Rewind 2012"
+# fixture was deleted upstream, hence the periodic 502).
+_YT_PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI"  # "Popular Music Videos"
 
 
 WATCHED_PL_KEYS = [
@@ -35,7 +36,7 @@ def test_list_watched_playlists_shape(api, base_url):
 
 def test_watched_playlist_crud(api, base_url):
     """Add, retrieve, update, and delete a watched playlist - full lifecycle."""
-    url = "https://www.youtube.com/playlist?list=PLbZIPy20-1pM_ByRF4R8bIEZUEVJnREjU"
+    url = _YT_PLAYLIST_URL
 
     # Create - server fetches the playlist immediately; 502 means the platform was
     # unreachable at test time, not a server bug. Skip rather than fail.
@@ -103,8 +104,10 @@ def test_fetch_youtube_playlist(api, base_url):
     assert "tracks" in d, f"no 'tracks' in response: {list(d.keys())}"
     tracks = d["tracks"]
     assert len(tracks) >= 1, "playlist fetch returned no tracks"
+    # fetch-playlist returns each track as an "Artist - Title" string.
     for t in tracks:
-        assert "title" in t, f"track missing 'title': {t}"
+        assert isinstance(t, str) and t.strip(), f"track is not a non-empty string: {t!r}"
+    assert any(" - " in t for t in tracks), "no track looked like 'Artist - Title'"
 
 
 @pytest.mark.slow

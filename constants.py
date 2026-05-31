@@ -162,6 +162,19 @@ MONOCHROME_QOBUZ_PROXY_URL = os.getenv(
 MONOCHROME_PROXY_RETRY_ROUNDS = int(os.getenv("MONOCHROME_PROXY_RETRY_ROUNDS", "5"))
 MONOCHROME_PROXY_RETRY_WAIT = float(os.getenv("MONOCHROME_PROXY_RETRY_WAIT", "3"))
 
+# qbdlx fallback: when every Qobuz proxy is down, sign the official Qobuz API
+# ourselves using a shared free-account token (the same pool the qbdlx web UI
+# uses). No proxy middleman, so it survives when the proxies are all face-down.
+# Heads up: the free shared tokens deliver 16/44.1 lossless FLAC, not 24-bit
+# hi-res, so this is a "a real FLAC beats a failed download" safety net.
+QBDLX_FALLBACK_ENABLED = os.getenv("QBDLX_FALLBACK_ENABLED", "true").lower() == "true"
+QBDLX_SHARED_TOKENS_URL = os.getenv(
+    "QBDLX_SHARED_TOKENS_URL",
+    "https://citegptapi.f5.si/webhook/qbdlx/shared",
+)
+QBDLX_QOBUZ_API_BASE = os.getenv("QBDLX_QOBUZ_API_BASE", "https://www.qobuz.com/api.json/0.2/")
+QBDLX_TOKEN_CACHE_TTL = int(os.getenv("QBDLX_TOKEN_CACHE_TTL", "600"))  # re-fetch the pool every N seconds
+
 # Source health checks: living the pirate lifestyle means free services come and
 # go, so we check whether each source can actually deliver before showing its
 # results. A failed check parks the source for a cooldown, then we re-check.

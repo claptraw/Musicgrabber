@@ -126,6 +126,7 @@ class SettingsUpdate(BaseModel):
     # Monochrome (Qobuz / Tidal via hifi-api)
     monochrome_hifi_api_url: Optional[str] = None
     monochrome_qobuz_proxy_url: Optional[str] = None
+    monochrome_qbdlx_fallback_enabled: Optional[bool] = None
     # Soulseek/slskd
     slskd_url: Optional[str] = None
     slskd_user: Optional[str] = None

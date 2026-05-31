@@ -154,8 +154,9 @@ def test_fetch_listenbrainz_playlist(api, base_url):
         json={"url": _LB_PLAYLIST_URL},
         timeout=20,
     )
-    # LB playlists rotate; 404 is acceptable (playlist was deleted/rotated)
-    if r.status_code == 400 and "rotated" in r.text.lower():
+    # LB playlists rotate; a missing one is acceptable (deleted/rotated upstream),
+    # whether the server reports it as 400 "rotated" or 404 "not found".
+    if r.status_code in (400, 404) and ("rotated" in r.text.lower() or "not found" in r.text.lower()):
         pytest.skip("ListenBrainz playlist has been rotated - update UUID in test")
     assert r.status_code == 200, f"fetch failed: {r.text}"
     d = r.json()

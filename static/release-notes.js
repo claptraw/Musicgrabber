@@ -15,14 +15,26 @@ const RELEASE_NOTES = {
                 items: [
                     "MusicGrabber now parks sources that are down instead of showing results that cannot preview or download. It checks source health at startup and during multi-source searches, hides parked sources for a configurable cooldown, and shows a toast when results were skipped.",
                     "If a source goes offline mid-download (Monochrome's proxies love doing this), MusicGrabber now automatically retries the track on another source instead of failing. The dead source is skipped so it can't keep handing you its own broken results. There's a new 'Fall back across sources' toggle in Settings (on by default) if you'd rather a job fail loudly than quietly grab a lower-quality copy from elsewhere.",
+                    "Monochrome has a new direct qbdlx fallback for the days when every public Qobuz proxy is down. It uses the shared qbdlx free-account token pool to ask Qobuz for the stream directly, so Monochrome can still deliver real lossless FLACs even when the proxy layer is having a bad day. The fallback can be turned off in Settings.",
                     "Watched playlists that vanish upstream now get paused with an explanation, instead of quietly failing forever. If a playlist is deleted or made private, its refresh keeps returning 'not found' — after three of those in a row, MusicGrabber pauses (not deletes) the playlist and adds a note to the card so you know to check the source.",
                     "We deliberately wait for a few strikes before pausing, because a private playlist with an expired login token can also return 'not found' and we'd rather not pause a healthy playlist over a one-off blip. Hit Resume once you've sorted the source out, and the slate is wiped clean.",
+                    "Watched artists with huge back-catalogues are now paginated. The tracks view shows 50 at a time with Prev/Next, so following someone like Radiohead no longer paints a giant wall of singles.",
                 ]
             },
             {
                 heading: "Changed",
                 items: [
                     "Monochrome now tries its flaky Qobuz proxies several times (sweep all, wait a beat, repeat) before giving up and falling back to another source. A proxy that's down for a couple of seconds no longer kills your download. Tracks that genuinely aren't on Qobuz still fail fast, so you're not left waiting for bad news.",
+                    "Adding or refreshing a watched artist no longer freezes the app. Seeding a prolific artist's catalogue from MusicBrainz used to hold the database's write lock for minutes, blocking everything (even login) until it gave up with 'database is locked'. Seeding now runs in the background in small cycles, the 'Add artist' button returns instantly, and the card shows live progress.",
+                ]
+            },
+            {
+                heading: "Fixed",
+                items: [
+                    "Monochrome hover previews now use the qbdlx fallback too. Source health could correctly say Monochrome was up because qbdlx could stream, while preview still failed because it only knew about the dead proxy path.",
+                    "The Queue tab should load faster and more reliably on large or slow music mounts. Queue refreshes no longer walk the library to verify every completed file; the background reconciler handles that slower housekeeping.",
+                    "Queue polling is gentler on SQLite. Session 'last seen' updates are throttled, which avoids turning every authenticated refresh into a database write and reduces intermittent 'database is locked' failures.",
+                    "A dead or mistyped YouTube playlist URL now returns a clear 'not found' instead of a Bad Gateway that looked like the server had crashed.",
                 ]
             }
         ]

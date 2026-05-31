@@ -213,6 +213,84 @@ def test_get_qobuz_stream_url_connection_error_does_not_blacklist(monkeypatch):
     assert "https://qobuz.kennyy.com.br" not in failures
 
 
+def test_monochrome_preview_uses_qbdlx_when_proxies_fail(monkeypatch):
+    import monochrome
+
+    def fake_proxy(isrc, quality_fmt):
+        raise monochrome.QobuzProxyError("all proxies down", transport_failure=True)
+
+    calls = []
+
+    def fake_qbdlx(isrc, quality_fmt):
+        calls.append((isrc, quality_fmt))
+        return "https://streaming-qobuz-std.akamaized.net/qbdlx-preview.flac"
+
+    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", fake_qbdlx)
+
+    url = monochrome.get_monochrome_preview_url("GBAYE9200070")
+
+    assert url == "https://streaming-qobuz-std.akamaized.net/qbdlx-preview.flac"
+    assert calls == [("GBAYE9200070", 7)]
+
+
+def test_monochrome_preview_tries_qbdlx_format_6_after_7_fails(monkeypatch):
+    import monochrome
+
+    def fake_proxy(isrc, quality_fmt):
+        raise monochrome.QobuzProxyError("all proxies down", transport_failure=True)
+
+    calls = []
+
+    def fake_qbdlx(isrc, quality_fmt):
+        calls.append((isrc, quality_fmt))
+        if quality_fmt == 7:
+            return None
+        return "https://streaming-qobuz-std.akamaized.net/qbdlx-format-6.flac"
+
+    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", fake_qbdlx)
+
+    url = monochrome.get_monochrome_preview_url("GBAYE9200070")
+
+    assert url == "https://streaming-qobuz-std.akamaized.net/qbdlx-format-6.flac"
+    assert calls == [("GBAYE9200070", 7), ("GBAYE9200070", 6)]
+
+
+def test_monochrome_preview_raises_when_proxy_and_qbdlx_fail(monkeypatch):
+    import monochrome
+
+    def fake_proxy(isrc, quality_fmt):
+        raise monochrome.QobuzProxyError("all proxies down", transport_failure=True)
+
+    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
+
+    with pytest.raises(RuntimeError, match="all proxies down"):
+        monochrome.get_monochrome_preview_url("GBAYE9200070")
+
+
+def test_download_monochrome_raises_when_proxy_and_qbdlx_fail(monkeypatch, tmp_path):
+    """With Lucida gone, qbdlx is the last resort; if it can't resolve either, the
+    download fails cleanly rather than hanging or half-writing."""
+    import monochrome
+
+    def fake_proxy(isrc, quality_fmt):
+        raise monochrome.QobuzProxyError("all proxies down", transport_failure=True)
+
+    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
+    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
+
+    output = tmp_path / "track.flac"
+    with pytest.raises(RuntimeError, match="no Qobuz stream available"):
+        monochrome.download_monochrome_track(
+            "monochrome://tidal123?isrc=GBAYE9200070&quality=LOSSLESS",
+            output,
+        )
+    assert not output.exists()
+
+
 # ---------------------------------------------------------------------------
 # Source default enabled
 # ---------------------------------------------------------------------------

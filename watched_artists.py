@@ -143,6 +143,21 @@ def refresh_watched_artist(artist_id: str) -> dict:
             tracks_to_import: list[tuple[str, str]] = []
             new_count = 0
 
+            # Compute pass: decide what to write WITHOUT touching the DB. This is
+            # the slow bit  -  check_duplicate() walks the library on disk for every
+            # track, and a prolific artist (hello, Radiohead) has hundreds of them.
+            # If we held an open write transaction across all those scans, SQLite's
+            # single writer lock would be pinned for minutes and everything else
+            # (even login, which writes a session row) would block until busy_timeout
+            # and start throwing "database is locked". So we only read the in-memory
+            # `tracked` dict here and stash the writes to flush in one quick batch.
+            pending_writes: list[tuple[str, tuple]] = []
+            # Process in cycles: heartbeat the refresh stage every batch so the UI
+            # shows the scan is alive, and (below) flush writes in batches so the
+            # write lock is taken in short bursts rather than one marathon hold.
+            SEED_BATCH = 50
+            processed = 0
+
             for t in unique_tracks:
                 track_artist = t["artist"] or artist["name"]
                 track_title = t["title"]
@@ -150,11 +165,15 @@ def refresh_watched_artist(artist_id: str) -> dict:
                 track_hash = hash_track(track_artist, track_title)
                 existing = tracked.get(track_hash)
 
+                processed += 1
+                if processed % SEED_BATCH == 0:
+                    set_refresh_stage("diffing")  # liveness heartbeat during a long scan
+
                 if not existing:
                     # New track  -  check disk before inserting so pre-existing
                     # library files are recognised immediately rather than queued.
                     existing_file = check_duplicate(track_artist, track_title)
-                    conn.execute(
+                    pending_writes.append((
                         """INSERT OR IGNORE INTO watched_artist_tracks
                            (artist_id, track_hash, artist, title, release_date, release_mbid,
                             downloaded_at, resolved_path)
@@ -163,7 +182,7 @@ def refresh_watched_artist(artist_id: str) -> dict:
                          release_date, t.get("release_mbid") or "",
                          "now" if existing_file else None,
                          str(existing_file) if existing_file else None)
-                    )
+                    ))
                     if existing_file:
                         continue  # Already on disk, nothing to queue
                     # Only queue if it's on or after the from_date
@@ -180,24 +199,24 @@ def refresh_watched_artist(artist_id: str) -> dict:
                         existing.get("title") or track_title
                     ):
                         # File has vanished  -  clear downloaded_at so it re-queues
-                        conn.execute(
+                        pending_writes.append((
                             """UPDATE watched_artist_tracks
                                SET downloaded_at = NULL, resolved_path = NULL
                                WHERE artist_id = ? AND track_hash = ?""",
                             (artist_id, track_hash)
-                        )
+                        ))
                         tracks_to_import.append((track_artist, track_title))
                     continue
 
                 # Not downloaded  -  check disk in case the file arrived via another route
                 existing_file = check_duplicate(track_artist, track_title)
                 if existing_file:
-                    conn.execute(
+                    pending_writes.append((
                         """UPDATE watched_artist_tracks
                            SET downloaded_at = datetime('now'), resolved_path = ?
                            WHERE artist_id = ? AND track_hash = ?""",
                         (str(existing_file), artist_id, track_hash)
-                    )
+                    ))
                     continue
 
                 # Not on disk  -  check job status
@@ -212,7 +231,13 @@ def refresh_watched_artist(artist_id: str) -> dict:
                     continue
                 tracks_to_import.append((track_artist, track_title))
 
-            conn.commit()
+            # Write pass, in cycles: flush in batches so each transaction is short
+            # and the single SQLite writer lock is released between batches, never
+            # pinned long enough to wedge other requests.
+            for i in range(0, len(pending_writes), SEED_BATCH):
+                for sql, params in pending_writes[i:i + SEED_BATCH]:
+                    conn.execute(sql, params)
+                conn.commit()
 
             # Queue new/missing tracks via bulk import
             import_id = None

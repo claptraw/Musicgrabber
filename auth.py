@@ -182,7 +182,8 @@ def get_session_user(token: str) -> dict | None:
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            """SELECT u.id, u.username, u.role, u.force_password_change, u.is_active
+            """SELECT u.id, u.username, u.role, u.force_password_change, u.is_active,
+                      (s.last_seen IS NULL OR s.last_seen < datetime('now', '-60 seconds')) AS should_touch
                FROM sessions s
                JOIN users u ON u.id = s.user_id
                WHERE s.token = ?
@@ -191,13 +192,18 @@ def get_session_user(token: str) -> dict | None:
         ).fetchone()
         if row is None:
             return None
-        # Touch last_seen while we have the connection
-        conn.execute(
-            "UPDATE sessions SET last_seen = datetime('now') WHERE token = ?",
-            (token,),
-        )
-        conn.commit()
-        return dict(row)
+        # Avoid turning every authenticated API poll into a SQLite write.
+        # Queue polling can be frequent, and download workers already contend
+        # for the same database lock.
+        if row["should_touch"]:
+            conn.execute(
+                "UPDATE sessions SET last_seen = datetime('now') WHERE token = ?",
+                (token,),
+            )
+            conn.commit()
+        user = dict(row)
+        user.pop("should_touch", None)
+        return user
 
 
 def delete_session(token: str) -> None:

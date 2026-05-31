@@ -679,6 +679,20 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             raise HTTPException(status_code=504, detail="Timeout fetching YouTube playlist")
 
         if result.returncode != 0:
+            # A bad/missing/private playlist is the caller's mistake (404), not an
+            # upstream gateway failure (502). yt-dlp tells us which in stderr: a
+            # dud or malformed list id makes YouTube's API answer "400 Bad
+            # Request", a deleted/private one says so outright. Anything else
+            # (timeouts, transient network) stays a 502.
+            stderr_lc = (result.stderr or "").lower()
+            client_error_signs = (
+                "does not exist", "unavailable", "private", "has been removed",
+                "this playlist does not exist or is private",
+                "http error 400", "bad request", "unable to download api page",
+                "not a valid url", "incomplete youtube id",
+            )
+            if any(s in stderr_lc for s in client_error_signs):
+                raise HTTPException(status_code=404, detail="YouTube playlist not found (it may have been deleted, made private, or the URL is wrong)")
             raise HTTPException(status_code=502, detail="Failed to fetch YouTube playlist")
 
         tracks = []
