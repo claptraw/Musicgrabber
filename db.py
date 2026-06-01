@@ -363,6 +363,58 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_video ON blacklist(video_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_uploader ON blacklist(uploader, source)")
 
+        # Track upgrades  -  the Phase 1 scan caches one row per eligible (our-tagged)
+        # file. The filesystem stays the source of truth; this is just a cache keyed by
+        # (user_id, path) and refreshed on every scan. mtime lets re-scans skip
+        # unchanged files. dismissed_mtime records the file mtime at the moment the user
+        # dismissed it, so a later edit to the file lapses the dismissal automatically.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS upgrade_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL DEFAULT '',
+            path TEXT NOT NULL,
+            mtime REAL,
+            file_size INTEGER,
+            codec TEXT,
+            bitrate_kbps INTEGER,
+            duration REAL,
+            file_tier INTEGER,
+            target_tier INTEGER,
+            below_target INTEGER DEFAULT 0,
+            source TEXT,
+            artist TEXT,
+            title TEXT,
+            dismissed INTEGER DEFAULT 0,
+            dismissed_mtime REAL,
+            upgrade_state TEXT DEFAULT 'none',
+            last_scanned TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, path)
+        )
+    """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_upgrade_below ON upgrade_candidates(user_id, below_target, dismissed)")
+
+        # Phase 2: per-candidate search cache. Populated on demand when the user views the
+        # Watched Upgrades page; found_at gives the TTL so revisits don't re-hammer sources.
+        # found_searched distinguishes "searched, nothing better" from "not searched yet".
+        for _col, _decl in [
+            ("found_at", "TIMESTAMP"),
+            ("found_searched", "INTEGER DEFAULT 0"),
+            ("found_source", "TEXT"),
+            ("found_quality", "TEXT"),
+            ("found_tier", "INTEGER"),
+            ("found_confidence", "REAL"),
+            ("found_verified", "INTEGER DEFAULT 0"),
+            ("found_video_id", "TEXT"),
+            ("found_source_url", "TEXT"),
+            ("found_slskd_username", "TEXT"),
+            ("found_slskd_filename", "TEXT"),
+            ("found_slskd_size", "INTEGER"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE upgrade_candidates ADD COLUMN {_col} {_decl}")
+            except sqlite3.OperationalError:
+                pass
+
         # Migration: add uploader column to jobs (raw channel/uploader name)
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN uploader TEXT")

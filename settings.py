@@ -168,6 +168,10 @@ SETTINGS_SCHEMA = {
     "opus_bitrate": {"type": "str", "default": "320k", "env": "OPUS_BITRATE"},
     "alac_bitrate": {"type": "str", "default": "lossless", "env": "ALAC_BITRATE"},
     "min_audio_bitrate": {"type": "int", "default": 0, "env": "MIN_AUDIO_BITRATE"},
+    # Track upgrades (Lidarr-style). Off by default; opt-in. The scan flags library
+    # files sitting below the quality you already download at, ready for a manual upgrade.
+    "enable_track_upgrades": {"type": "bool", "default": False, "env": "ENABLE_TRACK_UPGRADES"},
+    "upgrade_scan_interval_hours": {"type": "int", "default": 24, "env": "UPGRADE_SCAN_INTERVAL_HOURS"},
     "singles_subdir": {"type": "str", "default": "Singles", "env": "SINGLES_SUBDIR"},
     "playlists_subdir": {"type": "str", "default": "", "env": "PLAYLISTS_SUBDIR"},
     "albums_subdir": {"type": "str", "default": "Albums", "env": "ALBUMS_SUBDIR"},

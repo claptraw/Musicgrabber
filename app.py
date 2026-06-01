@@ -77,6 +77,11 @@ from watched_playlists import (
     fetch_listenbrainz_createdfor, start_scheduler,
 )
 from watched_artists import refresh_watched_artist, start_artist_scheduler
+from upgrades import (
+    start_upgrade_scheduler, run_scan_all, get_candidates,
+    get_candidates_page, search_candidate, dismiss_candidate,
+    perform_upgrade, perform_upgrade_all,
+)
 from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks, apply_metadata_to_file, guess_musicbrainz_tags, MusicBrainzUnavailable
 from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 from coverart import fetch_cover_art_url
@@ -153,6 +158,7 @@ cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
 start_stale_job_monitor()
 start_scheduler()
 start_artist_scheduler()
+start_upgrade_scheduler()
 servicecheck.start_health_checks()  # initial background health sweep at boot
 
 # Sync cookies file from settings at startup
@@ -3860,6 +3866,88 @@ def list_watched_artists(http_request: Request):
             _scope_params
         ).fetchall()
     return {"artists": [dict(r) for r in rows]}
+
+
+@app.get("/api/upgrades/candidates")
+def list_upgrade_candidates(http_request: Request, page: int = 1, per_page: int = 10):
+    """Paginated list of library files sitting below target quality (Watched Upgrades).
+
+    Read-only: each row carries any cached search result, but searching is triggered
+    per-row by the client (see /search below). Hidden from peons.
+    """
+    if _is_peon(http_request):
+        raise HTTPException(status_code=403, detail="Not available for this account")
+    if not get_setting_bool("enable_track_upgrades", False):
+        return {"enabled": False, "items": [], "total": 0, "page": 1, "pages": 0}
+    data = get_candidates_page(http_request.state.user_id, page=page, per_page=per_page)
+    data["enabled"] = True
+    return data
+
+
+@app.post("/api/upgrades/candidates/{candidate_id}/search")
+def search_upgrade_candidate(candidate_id: int, http_request: Request, force: bool = False):
+    """Search for a better copy of one candidate (network). Client calls this per row, ~1/s."""
+    if _is_peon(http_request):
+        raise HTTPException(status_code=403, detail="Not available for this account")
+    if not get_setting_bool("enable_track_upgrades", False):
+        raise HTTPException(status_code=400, detail="Track upgrades are disabled")
+    result = search_candidate(http_request.state.user_id, candidate_id, force=force)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    return result
+
+
+@app.post("/api/upgrades/candidates/{candidate_id}/dismiss")
+def dismiss_upgrade_candidate(candidate_id: int, http_request: Request):
+    """Stop suggesting an upgrade for this file (until the file itself changes)."""
+    if _is_peon(http_request):
+        raise HTTPException(status_code=403, detail="Not available for this account")
+    if not dismiss_candidate(http_request.state.user_id, candidate_id):
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    return {"status": "ok"}
+
+
+@app.post("/api/upgrades/candidates/{candidate_id}/upgrade")
+def upgrade_candidate(candidate_id: int, http_request: Request, force: bool = False):
+    """Download the proposed copy, verify it, and swap it in if it passes every check.
+
+    Synchronous: it downloads and fingerprints, so it can take a little while. The old
+    file goes to quarantine (manual purge), never deleted. Hidden from peons.
+    force=true skips the same-recording gates (still quarantines the old file).
+    """
+    if _is_peon(http_request):
+        raise HTTPException(status_code=403, detail="Not available for this account")
+    if not get_setting_bool("enable_track_upgrades", False):
+        raise HTTPException(status_code=400, detail="Track upgrades are disabled")
+    result = perform_upgrade(http_request.state.user_id, candidate_id, force=force)
+    if result.get("status") == "error" and result.get("reason") == "Candidate not found":
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    return result
+
+
+@app.post("/api/upgrades/upgrade-all")
+def upgrade_all(http_request: Request):
+    """Best-effort upgrade of every below-target candidate that has a proposal.
+
+    Runs in the background (downloads take time); the UI refreshes afterwards.
+    """
+    if _is_peon(http_request):
+        raise HTTPException(status_code=403, detail="Not available for this account")
+    if not get_setting_bool("enable_track_upgrades", False):
+        raise HTTPException(status_code=400, detail="Track upgrades are disabled")
+    user_id = http_request.state.user_id
+    spawn_daemon_thread(perform_upgrade_all, user_id)
+    return {"status": "started"}
+
+
+@app.post("/api/upgrades/rescan")
+def rescan_upgrades(http_request: Request):
+    """Kick off an immediate library scan (admin only). Cheap and network-free."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    if not get_setting_bool("enable_track_upgrades", False):
+        raise HTTPException(status_code=400, detail="Track upgrades are disabled")
+    return {"status": "ok", "totals": run_scan_all()}
 
 
 @app.put("/api/watched-artists/{artist_id}")

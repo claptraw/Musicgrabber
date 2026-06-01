@@ -2627,6 +2627,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                         album_art_bytes=pl_cover_art_bytes,
                         album_art_mime=pl_cover_art_mime,
                         album_artist=mb_metadata.get("album_artist"),
+                        source="youtube",
                     )
                     # Use canonical artist/title from MusicBrainz
                     if mb_artist != artist:
@@ -2648,6 +2649,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                         track_total=tag_track_total,
                         album_art_bytes=pl_cover_art_bytes,
                         album_art_mime=pl_cover_art_mime,
+                        source="youtube",
                     )
 
                 audio_file = _rename_with_track_number_if_enabled(
@@ -3009,6 +3011,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
                 album_artist=tag_album_artist,
+                source="soulseek",
+                source_quality=audio_quality,
             )
             # Use canonical artist/title from MusicBrainz
             if mb_artist != artist:
@@ -3042,6 +3046,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
                 album_artist=forced_album_artist,
+                source="soulseek",
+                source_quality=audio_quality,
             )
             title = forced_track_title or title
 
@@ -3409,6 +3415,8 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             album_art_bytes=album_art_bytes,
             album_art_mime=album_art_mime,
             album_artist=tag_album_artist,
+            source=source_label,
+            source_quality=audio_quality,
         )
 
         playlist_album_routed = False
@@ -3933,6 +3941,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
                 album_artist=tag_album_artist,
+                source=source_label,
+                source_quality=audio_quality,
             )
             # Use the canonical artist/title from MusicBrainz everywhere
             if mb_artist != artist:
@@ -3969,6 +3979,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
                 album_artist=forced_album_artist,
+                source=source_label,
+                source_quality=audio_quality,
             )
             title = tag_title
 

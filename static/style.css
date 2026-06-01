@@ -995,6 +995,48 @@ h1 {
     color: white;
 }
 
+/* Watched Upgrades rows */
+.upgrade-row {
+    cursor: default;
+    align-items: center;
+    justify-content: space-between;
+}
+.upgrade-row:hover { border-color: var(--border); background: var(--bg-secondary); }
+.upgrade-current { flex: 1 1 240px; min-width: 0; }
+.upgrade-track { font-weight: 500; }
+.upgrade-meta { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+.upgrade-quality-now { color: var(--text-secondary); }
+.upgrade-proposed {
+    flex: 1 1 320px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 14px;
+}
+.upgrade-arrow { color: var(--accent); font-weight: 700; }
+.upgrade-quality-new { font-weight: 600; }
+.upgrade-conf { color: var(--text-secondary); font-size: 12px; }
+.upgrade-searching, .upgrade-none { color: var(--text-secondary); font-style: italic; }
+.upgrade-verified {
+    font-size: 11px; padding: 1px 6px; border-radius: 3px;
+    background: #0f766e; color: #fff; text-transform: uppercase; letter-spacing: 0.03em;
+}
+.upgrade-unverified {
+    font-size: 11px; padding: 1px 6px; border-radius: 3px;
+    background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border);
+}
+.upgrade-actions { flex: 0 0 auto; display: flex; gap: 6px; }
+.btn-sm { padding: 4px 10px; font-size: 13px; }
+.upgrades-pager {
+    display: flex; align-items: center; justify-content: center; gap: 16px;
+    margin-top: 14px;
+}
+.upgrades-page-info { color: var(--text-secondary); font-size: 14px; }
+.upgrade-header-actions { display: flex; gap: 8px; align-items: center; }
+.upgrade-go { white-space: nowrap; }
+.watched-empty-text { color: var(--text-secondary); padding: 12px 0; }
+
 .job-source-badge {
     position: absolute;
     bottom: 2px;

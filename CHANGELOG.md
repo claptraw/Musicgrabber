@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.9.1 (DEV)
+
+### Added
+- **Track Upgrades, Phase 1: the library scan (groundwork for Lidarr-style "hold out for a better copy")**: downloads now get stamped with `SOURCE` and `SOURCE_QUALITY` tags (FLAC, MP3, M4A/MP4, Ogg/Opus), and a new opt-in background scan walks the files MusicGrabber downloaded (Singles and playlist tracks, never your Albums) to flag any sitting below the quality you already download at. The scan is cheap, network-free, and only looks; it never searches, downloads, or touches a file. Off by default; admin/standard only, peons never see it. New `enable_track_upgrades` toggle and `upgrade_scan_interval_hours` in Settings. Design lives in `docs/upgrades-design.md`.
+- **Track Upgrades, Phase 2a: the "Watched Upgrades" page (search + preview)**: a new section under the Watched tab, beneath Watched Artists. It lists the below-target files 10 to a page and, as you land on them, quietly searches each one (one at a time, a second apart, so we don't hammer sources) for a better copy, showing the proposed source, quality, and match confidence. Verified sources (Monochrome lossless) say so; slskd results are honestly badged "needs download to confirm". Hover a proposal to preview it before committing. Dismiss anything you're happy with as-is (and it comes back if you later change the file). Results are cached for a few hours so revisits are instant.
+- **Track Upgrades, Phase 2b: the actual swap**: each proposal now has an Upgrade button (plus an Upgrade All). It downloads the proposed copy to a staging area, ffprobes it, and only swaps it in if it passes every gate: genuinely better quality than what's on disk, duration within tolerance, a high title/artist match, and an acoustic-fingerprint (fpcalc) check that it's the same recording. Pass, and the old file is moved to a quarantine folder (manual purge, never auto-deleted), the new one takes its place, tags and any playlist M3U entries are fixed up, and Navidrome is poked to rescan. Fail any check and the download is binned and your original is left exactly as it was. Albums are still never touched.
+- **Force upgrade**: if a proposal is rejected by the same-recording checks (say you'd rather have the studio cut than your longer "HD" YouTube rip), the rejected row offers a "Force anyway" button. It skips the identity gates but still downloads a valid file and still moves the old one to quarantine, so a forced choice is always reversible.
+- **Scan now sees through transcoded FLACs**: a lossy track converted to FLAC is a FLAC container but lossy audio. The scan now reads the honest origin from the SOURCE_QUALITY tag and tiers by that, so e.g. a YouTube-sourced "FLAC" correctly shows as upgradeable to real lossless instead of hiding as already-lossless.
+
 ## v2.9.0 (2026-05-31)
 
 ### Added

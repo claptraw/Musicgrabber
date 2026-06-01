@@ -1260,6 +1260,7 @@
                 if (currentTab === 'watched') {
                     loadWatchedPlaylists();
                     loadWatchedArtists();
+                    loadWatchedUpgrades();
                     populateSourceChips();
                 } else if (watchedRefreshPollInterval) {
                     clearInterval(watchedRefreshPollInterval);
@@ -5758,6 +5759,39 @@
         });
         refreshAllWatchedBtn.addEventListener('click', refreshAllWatched);
 
+        // Watched Upgrades controls (pager + rescan)
+        (function wireUpgradeControls() {
+            const prev = document.getElementById('upgradesPrevBtn');
+            const next = document.getElementById('upgradesNextBtn');
+            const rescan = document.getElementById('rescanUpgradesBtn');
+            if (prev) prev.addEventListener('click', () => { if (upgradesPage > 1) { upgradesPage--; loadWatchedUpgrades(); } });
+            if (next) next.addEventListener('click', () => { upgradesPage++; loadWatchedUpgrades(); });
+            if (rescan) rescan.addEventListener('click', async () => {
+                rescan.disabled = true;
+                const original = rescan.textContent;
+                rescan.textContent = 'Scanning...';
+                try {
+                    const resp = await apiFetch('/api/upgrades/rescan', { method: 'POST' });
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        const t = data.totals || {};
+                        showToast(`Scan done: ${t.below_target || 0} below target across ${t.eligible || 0} files`);
+                        upgradesPage = 1;
+                        loadWatchedUpgrades();
+                    } else if (resp.status === 400) {
+                        showToast('Enable Track Upgrades in Settings first', true);
+                    } else if (resp.status === 403) {
+                        showToast('Admin only', true);
+                    }
+                } catch (e) {
+                    showToast('Scan failed', true);
+                } finally {
+                    rescan.disabled = false;
+                    rescan.textContent = original;
+                }
+            });
+        })();
+
         // =============================================================================
         // Watched Artists
         // =============================================================================
@@ -5868,6 +5902,220 @@
                 statusEl.textContent = `Error: ${e.message}`;
                 addBtn.disabled = false;
             }
+        }
+
+        // =====================================================================
+        // Watched Upgrades (track-upgrades Phase 2a: search + display, no swap yet)
+        // =====================================================================
+        const UPGRADES_PER_PAGE = 10;
+        let upgradesPage = 1;
+        let upgradesSearchToken = 0;  // bumped to abort an in-flight lazy-search sweep
+        const UPGRADE_SOURCE_BADGES = {
+            youtube: 'YT', monochrome: 'MONO', soulseek: 'SLK',
+            soundcloud: 'SC', mp3phoenix: 'PX', zvu4no: 'ZV',
+        };
+
+        function upgradeTierLabel(tier) {
+            return { 5: 'Lossless', 4: '320', 3: '256', 2: '192', 1: '128' }[tier] || '?';
+        }
+
+        function upgradeCurrentQuality(item) {
+            if (item.file_tier === 5) return 'Lossless (' + (item.codec || '?').toUpperCase() + ')';
+            const br = item.bitrate_kbps ? item.bitrate_kbps + 'kbps' : '';
+            return [(item.codec || '?').toUpperCase(), br].filter(Boolean).join(' ');
+        }
+
+        async function loadWatchedUpgrades() {
+            const list = document.getElementById('watchedUpgradesList');
+            const pager = document.getElementById('upgradesPager');
+            const disabledNote = document.getElementById('upgradesDisabledNote');
+            if (!list) return;
+            upgradesSearchToken++;  // abort any previous sweep
+            try {
+                const resp = await apiFetch(`/api/upgrades/candidates?page=${upgradesPage}&per_page=${UPGRADES_PER_PAGE}`);
+                if (!resp.ok) { list.innerHTML = ''; return; }
+                const data = await resp.json();
+                if (data.enabled === false) {
+                    if (disabledNote) disabledNote.style.display = '';
+                    list.innerHTML = '';
+                    if (pager) pager.style.display = 'none';
+                    return;
+                }
+                if (disabledNote) disabledNote.style.display = 'none';
+
+                if (!data.items.length) {
+                    list.innerHTML = '<p class="watched-empty-text">No upgrade candidates. Either everything is already at target quality, or the library has not been scanned yet (try Rescan Library).</p>';
+                    if (pager) pager.style.display = 'none';
+                    return;
+                }
+
+                list.innerHTML = data.items.map(renderUpgradeRow).join('');
+                data.items.forEach(item => {
+                    if (item.found_searched) {
+                        renderProposedUpgrade(item);
+                    }
+                });
+
+                // Pager
+                if (pager) {
+                    const info = document.getElementById('upgradesPageInfo');
+                    if (info) info.textContent = `Page ${data.page} of ${data.pages} (${data.total} below target)`;
+                    document.getElementById('upgradesPrevBtn').disabled = data.page <= 1;
+                    document.getElementById('upgradesNextBtn').disabled = data.page >= data.pages;
+                    pager.style.display = data.pages > 1 ? '' : 'none';
+                }
+
+                // Lazily search the rows that have no fresh cached result, ~1/s, this page only.
+                lazySearchUpgrades(data.items, ++upgradesSearchToken);
+            } catch (e) {
+                list.innerHTML = '';
+            }
+        }
+
+        function renderUpgradeRow(item) {
+            const title = escapeHtml(item.title || item.filename || '');
+            const artist = escapeHtml(item.artist || '');
+            const current = escapeHtml(upgradeCurrentQuality(item));
+            return `
+                <div class="result-item upgrade-row" id="upgrade-row-${item.id}" data-id="${item.id}">
+                    <div class="upgrade-current">
+                        <div class="upgrade-track"><strong>${artist}</strong>${artist ? ' &ndash; ' : ''}${title}</div>
+                        <div class="upgrade-meta">Current: <span class="upgrade-quality-now">${current}</span></div>
+                    </div>
+                    <div class="upgrade-proposed" id="upgrade-proposed-${item.id}">
+                        <span class="upgrade-searching">Checking for a better copy&hellip;</span>
+                    </div>
+                    <div class="upgrade-actions">
+                        <button class="btn btn-ghost btn-sm" onclick="dismissUpgrade(${item.id})" title="Stop suggesting this one">Dismiss</button>
+                    </div>
+                </div>`;
+        }
+
+        function renderProposedUpgrade(item) {
+            const cell = document.getElementById(`upgrade-proposed-${item.id}`);
+            if (!cell) return;
+            // Stash the source_url on the row so the preview handler can reach it
+            // (url-based sources need it; it isn't safe to inline into an attribute).
+            const rowEl = document.getElementById(`upgrade-row-${item.id}`);
+            if (rowEl) rowEl._foundSourceUrl = item.found_source_url || null;
+            if (!item.found_source) {
+                cell.innerHTML = '<span class="upgrade-none">No better copy found</span>';
+                return;
+            }
+            const badge = UPGRADE_SOURCE_BADGES[item.found_source] || item.found_source.toUpperCase().slice(0, 4);
+            const tier = upgradeTierLabel(item.found_tier);
+            const qual = escapeHtml(item.found_quality || tier);
+            const conf = item.found_confidence != null ? Math.round(item.found_confidence * 100) + '%' : '';
+            const verifiedBadge = item.found_verified
+                ? '<span class="upgrade-verified" title="Quality confirmed by the source">verified</span>'
+                : '<span class="upgrade-unverified" title="Estimated; confirmed only after download">needs download to confirm</span>';
+            const canPreview = item.found_video_id && item.found_source !== 'soulseek';
+            const previewBtn = canPreview
+                ? `<button class="btn btn-ghost btn-sm upgrade-preview"
+                        onmouseenter="previewUpgrade('${item.found_video_id}', '${item.found_source}', this, ${item.id})"
+                        onmouseleave="stopPreview()"
+                        onclick="previewUpgrade('${item.found_video_id}', '${item.found_source}', this, ${item.id})">&#9654; Preview</button>`
+                : '';
+            cell.innerHTML = `
+                <span class="upgrade-arrow">&rarr;</span>
+                <span class="source-badge ${item.found_source}">${badge}</span>
+                <span class="upgrade-quality-new">${qual}</span>
+                ${conf ? `<span class="upgrade-conf" title="Match confidence">${conf}</span>` : ''}
+                ${verifiedBadge}
+                ${previewBtn}
+                <button class="btn btn-primary btn-sm upgrade-go" onclick="upgradeOne(${item.id}, this)" title="Download, verify, and swap in this copy">Upgrade</button>`;
+        }
+
+        // Walk the visible rows one at a time (~1/s) searching for a better copy.
+        // Aborts cleanly if the token changes (user paginated away or left the tab).
+        async function lazySearchUpgrades(items, token) {
+            for (const item of items) {
+                if (token !== upgradesSearchToken) return;
+                if (item.found_searched) continue;  // already have a cached result rendered
+                try {
+                    const resp = await apiFetch(`/api/upgrades/candidates/${item.id}/search`, { method: 'POST' });
+                    if (token !== upgradesSearchToken) return;
+                    if (resp.ok) {
+                        const updated = await resp.json();
+                        renderProposedUpgrade(updated);
+                    }
+                } catch (e) { /* leave the row as-is */ }
+                await new Promise(r => setTimeout(r, 1000));  // rate limit, be kind to sources
+            }
+        }
+
+        function previewUpgrade(videoId, source, element, id) {
+            // Reuse the search-result preview machinery with a synthetic result object.
+            const row = document.getElementById(`upgrade-row-${id}`);
+            let sourceUrl = null;
+            // source_url isn't in the DOM; the preview endpoint needs it for url-based sources.
+            // For those, fall back to the cached candidate data attached to the row.
+            if (row && row._foundSourceUrl) sourceUrl = row._foundSourceUrl;
+            startPreview(videoId, element, { source, source_url: sourceUrl });
+        }
+
+        async function upgradeOne(id, btn, force = false) {
+            const row = document.getElementById(`upgrade-row-${id}`);
+            const cell = document.getElementById(`upgrade-proposed-${id}`);
+            if (btn) { btn.disabled = true; btn.textContent = force ? 'Forcing...' : 'Upgrading...'; }
+            stopPreview();
+            try {
+                const url = `/api/upgrades/candidates/${id}/upgrade${force ? '?force=true' : ''}`;
+                const resp = await apiFetch(url, { method: 'POST' });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok && data.status === 'upgraded') {
+                    if (row) {
+                        row.style.transition = 'opacity 0.4s';
+                        row.style.opacity = '0.5';
+                        const c = row.querySelector('.upgrade-current .upgrade-meta');
+                        if (c) c.innerHTML = '<span class="upgrade-verified">Upgraded</span> old file moved to quarantine';
+                    }
+                    if (cell) cell.innerHTML = '<span class="upgrade-verified">Done</span>';
+                    showToast(force ? 'Force-upgraded; old file is in quarantine' : 'Upgraded; old file is in quarantine');
+                    setTimeout(() => { if (row) row.remove(); if (!document.querySelectorAll('#watchedUpgradesList .upgrade-row').length) loadWatchedUpgrades(); }, 1200);
+                } else if (data.status === 'rejected') {
+                    // Offer a force override; the old file still goes to quarantine, so it's recoverable.
+                    if (cell) cell.innerHTML = `<span class="upgrade-none">Rejected: ${escapeHtml(data.reason || 'failed checks')}</span>
+                        <button class="btn btn-ghost btn-sm upgrade-force" onclick="forceUpgrade(${id}, this)" title="Swap it in anyway. The old file still goes to quarantine, so you can undo it.">Force anyway</button>`;
+                    showToast('Upgrade rejected: ' + (data.reason || 'failed checks'), true);
+                } else {
+                    showToast('Upgrade failed: ' + (data.reason || resp.status), true);
+                    if (btn) { btn.disabled = false; btn.textContent = force ? 'Force anyway' : 'Upgrade'; }
+                }
+            } catch (e) {
+                showToast('Upgrade failed', true);
+                if (btn) { btn.disabled = false; btn.textContent = force ? 'Force anyway' : 'Upgrade'; }
+            }
+        }
+
+        function forceUpgrade(id, btn) {
+            if (!confirm('Force this upgrade? The proposed copy failed a same-recording check (e.g. different length), so it may be a different version. The old file goes to quarantine and can be restored.')) return;
+            upgradeOne(id, btn, true);
+        }
+
+        async function upgradeAll() {
+            if (!confirm('Download and swap in every proposed upgrade on this page set? Old files are moved to quarantine (recoverable), not deleted.')) return;
+            try {
+                const resp = await apiFetch('/api/upgrades/upgrade-all', { method: 'POST' });
+                if (resp.ok) {
+                    showToast('Upgrading all in the background; this can take a while. Refresh to see progress.');
+                } else if (resp.status === 400) {
+                    showToast('Enable Track Upgrades in Settings first', true);
+                }
+            } catch (e) { showToast('Could not start upgrade-all', true); }
+        }
+
+        async function dismissUpgrade(id) {
+            try {
+                const resp = await apiFetch(`/api/upgrades/candidates/${id}/dismiss`, { method: 'POST' });
+                if (resp.ok) {
+                    const row = document.getElementById(`upgrade-row-${id}`);
+                    if (row) row.remove();
+                    if (!document.querySelectorAll('#watchedUpgradesList .upgrade-row').length) {
+                        loadWatchedUpgrades();
+                    }
+                }
+            } catch (e) { showToast('Could not dismiss', true); }
         }
 
         async function loadWatchedArtists(showLoading = true) {
@@ -6535,6 +6783,8 @@
             'opus_bitrate': 'settingOpusBitrate',
             'alac_bitrate': 'settingAlacBitrate',
             'min_audio_bitrate': 'settingMinBitrate',
+            'enable_track_upgrades': 'settingEnableTrackUpgrades',
+            'upgrade_scan_interval_hours': 'settingUpgradeScanInterval',
             'singles_subdir': 'settingSinglesSubdir',
             'playlists_subdir': 'settingPlaylistsSubdir',
             'albums_subdir': 'settingAlbumsSubdir',

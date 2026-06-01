@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.9.0"
+VERSION = "2.9.1"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -110,6 +110,16 @@ ROOT_PATH = _normalise_root_path(os.getenv("ROOT_PATH", ""))
 SLSKD_REQUIRE_FREE_SLOT = os.getenv("SLSKD_REQUIRE_FREE_SLOT", "true").lower() == "true"
 SLSKD_MAX_RETRIES = int(os.getenv("SLSKD_MAX_RETRIES", "5"))
 WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24"))
+# How often the track-upgrades scan walks the library (hours). Cheap and network-free,
+# so daily is plenty; this is not time-sensitive.
+UPGRADE_SCAN_INTERVAL_HOURS = int(os.getenv("UPGRADE_SCAN_INTERVAL_HOURS", "24"))
+# How long a per-candidate upgrade search result stays cached before a revisit
+# re-searches (seconds). Keeps the Watched Upgrades page snappy without re-hammering
+# sources on every visit. Default 4 hours.
+UPGRADE_SEARCH_TTL_SECONDS = int(os.getenv("UPGRADE_SEARCH_TTL_SECONDS", str(4 * 3600)))
+# Minimum match confidence (0..1) for a found result to count as the same track.
+# Deliberately high: we are proposing to replace a file, not just rank a search.
+UPGRADE_MATCH_FLOOR = float(os.getenv("UPGRADE_MATCH_FLOOR", "0.6"))
 WATCHED_REFRESH_STALE_SECONDS = int(os.getenv("WATCHED_REFRESH_STALE_SECONDS", "1800"))
 # How many consecutive "not found" (404) refreshes before we assume a watched
 # playlist has genuinely vanished upstream and auto-pause it. We wait for a few

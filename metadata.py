@@ -927,8 +927,16 @@ def apply_metadata_to_file(
     album_art_bytes: bytes | None = None,
     album_art_mime: str | None = None,
     album_artist: str | None = None,
+    source: str | None = None,
+    source_quality: str | None = None,
 ):
-    """Apply metadata to audio file using mutagen (supports multiple formats)"""
+    """Apply metadata to audio file using mutagen (supports multiple formats).
+
+    source / source_quality stamp where MusicGrabber fetched the audio and at
+    what quality. The SOURCE tag doubles as the "this file is ours" eligibility
+    marker for the track-upgrades feature; without it a file is invisible to
+    upgrades. Only written when provided, so existing tags are never clobbered.
+    """
     try:
         suffix = file_path.suffix.lower()
         track_number = int(track_number) if track_number else None
@@ -956,6 +964,10 @@ def apply_metadata_to_file(
             # Wipe yt-dlp source branding from COMMENT tag
             if any(_is_source_branding(c) for c in audio.get("COMMENT", [])):
                 audio["COMMENT"] = []
+            if source:
+                audio["SOURCE"] = source
+            if source_quality:
+                audio["SOURCE_QUALITY"] = source_quality
             if has_art:
                 pic = Picture()
                 pic.type = 3  # front cover
@@ -990,6 +1002,14 @@ def apply_metadata_to_file(
                 audio["tracknumber"] = [tn]
             if any(_is_source_branding(c) for c in audio.get("comment", [])):
                 audio["comment"] = []
+            if source or source_quality:
+                # EasyID3 won't take arbitrary keys; register them as TXXX frames.
+                EasyID3.RegisterTXXXKey("source", "SOURCE")
+                EasyID3.RegisterTXXXKey("source_quality", "SOURCE_QUALITY")
+                if source:
+                    audio["source"] = source
+                if source_quality:
+                    audio["source_quality"] = source_quality
             audio.save()
             if has_art:
                 mp3 = MP3(str(file_path), ID3=ID3)
@@ -1015,6 +1035,11 @@ def apply_metadata_to_file(
             # \xa9cmt is the comment atom
             if any(_is_source_branding(c) for c in audio.get("\xa9cmt", [])):
                 audio["\xa9cmt"] = []
+            # Freeform atoms for our source/quality markers (values are bytes)
+            if source:
+                audio["----:com.musicgrabber:SOURCE"] = [source.encode("utf-8")]
+            if source_quality:
+                audio["----:com.musicgrabber:SOURCE_QUALITY"] = [source_quality.encode("utf-8")]
             if has_art:
                 fmt = MP4Cover.FORMAT_PNG if art_mime == "image/png" else MP4Cover.FORMAT_JPEG
                 audio["covr"] = [MP4Cover(album_art_bytes, imageformat=fmt)]
@@ -1045,6 +1070,10 @@ def apply_metadata_to_file(
                         audio["TOTALTRACKS"] = str(track_total)
                 if any(_is_source_branding(c) for c in audio.get("COMMENT", [])):
                     audio["COMMENT"] = []
+                if source:
+                    audio["SOURCE"] = source
+                if source_quality:
+                    audio["SOURCE_QUALITY"] = source_quality
                 if has_art:
                     pic = Picture()
                     pic.type = 3  # front cover

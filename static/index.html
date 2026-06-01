@@ -274,7 +274,7 @@
 
         <div id="watchedTabContainer" class="tab-panel">
             <div class="queue-header">
-                <h2 class="queue-section-heading">Watched Playlists / <a href="#watchedArtists" title="Jump to Watched Artists">Watched Artists &#8595;</a></h2>
+                <h2 class="queue-section-heading">Watched Playlists / <a href="#watchedArtists" title="Jump to Watched Artists">Watched Artists &#8595;</a> / <a href="#watchedUpgrades" title="Jump to Watched Upgrades">Watched Upgrades &#8595;</a></h2>
                 <button class="btn accent-btn" id="refreshAllWatchedBtn">Check All Now</button>
             </div>
             <div class="watched-add-panel">
@@ -440,6 +440,29 @@
                 <div id="artistAddStatus" style="display: none;" class="watched-status-box"></div>
             </div>
             <div id="watchedArtistList" class="results"></div>
+
+            <!-- Watched Upgrades section -->
+            <div id="watchedUpgrades" class="queue-header section-with-top-margin">
+                <h2 class="queue-section-heading">Watched Upgrades</h2>
+                <div class="upgrade-header-actions">
+                    <button class="btn btn-ghost" id="upgradeAllBtn" onclick="upgradeAll()" title="Best-effort: download and swap in every proposed upgrade">Upgrade All</button>
+                    <button class="btn accent-btn" id="rescanUpgradesBtn">Rescan Library</button>
+                </div>
+            </div>
+            <div class="watched-add-panel">
+                <p class="watched-panel-text">
+                    Files MusicGrabber downloaded that are sitting below the quality you currently download at. Hover a proposed upgrade to preview it before you commit. Your Albums are never touched, only Singles and playlist tracks.
+                </p>
+                <p id="upgradesDisabledNote" class="watched-schedule-info" style="display: none;">
+                    Track Upgrades are switched off. Turn them on in Settings, then run a scan, to see candidates here.
+                </p>
+            </div>
+            <div id="watchedUpgradesList" class="results"></div>
+            <div id="upgradesPager" class="upgrades-pager" style="display: none;">
+                <button class="btn btn-ghost" id="upgradesPrevBtn">&#8592; Prev</button>
+                <span id="upgradesPageInfo" class="upgrades-page-info"></span>
+                <button class="btn btn-ghost" id="upgradesNextBtn">Next &#8594;</button>
+            </div>
         </div>
 
         <div id="queueTabContainer" class="tab-panel">
@@ -693,7 +716,20 @@
                     <div class="settings-row admin-only">
                         <label for="settingMinBitrate">Minimum Audio Bitrate (kbps)</label>
                         <input type="number" id="settingMinBitrate" placeholder="0 (disabled)" value="0" min="0" max="320" class="settings-input-sm">
-                        <span class="settings-hint-sm">Downloads below this bitrate are rejected. 0 = no minimum.</span>
+                        <span class="settings-hint-sm">Downloads below this bitrate are rejected. 0 = no minimum. <strong>Separate from track upgrades below</strong>: this gates new downloads, not existing files.</span>
+                    </div>
+                    <label class="settings-label settings-label-wrap admin-only">
+                        <span>Track Upgrades (scan for better copies)</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingEnableTrackUpgrades">
+                            <span class="toggle-slider"></span>
+                        </div>
+                        <span class="settings-hint settings-hint-full">When on, MusicGrabber periodically scans library files it downloaded (Singles and playlist tracks, never Albums) and flags any sitting below the quality you already download at, so you can hold out for a lossless or higher-bitrate copy. The scan only looks; it never searches, downloads, or touches a file on its own. Off by default.</span>
+                    </label>
+                    <div class="settings-row admin-only">
+                        <label for="settingUpgradeScanInterval">Upgrade Scan Interval (hours)</label>
+                        <input type="number" id="settingUpgradeScanInterval" placeholder="24" value="24" min="1" max="720" class="settings-input-sm">
+                        <span class="settings-hint-sm">How often the library scan runs. Cheap and network-free, so daily (24) is plenty.</span>
                     </div>
                     <div class="settings-row">
                         <label for="settingSinglesSubdir">Singles Subfolder</label>
