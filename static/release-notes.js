@@ -9,7 +9,18 @@
 const RELEASE_NOTES = {
     "2.9.1": {
         title: "What's New in v2.9.1",
-        sections: [],
+        sections: [
+            {
+                heading: "Added",
+                items: [
+                    "Track Upgrades: a new opt-in feature for holding out for a better copy, Lidarr style. Accept a track now at whatever quality you can get, and MusicGrabber will quietly notice when something better turns up and offer to swap it in. It's off by default; turn it on in Settings.",
+                    "New 'Watched Upgrades' section under the Watched tab. It lists the files MusicGrabber downloaded that are sitting below the quality you normally download at (Singles and playlist tracks only, your Albums are never touched), and as you browse it searches each one for a better copy, showing the proposed source, quality, and match confidence. Verified sources like Monochrome say so; Soulseek results are honestly badged 'needs download to confirm'. Hover any proposal to preview it before you commit.",
+                    "Hit Upgrade (or Upgrade All) and MusicGrabber downloads the better copy to one side, checks it really is better and really is the same recording (duration, title/artist match, and an acoustic fingerprint), then moves your old file to a quarantine folder and drops the new one in its place. Tags and playlist entries are fixed up and Navidrome is told to rescan. If anything looks off, the download is binned and your file is left alone.",
+                    "The old file always goes to quarantine rather than the bin, so any upgrade is reversible. Quarantine is never auto-emptied; that's your call.",
+                    "Force anyway: if an upgrade gets knocked back because the proposed copy looks like a different recording (say you'd rather have the studio cut than your six-minute live rip), you can override it. It still quarantines the old file, so you can always change your mind.",
+                ]
+            }
+        ]
     },
     "2.9.0": {
         title: "What's New in v2.9.0",
