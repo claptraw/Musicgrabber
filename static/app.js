@@ -6689,7 +6689,7 @@
                         ${pxCount > 0 ? `<div style="flex: ${pxCount}; background: #e05c00; border-radius: 4px;"></div>` : ''}
                         ${scCount > 0 ? `<div style="flex: ${scCount}; background: #ff5500; border-radius: 4px;"></div>` : ''}
                         ${zvCount > 0 ? `<div style="flex: ${zvCount}; background: #7a6aee; border-radius: 4px;"></div>` : ''}
-                        ${fmcCount > 0 ? `<div style="flex: ${fmcCount}; background: #2e9e5b; border-radius: 4px;"></div>` : ''}
+                        ${fmcCount > 0 ? `<div style="flex: ${fmcCount}; background: #3a2fd6; border-radius: 4px;"></div>` : ''}
                         ${monoCount > 0 ? `<div style="flex: ${monoCount}; background: #0f766e; border-radius: 4px;"></div>` : ''}
                         ${slkCount > 0 ? `<div style="flex: ${slkCount}; background: #4a9eff; border-radius: 4px;"></div>` : ''}
                     </div>
@@ -6698,7 +6698,7 @@
                         ${pxCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #e05c00; border-radius: 2px; margin-right: 4px;"></span>MP3Phoenix: ${pxCount}</span>` : ''}
                         ${scCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff5500; border-radius: 2px; margin-right: 4px;"></span>SoundCloud: ${scCount}</span>` : ''}
                         ${zvCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #7a6aee; border-radius: 2px; margin-right: 4px;"></span>zvu4no: ${zvCount}</span>` : ''}
-                        ${fmcCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #2e9e5b; border-radius: 2px; margin-right: 4px;"></span>FreeMp3Cloud: ${fmcCount}</span>` : ''}
+                        ${fmcCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #3a2fd6; border-radius: 2px; margin-right: 4px;"></span>FreeMp3Cloud: ${fmcCount}</span>` : ''}
                         ${monoCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #0f766e; border-radius: 2px; margin-right: 4px;"></span>Monochrome: ${monoCount}</span>` : ''}
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #4a9eff; border-radius: 2px; margin-right: 4px;"></span>Soulseek: ${slkCount}</span>
                     </div>

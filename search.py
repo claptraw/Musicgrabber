@@ -181,7 +181,7 @@ SOURCE_REGISTRY = {
     "freemp3cloud": {
         "label": "FreeMp3Cloud",
         "badge": "FMC",
-        "colour": "#2e9e5b",
+        "colour": "#3a2fd6",
         "search_fn": search_freemp3cloud,
         "has_preview": True,
     },
