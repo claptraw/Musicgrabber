@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.9.1 (DEV)
+## v2.9.1 (2026-06-04)
 
 ### Added
 - **New search source: FreeMp3Cloud**: a sixth web source (g2.freemp3cloud.com, backed by the meln.top CDN) joining the MP3 fallback ranks. It is quality-aware: results the site tags "HQ" are genuine 320 kbps and get scored at the same tier as MP3Phoenix, while the un-tagged 128 kbps ones are demoted so they only ever surface when nothing better exists. Toggle it in Settings under Search Sources (on by default), hover-preview works, and it slots into the upgrade scanner's tiering too. As with the other lossy web sources, lossless still always wins.
