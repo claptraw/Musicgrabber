@@ -20,6 +20,12 @@ const RELEASE_NOTES = {
                     "The old file always goes to quarantine rather than the bin, so any upgrade is reversible. Quarantine is never auto-emptied; that's your call.",
                     "Force anyway: if an upgrade gets knocked back because the proposed copy looks like a different recording (say you'd rather have the studio cut than your six-minute live rip), you can override it. It still quarantines the old file, so you can always change your mind.",
                 ]
+            },
+            {
+                heading: "Fixed",
+                items: [
+                    "Spotify playlist imports no longer fall over when Spotify has a momentary wobble. Their embed servers throw the odd gateway timeout, and one of those used to fail the whole import; now it quietly retries a couple of times first, so a blip sorts itself out instead of bringing the playlist down with it.",
+                ]
             }
         ]
     },

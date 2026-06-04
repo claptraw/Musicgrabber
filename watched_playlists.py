@@ -18,6 +18,7 @@ from fastapi import HTTPException
 
 from constants import (
     TIMEOUT_YTDLP_PLAYLIST, TIMEOUT_HTTP_SPOTIFY,
+    SPOTIFY_EMBED_MAX_ATTEMPTS, SPOTIFY_EMBED_RETRY_BACKOFF,
     WATCHED_PLAYLIST_CHECK_HOURS, WATCHED_REFRESH_STALE_SECONDS,
     WATCHED_GONE_STRIKES_BEFORE_PAUSE,
     LISTENBRAINZ_API_URL, TIMEOUT_LISTENBRAINZ, TIMEOUT_LISTENBRAINZ_PLAYLIST,
@@ -267,32 +268,54 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
     # Fetch the embed page. Spotify's public playlist API is gone, so we scrape the
     # embed HTML which includes a predictable JSON-in-HTML "title"/"subtitle" pattern.
     # If this breaks, inspect the embed HTML for renamed fields or a new data blob.
-    try:
-        with httpx.Client(timeout=TIMEOUT_HTTP_SPOTIFY, follow_redirects=True) as client:
-            response = client.get(
-                f"https://open.spotify.com/embed/{spotify_type}/{spotify_id}",
-                headers=headers,
-                cookies=cookies,
+    # Spotify's embed edge has a habit of throwing the odd transient 502/503/504
+    # (gateway timeouts under load) or dropping the connection. One blip
+    # shouldn't sink the whole fetch, so we retry a few times with a short
+    # linear backoff. 401/403/404 are NOT transient (private/missing playlist),
+    # so a definitive answer breaks out of the loop and is handled below.
+    embed_url = f"https://open.spotify.com/embed/{spotify_type}/{spotify_id}"
+    response = None
+    last_error = None
+    for attempt in range(SPOTIFY_EMBED_MAX_ATTEMPTS):
+        try:
+            with httpx.Client(timeout=TIMEOUT_HTTP_SPOTIFY, follow_redirects=True) as client:
+                response = client.get(embed_url, headers=headers, cookies=cookies)
+        except httpx.RequestError as e:
+            response = None
+            last_error = e
+        else:
+            if response.status_code not in (502, 503, 504):
+                break  # definitive answer (200/401/403/404/...), stop retrying
+            last_error = httpx.HTTPStatusError(
+                f"transient {response.status_code} from Spotify embed",
+                request=response.request, response=response,
             )
-            if response.status_code in (401, 403):
-                # Embed refused. Could be a private playlist or stale cookies.
-                # The headless browser handles both cases more gracefully
-                # when sp_dc is available, so try that before giving up.
-                if sp_dc:
-                    print(
-                        f"Spotify embed returned {response.status_code} for "
-                        f"{spotify_type} {spotify_id}, trying headless browser..."
+        if attempt < SPOTIFY_EMBED_MAX_ATTEMPTS - 1:
+            time.sleep(SPOTIFY_EMBED_RETRY_BACKOFF * (attempt + 1))
+
+    try:
+        if response is None:
+            # Every attempt hit a connection-level error; surface the last one.
+            raise HTTPException(status_code=502, detail=f"Failed to connect to Spotify: {last_error}")
+        if response.status_code in (401, 403):
+            # Embed refused. Could be a private playlist or stale cookies.
+            # The headless browser handles both cases more gracefully
+            # when sp_dc is available, so try that before giving up.
+            if sp_dc:
+                print(
+                    f"Spotify embed returned {response.status_code} for "
+                    f"{spotify_type} {spotify_id}, trying headless browser..."
+                )
+                try:
+                    return fetch_spotify_playlist_via_browser(
+                        spotify_id, spotify_type, sp_dc=sp_dc, user_id=user_id,
                     )
-                    try:
-                        return fetch_spotify_playlist_via_browser(
-                            spotify_id, spotify_type, sp_dc=sp_dc, user_id=user_id,
-                        )
-                    except HTTPException as browser_exc:
-                        if browser_exc.detail == "spotify_cookies_expired":
-                            _flag_spotify_cookies_expired(user_id)
-                        raise
-                raise HTTPException(status_code=403, detail=f"{spotify_type.title()} not found or is private")
-            response.raise_for_status()
+                except HTTPException as browser_exc:
+                    if browser_exc.detail == "spotify_cookies_expired":
+                        _flag_spotify_cookies_expired(user_id)
+                    raise
+            raise HTTPException(status_code=403, detail=f"{spotify_type.title()} not found or is private")
+        response.raise_for_status()
     except HTTPException:
         raise
     except httpx.HTTPStatusError as e:

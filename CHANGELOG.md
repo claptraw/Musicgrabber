@@ -10,6 +10,9 @@
 - **Force upgrade**: if a proposal is rejected by the same-recording checks (say you'd rather have the studio cut than your longer "HD" YouTube rip), the rejected row offers a "Force anyway" button. It skips the identity gates but still downloads a valid file and still moves the old one to quarantine, so a forced choice is always reversible.
 - **Scan now sees through transcoded FLACs**: a lossy track converted to FLAC is a FLAC container but lossy audio. The scan now reads the honest origin from the SOURCE_QUALITY tag and tiers by that, so e.g. a YouTube-sourced "FLAC" correctly shows as upgradeable to real lossless instead of hiding as already-lossless.
 
+### Fixed
+- **Spotify playlist fetches no longer fall over on a transient Spotify hiccup**: Spotify's embed edge throws the occasional 502/503/504 gateway timeout (especially under load), and a single one of those used to fail the whole playlist fetch with a hard 502. The embed fetch now retries a few times with a short backoff before giving up, so a momentary blip self-heals instead of taking the playlist down with it. A genuine, persistent outage still fails loudly after the retries, as it should. Tuneable via `SPOTIFY_EMBED_MAX_ATTEMPTS` / `SPOTIFY_EMBED_RETRY_BACKOFF`.
+
 ## v2.9.0 (2026-05-31)
 
 ### Added
