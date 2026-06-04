@@ -24,6 +24,7 @@ const RELEASE_NOTES = {
             {
                 heading: "Fixed",
                 items: [
+                    "A track no longer fails to download just because YouTube hiccupped on the cover art. If the thumbnail can't be fetched, MusicGrabber now keeps the audio (which had already downloaded and tagged fine) instead of binning the whole thing; you just won't get embedded artwork on those rare occasions.",
                     "Spotify playlist imports no longer fall over when Spotify has a momentary wobble. Their embed servers throw the odd gateway timeout, and one of those used to fail the whole import; now it quietly retries a couple of times first, so a blip sorts itself out instead of bringing the playlist down with it.",
                 ]
             }

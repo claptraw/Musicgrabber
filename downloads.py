@@ -1666,6 +1666,24 @@ def _is_postprocess_conversion_failure(stderr: str) -> bool:
     return "postprocessing" in s and "conversion failed" in s
 
 
+def _is_thumbnail_postprocess_failure(stderr: str) -> bool:
+    """Return True when yt-dlp choked on the thumbnail rather than the audio.
+
+    YouTube's thumbnail CDN is flaky, so the embed/convert step occasionally
+    dies with a bare "[Errno 2] No such file or directory: '...webp'" even
+    though the audio (and its metadata) downloaded perfectly. That error is
+    fatal to yt-dlp but it shouldn't be fatal to us: losing a track over a
+    missing bit of cover art would be daft. Treat it as recoverable so the
+    existing salvage path keeps the audio.
+    """
+    s = (stderr or "").lower()
+    if "thumbnail" in s:
+        return True
+    if "no such file or directory" in s and (".webp" in s or ".jpg" in s or ".png" in s):
+        return True
+    return False
+
+
 def _recover_from_ytdlp_postprocess_failure(artist_dir: Path, sanitized_title: str, stderr: str) -> Path | None:
     """Recover when yt-dlp reports conversion failure but a usable output exists.
 
@@ -1673,7 +1691,7 @@ def _recover_from_ytdlp_postprocess_failure(artist_dir: Path, sanitized_title: s
     valid final file is already present (often with a leftover zero-byte temp file).
     If the resolved output passes integrity checks, continue and clean temp files.
     """
-    if not _is_postprocess_conversion_failure(stderr):
+    if not (_is_postprocess_conversion_failure(stderr) or _is_thumbnail_postprocess_failure(stderr)):
         return None
 
     try:

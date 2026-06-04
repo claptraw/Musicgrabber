@@ -114,6 +114,23 @@ def _import_downloads_or_skip():
     return downloads
 
 
+@pytest.mark.parametrize("stderr, expected", [
+    # The exact shape that flaked a release build: YouTube's thumbnail CDN
+    # didn't serve the .webp, so the convert/embed step died even though the
+    # audio downloaded fine. Must be recoverable, not fatal.
+    ("ERROR: [Errno 2] No such file or directory: '/music/Singles/jawed/Me at the zoo.webp'", True),
+    ("ERROR: Unable to embed thumbnail in the output file", True),
+    ("ERROR: [Errno 2] No such file or directory: cover.jpg", True),
+    # Genuine audio failures must NOT be swallowed as recoverable thumbnail blips.
+    ("ERROR: unable to download video data: HTTP Error 403: Forbidden", False),
+    ("ERROR: Postprocessing: Conversion failed!", False),
+    ("", False),
+])
+def test_thumbnail_postprocess_failure_detection(stderr, expected):
+    downloads = _import_downloads_or_skip()
+    assert downloads._is_thumbnail_postprocess_failure(stderr) is expected
+
+
 def test_auto_route_single_uses_album_artist_for_folder(tmp_path, monkeypatch):
     downloads = _import_downloads_or_skip()
 

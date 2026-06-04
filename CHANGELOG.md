@@ -11,6 +11,7 @@
 - **Scan now sees through transcoded FLACs**: a lossy track converted to FLAC is a FLAC container but lossy audio. The scan now reads the honest origin from the SOURCE_QUALITY tag and tiers by that, so e.g. a YouTube-sourced "FLAC" correctly shows as upgradeable to real lossless instead of hiding as already-lossless.
 
 ### Fixed
+- **A flaky YouTube thumbnail no longer sinks the whole download**: YouTube's thumbnail CDN occasionally fails to serve the cover art, and yt-dlp treated that as fatal, binning a track whose audio had already downloaded perfectly (and was already tagged). The download path now recognises a thumbnail-only post-process failure and salvages the audio via the existing recovery route, so you get your track (just without embedded cover art on those rare occasions) instead of a failed job. Genuine audio failures still fail, as they should.
 - **Spotify playlist fetches no longer fall over on a transient Spotify hiccup**: Spotify's embed edge throws the occasional 502/503/504 gateway timeout (especially under load), and a single one of those used to fail the whole playlist fetch with a hard 502. The embed fetch now retries a few times with a short backoff before giving up, so a momentary blip self-heals instead of taking the playlist down with it. A genuine, persistent outage still fails loudly after the retries, as it should. Tuneable via `SPOTIFY_EMBED_MAX_ATTEMPTS` / `SPOTIFY_EMBED_RETRY_BACKOFF`.
 
 ## v2.9.0 (2026-05-31)
