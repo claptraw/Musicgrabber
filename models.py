@@ -19,7 +19,7 @@ def _validate_mbid(v: str | None) -> str | None:
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: int = 15
-    source: str = "all"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", or "all"
+    source: str = "all"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", "freemp3cloud", or "all"
 
 class DownloadRequest(BaseModel):
     video_id: str
@@ -29,7 +29,7 @@ class DownloadRequest(BaseModel):
     download_type: str = "single"  # "single" or "playlist"
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
     # Source routing
-    source: str = "youtube"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", or "soulseek"
+    source: str = "youtube"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", "freemp3cloud", or "soulseek"
     source_url: Optional[str] = None  # Full URL for non-YouTube sources (e.g. SoundCloud/MP3Phoenix)
     # Soulseek-specific fields
     slskd_username: Optional[str] = None
@@ -119,6 +119,7 @@ class SettingsUpdate(BaseModel):
     source_mp3phoenix_enabled: Optional[bool] = None
     source_soundcloud_enabled: Optional[bool] = None
     source_zvu4no_enabled: Optional[bool] = None
+    source_freemp3cloud_enabled: Optional[bool] = None
     source_soulseek_enabled: Optional[bool] = None
     source_monochrome_enabled: Optional[bool] = None
     source_offline_fallback: Optional[bool] = None
@@ -180,7 +181,7 @@ class SearchResult(BaseModel):
     is_playlist: bool = False
     video_count: Optional[int] = None
     # Multi-source support
-    source: str = "youtube"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", or "soulseek"
+    source: str = "youtube"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", "freemp3cloud", or "soulseek"
     source_url: Optional[str] = None  # Full URL for non-YouTube sources
     quality: Optional[str] = None  # e.g., None for YouTube, format string for others
     quality_score: int = 40  # For sorting (higher = better)
@@ -194,7 +195,7 @@ class BlacklistRequest(BaseModel):
     job_id: Optional[str] = None
     video_id: Optional[str] = None
     uploader: Optional[str] = None
-    source: str = "youtube"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", or "soulseek"
+    source: str = "youtube"  # "youtube", "soundcloud", "mp3phoenix", "zvu4no", "freemp3cloud", or "soulseek"
     reason: str = "other"  # wrong_track, poor_quality, slowed_pitched, contentid, other
     note: Optional[str] = None  # Optional free-text detail
     block_uploader: bool = False  # Also blacklist the uploader

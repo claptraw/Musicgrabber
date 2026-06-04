@@ -17,6 +17,7 @@ from constants import (
     SEARCH_MAX_PER_SOURCE,
     SEARCH_MAX_PER_SOURCE_YOUTUBE, SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
     SEARCH_MAX_PER_SOURCE_SOUNDCLOUD, SEARCH_MAX_PER_SOURCE_ZVU4NO,
+    SEARCH_MAX_PER_SOURCE_FREEMP3CLOUD,
     SEARCH_MAX_PER_SOURCE_SOULSEEK, SEARCH_MAX_PER_SOURCE_MONOCHROME,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
@@ -26,6 +27,7 @@ from monochrome import search_monochrome, monochrome_enabled
 from mp3phoenix import search_mp3phoenix
 from slskd import slskd_enabled, search_slskd
 from zvu4no import search_zvu4no
+from freemp3cloud import search_freemp3cloud
 import servicecheck
 from youtube import (
     search_youtube, score_search_result_with_breakdown, format_score_breakdown, parse_duration,
@@ -176,6 +178,13 @@ SOURCE_REGISTRY = {
         "search_fn": search_zvu4no,
         "has_preview": True,
     },
+    "freemp3cloud": {
+        "label": "FreeMp3Cloud",
+        "badge": "FMC",
+        "colour": "#2e9e5b",
+        "search_fn": search_freemp3cloud,
+        "has_preview": True,
+    },
     "soulseek": {
         "label": "Soulseek",
         "badge": "SLK",
@@ -199,6 +208,7 @@ SEARCH_MAX_PER_SOURCE_BY_SOURCE = {
     "mp3phoenix": SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
     "soundcloud": SEARCH_MAX_PER_SOURCE_SOUNDCLOUD,
     "zvu4no": SEARCH_MAX_PER_SOURCE_ZVU4NO,
+    "freemp3cloud": SEARCH_MAX_PER_SOURCE_FREEMP3CLOUD,
     "soulseek": SEARCH_MAX_PER_SOURCE_SOULSEEK,
     "monochrome": SEARCH_MAX_PER_SOURCE_MONOCHROME,
 }

@@ -1108,7 +1108,7 @@
                     // Build preview URL with source params
                     const previewSource = (result && result.source) || 'youtube';
                     const params = new URLSearchParams({ source: previewSource });
-                    if ((previewSource === 'soundcloud' || previewSource === 'mp3phoenix' || previewSource === 'zvu4no' || previewSource === 'monochrome') && result.source_url) {
+                    if ((previewSource === 'soundcloud' || previewSource === 'mp3phoenix' || previewSource === 'zvu4no' || previewSource === 'freemp3cloud' || previewSource === 'monochrome') && result.source_url) {
                         params.set('url', result.source_url);
                     }
                     const response = await apiFetch(`/api/preview/${encodeURIComponent(videoId)}?${params}`);
@@ -1848,12 +1848,12 @@
         }
 
         function getSourceBadge(source) {
-            const badges = { youtube: 'YT', mp3phoenix: 'PX', soundcloud: 'SC', zvu4no: 'ZV', soulseek: 'SLK', monochrome: 'MONO' };
+            const badges = { youtube: 'YT', mp3phoenix: 'PX', soundcloud: 'SC', zvu4no: 'ZV', freemp3cloud: 'FMC', soulseek: 'SLK', monochrome: 'MONO' };
             return badges[source] || source.toUpperCase().slice(0, 3);
         }
 
         function getSourceLabel(source) {
-            const labels = { youtube: 'YouTube', mp3phoenix: 'MP3Phoenix', soundcloud: 'SoundCloud', zvu4no: 'zvu4no', soulseek: 'Soulseek', monochrome: 'Monochrome' };
+            const labels = { youtube: 'YouTube', mp3phoenix: 'MP3Phoenix', soundcloud: 'SoundCloud', zvu4no: 'zvu4no', freemp3cloud: 'FreeMp3Cloud', soulseek: 'Soulseek', monochrome: 'Monochrome' };
             return labels[source] || source;
         }
 
@@ -2142,7 +2142,7 @@
                 }
 
                 // URL-based sources need the full URL for downloading
-                if ((result.source === 'soundcloud' || result.source === 'mp3phoenix' || result.source === 'zvu4no' || result.source === 'monochrome') && result.source_url) {
+                if ((result.source === 'soundcloud' || result.source === 'mp3phoenix' || result.source === 'zvu4no' || result.source === 'freemp3cloud' || result.source === 'monochrome') && result.source_url) {
                     payload.source_url = result.source_url;
                 }
 
@@ -2438,6 +2438,7 @@
                 'soundcloud_guessed': 'SoundCloud embedded/guessed',
                 'mp3phoenix_guessed': 'MP3Phoenix embedded/guessed',
                 'zvu4no_guessed': 'zvu4no embedded/guessed',
+                'freemp3cloud_guessed': 'FreeMp3Cloud embedded/guessed',
                 'soulseek_guessed': 'Soulseek embedded/guessed',
             };
             return labels[source] || metadataSource;
@@ -5912,7 +5913,7 @@
         let upgradesSearchToken = 0;  // bumped to abort an in-flight lazy-search sweep
         const UPGRADE_SOURCE_BADGES = {
             youtube: 'YT', monochrome: 'MONO', soulseek: 'SLK',
-            soundcloud: 'SC', mp3phoenix: 'PX', zvu4no: 'ZV',
+            soundcloud: 'SC', mp3phoenix: 'PX', zvu4no: 'ZV', freemp3cloud: 'FMC',
         };
 
         function upgradeTierLabel(tier) {
@@ -6628,9 +6629,10 @@
             const pxCount = data.sources.mp3phoenix || 0;
             const scCount = data.sources.soundcloud || 0;
             const zvCount = data.sources.zvu4no || 0;
+            const fmcCount = data.sources.freemp3cloud || 0;
             const slkCount = data.sources.soulseek || 0;
             const monoCount = data.sources.monochrome || 0;
-            const sourceTotal = ytCount + pxCount + scCount + zvCount + slkCount + monoCount || 1;
+            const sourceTotal = ytCount + pxCount + scCount + zvCount + fmcCount + slkCount + monoCount || 1;
 
             let html = `
                 <!-- Summary cards -->
@@ -6686,6 +6688,8 @@
                         ${ytCount > 0 ? `<div style="flex: ${ytCount}; background: #ff0000; border-radius: 4px;"></div>` : ''}
                         ${pxCount > 0 ? `<div style="flex: ${pxCount}; background: #e05c00; border-radius: 4px;"></div>` : ''}
                         ${scCount > 0 ? `<div style="flex: ${scCount}; background: #ff5500; border-radius: 4px;"></div>` : ''}
+                        ${zvCount > 0 ? `<div style="flex: ${zvCount}; background: #7a6aee; border-radius: 4px;"></div>` : ''}
+                        ${fmcCount > 0 ? `<div style="flex: ${fmcCount}; background: #2e9e5b; border-radius: 4px;"></div>` : ''}
                         ${monoCount > 0 ? `<div style="flex: ${monoCount}; background: #0f766e; border-radius: 4px;"></div>` : ''}
                         ${slkCount > 0 ? `<div style="flex: ${slkCount}; background: #4a9eff; border-radius: 4px;"></div>` : ''}
                     </div>
@@ -6694,6 +6698,7 @@
                         ${pxCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #e05c00; border-radius: 2px; margin-right: 4px;"></span>MP3Phoenix: ${pxCount}</span>` : ''}
                         ${scCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #ff5500; border-radius: 2px; margin-right: 4px;"></span>SoundCloud: ${scCount}</span>` : ''}
                         ${zvCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #7a6aee; border-radius: 2px; margin-right: 4px;"></span>zvu4no: ${zvCount}</span>` : ''}
+                        ${fmcCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #2e9e5b; border-radius: 2px; margin-right: 4px;"></span>FreeMp3Cloud: ${fmcCount}</span>` : ''}
                         ${monoCount > 0 ? `<span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #0f766e; border-radius: 2px; margin-right: 4px;"></span>Monochrome: ${monoCount}</span>` : ''}
                         <span style="color: var(--text-secondary);"><span style="display: inline-block; width: 8px; height: 8px; background: #4a9eff; border-radius: 2px; margin-right: 4px;"></span>Soulseek: ${slkCount}</span>
                     </div>
@@ -6797,6 +6802,7 @@
             'source_mp3phoenix_enabled': 'settingSourceMp3phoenix',
             'source_soundcloud_enabled': 'settingSourceSoundcloud',
             'source_zvu4no_enabled': 'settingSourceZvu4no',
+            'source_freemp3cloud_enabled': 'settingSourceFreemp3cloud',
             'source_soulseek_enabled': 'settingSourceSoulseek',
             'source_monochrome_enabled': 'settingSourceMonochrome',
             'source_offline_fallback': 'settingSourceOfflineFallback',

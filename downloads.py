@@ -55,6 +55,7 @@ from utils import (
 from monochrome import download_monochrome_track
 from mp3phoenix import download_mp3phoenix_track
 from zvu4no import download_zvu4no_track
+from freemp3cloud import download_freemp3cloud_track
 from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, _strip_cookies_args,
     _should_retry_without_cookies, _sleep_if_botted, _note_bot_block, _note_cookie_failure,
@@ -75,6 +76,8 @@ def _default_metadata_source(source: str) -> str:
         return "mp3phoenix_guessed"
     if source_name == "zvu4no":
         return "zvu4no_guessed"
+    if source_name == "freemp3cloud":
+        return "freemp3cloud_guessed"
     if source_name == "soulseek":
         return "soulseek_guessed"
     return "youtube_guessed"
@@ -3560,6 +3563,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
     is_soundcloud  = source_url and "soundcloud.com" in source_url
     is_mp3phoenix  = source_url and "mp3phoenix.net" in source_url
     is_zvu4no      = source_url and "zvu4no.org" in source_url
+    is_freemp3cloud = source_url and "meln.top" in source_url
     is_monochrome  = source_url and source_url.startswith("monochrome://")
     is_url_source  = bool(source_url)
 
@@ -3592,7 +3596,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
     # Direct stream sources: bypass yt-dlp entirely.
     # artist/title come from the job row (set at queue time from search results).
-    if is_monochrome or is_mp3phoenix or is_zvu4no:
+    if is_monochrome or is_mp3phoenix or is_zvu4no or is_freemp3cloud:
         with db_conn() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
@@ -3600,14 +3604,22 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             ).fetchone()
         artist_hint = (row["artist"] or "") if row else ""
         title_hint  = (row["title"]  or "") if row else ""
+        if is_monochrome:
+            direct_label, direct_fn = "monochrome", download_monochrome_track
+        elif is_zvu4no:
+            direct_label, direct_fn = "zvu4no", download_zvu4no_track
+        elif is_freemp3cloud:
+            direct_label, direct_fn = "freemp3cloud", download_freemp3cloud_track
+        else:
+            direct_label, direct_fn = "mp3phoenix", download_mp3phoenix_track
         _process_direct_mp3_download(
             job_id, source_url, artist_hint, title_hint,
             convert_to_flac, playlist_name, use_playlists_dir,
             video_id=video_id, attempted_ids=attempted_ids, user_id=user_id,
             override_dir=override_dir, skip_dupe_check=skip_dupe_check,
             custom_subdir=custom_subdir,
-            source_label="monochrome" if is_monochrome else ("zvu4no" if is_zvu4no else "mp3phoenix"),
-            download_fn=download_monochrome_track if is_monochrome else (download_zvu4no_track if is_zvu4no else download_mp3phoenix_track),
+            source_label=direct_label,
+            download_fn=direct_fn,
         )
         return
 

@@ -86,8 +86,8 @@ from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks
 from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 from coverart import fetch_cover_art_url
 
-URL_BASED_SOURCES = {"soundcloud", "mp3phoenix", "zvu4no", "monochrome"}
-DIRECT_PREVIEW_SOURCES = {"mp3phoenix", "zvu4no"}
+URL_BASED_SOURCES = {"soundcloud", "mp3phoenix", "zvu4no", "freemp3cloud", "monochrome"}
+DIRECT_PREVIEW_SOURCES = {"mp3phoenix", "zvu4no", "freemp3cloud"}
 MONOCHROME_PREVIEW_SOURCES = {"monochrome"}
 
 
