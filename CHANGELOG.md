@@ -2,6 +2,9 @@
 
 ## v2.9.2 (DEV)
 
+### Added
+- **Monochrome search now survives monochrome.tf being down**: Monochrome's search leg leaned entirely on the hifi-api (the Tidal gateway), which is the flaky bit, so when monochrome.tf fell over you got nothing, even though the Qobuz download leg (via qbdlx) was perfectly healthy. Search now falls back to querying Qobuz directly through the existing qbdlx shared-token pool when the hifi-api comes back empty. Results carry an ISRC so the normal download path is unchanged, and they're honestly labelled LOSSLESS (the free shared tokens cap at 16-bit/44.1kHz, even where Qobuz lists a hi-res master). When monochrome.tf is up you still get the full Tidal catalogue and hi-res as before; the fallback only steps in when the primary search returns nothing. Net effect: a real lossless FLAC instead of a dead source.
+
 ## v2.9.1 (2026-06-04)
 
 ### Added

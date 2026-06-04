@@ -411,8 +411,103 @@ def _monochrome_search_queries(query: str) -> list[str]:
     return queries
 
 
+def _qbdlx_search_fallback(query: str, limit: int) -> list[dict]:
+    """Search Qobuz directly via qbdlx when the hifi-api search leg is dead.
+
+    The hifi-api (Tidal gateway) is the flaky single point of failure for
+    Monochrome search. qbdlx already talks to the real Qobuz API for downloads,
+    so we reuse its token pool to search the catalogue too. Results carry an
+    ISRC, so the existing monochrome:// download path works unchanged; quality
+    is honestly LOSSLESS (16/44.1) since the free shared tokens cap there, even
+    when Qobuz reports a hi-res master exists.
+    """
+    try:
+        from qbdlx import search_qobuz_catalog
+        raw_items = search_qobuz_catalog(query, limit * 2)
+    except Exception as exc:
+        print(f"Monochrome: qbdlx search fallback errored: {exc}")
+        return []
+    if not raw_items:
+        return []
+
+    results = []
+    seen_isrcs = set()
+    for item in raw_items:
+        if not item.get("streamable", True):
+            continue
+        isrc = (item.get("isrc") or "").strip()
+        title = (item.get("title") or "").strip()
+        artist = ((item.get("performer") or {}).get("name") or "").strip()
+        # No ISRC means the download leg can't resolve it on Qobuz; skip it,
+        # same rule the hifi-api path applies.
+        if not (isrc and title and artist):
+            continue
+        if isrc in seen_isrcs:
+            continue
+        seen_isrcs.add(isrc)
+
+        album = ((item.get("album") or {}).get("title") or "")
+        cover = ((item.get("album") or {}).get("image") or {}).get("large", "") or \
+                ((item.get("album") or {}).get("image") or {}).get("thumbnail", "")
+        duration = item.get("duration") or 0
+        version = item.get("version") or ""
+
+        combined = f"{artist} - {title}"
+        quality_score, score_breakdown = score_search_result_with_breakdown(
+            combined, artist, query,
+            duration_seconds=duration or None,
+            view_count=None,
+            album=album,
+        )
+        bonus = _QUALITY_BONUS["LOSSLESS"]
+        quality_score += bonus
+        score_breakdown.append(f"source_quality=+{bonus}")
+        score_breakdown.append("via=qbdlx-direct (hifi-api down)")
+
+        for delta, reason in (
+            _version_penalty(version, query),
+            _album_edition_penalty(album, query),
+        ):
+            if delta:
+                quality_score += delta
+                score_breakdown.append(reason)
+
+        # tidal_id slot carries the Qobuz track id here; the download path keys
+        # off the ISRC, so the netloc is purely informational.
+        params = urlencode({"isrc": isrc, "quality": "LOSSLESS"})
+        source_url = f"monochrome://{item.get('id', '')}?{params}"
+        video_id = f"mono_{hashlib.md5(source_url.encode()).hexdigest()[:12]}"
+
+        results.append({
+            "video_id": video_id,
+            "title": title,
+            "channel": artist,
+            "duration": parse_duration(duration) if duration else "",
+            "thumbnail": cover,
+            "is_playlist": False,
+            "video_count": None,
+            "source": "monochrome",
+            "source_url": source_url,
+            "quality": "LOSSLESS",
+            "quality_score": quality_score,
+            "score_breakdown": score_breakdown,
+            "slskd_username": None,
+            "slskd_filename": None,
+            "slskd_size": None,
+        })
+
+    results.sort(key=lambda x: x["quality_score"], reverse=True)
+    if results:
+        print(f"Monochrome: hifi-api search empty, served {len(results)} result(s) via qbdlx direct Qobuz")
+    return results[:limit]
+
+
 def search_monochrome(query: str, limit: int) -> list[dict]:
-    """Search Tidal via hifi-api and return normalised result dicts."""
+    """Search Tidal via hifi-api and return normalised result dicts.
+
+    Falls back to a direct Qobuz catalogue search (via qbdlx) when the hifi-api
+    leg yields nothing, so the source survives monochrome.tf being down.
+    """
     try:
         items = []
         seen_raw_ids = set()
@@ -520,11 +615,16 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
             })
 
         results.sort(key=lambda x: x["quality_score"], reverse=True)
+        # hifi-api gave us nothing (down, or genuinely no match): try Qobuz direct.
+        if not results:
+            return _qbdlx_search_fallback(query, limit)
         return results[:limit]
 
     except Exception as e:
         print(f"Monochrome search error: {e}")
-        return []
+        # Even a hard failure in the hifi-api path shouldn't kill the source
+        # outright if qbdlx can still reach Qobuz.
+        return _qbdlx_search_fallback(query, limit)
 
 
 class QobuzProxyError(RuntimeError):

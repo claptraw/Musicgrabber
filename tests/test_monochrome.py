@@ -550,6 +550,90 @@ def test_monochrome_playlist_fetch_handles_top_level_playlist_payload(monkeypatc
     ]
 
 
+# ---------------------------------------------------------------------------
+# qbdlx direct-Qobuz search fallback (when the hifi-api search leg is down)
+# ---------------------------------------------------------------------------
+
+def _make_qobuz_catalog_item(track_id=8767428, isrc="USQX91300809", title="Get Lucky",
+                             artist="Daft Punk", album="Random Access Memories",
+                             streamable=True, version=""):
+    """A minimal Qobuz catalog/search track item, shaped like the real API."""
+    return {
+        "id": track_id,
+        "isrc": isrc,
+        "title": title,
+        "performer": {"name": artist},
+        "album": {"title": album, "image": {"large": "https://img.test/large.jpg"}},
+        "duration": 247,
+        "version": version,
+        "streamable": streamable,
+    }
+
+
+def test_qbdlx_search_fallback_maps_items(monkeypatch):
+    import monochrome
+    monkeypatch.setattr("qbdlx.search_qobuz_catalog",
+                        lambda q, limit: [_make_qobuz_catalog_item()])
+
+    results = monochrome._qbdlx_search_fallback("daft punk get lucky", 5)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r["source"] == "monochrome"
+    assert r["quality"] == "LOSSLESS"          # free tokens cap here, labelled honestly
+    assert r["channel"] == "Daft Punk"
+    assert r["title"] == "Get Lucky"
+    assert r["thumbnail"] == "https://img.test/large.jpg"
+    assert r["source_url"].startswith("monochrome://8767428?")
+    assert "isrc=USQX91300809" in r["source_url"]
+    assert "quality=LOSSLESS" in r["source_url"]
+    assert any("qbdlx-direct" in b for b in r["score_breakdown"])
+
+
+def test_qbdlx_search_fallback_skips_no_isrc_and_unstreamable(monkeypatch):
+    import monochrome
+    items = [
+        _make_qobuz_catalog_item(track_id=1, isrc="", title="No ISRC"),
+        _make_qobuz_catalog_item(track_id=2, streamable=False, title="Not streamable"),
+        _make_qobuz_catalog_item(track_id=3, isrc="GBABC1234567", title="Good"),
+    ]
+    monkeypatch.setattr("qbdlx.search_qobuz_catalog", lambda q, limit: items)
+
+    results = monochrome._qbdlx_search_fallback("x", 5)
+
+    assert [r["title"] for r in results] == ["Good"]
+
+
+def test_qbdlx_search_fallback_dedupes_by_isrc(monkeypatch):
+    import monochrome
+    items = [
+        _make_qobuz_catalog_item(track_id=10, isrc="USQX91300809", title="Get Lucky"),
+        _make_qobuz_catalog_item(track_id=11, isrc="USQX91300809", title="Get Lucky (dupe)"),
+    ]
+    monkeypatch.setattr("qbdlx.search_qobuz_catalog", lambda q, limit: items)
+
+    results = monochrome._qbdlx_search_fallback("x", 5)
+
+    assert len(results) == 1
+
+
+def test_search_monochrome_falls_back_to_qbdlx_when_hifi_api_down(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_hifi_api_urls", lambda: ["https://dead.example.test"])
+
+    def boom(*a, **k):
+        raise RuntimeError("hifi-api dead")
+    monkeypatch.setattr(monochrome.httpx, "get", boom)
+    monkeypatch.setattr("qbdlx.search_qobuz_catalog",
+                        lambda q, limit: [_make_qobuz_catalog_item()])
+
+    results = monochrome.search_monochrome("daft punk get lucky", 5)
+
+    assert results
+    assert results[0]["title"] == "Get Lucky"
+    assert any("qbdlx-direct" in b for b in results[0]["score_breakdown"])
+
+
 def test_monochrome_playlist_urls_detect_as_monochrome():
     from watched_playlists import detect_playlist_platform
 

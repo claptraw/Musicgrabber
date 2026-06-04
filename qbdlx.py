@@ -154,6 +154,34 @@ def resolve_qobuz_track_id(isrc: str) -> int | None:
     return None
 
 
+def search_qobuz_catalog(query: str, limit: int = 10) -> list[dict]:
+    """Search the Qobuz catalogue by free text via the shared token pool.
+
+    This is the search-leg counterpart to the download fallback: when
+    Monochrome's hifi-api is face-down, we can still find tracks by asking
+    Qobuz directly (the same catalog/search the ISRC resolver uses, just with
+    a real "artist title" query). Returns the raw Qobuz track item dicts so the
+    caller does the scoring/shaping and result formatting stays in one place.
+
+    Returns [] when the fallback is disabled, the query is empty, or no token
+    in the pool can answer.
+    """
+    if not qbdlx_enabled():
+        return []
+    if not (query or "").strip():
+        return []
+
+    tokens = _fetch_shared_tokens()
+    for token in tokens:
+        body = _signed_call(token, "catalog/search", {"query": query, "limit": limit})
+        if not body:
+            continue
+        items = ((body.get("tracks") or {}).get("items")) or []
+        if items:
+            return items
+    return []
+
+
 def resolve_qobuz_stream_url(isrc: str, quality_fmt: int) -> str | None:
     """Resolve an ISRC to a direct Qobuz CDN FLAC URL via the shared tokens.
 

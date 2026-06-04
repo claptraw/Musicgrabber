@@ -9,7 +9,14 @@
 const RELEASE_NOTES = {
     "2.9.2": {
         title: "What's New in v2.9.2",
-        sections: []
+        sections: [
+            {
+                heading: "Added",
+                items: [
+                    "Monochrome no longer goes dark for searching when monochrome.tf has one of its turns. If the usual search route is down, MusicGrabber now asks Qobuz directly (through the same fallback it already uses for downloads) so you still get real lossless results. When monochrome.tf is up you get the full catalogue and hi-res exactly as before; the fallback only kicks in when the normal search comes back empty.",
+                ]
+            }
+        ]
     },
     "2.9.1": {
         title: "What's New in v2.9.1",
