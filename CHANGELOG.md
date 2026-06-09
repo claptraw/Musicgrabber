@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.9.2 (DEV)
+## v2.9.2 (2026-06-09)
 
 ### Fixed
 - **Big Spotify playlists no longer get truncated to 100 tracks**: Spotify's embed only ever hands back the first 100 tracks, so anything bigger falls through to the headless browser. The trouble: Spotify killed the server-rendered track count on the public page (it's a JS shell now), so we could no longer size the browser timeout to the playlist, and a 5,000-track list would hit the old flat 300s cap, time out, and silently drop back to the embed's 100. Three fixes. The headless browser now reads the real "N songs" count straight off the rendered page and uses it as the scroll target, so it knows when it's got the lot. The timeout is now a generous ceiling (with the browser self-terminating once it reaches the end or stalls) and, when the count is known, it's sized to a per-track estimate. And if it does run out of time on a monster playlist, it now hands back everything it managed to scroll (with a "some tracks may be missing" warning) instead of binning the lot and falling back to 100. New `SPOTIFY_BROWSER_MAX_SECONDS` / `SPOTIFY_BROWSER_SECONDS_PER_TRACK` constants.
