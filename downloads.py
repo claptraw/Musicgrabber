@@ -44,6 +44,7 @@ from slskd import (
 )
 from utils import (
     sanitize_filename,
+    cap_filename_stem,
     sanitize_playlist_name,
     extract_artist_title,
     check_duplicate,
@@ -134,8 +135,8 @@ def _output_stem(artist: str, title: str, fallback: str, user_id: str | None = N
     safe_title = _safe_sanitized_title(title, fallback)
     if not get_setting_bool("organise_by_artist", True, user_id=user_id):
         safe_artist = sanitize_filename(artist or "Unknown Artist")
-        return f"{safe_artist} - {safe_title}"
-    return safe_title
+        return cap_filename_stem(f"{safe_artist} - {safe_title}")
+    return cap_filename_stem(safe_title)
 
 
 def _playlist_stem(artist: str, title: str, fallback: str) -> str:
@@ -146,7 +147,7 @@ def _playlist_stem(artist: str, title: str, fallback: str) -> str:
     """
     safe_artist = sanitize_filename(artist or "Unknown Artist")
     safe_title = _safe_sanitized_title(title, fallback)
-    return f"{safe_artist} - {safe_title}"
+    return cap_filename_stem(f"{safe_artist} - {safe_title}")
 
 
 def _numbered_output_stem(
@@ -171,8 +172,8 @@ def _numbered_output_stem(
     numbered_title = f"{track_number} - {safe_title}"
     if playlist_routed or not get_setting_bool("organise_by_artist", True, user_id=user_id):
         safe_artist = sanitize_filename(artist or "Unknown Artist")
-        return f"{safe_artist} - {numbered_title}"
-    return numbered_title
+        return cap_filename_stem(f"{safe_artist} - {numbered_title}")
+    return cap_filename_stem(numbered_title)
 
 
 def _rename_with_track_number_if_enabled(

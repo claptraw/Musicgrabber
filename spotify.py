@@ -16,7 +16,11 @@ from pathlib import Path
 import httpx
 from fastapi import HTTPException
 
-from constants import TIMEOUT_SPOTIFY_BROWSER, SPOTIFY_BROWSER_STALL_SECONDS
+from constants import (
+    TIMEOUT_SPOTIFY_BROWSER, SPOTIFY_BROWSER_STALL_SECONDS,
+    SPOTIFY_BROWSER_MAX_SECONDS, SPOTIFY_BROWSER_SECONDS_PER_TRACK,
+    SPOTIFY_BROWSER_BASE_OVERHEAD, SPOTIFY_BROWSER_DEADLINE_BUFFER,
+)
 from settings import get_setting_int
 
 _BROWSER_SCRIPT = Path(__file__).parent / "spotify_browser.py"
@@ -84,9 +88,23 @@ def fetch_spotify_playlist_via_browser(
     )
     configured_base_timeout = max(60, min(1800, configured_base_timeout))
     configured_stall_seconds = max(5, min(300, configured_stall_seconds))
+    ceiling = max(configured_base_timeout, SPOTIFY_BROWSER_MAX_SECONDS)
 
     if not expected_total:
+        # Best-effort, but Spotify's public page is now a JS shell so this almost
+        # always comes back None; the browser reads the real count from the DOM.
         expected_total = _fetch_spotify_expected_total(spotify_id, spotify_type)
+
+    # Size the hard subprocess timeout. When we somehow know the count up front, use
+    # it as a time guesstimate (a few hundred ms per track plus fixed overhead). When
+    # we don't, give the browser a generous ceiling and trust it to stop itself once
+    # it has reached the end of the list (it reads the count from the rendered DOM)
+    # rather than capping at a tight 300s and timing out on a 5,000-track playlist.
+    if expected_total and expected_total > 0:
+        estimate = SPOTIFY_BROWSER_BASE_OVERHEAD + int(expected_total * SPOTIFY_BROWSER_SECONDS_PER_TRACK)
+        timeout_seconds = max(configured_base_timeout, min(ceiling, estimate))
+    else:
+        timeout_seconds = ceiling
 
     env = {**os.environ, "SPOTIFY_TYPE": spotify_type, "SPOTIFY_ID": spotify_id}
     if spotify_type == "collection" and spotify_id == "tracks":
@@ -94,22 +112,19 @@ def fetch_spotify_playlist_via_browser(
     if expected_total and expected_total > 0:
         env["SPOTIFY_EXPECTED_TOTAL"] = str(expected_total)
     env["SPOTIFY_BROWSER_STALL_SECONDS"] = str(configured_stall_seconds)
+    # Tell the browser when we're going to pull the plug so it can bow out cleanly a
+    # few seconds early and hand back partial results, instead of being hard-killed
+    # (which loses everything and drops us back to the 100-track embed).
+    env["SPOTIFY_BROWSER_DEADLINE_SECONDS"] = str(max(30, timeout_seconds - SPOTIFY_BROWSER_DEADLINE_BUFFER))
+    # Pass the per-track estimate so the browser can size its own working budget from
+    # the count it finds in the DOM (the count we can't see from out here).
+    env["SPOTIFY_BROWSER_SECONDS_PER_TRACK"] = str(SPOTIFY_BROWSER_SECONDS_PER_TRACK)
+    env["SPOTIFY_BROWSER_BASE_OVERHEAD"] = str(SPOTIFY_BROWSER_BASE_OVERHEAD)
     if sp_dc:
         env["SPOTIFY_SP_DC"] = sp_dc
     if user_id:
         env["SPOTIFY_USER_ID"] = user_id
 
-    # Fixed timeout is tight on low-power hosts for very large playlists.
-    # Scale timeout by expected track count, while keeping an upper bound.
-    timeout_seconds = configured_base_timeout
-    if expected_total and expected_total > 0:
-        upper_bound = max(600, configured_base_timeout)
-        timeout_seconds = max(
-            configured_base_timeout,
-            min(upper_bound, 120 + int(expected_total * 0.12)),
-        )
-    else:
-        timeout_seconds = max(configured_base_timeout, 300)
     print(
         "Spotify browser limits: "
         f"timeout={timeout_seconds}s, stall={configured_stall_seconds}s "
@@ -175,8 +190,19 @@ def fetch_spotify_playlist_via_browser(
             detail=f"Could not extract tracks from {spotify_type}. The page structure may have changed."
         )
 
-    return {
+    result = {
         "tracks": tracks,
         "playlist_name": playlist_name,
-        "count": len(tracks)
+        "count": len(tracks),
     }
+    # The browser reports the count it read from the page; if we came up short, the
+    # playlist is probably huge and ran out of scroll time. Flag it instead of silently
+    # handing back a partial list.
+    detected_total = data.get("expected_total")
+    if detected_total and len(tracks) < detected_total:
+        result["warning"] = (
+            f"Spotify reports {detected_total} tracks but only {len(tracks)} were extracted. "
+            "Very large playlists may need a higher spotify_browser_timeout_seconds."
+        )
+        print(f"Spotify browser extracted {len(tracks)}/{detected_total} tracks (partial)")
+    return result

@@ -29,6 +29,66 @@ if stall_raw.isdigit():
 
 sp_dc = (os.environ.get("SPOTIFY_SP_DC") or "").strip() or None
 
+# Spotify's embed trackList tops out here, so any real total worth chasing is larger.
+# We only trust a DOM-read count as a hard completion target when it clears this, so a
+# misread small number can never cut a big playlist short.
+EMBED_TRACK_LIMIT = 100
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float((os.environ.get(name) or "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _int_env(name: str) -> int | None:
+    raw = (os.environ.get(name) or "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
+# The parent tells us when it'll pull the plug; we bow out a touch before then with
+# whatever we've gathered. seconds_per_track + overhead let us guesstimate how long the
+# full scroll should take from the count we read off the page.
+hard_deadline_seconds = _int_env("SPOTIFY_BROWSER_DEADLINE_SECONDS")
+seconds_per_track = _float_env("SPOTIFY_BROWSER_SECONDS_PER_TRACK", 0.12)
+base_overhead = _float_env("SPOTIFY_BROWSER_BASE_OVERHEAD", 120.0)
+
+
+def _detect_total_from_dom(page) -> int | None:
+    """Read the playlist's real track count from the rendered page.
+
+    Spotify's server HTML is now a JS shell, but the live page still shows the count
+    in its header as 'N songs' / 'N items'. We take the largest such number we find in
+    the header region (the total dwarfs any incidental match), so we know when we've
+    got the lot and roughly how long to keep scrolling.
+    """
+    selectors = [
+        '[data-testid="playlist-page"]',
+        '[data-testid="entityTitle"]',
+        '[data-testid="action-bar-row"]',
+        "header",
+    ]
+    for sel in selectors:
+        try:
+            el = page.query_selector(sel)
+            if not el:
+                continue
+            text = el.inner_text()
+        except Exception:
+            continue
+        best = None
+        for m in re.finditer(r"(\d[\d.,   ]*)\s+(?:songs?|tracks?|items?)\b", text, re.IGNORECASE):
+            digits = re.sub(r"\D", "", m.group(1))
+            if digits and (best is None or int(digits) > best):
+                best = int(digits)
+        if best:
+            return best
+    return None
+
+
+_script_start = time.monotonic()
+
 try:
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -126,6 +186,22 @@ try:
         if is_liked_songs:
             playlist_name = "Liked Songs"
 
+        # If we still don't know the count (the parent's HTTP probe comes back empty
+        # now that the public page is a JS shell), read it off the rendered header.
+        if not expected_total:
+            expected_total = _detect_total_from_dom(page)
+            if expected_total:
+                print(f"DEBUG: detected {expected_total} tracks from rendered page", file=sys.stderr)
+
+        # Guesstimate how long the full scroll should take from the count, with generous
+        # slack for slow hosts, and never run past the parent's hard deadline. This stops
+        # us spinning at the outer ceiling on a known-size list while still giving a huge
+        # playlist plenty of room.
+        working_deadline = hard_deadline_seconds
+        if expected_total:
+            est_with_slack = (base_overhead + expected_total * seconds_per_track) * 1.5
+            working_deadline = min(hard_deadline_seconds or est_with_slack, est_with_slack)
+
         # Spotify uses virtualised scrolling — tracks get unloaded as you scroll.
         # Extract tracks incrementally while scrolling.
         seen_tracks_by_index = {}
@@ -188,7 +264,19 @@ try:
         extract_visible_tracks()
 
         while True:
-            if expected_total and len(seen_tracks_by_index) >= expected_total:
+            # Out of time: hand back whatever we've got rather than let the parent
+            # hard-kill us (which loses everything and drops back to the 100-track embed).
+            if working_deadline and (time.monotonic() - _script_start) > working_deadline:
+                if expected_total and len(seen_tracks_by_index) < expected_total:
+                    print(
+                        f"DEBUG: stopping at deadline ({working_deadline:.0f}s) with "
+                        f"{len(seen_tracks_by_index)}/{expected_total} tracks",
+                        file=sys.stderr,
+                    )
+                break
+            # Reached the known total. Only trust counts above the embed cap as a hard
+            # stop, so a misread small number can't truncate a big playlist.
+            if expected_total and expected_total > EMBED_TRACK_LIMIT and len(seen_tracks_by_index) >= expected_total:
                 break
             if time.monotonic() - last_progress_at > stall_timeout_seconds:
                 break
@@ -215,7 +303,13 @@ try:
             )
         browser.close()
 
-    print(json.dumps({"success": True, "tracks": tracks, "playlist_name": playlist_name, "count": len(tracks)}))
+    print(json.dumps({
+        "success": True,
+        "tracks": tracks,
+        "playlist_name": playlist_name,
+        "count": len(tracks),
+        "expected_total": expected_total,
+    }))
 
 except Exception as e:
     print(json.dumps({"success": False, "error": str(e)}))

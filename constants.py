@@ -30,8 +30,19 @@ SPOTIFY_EMBED_RETRY_BACKOFF = 1.5  # Seconds, multiplied by attempt number for a
 TIMEOUT_SLSKD_SEARCH = 12        # Soulseek search polling
 TIMEOUT_SLSKD_DOWNLOAD = 600     # Soulseek download (10 minutes)
 TIMEOUT_SLSKD_API = 30           # slskd API calls
-TIMEOUT_SPOTIFY_BROWSER = 180    # Headless browser for large playlists (3 minutes)
+TIMEOUT_SPOTIFY_BROWSER = 180    # Headless browser base/floor timeout (3 minutes)
 SPOTIFY_BROWSER_STALL_SECONDS = 30  # No-progress cutoff while scrolling long Spotify playlists
+# Spotify's public page is now a JS shell with no server-rendered track count, so we
+# can no longer size the browser timeout up front from a cheap HTTP fetch. Instead the
+# headless browser reads the real count from the rendered DOM and uses it as the scroll
+# completion target. The outer subprocess timeout is a generous ceiling; the browser
+# self-terminates (target reached, scroll stalled, or its own deadline) and returns
+# whatever it has, so a huge playlist yields partial results instead of being hard-killed
+# and silently falling back to the truncated 100-track embed.
+SPOTIFY_BROWSER_MAX_SECONDS = 1500       # Generous ceiling for very large playlists (~25 min)
+SPOTIFY_BROWSER_SECONDS_PER_TRACK = 0.12 # Per-track time estimate when the count is known
+SPOTIFY_BROWSER_BASE_OVERHEAD = 120      # Fixed startup/page-load overhead in the estimate
+SPOTIFY_BROWSER_DEADLINE_BUFFER = 15     # Browser bows out this many seconds before the hard kill
 TIMEOUT_AMAZON_BROWSER = 180     # Amazon Music playlist scraping (3 minutes)
 TIMEOUT_FPCALC = 30              # Audio fingerprinting via fpcalc
 TIMEOUT_MP3PHOENIX_SEARCH = 15   # mp3phoenix AJAX search
@@ -75,6 +86,14 @@ SEARCH_LOG_RETENTION_DAYS = 90   # Keep search analytics for N days
 
 # File handling
 MAX_FILENAME_LENGTH = 200        # Maximum characters in sanitised filenames
+# NAME_MAX is 255 bytes on ext4 and most Linux/NAS filesystems, and it counts
+# bytes, not characters. sanitize_filename caps each part (artist, title) at
+# MAX_FILENAME_LENGTH chars, but "Artist - Title" can still combine to well over
+# 255 bytes and blow up mid-download with [Errno 36] File name too long. The
+# reserve leaves headroom for the extension, yt-dlp's intermediate suffixes
+# (.fNNN, .part, .temp) and dedup numbering like " (1)".
+MAX_FILENAME_BYTES = 255         # Per-component byte limit (NAME_MAX)
+FILENAME_STEM_RESERVE_BYTES = 40 # Headroom kept free below NAME_MAX for the stem
 COOKIES_FILE = Path("/data/cookies.txt")  # yt-dlp cookies file path
 AUDIO_EXTENSIONS = ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']
 

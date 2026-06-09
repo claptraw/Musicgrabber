@@ -17,15 +17,46 @@ import shutil
 
 from constants import (
     AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH,
+    MAX_FILENAME_BYTES, FILENAME_STEM_RESERVE_BYTES,
 )
 from settings import get_singles_dir, get_albums_dir, get_download_dir, get_playlists_dir, get_trash_dir, get_setting
+
+
+def truncate_to_bytes(name: str, max_bytes: int) -> str:
+    """Truncate `name` so its UTF-8 encoding is at most `max_bytes` bytes.
+
+    Filesystem name limits (NAME_MAX) count bytes, not characters, so a long
+    title full of accented or CJK glyphs can overflow even when it looks short.
+    We cut on a character boundary so we never emit half a multi-byte glyph.
+    """
+    encoded = name.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return name
+    # errors="ignore" discards any partial trailing character left by the slice.
+    return encoded[:max_bytes].decode("utf-8", "ignore").rstrip()
+
+
+def cap_filename_stem(stem: str) -> str:
+    """Cap a combined filename stem to fit the filesystem's per-component limit.
+
+    sanitize_filename caps each part (artist, title) at MAX_FILENAME_LENGTH
+    characters, but 'Artist - Title' can still combine to well over the 255-byte
+    NAME_MAX limit and crash a download with [Errno 36] File name too long, which
+    also stalls the rest of a playlist. We keep a little headroom below NAME_MAX
+    for the extension, yt-dlp's temp suffixes (.fNNN/.part/.temp) and dedup
+    numbering. Apply this to the final stem, not to individual parts.
+    """
+    return truncate_to_bytes(stem, MAX_FILENAME_BYTES - FILENAME_STEM_RESERVE_BYTES)
 
 
 def sanitize_filename(name: str) -> str:
     """Remove/replace characters that are problematic in filenames"""
     name = re.sub(r'[<>:"/\\|?*]', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
-    return name[:MAX_FILENAME_LENGTH]
+    name = name[:MAX_FILENAME_LENGTH]
+    # NAME_MAX is a byte budget; a MAX_FILENAME_LENGTH-char multi-byte name can
+    # still overflow it, so trim directory/standalone components to bytes too.
+    return truncate_to_bytes(name, MAX_FILENAME_BYTES)
 
 
 def _fallback_name_from_url(value: str) -> str:
@@ -227,7 +258,8 @@ def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Opti
     try:
         sanitized_title = sanitize_filename(title)
         sanitized_artist = sanitize_filename(artist or "")
-        artist_title_stem = f"{sanitized_artist} - {sanitized_title}" if sanitized_artist else sanitized_title
+        # Match the capping the download path applies so long names still resolve.
+        artist_title_stem = cap_filename_stem(f"{sanitized_artist} - {sanitized_title}") if sanitized_artist else sanitized_title
         stems = [s for s in (sanitized_title, artist_title_stem) if s]
 
         checks = [
@@ -375,7 +407,8 @@ def check_trash_duplicate(artist: str, title: str, user_id: str | None = None) -
 
         sanitized_title = sanitize_filename(title)
         sanitized_artist = sanitize_filename(artist or "")
-        artist_title_stem = f"{sanitized_artist} - {sanitized_title}" if sanitized_artist else sanitized_title
+        # Match the capping the download path applies so long names still resolve.
+        artist_title_stem = cap_filename_stem(f"{sanitized_artist} - {sanitized_title}") if sanitized_artist else sanitized_title
         stems = [s for s in (sanitized_title, artist_title_stem) if s]
 
         # Walk every directory under .trash/ looking for a match

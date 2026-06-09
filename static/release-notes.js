@@ -15,6 +15,13 @@ const RELEASE_NOTES = {
                 items: [
                     "Monochrome no longer goes dark for searching when monochrome.tf has one of its turns. If the usual search route is down, MusicGrabber now asks Qobuz directly (through the same fallback it already uses for downloads) so you still get real lossless results. When monochrome.tf is up you get the full catalogue and hi-res exactly as before; the fallback only kicks in when the normal search comes back empty.",
                 ]
+            },
+            {
+                heading: "Fixed",
+                items: [
+                    "Large Spotify playlists no longer come back capped at 100 tracks. Spotify's quick embed only gives the first 100, so bigger playlists use a headless browser to scroll the rest, but a recent Spotify change was making that time out on really big lists and quietly fall back to just the 100. It now reads the real track count off the page, gives itself enough time to scroll the whole thing, and if a genuinely enormous playlist still runs long it hands back everything it managed to grab (with a heads-up) rather than dropping back to 100.",
+                    "Tracks with monstrously long titles (the 30-artist remix with everyone and their cousin on the feature list) no longer crash with a 'File name too long' error and take the rest of the playlist down with them. The filename is now trimmed to fit your filesystem's limit, accented and non-Latin titles are cut cleanly without mangling a character, and a track you've already got is still recognised so it isn't downloaded twice.",
+                ]
             }
         ]
     },

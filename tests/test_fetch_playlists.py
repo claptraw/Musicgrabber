@@ -43,18 +43,24 @@ def test_fetch_spotify_short(api, base_url):
 
 @pytest.mark.slow
 def test_fetch_spotify_long_playwright(api, base_url):
-    """Playlist with 95+ tracks - triggers Playwright fallback. Expects at least 95 tracks."""
+    """Playlist with 100+ tracks - must surpass the 100-track embed cap.
+
+    The embed's trackList tops out at exactly 100. If the Playwright fallback is
+    broken (or times out and we silently fall back to the embed), we get exactly 100
+    and no more. Asserting > 100 catches that regression; >= 50 did not.
+    """
     r = api.post(
         f"{base_url}/api/fetch-playlist",
         json={"url": _SPOTIFY_LONG},
-        timeout=120,  # Playwright is slow
+        timeout=300,  # Playwright scrolling a large list is slow
     )
     assert r.status_code == 200, f"fetch failed: {r.text}"
     d = r.json()
     assert d.get("platform") == "spotify"
     tracks = d.get("tracks", [])
-    assert len(tracks) >= 50, (
-        f"Spotify Playwright fallback returned only {len(tracks)} tracks - Playwright may be broken"
+    assert len(tracks) > 100, (
+        f"Spotify returned only {len(tracks)} tracks - the Playwright fallback isn't "
+        "beating the 100-track embed cap (timeout too tight, or scroll broken)"
     )
 
 
