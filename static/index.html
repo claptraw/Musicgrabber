@@ -623,7 +623,7 @@
                             </label>
                         </div>
                     </label>
-                    <label class="settings-label format-selector-wrap admin-only">
+                    <label class="settings-label format-selector-wrap">
                         <span>Audio Format</span>
                         <div class="format-btn-group">
                             <button type="button" id="formatBtnFlac" class="format-option active" onclick="setAudioFormat('flac'); saveSettings();">FLAC</button>
@@ -631,7 +631,7 @@
                             <button type="button" id="formatBtnOpus" class="format-option" onclick="setAudioFormat('opus'); saveSettings();">Opus</button>
                             <button type="button" id="formatBtnMp3"  class="format-option" onclick="setAudioFormat('mp3');  saveSettings();">MP3</button>
                         </div>
-                        <span class="settings-hint settings-hint-full">The format all downloads are converted to. FLAC and ALAC are lossless. Opus is high-quality lossy (smaller files). MP3 for maximum compatibility.</span>
+                        <span class="settings-hint settings-hint-full">The format your downloads are converted to (each user gets their own choice). FLAC and ALAC are lossless. Opus is high-quality lossy (smaller files). MP3 for maximum compatibility.</span>
                         <span id="alacFormatNote" style="display:none;" class="mp3-format-note">ALAC (.m4a) is lossless. Lower bitrates here actually fall back to AAC inside the same .m4a container, so anything below "Lossless" is lossy.</span>
                         <span id="mp3FormatNote" style="display:none;" class="mp3-format-note">MP3 may cause quality loss if the source is already lossy (e.g. from YouTube).</span>
                         <div id="mp3QualityRow" style="display:none;margin-top:6px;">
@@ -1067,7 +1067,7 @@
                 <h3 class="settings-section-title">User Management</h3>
                 <div id="userInfoPanel" class="user-info-panel" hidden>
                     <p><strong>Admin</strong> &mdash; full run of the place. Can change every setting, manage users, and see Stats.</p>
-                    <p><strong>User</strong> &mdash; their own per-user settings (Navidrome / Jellyfin / Lidarr creds, Spotify cookies, notifications, subfolders, change password). System-level settings stay admin-only. Stats tab visible.</p>
+                    <p><strong>User</strong> &mdash; their own per-user settings (audio format, Navidrome / Jellyfin / Lidarr creds, Spotify cookies, notifications, subfolders, change password). System-level settings stay admin-only. Stats tab visible.</p>
                     <p><strong>Peon</strong> &mdash; locked-down request-only account. Search, Bulk Import, Queue and Watched, that is the lot. No Settings, no Stats, no Albums, and the Convert toggle is hidden too: they always download in whatever format the admin has chosen globally. Ideal for the family member who keeps changing the audio format to MP3.</p>
                 </div>
                 <div id="userList" class="user-list-wrap"></div>

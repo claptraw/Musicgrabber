@@ -977,19 +977,22 @@ def _build_ytdlp_download_cmd(
     convert_to_flac: bool,
     source_url: str = None,
     use_cookies: bool = True,
+    user_id: str | None = None,
 ) -> list[str]:
     """Build yt-dlp args for audio extraction, metadata, and thumbnail embedding.
 
     source_url overrides the default YouTube URL (used for SoundCloud etc.).
     use_cookies=False skips cookie/player-client args (not needed for SoundCloud).
+    user_id picks up the per-user format choice, so yt-dlp converts straight to
+    the right format rather than transcoding twice (lossy-to-lossy is a war crime).
     """
     if convert_to_flac:
-        fmt = get_setting("audio_format", "flac")  # Global default; per-user override applied at call site
+        fmt = get_setting("audio_format", "flac", user_id=user_id)
         fmt = fmt if fmt in ("flac", "opus", "mp3", "alac") else "flac"
         # ALAC with a non-lossless bitrate means "lossy AAC in an .m4a container".
         # yt-dlp has no first-class option for that, so we ask it for "m4a" and
         # let the AAC encoder do its thing at the chosen kbps.
-        if fmt == "alac" and get_setting("alac_bitrate", "lossless") != "lossless":
+        if fmt == "alac" and get_setting("alac_bitrate", "lossless", user_id=user_id) != "lossless":
             format_args = ["--audio-format", "m4a"]
         else:
             format_args = ["--audio-format", fmt]
@@ -1000,13 +1003,13 @@ def _build_ytdlp_download_cmd(
     # values >10 as kbps and 0-10 as a VBR quality digit. So a trailing "k" is
     # poison; strip it. "v2" -> "2" (VBR), "320k" -> "320" (CBR kbps).
     if fmt == "mp3":
-        q = get_setting("mp3_bitrate", "v2")
+        q = get_setting("mp3_bitrate", "v2", user_id=user_id)
         audio_quality = q[1] if q.startswith("v") else q.rstrip("kK")
     elif fmt == "opus":
-        q = get_setting("opus_bitrate", "320k")
+        q = get_setting("opus_bitrate", "320k", user_id=user_id)
         audio_quality = q.rstrip("kK")
     elif fmt == "alac":
-        q = get_setting("alac_bitrate", "lossless")
+        q = get_setting("alac_bitrate", "lossless", user_id=user_id)
         # "lossless" -> best (true ALAC); kbps -> CBR for the AAC fallback.
         audio_quality = "0" if q == "lossless" else q.rstrip("kK")
     else:
@@ -2534,7 +2537,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     artist_dir.mkdir(parents=True, exist_ok=True)
                     safe_title = _output_stem(artist, title, video_id, user_id=user_id)
                 output_template = str(artist_dir / f"{safe_title}.%(ext)s")
-                download_cmd = _build_ytdlp_download_cmd(video_id, output_template, convert_to_flac)
+                download_cmd = _build_ytdlp_download_cmd(video_id, output_template, convert_to_flac, user_id=user_id)
                 has_cookies = "--cookies" in download_cmd
 
                 download_result, download_timed_out = _run_ytdlp_with_retries(
@@ -3776,6 +3779,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             video_id, output_template, convert_to_flac,
             source_url=source_url,
             use_cookies=not is_url_source,
+            user_id=user_id,
         )
         has_cookies = "--cookies" in download_cmd
 

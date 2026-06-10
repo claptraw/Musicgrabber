@@ -9,7 +9,14 @@
 const RELEASE_NOTES = {
     "2.9.3": {
         title: "What's New in v2.9.3",
-        sections: []
+        sections: [
+            {
+                heading: "Added",
+                items: [
+                    "Everyone gets their own audio format. The FLAC / ALAC / Opus / MP3 picker in Settings is no longer admins-only: each user can now choose their own format (and bitrate) and their downloads convert to it. Anyone who hasn't picked carries on with the admin's default, setting AUDIO_FORMAT in docker-compose still locks it for the whole house, and Peons still take what they're given.",
+                ]
+            }
+        ]
     },
     "2.9.2": {
         title: "What's New in v2.9.2",

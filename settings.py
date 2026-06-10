@@ -133,6 +133,7 @@ SENSITIVE_SETTINGS = {
 # Settings that belong to each user (stored in user_settings table)
 USER_SETTINGS_KEYS = {
     "singles_subdir", "playlists_subdir", "albums_subdir", "organise_by_artist", "include_track_number_in_filename", "auto_album_singles", "auto_album_singles_use_albums_dir",
+    "audio_format", "mp3_bitrate", "opus_bitrate", "alac_bitrate",
     "navidrome_url", "navidrome_user", "navidrome_pass", "navidrome_dupe_check",
     "jellyfin_url", "jellyfin_api_key",
     "lidarr_url", "lidarr_api_key",
