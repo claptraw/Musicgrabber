@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.9.4 (DEV)
+## v2.9.4 (2026-06-12)
 
 ### Added
 - **Monochrome search now asks Deezer first**: Deezer's public API is typo-tolerant (misspell the artist AND the title and it still finds the studio cut), hands over a clean ISRC with every result, and labels live/karaoke versions in a proper machine-readable field instead of making us guess from bracket punctuation. Each candidate is verified against Qobuz before it's shown, so every Monochrome result you see is one we can actually download, labelled with the quality Qobuz genuinely stocks (hi-res editions get found properly now too). The Tidal hifi-api leg still tops up when Deezer comes back light, and qbdlx direct Qobuz remains the safety net, so nothing got less reliable; the flakiest leg just stopped being load-bearing.
