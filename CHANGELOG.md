@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.9.3 (DEV)
+## v2.9.3 (2026-06-12)
 
 ### Added
 - **Per-user audio format**: the Audio Format picker (FLAC / ALAC / Opus / MP3, plus the bitrate sub-options) is no longer admin-only. Every standard user can now pick their own format in Settings and their downloads convert accordingly; the admin's choice carries on as the default for anyone who hasn't picked. Setting `AUDIO_FORMAT` via environment variable still locks it server-wide for everyone, as before, and Peons continue to get whatever the admin decreed (that is rather the point of being a Peon). Under the bonnet, yt-dlp now converts straight to the user's format rather than the global one, so an MP3 household member no longer risks a sneaky double transcode.
