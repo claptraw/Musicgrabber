@@ -13,6 +13,7 @@ import subprocess
 import time
 import unicodedata
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
@@ -3627,7 +3628,10 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         artist_hint = (row["artist"] or "") if row else ""
         title_hint  = (row["title"]  or "") if row else ""
         if is_monochrome:
-            direct_label, direct_fn = "monochrome", download_monochrome_track
+            # The hints feed the Deezer ISRC rescue when Tidal's ISRC is junk.
+            direct_label = "monochrome"
+            direct_fn = partial(download_monochrome_track,
+                                artist_hint=artist_hint, title_hint=title_hint)
         elif is_zvu4no:
             direct_label, direct_fn = "zvu4no", download_zvu4no_track
         elif is_freemp3cloud:

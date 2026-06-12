@@ -2,6 +2,11 @@
 
 ## v2.9.4 (DEV)
 
+### Added
+- **Monochrome search now asks Deezer first**: Deezer's public API is typo-tolerant (misspell the artist AND the title and it still finds the studio cut), hands over a clean ISRC with every result, and labels live/karaoke versions in a proper machine-readable field instead of making us guess from bracket punctuation. Each candidate is verified against Qobuz before it's shown, so every Monochrome result you see is one we can actually download, labelled with the quality Qobuz genuinely stocks (hi-res editions get found properly now too). The Tidal hifi-api leg still tops up when Deezer comes back light, and qbdlx direct Qobuz remains the safety net, so nothing got less reliable; the flakiest leg just stopped being load-bearing.
+- **Deezer ISRC rescue**: it turns out Tidal sometimes ships ISRCs that are not even the right shape (a genuine specimen seen in the wild: `QT&JC2622262`, ampersand and all), and Qobuz quite reasonably refuses to serve them. When the stored ISRC is malformed, or Qobuz cleanly denies all knowledge of it, the download path now asks Deezer for the recording's real ISRC (by artist and title, studio versions only, with a confidence gate so a wrong track never sneaks in) and retries Qobuz with that.
+- **Tidal stream fallback**: if a track simply isn't in Qobuz's catalogue at all, but Tidal streams it happily (which is exactly how the Monochrome web player plays the things we couldn't download), the download path now falls back to pulling the stream straight from the Tidal hifi-api as a last resort. Capped honestly at 16-bit/44.1kHz FLAC, since Tidal's hi-res sits behind DRM and we are not in the lock-picking business. The full ladder is now: Qobuz proxies, qbdlx, Deezer rescue, Tidal stream, and only then an honest failure.
+
 ## v2.9.3 (2026-06-12)
 
 ### Added

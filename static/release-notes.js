@@ -9,7 +9,15 @@
 const RELEASE_NOTES = {
     "2.9.4": {
         title: "What's New in v2.9.4",
-        sections: []
+        sections: [
+            {
+                heading: "Added",
+                items: [
+                    "Monochrome search got a brain transplant. It now asks Deezer first, which copes with misspelt artists and titles, points straight at the studio version instead of the live-at-somewhere one, and every result shown is pre-checked as actually downloadable from Qobuz at the quality it claims. The old route still backs it up, so nothing is lost on the rare track Deezer doesn't know.",
+                    "Tracks that used to fail with 'no Qobuz stream available' get two new escape routes: if the track ID we were given is wrong or mangled (Tidal occasionally ships ISRCs that fail a basic format check), Deezer is asked for the correct one and the download retried; and if Qobuz genuinely doesn't stock the track at all, it's now pulled from Tidal's own stream as a last resort, in proper lossless FLAC.",
+                ]
+            }
+        ]
     },
     "2.9.3": {
         title: "What's New in v2.9.3",

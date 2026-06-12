@@ -196,6 +196,12 @@ MONOCHROME_QOBUZ_PROXY_URL = os.getenv(
 MONOCHROME_PROXY_RETRY_ROUNDS = int(os.getenv("MONOCHROME_PROXY_RETRY_ROUNDS", "5"))
 MONOCHROME_PROXY_RETRY_WAIT = float(os.getenv("MONOCHROME_PROXY_RETRY_WAIT", "3"))
 
+# Deezer public API: no key, no auth, no CAPTCHA, and remarkably typo-tolerant.
+# Used as the primary ISRC oracle for Monochrome search, and to rescue tracks
+# whose Tidal-supplied ISRC is junk (yes, Tidal ships ISRCs with ampersands in).
+DEEZER_API_URL = os.getenv("DEEZER_API_URL", "https://api.deezer.com")
+TIMEOUT_DEEZER = int(os.getenv("TIMEOUT_DEEZER", "10"))
+
 # qbdlx fallback: when every Qobuz proxy is down, sign the official Qobuz API
 # ourselves using a shared free-account token (the same pool the qbdlx web UI
 # uses). No proxy middleman, so it survives when the proxies are all face-down.

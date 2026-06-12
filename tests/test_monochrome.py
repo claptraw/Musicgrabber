@@ -283,7 +283,7 @@ def test_download_monochrome_raises_when_proxy_and_qbdlx_fail(monkeypatch, tmp_p
     monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
 
     output = tmp_path / "track.flac"
-    with pytest.raises(RuntimeError, match="no Qobuz stream available"):
+    with pytest.raises(RuntimeError, match="no stream available"):
         monochrome.download_monochrome_track(
             "monochrome://tidal123?isrc=GBAYE9200070&quality=LOSSLESS",
             output,
@@ -632,6 +632,279 @@ def test_search_monochrome_falls_back_to_qbdlx_when_hifi_api_down(monkeypatch):
     assert results
     assert results[0]["title"] == "Get Lucky"
     assert any("qbdlx-direct" in b for b in results[0]["score_breakdown"])
+
+
+# ---------------------------------------------------------------------------
+# Deezer ISRC leg (v2.9.4): search, rescue, and the Tidal stream fallback
+# ---------------------------------------------------------------------------
+
+def _make_deezer_item(track_id=62847142, isrc="GB28K1100036", title="Titanium (feat. Sia)",
+                      artist="David Guetta", album="Nothing but the Beat",
+                      duration=245, rank=956365, title_version=""):
+    """A minimal Deezer /search track item, shaped like the real API."""
+    return {
+        "id": track_id,
+        "isrc": isrc,
+        "title": title,
+        "title_version": title_version,
+        "artist": {"name": artist},
+        "album": {"title": album, "cover_big": "https://img.test/cover.jpg"},
+        "duration": duration,
+        "rank": rank,
+    }
+
+
+def test_isrc_valid():
+    import monochrome
+    assert monochrome._isrc_valid("GB28K1100036")
+    assert monochrome._isrc_valid("usum71703861")     # case-insensitive
+    assert not monochrome._isrc_valid("QT&JC2622262") # Tidal's finest ampersand
+    assert not monochrome._isrc_valid("QTJC2622262")  # eleven characters
+    assert not monochrome._isrc_valid("")
+    assert not monochrome._isrc_valid("GB28K110003X") # designation must be digits
+
+
+def test_parse_tidal_track_payload_shapes():
+    import base64
+    import json as jsonlib
+    import monochrome
+
+    assert monochrome._parse_tidal_track_payload(
+        {"data": {"OriginalTrackUrl": "http://cdn.test/a.flac"}}
+    ) == "http://cdn.test/a.flac"
+    assert monochrome._parse_tidal_track_payload(
+        {"data": {"urls": ["http://cdn.test/b.flac"]}}
+    ) == "http://cdn.test/b.flac"
+    bts = base64.b64encode(jsonlib.dumps({"urls": ["http://cdn.test/c.flac"]}).encode()).decode()
+    assert monochrome._parse_tidal_track_payload(
+        {"data": {"manifest": bts, "manifestMimeType": "application/vnd.tidal.bts"}}
+    ) == "http://cdn.test/c.flac"
+    # DASH means Widevine means no; and error payloads yield nothing.
+    assert monochrome._parse_tidal_track_payload(
+        {"data": {"manifest": bts, "manifestMimeType": "application/dash+xml"}}
+    ) == ""
+    assert monochrome._parse_tidal_track_payload({"detail": "Upstream API error"}) == ""
+
+
+def test_deezer_search_leg_verifies_against_qobuz(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_deezer_search_tracks",
+                        lambda q, limit: [
+                            _make_deezer_item(),
+                            _make_deezer_item(track_id=2, isrc="GB28K1100170", title="Titanium (hi-res edition)"),
+                            _make_deezer_item(track_id=3, isrc="GB28K1100999", title="Titanium (not on Qobuz)"),
+                        ])
+
+    def fake_lookup(isrc):
+        if isrc == "GB28K1100036":
+            return [{"id": 1, "isrc": isrc, "hires": False}], False
+        if isrc == "GB28K1100170":
+            return [{"id": 2, "isrc": isrc, "hires": True}], False
+        return [], False  # clean miss: Qobuz has never heard of it
+    monkeypatch.setattr(monochrome, "_qobuz_isrc_lookup", fake_lookup)
+
+    results = monochrome._deezer_search_leg("david guetta titanium", 5)
+
+    assert len(results) == 2  # the clean miss was dropped
+    qualities = {r["quality"] for r in results}
+    assert qualities == {"LOSSLESS", "HI_RES_LOSSLESS"}
+    assert all("src=deezer" in r["source_url"] for r in results)
+    assert all(r["source"] == "monochrome" for r in results)
+    assert all(any("via=deezer-isrc" in b for b in r["score_breakdown"]) for r in results)
+
+
+def test_deezer_search_leg_keeps_unverified_when_proxies_down(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_deezer_search_tracks",
+                        lambda q, limit: [_make_deezer_item()])
+    monkeypatch.setattr(monochrome, "_qobuz_isrc_lookup", lambda isrc: ([], True))
+
+    results = monochrome._deezer_search_leg("david guetta titanium", 5)
+
+    assert len(results) == 1
+    assert results[0]["quality"] == "LOSSLESS"
+    assert any("qobuz_unverified" in b for b in results[0]["score_breakdown"])
+
+
+def test_deezer_search_leg_skips_junk_isrcs(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_deezer_search_tracks",
+                        lambda q, limit: [
+                            _make_deezer_item(isrc="QT&JC2622262", title="Junk ISRC"),
+                            _make_deezer_item(isrc=""),
+                        ])
+    monkeypatch.setattr(monochrome, "_qobuz_isrc_lookup",
+                        lambda isrc: ([{"id": 1, "isrc": isrc, "hires": False}], False))
+
+    assert monochrome._deezer_search_leg("whatever", 5) == []
+
+
+def test_deezer_isrc_rescue_prefers_studio_version(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_deezer_search_tracks",
+                        lambda q, limit: [
+                            _make_deezer_item(isrc="GBCEE0300050", title="Titanium (Live At Wembley)",
+                                              title_version="(Live At Wembley)"),
+                            _make_deezer_item(isrc="GB28K1100036", title="Titanium (feat. Sia)"),
+                        ])
+
+    rescued = monochrome._deezer_isrc_rescue("David Guetta", "Titanium", "QT&JC2622262")
+
+    assert rescued == "GB28K1100036"
+
+
+def test_deezer_isrc_rescue_returns_empty_on_weak_match(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_deezer_search_tracks",
+                        lambda q, limit: [
+                            _make_deezer_item(isrc="FRXXX9900001", title="Entirely Different Song",
+                                              artist="Someone Else"),
+                        ])
+
+    assert monochrome._deezer_isrc_rescue("David Guetta", "Titanium", "") == ""
+
+
+def test_deezer_isrc_rescue_no_hints_no_network(monkeypatch):
+    import monochrome
+
+    def boom(*a, **k):
+        raise AssertionError("should not search Deezer without hints")
+    monkeypatch.setattr(monochrome, "_deezer_search_tracks", boom)
+
+    assert monochrome._deezer_isrc_rescue("", "", "QT&JC2622262") == ""
+
+
+def test_search_monochrome_skips_hifi_when_deezer_delivers(monkeypatch):
+    import monochrome
+    fake_results = [
+        {"quality_score": 100 - i, "source_url": f"monochrome://x{i}?isrc=GBABC123456{i}&src=deezer"}
+        for i in range(5)
+    ]
+    monkeypatch.setattr(monochrome, "_deezer_search_leg", lambda q, limit: fake_results)
+
+    def boom(*a, **k):
+        raise AssertionError("hifi leg should not run when Deezer fills the limit")
+    monkeypatch.setattr(monochrome, "_hifi_search_leg", boom)
+
+    results = monochrome.search_monochrome("query", 5)
+    assert len(results) == 5
+
+
+def test_search_monochrome_tops_up_from_hifi_and_dedupes(monkeypatch):
+    import monochrome
+    deezer = [{"quality_score": 90, "source_url": "monochrome://1?isrc=GB28K1100036&src=deezer"}]
+    hifi = [
+        {"quality_score": 80, "source_url": "monochrome://2?isrc=GB28K1100036&src=tidal"},  # dupe
+        {"quality_score": 70, "source_url": "monochrome://3?isrc=USUM71703861&src=tidal"},
+    ]
+    monkeypatch.setattr(monochrome, "_deezer_search_leg", lambda q, limit: deezer)
+    monkeypatch.setattr(monochrome, "_hifi_search_leg", lambda q, limit: hifi)
+
+    results = monochrome.search_monochrome("query", 5)
+
+    assert len(results) == 2
+    assert results[0]["source_url"].startswith("monochrome://1")
+    assert results[1]["source_url"].startswith("monochrome://3")
+
+
+class _FakeStreamResponse:
+    """Pretend httpx.stream context manager serving a small FLAC-ish blob."""
+    def __init__(self, payload=b"FLACDATA" * 16):
+        self._payload = payload
+        self.headers = {"content-length": str(len(payload))}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    def iter_bytes(self, chunk_size=65536):
+        yield self._payload
+
+
+def test_download_rescues_malformed_isrc_via_deezer(monkeypatch, tmp_path):
+    import monochrome
+
+    rescue_calls = []
+    def fake_rescue(artist, title, bad_isrc):
+        rescue_calls.append((artist, title, bad_isrc))
+        return "GB28K1100036"
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", fake_rescue)
+
+    stream_calls = []
+    def fake_stream_url(isrc, fmt):
+        stream_calls.append(isrc)
+        return "https://cdn.test/track.flac"
+    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_stream_url)
+    monkeypatch.setattr(monochrome.httpx, "stream",
+                        lambda *a, **k: _FakeStreamResponse())
+
+    output = tmp_path / "track.flac"
+    monochrome.download_monochrome_track(
+        "monochrome://12345?isrc=QT%26JC2622262&quality=LOSSLESS&src=tidal",
+        output,
+        artist_hint="David Guetta", title_hint="Titanium",
+    )
+
+    assert rescue_calls == [("David Guetta", "Titanium", "QT&JC2622262")]
+    assert stream_calls and stream_calls[0] == "GB28K1100036"
+    assert output.exists() and output.stat().st_size > 0
+
+
+def test_download_falls_back_to_tidal_stream_for_tidal_results(monkeypatch, tmp_path):
+    import monochrome
+
+    def clean_miss(isrc, fmt):
+        raise monochrome.QobuzProxyError("no results", transport_failure=False)
+    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", clean_miss)
+    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, fmt: None)
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda a, t, b: "")
+
+    tidal_calls = []
+    def fake_tidal(tidal_id, quality):
+        tidal_calls.append((tidal_id, quality))
+        return "https://tidal-cdn.test/track.flac"
+    monkeypatch.setattr(monochrome, "_tidal_stream_url", fake_tidal)
+    monkeypatch.setattr(monochrome.httpx, "stream",
+                        lambda *a, **k: _FakeStreamResponse())
+
+    output = tmp_path / "track.flac"
+    monochrome.download_monochrome_track(
+        "monochrome://18420572?isrc=GBZZZ9900001&quality=LOSSLESS&src=tidal",
+        output,
+    )
+
+    assert tidal_calls == [("18420572", "LOSSLESS")]
+    assert output.exists()
+
+
+def test_download_never_uses_tidal_stream_for_non_tidal_results(monkeypatch, tmp_path):
+    import monochrome
+
+    def clean_miss(isrc, fmt):
+        raise monochrome.QobuzProxyError("no results", transport_failure=False)
+    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", clean_miss)
+    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, fmt: None)
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda a, t, b: "")
+
+    def boom(tidal_id, quality):
+        raise AssertionError("Tidal stream must not run for qbdlx-sourced results")
+    monkeypatch.setattr(monochrome, "_tidal_stream_url", boom)
+
+    output = tmp_path / "track.flac"
+    # netloc is a Qobuz id here; treating it as a Tidal id risks surprise polka
+    with pytest.raises(RuntimeError, match="no stream available"):
+        monochrome.download_monochrome_track(
+            "monochrome://8767428?isrc=GBZZZ9900001&quality=LOSSLESS&src=qbdlx",
+            output,
+        )
+    assert not output.exists()
 
 
 def test_monochrome_playlist_urls_detect_as_monochrome():
