@@ -596,7 +596,7 @@
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
-                            <label class="source-toggle-item" title="When a download fails because the selected source is offline, try the same track from another enabled source instead of failing the job.">
+                            <label class="source-toggle-item" title="When a download fails (source offline, track unavailable, corrupt or wrong length), try the same track from another enabled source instead of failing the job. The replacement must clear a confidence check first, so it only swaps in a track that's very likely the same recording.">
                                 <span class="source-toggle-text">Fallback <i class="fa-solid fa-circle-info source-toggle-help" aria-label="Fallback help"></i></span>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="settingSourceOfflineFallback" checked>

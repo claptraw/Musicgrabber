@@ -81,6 +81,10 @@ SEARCH_MAX_PER_SOURCE_SOULSEEK = 6
 SEARCH_MAX_PER_SOURCE_MONOCHROME = 6
 SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 SLSKD_MATCH_CONFIDENCE_FLOOR = float(os.getenv("SLSKD_MATCH_CONFIDENCE_FLOOR", "0.55"))  # 0.0-1.0; reject worse than this
+# Cross-source fallback (source_offline_fallback): a swapped-in candidate must clear
+# this confidence bar so we don't "rescue" a dead source by grabbing the wrong song.
+# Stricter than the slskd floor on purpose; a silent fail beats a confident wrong track.
+FALLBACK_MATCH_CONFIDENCE_FLOOR = float(os.getenv("FALLBACK_MATCH_CONFIDENCE_FLOOR", "0.70"))  # 0.0-1.0
 MAX_SEARCH_QUERY_LENGTH = 512    # Max characters allowed in search input
 SEARCH_LOG_RETENTION_DAYS = 90   # Keep search analytics for N days
 

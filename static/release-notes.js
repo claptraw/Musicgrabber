@@ -9,7 +9,15 @@
 const RELEASE_NOTES = {
     "2.9.5": {
         title: "What's New in v2.9.5",
-        sections: []
+        sections: [
+            {
+                heading: "Improved",
+                items: [
+                    "The 'Fallback' setting (Settings, Sources) got a lot more trustworthy. When a download fails and it re-routes to another source, the replacement now has to pass a same-track confidence check first, so it won't quietly swap in a live version, a remix, or an entirely different song just because it scored well.",
+                    "Fallback now also kicks in for YouTube and SoundCloud, not just Monochrome and the MP3 sources, and once a source has been marked offline mid-attempt it stays out of the running so the chain doesn't keep retrying a platform that's clearly having a bad day.",
+                ]
+            }
+        ]
     },
     "2.9.4": {
         title: "What's New in v2.9.4",

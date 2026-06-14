@@ -2,6 +2,11 @@
 
 ## v2.9.5 (DEV)
 
+### Improved
+- **Cross-source download fallback now refuses to grab the wrong song**: the "Fallback" toggle (Settings, Sources) has always re-routed a failed download to another enabled source, but it would happily hand over whatever scored highest next, wrong mix and all. Each replacement candidate is now put through the same confidence check the matching engine uses everywhere else, and anything below the bar (`FALLBACK_MATCH_CONFIDENCE_FLOOR`, default 0.70) is skipped rather than downloaded. A silent fail beats a confident impostor.
+- **Fallback now covers YouTube and SoundCloud too**: previously only the direct sources (Monochrome, MP3Phoenix and friends) would hand off when they fell over. A hard YouTube/SoundCloud failure now triggers the same chain, so the setting genuinely means "all sources" rather than "all sources except the noisy ones".
+- **The chain stops climbing back onto a dead platform**: once a source has been written off as offline during a fallback run, it stays excluded for the rest of that track's attempts, so a flat Monochrome won't get poked again via its second- and third-best results.
+
 ## v2.9.4 (2026-06-12)
 
 ### Added
