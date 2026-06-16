@@ -1133,13 +1133,22 @@ def _resolve_track_number(
     album_track_number: int | None,
     album_track_total: int | None,
     mb_metadata: dict | None,
+    compilation: bool = False,
 ) -> tuple[int | None, int | None]:
     """Pick the best track number/total for tagging, without clobbering existing tags.
 
     Priority: explicit album context > existing file tags > MusicBrainz lookup.
     Some source files arrive with track info baked in; we don't want a MusicBrainz
     guess (which might be from a compilation) to overwrite that.
+
+    When the track is being collapsed into a playlist-as-compilation, its original
+    studio-album position ("8 of 13") is meaningless and would scramble ordering in
+    Plex/Navidrome, so we suppress the number entirely and let the M3U/filename order
+    the playlist instead.
     """
+    if compilation:
+        return None, None
+
     # Album downloads always win, the user picked the album intentionally
     if album_track_number is not None:
         return album_track_number, album_track_total
@@ -1544,6 +1553,29 @@ def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artis
         pass
 
     return new_path
+
+
+def _playlist_album_tags(
+    playlist_name: str | None, playlist_routed: bool, user_id: str | None = None
+) -> tuple[str | None, str | None, bool]:
+    """Album/album-artist/compilation overrides for playlist-routed tracks.
+
+    When 'playlist_album_as_name' is enabled and a track is landing inside a
+    playlist folder, return (playlist_name, "Various Artists", True) so the whole
+    playlist collapses into one Various-Artists compilation. Otherwise returns
+    (None, None, False) and the caller keeps its own album tags. This is what
+    stops Plex spawning a separate one-track album per Shazam'd song.
+    """
+    if not playlist_routed or not playlist_name:
+        return None, None, False
+    if not get_setting_bool("playlist_album_as_name", False, user_id=user_id):
+        return None, None, False
+    name = playlist_name.strip()
+    if name.lower().endswith(".m3u"):
+        name = name[:-4].strip()
+    if not name:
+        return None, None, False
+    return name, "Various Artists", True
 
 
 def _auto_route_playlist_to_album(
@@ -2503,6 +2535,9 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
         # Resolve the download directory for this playlist
         playlists_dir = get_playlists_dir(user_id=user_id) if use_playlists_dir else None
         safe_playlist = sanitize_playlist_name(playlist_name, playlist_id)
+        pl_album, pl_album_artist, pl_compilation = _playlist_album_tags(
+            playlist_name, bool(playlists_dir), user_id
+        )
         if playlists_dir:
             playlist_track_dir = playlists_dir / safe_playlist
             playlist_track_dir.mkdir(parents=True, exist_ok=True)
@@ -2667,18 +2702,19 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     mb_artist = mb_metadata.get("artist", artist)
                     mb_title = mb_metadata.get("title", title)
                     tag_track_num, tag_track_total = _resolve_track_number(
-                        audio_file, None, None, mb_metadata
+                        audio_file, None, None, mb_metadata, compilation=pl_compilation
                     )
                     apply_metadata_to_file(
                         audio_file, mb_artist, mb_title,
-                        mb_metadata.get("album", ""),
+                        pl_album or mb_metadata.get("album", ""),
                         mb_metadata.get("year"),
                         track_number=tag_track_num,
                         track_total=tag_track_total,
                         album_art_bytes=pl_cover_art_bytes,
                         album_art_mime=pl_cover_art_mime,
-                        album_artist=mb_metadata.get("album_artist"),
+                        album_artist=pl_album_artist or mb_metadata.get("album_artist"),
                         source="youtube",
+                        compilation=pl_compilation,
                     )
                     # Use canonical artist/title from MusicBrainz
                     if mb_artist != artist:
@@ -2692,15 +2728,18 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                         title = mb_title
                 else:
                     tag_track_num, tag_track_total = _resolve_track_number(
-                        audio_file, None, None, None
+                        audio_file, None, None, None, compilation=pl_compilation
                     )
                     apply_metadata_to_file(
                         audio_file, artist, title,
+                        pl_album or "",
                         track_number=tag_track_num,
                         track_total=tag_track_total,
                         album_art_bytes=pl_cover_art_bytes,
                         album_art_mime=pl_cover_art_mime,
+                        album_artist=pl_album_artist,
                         source="youtube",
+                        compilation=pl_compilation,
                     )
 
                 audio_file = _rename_with_track_number_if_enabled(
@@ -2870,6 +2909,10 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             playlists_dir = get_playlists_dir(user_id=user_id)
         else:
             playlists_dir = None
+
+        pl_album, pl_album_artist, pl_compilation = _playlist_album_tags(
+            playlist_name, bool(playlists_dir), user_id
+        )
 
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_playlist_name(playlist_name, playlist_name)
@@ -3051,19 +3094,20 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             tag_album = forced_album_name or mb_metadata.get("album", "")
             tag_album_artist = forced_album_artist or mb_metadata.get("album_artist")
             tag_track_num, tag_track_total = _resolve_track_number(
-                final_file, album_track_number, album_track_total, mb_metadata
+                final_file, album_track_number, album_track_total, mb_metadata, compilation=pl_compilation
             )
             apply_metadata_to_file(
                 final_file, mb_artist, tag_title,
-                tag_album,
+                pl_album or tag_album,
                 mb_metadata.get("year"),
                 track_number=tag_track_num,
                 track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
-                album_artist=tag_album_artist,
+                album_artist=pl_album_artist or tag_album_artist,
                 source="soulseek",
                 source_quality=audio_quality,
+                compilation=pl_compilation,
             )
             # Use canonical artist/title from MusicBrainz
             if mb_artist != artist:
@@ -3072,7 +3116,9 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 artist = mb_artist
             title = tag_title
             playlist_album_routed = False
-            if not override_dir:
+            # Compilation mode keeps every track flat in the playlist folder, so
+            # skip the per-album subfolder routing that would split it up again.
+            if not override_dir and not pl_compilation:
                 if playlists_dir:
                     final_file, playlist_album_routed = _auto_route_playlist_to_album(
                         final_file, artist, title, mb_metadata, job_id, artist_dir, user_id
@@ -3085,20 +3131,21 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         else:
             playlist_album_routed = False
             tag_track_num, tag_track_total = _resolve_track_number(
-                final_file, album_track_number, album_track_total, None
+                final_file, album_track_number, album_track_total, None, compilation=pl_compilation
             )
             apply_metadata_to_file(
                 final_file,
                 artist,
                 forced_track_title or title,
-                forced_album_name or "",
+                pl_album or forced_album_name or "",
                 track_number=tag_track_num,
                 track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
-                album_artist=forced_album_artist,
+                album_artist=pl_album_artist or forced_album_artist,
                 source="soulseek",
                 source_quality=audio_quality,
+                compilation=pl_compilation,
             )
             title = forced_track_title or title
 
@@ -3306,6 +3353,9 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             playlists_dir = get_playlists_dir(user_id=user_id)
         else:
             playlists_dir = None
+        pl_album, pl_album_artist, pl_compilation = _playlist_album_tags(
+            playlist_name, bool(playlists_dir), user_id
+        )
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_playlist_name(playlist_name, playlist_name)
             safe_title = _playlist_stem(forced_album_artist or artist, forced_track_title or title, job_id)
@@ -3462,25 +3512,27 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                 album_art_bytes, album_art_mime = cover
 
         tag_track_num, tag_track_total = _resolve_track_number(
-            output_path, album_track_number, album_track_total, mb_metadata
+            output_path, album_track_number, album_track_total, mb_metadata, compilation=pl_compilation
         )
         apply_metadata_to_file(
             output_path,
             artist,
             title,
-            album or "Singles",
+            pl_album or album or "Singles",
             year,
             track_number=tag_track_num,
             track_total=tag_track_total,
             album_art_bytes=album_art_bytes,
             album_art_mime=album_art_mime,
-            album_artist=tag_album_artist,
+            album_artist=pl_album_artist or tag_album_artist,
             source=source_label,
             source_quality=audio_quality,
+            compilation=pl_compilation,
         )
 
         playlist_album_routed = False
-        if not override_dir and mb_metadata:
+        # Compilation mode keeps tracks flat in the playlist folder; don't re-split.
+        if not override_dir and mb_metadata and not pl_compilation:
             if playlists_dir:
                 output_path, playlist_album_routed = _auto_route_playlist_to_album(
                     output_path, artist, title, mb_metadata, job_id, artist_dir, user_id
@@ -3801,6 +3853,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             playlists_dir = get_playlists_dir(user_id=user_id)
         else:
             playlists_dir = None
+        pl_album, pl_album_artist, pl_compilation = _playlist_album_tags(
+            playlist_name, bool(playlists_dir), user_id
+        )
         if playlists_dir:
             artist_dir = playlists_dir / sanitize_playlist_name(playlist_name, playlist_name)
             safe_title = _playlist_stem(forced_album_artist or artist, forced_track_title or title, video_id)
@@ -4013,19 +4068,20 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             tag_album = forced_album_name or mb_metadata.get("album", "")
             tag_album_artist = forced_album_artist or mb_metadata.get("album_artist")
             tag_track_num, tag_track_total = _resolve_track_number(
-                audio_file, album_track_number, album_track_total, mb_metadata
+                audio_file, album_track_number, album_track_total, mb_metadata, compilation=pl_compilation
             )
             apply_metadata_to_file(
                 audio_file, mb_artist, tag_title,
-                tag_album,
+                pl_album or tag_album,
                 mb_metadata.get("year"),
                 track_number=tag_track_num,
                 track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
-                album_artist=tag_album_artist,
+                album_artist=pl_album_artist or tag_album_artist,
                 source=source_label,
                 source_quality=audio_quality,
+                compilation=pl_compilation,
             )
             # Use the canonical artist/title from MusicBrainz everywhere
             if mb_artist != artist:
@@ -4037,7 +4093,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             # Auto-route to Artist/Album/ when the setting is on.
             # For singles: Singles/Artist/Album/ (or Albums/Artist/Album/).
             # For playlists: Playlists/Name/Artist/Album/ — stays inside the playlist folder.
-            if not override_dir:
+            # Compilation mode skips this: the whole playlist stays flat as one album.
+            if not override_dir and not pl_compilation:
                 if playlists_dir:
                     audio_file, playlist_album_routed = _auto_route_playlist_to_album(
                         audio_file, artist, title, mb_metadata, job_id, artist_dir, user_id
@@ -4050,20 +4107,21 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         else:
             tag_title = forced_track_title or title
             tag_track_num, tag_track_total = _resolve_track_number(
-                audio_file, album_track_number, album_track_total, None
+                audio_file, album_track_number, album_track_total, None, compilation=pl_compilation
             )
             apply_metadata_to_file(
                 audio_file,
                 artist,
                 tag_title,
-                forced_album_name or "",
+                pl_album or forced_album_name or "",
                 track_number=tag_track_num,
                 track_total=tag_track_total,
                 album_art_bytes=album_art_bytes,
                 album_art_mime=album_art_mime,
-                album_artist=forced_album_artist,
+                album_artist=pl_album_artist or forced_album_artist,
                 source=source_label,
                 source_quality=audio_quality,
+                compilation=pl_compilation,
             )
             title = tag_title
 

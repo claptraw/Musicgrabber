@@ -88,6 +88,7 @@ class SettingsUpdate(BaseModel):
     # General
     music_dir: Optional[str] = None
     enable_musicbrainz: Optional[bool] = None
+    enable_deezer_metadata: Optional[bool] = None
     enable_lyrics: Optional[bool] = None
     default_convert_to_flac: Optional[bool] = None
     audio_format: Optional[str] = None  # "flac", "alac", "opus", or "mp3"
@@ -104,6 +105,7 @@ class SettingsUpdate(BaseModel):
     include_track_number_in_filename: Optional[bool] = None
     auto_album_singles: Optional[bool] = None
     auto_album_singles_use_albums_dir: Optional[bool] = None
+    playlist_album_as_name: Optional[bool] = None
     singles_only_mode: Optional[bool] = None
     file_permissions: Optional[str] = None
 

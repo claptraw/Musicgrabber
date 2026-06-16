@@ -206,6 +206,13 @@ MONOCHROME_PROXY_RETRY_WAIT = float(os.getenv("MONOCHROME_PROXY_RETRY_WAIT", "3"
 DEEZER_API_URL = os.getenv("DEEZER_API_URL", "https://api.deezer.com")
 TIMEOUT_DEEZER = int(os.getenv("TIMEOUT_DEEZER", "10"))
 
+# Deezer-as-metadata-fallback: MusicBrainz is canonical but slow to ingest new
+# releases, so fresh singles come back album-less and never leave Singles/. When
+# MB gives us no album we ask Deezer, but only trust it if it is confident it's
+# the same track. The floor keeps us from routing a track into the wrong album.
+DEEZER_METADATA_MATCH_FLOOR = float(os.getenv("DEEZER_METADATA_MATCH_FLOOR", "0.65"))
+DEEZER_METADATA_SEARCH_LIMIT = int(os.getenv("DEEZER_METADATA_SEARCH_LIMIT", "5"))
+
 # qbdlx fallback: when every Qobuz proxy is down, sign the official Qobuz API
 # ourselves using a shared free-account token (the same pool the qbdlx web UI
 # uses). No proxy middleman, so it survives when the proxies are all face-down.

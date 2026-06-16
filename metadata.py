@@ -18,7 +18,10 @@ from constants import (
     VERSION, TIMEOUT_HTTP_REQUEST, TIMEOUT_FPCALC,
     ACOUSTID_MIN_SCORE, MIN_SONG_DURATION_SECS,
     MB_ARTIST_SEARCH_LIMIT, TIMEOUT_MUSICBRAINZ_ARTIST,
+    DEEZER_SEARCH_URL, DEEZER_API_URL, TIMEOUT_DEEZER,
+    DEEZER_METADATA_MATCH_FLOOR, DEEZER_METADATA_SEARCH_LIMIT,
 )
+from matching import compute_match_confidence
 from settings import get_setting, get_setting_bool
 from utils import set_file_permissions
 
@@ -720,6 +723,108 @@ def lookup_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional
         return None
 
 
+# Deezer occasionally files a track under a greatest-hits or live package even
+# when record_type says "album", and the title usually gives it away. Belt and
+# braces alongside the record_type check so we don't route a studio single into
+# "The Very Best Of...".
+_DEEZER_NONCANONICAL_ALBUM_RE = re.compile(
+    r"\b(greatest hits|best of|the hits|hits collection|anthology|essentials?|"
+    r"compilation|live|unplugged|in concert|karaoke|tribute|soundtrack|"
+    r"original score|o\.?s\.?t\.?)\b",
+    re.IGNORECASE,
+)
+
+
+def lookup_deezer_album(artist: str, title: str) -> Optional[dict]:
+    """Ask Deezer which album a track belongs to, to fill MusicBrainz's gaps.
+
+    MusicBrainz is canonical but slow to ingest new releases, so plenty of fresh
+    singles come back album-less and never get routed out of Singles/. Deezer's
+    catalogue is bang up to date and hands us the album inline, so we use it
+    purely to plug that hole: only when MB gave us no album, and only if Deezer
+    is confident it's the same track AND the album looks like a real studio
+    release (record_type album/ep, not a 'Now 87' compilation).
+
+    Returns a dict with 'album' (+ optional year/track_number/track_total), or
+    None. Deliberately does NOT return a duration, so it never trips the
+    MusicBrainz duration sanity check on a path that previously had no album.
+    """
+    if not get_setting_bool("enable_deezer_metadata", True):
+        return None
+    if not (artist and title):
+        return None
+    try:
+        with httpx.Client(timeout=TIMEOUT_DEEZER) as client:
+            # Advanced query keeps Deezer honest about which field is which; if
+            # that's too strict to match, fall back to a loose free-text search.
+            params = {"q": f'artist:"{artist}" track:"{title}"', "limit": DEEZER_METADATA_SEARCH_LIMIT}
+            resp = client.get(DEEZER_SEARCH_URL, params=params)
+            items = (resp.json() or {}).get("data") or [] if resp.status_code == 200 else []
+            if not items:
+                resp = client.get(DEEZER_SEARCH_URL, params={"q": f"{artist} {title}", "limit": DEEZER_METADATA_SEARCH_LIMIT})
+                items = (resp.json() or {}).get("data") or [] if resp.status_code == 200 else []
+            if not items:
+                return None
+
+            # Shared confidence scorer picks the best track and the version-aware
+            # penalty keeps a remix/live cut from sneaking past a plain query.
+            best, best_conf = None, 0.0
+            for item in items:
+                cand_title = item.get("title") or ""
+                cand_artist = (item.get("artist") or {}).get("name") or ""
+                conf, _ = compute_match_confidence(artist, title, cand_title, cand_artist)
+                if conf > best_conf:
+                    best, best_conf = item, conf
+            if not best or best_conf < DEEZER_METADATA_MATCH_FLOOR:
+                return None
+
+            album_obj = best.get("album") or {}
+            album_id = album_obj.get("id")
+            album_title = (album_obj.get("title") or "").strip()
+            if not album_id or not album_title:
+                return None
+
+            # One more call to learn the album's type, year and track count.
+            # Only ever runs on the MB-miss path, so it's cheap in aggregate.
+            album_resp = client.get(f"{DEEZER_API_URL}/album/{album_id}")
+            if album_resp.status_code != 200:
+                return None
+            album = album_resp.json() or {}
+
+        record_type = (album.get("record_type") or "").lower()
+        if record_type not in ("album", "ep"):
+            # Singles and compilations don't earn a folder of their own.
+            return None
+        if _DEEZER_NONCANONICAL_ALBUM_RE.search(album_title):
+            return None
+
+        meta = {"album": album_title, "album_artist": artist, "metadata_source": "deezer_album"}
+        release_date = album.get("release_date") or ""
+        if len(release_date) >= 4 and release_date[:4].isdigit():
+            meta["year"] = release_date[:4]
+        nb_tracks = album.get("nb_tracks")
+        if isinstance(nb_tracks, int) and nb_tracks > 0:
+            meta["track_total"] = nb_tracks
+        # Deezer's album tracklist comes back in running order but doesn't carry
+        # an explicit track_position, so the track's index in the list is its
+        # number. Correct for single-disc albums (the overwhelming majority of
+        # the new-single case this path serves); only set track_total alongside
+        # it so we never write a bare "/11" with no number.
+        track_id = best.get("id")
+        tracklist = (album.get("tracks") or {}).get("data") or []
+        for idx, entry in enumerate(tracklist):
+            if entry.get("id") == track_id:
+                meta["track_number"] = idx + 1
+                break
+        else:
+            meta.pop("track_total", None)
+        return meta
+
+    except Exception as e:
+        print(f"Deezer album lookup failed for {artist} - {title}: {e}")
+        return None
+
+
 def lookup_metadata(artist: str, title: str, file_path: Path = None) -> Optional[dict]:
     """Look up track metadata, trying audio fingerprinting first.
 
@@ -727,9 +832,31 @@ def lookup_metadata(artist: str, title: str, file_path: Path = None) -> Optional
     1. Fingerprint the file with fpcalc -> query AcoustID
     2. If AcoustID matches, fetch the release date from MusicBrainz by recording ID
     3. If fingerprinting fails or scores too low, fall back to text-based MusicBrainz search
+    4. If MusicBrainz still gave us no album, ask Deezer to fill that one field
 
     Returns a dict with 'title', 'artist', 'album', 'year' or None.
     """
+    result = _lookup_metadata_musicbrainz(artist, title, file_path)
+
+    # Step 4: MusicBrainz couldn't pin down an album (common for brand-new
+    # releases it hasn't ingested yet). Deezer usually can, so let it fill the
+    # one field auto-album routing actually needs. We never overwrite anything
+    # MusicBrainz was sure about; Deezer only adds what's missing.
+    if get_setting_bool("enable_deezer_metadata", True) and (not result or not result.get("album")):
+        deezer = lookup_deezer_album(artist, title)
+        if deezer and deezer.get("album"):
+            if result is None:
+                result = {"title": title, "artist": artist}
+            for key in ("album", "year", "track_number", "track_total", "album_artist"):
+                if deezer.get(key) and not result.get(key):
+                    result[key] = deezer[key]
+            result.setdefault("metadata_source", deezer.get("metadata_source", "deezer_album"))
+
+    return result
+
+
+def _lookup_metadata_musicbrainz(artist: str, title: str, file_path: Path = None) -> Optional[dict]:
+    """AcoustID + MusicBrainz half of lookup_metadata (steps 1-3)."""
     if not get_setting_bool("enable_musicbrainz", True):
         return None
 
@@ -929,6 +1056,7 @@ def apply_metadata_to_file(
     album_artist: str | None = None,
     source: str | None = None,
     source_quality: str | None = None,
+    compilation: bool = False,
 ):
     """Apply metadata to audio file using mutagen (supports multiple formats).
 
@@ -936,6 +1064,10 @@ def apply_metadata_to_file(
     what quality. The SOURCE tag doubles as the "this file is ours" eligibility
     marker for the track-upgrades feature; without it a file is invisible to
     upgrades. Only written when provided, so existing tags are never clobbered.
+
+    compilation, when True, sets the iTunes-style "part of a compilation" flag so
+    Plex/Navidrome group the file under one Various-Artists album rather than
+    spawning a separate album per track. Only written when True, never cleared.
     """
     try:
         suffix = file_path.suffix.lower()
@@ -954,6 +1086,8 @@ def apply_metadata_to_file(
             if album_artist:
                 audio["ALBUMARTIST"] = album_artist
                 audio["ALBUM ARTIST"] = album_artist
+            if compilation:
+                audio["COMPILATION"] = "1"
             if year:
                 audio["DATE"] = year
             if track_number:
@@ -995,6 +1129,14 @@ def apply_metadata_to_file(
                 audio["album"] = album
             if album_artist:
                 audio["albumartist"] = [album_artist]
+            if compilation:
+                # TCMP is the iTunes compilation flag; EasyID3 doesn't know it by
+                # default, so register it as a plain text key before writing.
+                try:
+                    EasyID3.RegisterTextKey("compilation", "TCMP")
+                    audio["compilation"] = ["1"]
+                except Exception:
+                    pass
             if year:
                 audio["date"] = year
             if track_number:
@@ -1028,6 +1170,8 @@ def apply_metadata_to_file(
                 audio["\xa9alb"] = [album]
             if album_artist:
                 audio["aART"] = [album_artist]
+            if compilation:
+                audio["cpil"] = True
             if year:
                 audio["\xa9day"] = [year]
             if track_number:
@@ -1061,6 +1205,8 @@ def apply_metadata_to_file(
                 if album_artist:
                     audio["ALBUMARTIST"] = album_artist
                     audio["ALBUM ARTIST"] = album_artist
+                if compilation:
+                    audio["COMPILATION"] = "1"
                 if year:
                     audio["DATE"] = year
                 if track_number:

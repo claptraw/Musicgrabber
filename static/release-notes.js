@@ -11,6 +11,13 @@ const RELEASE_NOTES = {
         title: "What's New in v2.9.5",
         sections: [
             {
+                heading: "Added",
+                items: [
+                    "New 'Group playlists as one compilation' toggle (Settings, File Organisation). Turn it on and every track that lands in a playlist folder is tagged with the playlist name as its album, 'Various Artists' as the album artist, and the compilation flag, so Plex and Navidrome group the whole playlist together instead of inventing a separate one-track album for each song. Tracks collapsed this way also drop their original studio-album track number, so the playlist isn't reordered by stray '8 of 13' positions. Off by default; ideal for Shazam-style mixed playlists.",
+                    "New 'Deezer Album Fallback' toggle (Settings, General; on by default). MusicBrainz is slow to catalogue brand-new releases, so newly released singles often arrived with no album and stayed stuck in Singles/ even with auto-album routing on. Now, when MusicBrainz can't find the album, Deezer is asked instead and fills in the album, year and track number so the track gets filed properly. It only adds what MusicBrainz left blank, and only when it's confident it's the same studio track, so your existing tags are never overwritten.",
+                ]
+            },
+            {
                 heading: "Improved",
                 items: [
                     "The 'Fallback' setting (Settings, Sources) got a lot more trustworthy. When a download fails and it re-routes to another source, the replacement now has to pass a same-track confidence check first, so it won't quietly swap in a live version, a remix, or an entirely different song just because it scored well.",

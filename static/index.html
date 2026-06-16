@@ -537,6 +537,14 @@
                         <span class="settings-hint settings-hint-full">Looks up each download on MusicBrainz to correct artist/title tags, add release year, and verify track duration. Occasional false matches are possible for obscure tracks.</span>
                     </label>
                     <label class="settings-label settings-label-wrap admin-only">
+                        <span>Deezer Album Fallback</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingEnableDeezerMetadata" checked>
+                            <span class="toggle-slider"></span>
+                        </div>
+                        <span class="settings-hint settings-hint-full">When MusicBrainz can't pin down an album (common for brand-new releases), asks Deezer instead so the track still gets an album and can be routed out of Singles/. Only fills the album when MusicBrainz left it blank.</span>
+                    </label>
+                    <label class="settings-label settings-label-wrap admin-only">
                         <span>Fetch Lyrics (LRClib)</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingEnableLyrics" checked>
@@ -704,6 +712,14 @@
                             <span class="toggle-slider"></span>
                         </div>
                         <span class="settings-hint settings-hint-full">When on, album-routed singles land in <code>Albums/Artist/Album/Track.ext</code> instead of the Singles folder. Requires auto-album routing to be enabled.</span>
+                    </label>
+                    <label class="settings-label settings-label-wrap">
+                        <span>Group playlists as one compilation</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingPlaylistAlbumAsName">
+                            <span class="toggle-slider"></span>
+                        </div>
+                        <span class="settings-hint settings-hint-full">When on, tracks downloaded into a playlist folder are tagged with the playlist name as the album, album artist <code>Various Artists</code>, and the compilation flag. Stops Plex/Navidrome creating a separate one-track album per song. Handy for Shazam-style mixed playlists.</span>
                     </label>
                     <label class="settings-label settings-label-wrap admin-only">
                         <span>Singles-only mode</span>

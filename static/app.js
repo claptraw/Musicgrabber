@@ -6780,6 +6780,7 @@
         const settingsFieldMap = {
             'skip_dupes': 'settingSkipDupes',
             'enable_musicbrainz': 'settingEnableMusicbrainz',
+            'enable_deezer_metadata': 'settingEnableDeezerMetadata',
             'enable_lyrics': 'settingEnableLyrics',
             'acoustid_api_key': 'settingAcoustidKey',
             'default_convert_to_flac': 'settingDefaultFlac',
@@ -6797,6 +6798,7 @@
             'include_track_number_in_filename': 'settingIncludeTrackNumberInFilename',
             'auto_album_singles': 'settingAutoAlbumSingles',
             'auto_album_singles_use_albums_dir': 'settingAutoAlbumSinglesUseAlbumsDir',
+            'playlist_album_as_name': 'settingPlaylistAlbumAsName',
             'singles_only_mode': 'settingSinglesOnlyMode',
             'source_youtube_enabled': 'settingSourceYoutube',
             'source_mp3phoenix_enabled': 'settingSourceMp3phoenix',
