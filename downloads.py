@@ -2260,6 +2260,20 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         if stored_path_str:
             stored_path = Path(stored_path_str)
             if stored_path.exists():
+                try:
+                    from metadata import apply_metadata_to_file as _apply
+                    for _pl_name in _all_playlist_names_for_track(conn, row["wpt_artist"] or row["job_artist"] or "", row["wpt_title"] or row["job_title"] or ""):
+                        try:
+                            _apply(
+                                stored_path,
+                                row["wpt_artist"] or row["job_artist"] or "",
+                                row["wpt_title"] or row["job_title"] or "",
+                                playlist_name=_pl_name,
+                            )
+                        except Exception as _e2:
+                            print(f"Playlist tag retroactive failed for {stored_path} ({_pl_name}): {_e2}")
+                except Exception as _e:
+                    print(f"Playlist tag retroactive failed for {stored_path}: {_e}")
                 if playlists_dir:
                     # In playlist-folder mode the file is either inside the playlist folder
                     # or borrowed from the Singles library. Use the same formatting as the
@@ -2293,6 +2307,20 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
             if resolved and resolved not in seen_paths:
                 seen_paths.add(resolved)
                 playlist_files.append(resolved)
+                try:
+                    from metadata import apply_metadata_to_file as _apply
+                    for _pl_name in _all_playlist_names_for_track(conn, row["wpt_artist"] or row["job_artist"] or "", row["wpt_title"] or row["job_title"] or ""):
+                        try:
+                            _apply(
+                                track_dir / Path(resolved).name,
+                                row["wpt_artist"] or row["job_artist"] or "",
+                                row["wpt_title"] or row["job_title"] or "",
+                                playlist_name=_pl_name,
+                            )
+                        except Exception as _e2:
+                            print(f"Playlist tag retroactive failed for {resolved} ({_pl_name}): {_e2}")
+                except Exception as _e:
+                    print(f"Playlist tag retroactive failed for {resolved}: {_e}")
                 continue
 
             # Track wasn't resolved inside the playlist folder  -  fall back through
@@ -2323,6 +2351,20 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                     # Absolute path from Navidrome that doesn't exist on our filesystem = stale entry
                     if existing.is_absolute() and not existing.exists():
                         stale_navidrome_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
+                try:
+                    from metadata import apply_metadata_to_file as _apply
+                    for _pl_name in _all_playlist_names_for_track(conn, row["wpt_artist"] or row["job_artist"] or "", row["wpt_title"] or row["job_title"] or ""):
+                        try:
+                            _apply(
+                                existing,
+                                row["wpt_artist"] or row["job_artist"] or "",
+                                row["wpt_title"] or row["job_title"] or "",
+                                playlist_name=_pl_name,
+                            )
+                        except Exception as _e2:
+                            print(f"Playlist tag retroactive failed for {existing} ({_pl_name}): {_e2}")
+                except Exception as _e:
+                    print(f"Playlist tag retroactive failed for {existing}: {_e}")
             elif navidrome_sentinel_hit:
                 synthetic_path_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
             else:
@@ -2358,6 +2400,20 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                     if rel_path_str not in seen_paths:
                         seen_paths.add(rel_path_str)
                         playlist_files.append(rel_path_str)
+                        try:
+                            from metadata import apply_metadata_to_file as _apply
+                            for _pl_name in _all_playlist_names_for_track(conn, row["wpt_artist"] or row["job_artist"] or "", row["wpt_title"] or row["job_title"] or ""):
+                                try:
+                                    _apply(
+                                        audio_file,
+                                        row["wpt_artist"] or row["job_artist"] or "",
+                                        row["wpt_title"] or row["job_title"] or "",
+                                        playlist_name=_pl_name,
+                                    )
+                                except Exception as _e2:
+                                    print(f"Playlist tag retroactive failed for {audio_file} ({_pl_name}): {_e2}")
+                        except Exception as _e:
+                            print(f"Playlist tag retroactive failed for {audio_file}: {_e}")
                 except ValueError:
                     abs_path = str(audio_file)  # Navidrome absolute path  -  use as-is
                     if abs_path not in seen_paths:
@@ -2366,6 +2422,20 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                         # Navidrome says it exists but our filesystem disagrees = stale DB entry
                         if not audio_file.exists():
                             stale_navidrome_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
+                        try:
+                            from metadata import apply_metadata_to_file as _apply
+                            for _pl_name in _all_playlist_names_for_track(conn, row["wpt_artist"] or row["job_artist"] or "", row["wpt_title"] or row["job_title"] or ""):
+                                try:
+                                    _apply(
+                                        audio_file,
+                                        row["wpt_artist"] or row["job_artist"] or "",
+                                        row["wpt_title"] or row["job_title"] or "",
+                                        playlist_name=_pl_name,
+                                    )
+                                except Exception as _e2:
+                                    print(f"Playlist tag retroactive failed for {audio_file} ({_pl_name}): {_e2}")
+                        except Exception as _e:
+                            print(f"Playlist tag retroactive failed for {audio_file}: {_e}")
             elif navidrome_sentinel_hit:
                 synthetic_path_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
             else:

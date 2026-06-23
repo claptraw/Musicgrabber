@@ -3793,6 +3793,70 @@ def check_all_watched_playlists(http_request: Request):
     }
 
 
+@app.post("/api/watched-playlists/tag-all-playlists-comment")
+def tag_all_playlists_comment(http_request: Request):
+    """One-shot: tag all downloaded tracks with playlist names in COMMENT metadata."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT DISTINCT wpt.artist, wpt.title, wpt.resolved_path
+            FROM watched_playlist_tracks wpt
+            WHERE wpt.downloaded_at IS NOT NULL
+        """).fetchall()
+
+    if not rows:
+        return {"tagged": 0, "skipped": 0, "errors": 0}
+
+    tagged = 0
+    skipped = 0
+    errors = 0
+
+    for row in rows:
+        artist = row["artist"]
+        title = row["title"]
+        resolved_path = row["resolved_path"]
+
+        if not resolved_path:
+            skipped += 1
+            continue
+
+        audio_file = Path(resolved_path)
+        if not audio_file.exists():
+            skipped += 1
+            continue
+
+        try:
+            with db_conn() as conn2:
+                pl_rows = conn2.execute(
+                    """SELECT DISTINCT wp.name
+                       FROM watched_playlist_tracks wpt
+                       JOIN watched_playlists wp ON wp.id = wpt.playlist_id
+                       WHERE wpt.downloaded_at IS NOT NULL
+                         AND LOWER(wpt.artist) = LOWER(?)
+                         AND LOWER(wpt.title) = LOWER(?)""",
+                    (artist, title),
+                ).fetchall()
+                pl_names = sorted({r[0] for r in pl_rows if r[0]}) if pl_rows else []
+        except Exception:
+            pl_names = []
+
+        if not pl_names:
+            skipped += 1
+            continue
+
+        try:
+            apply_metadata_to_file(audio_file, artist, title, playlist_names=pl_names)
+            tagged += 1
+        except Exception as e:
+            print(f"Tag-all COMMENT failed for {audio_file}: {e}")
+            errors += 1
+
+    return {"tagged": tagged, "skipped": skipped, "errors": errors}
+
+
 # ---------------------------------------------------------------------------
 # Watched Artists
 # ---------------------------------------------------------------------------
