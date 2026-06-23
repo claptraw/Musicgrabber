@@ -6789,6 +6789,7 @@
             'opus_bitrate': 'settingOpusBitrate',
             'alac_bitrate': 'settingAlacBitrate',
             'min_audio_bitrate': 'settingMinBitrate',
+            'reject_live_versions': 'settingRejectLiveVersions',
             'enable_track_upgrades': 'settingEnableTrackUpgrades',
             'upgrade_scan_interval_hours': 'settingUpgradeScanInterval',
             'singles_subdir': 'settingSinglesSubdir',

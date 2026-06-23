@@ -552,6 +552,14 @@
                         </div>
                         <span class="settings-hint settings-hint-full">Downloads synced (.lrc) or plain lyrics from LRClib after each track is saved. Displayed by players that support LRC files (e.g. Navidrome, foobar2000).</span>
                     </label>
+                    <label class="settings-label settings-label-wrap admin-only">
+                        <span>Reject Live Versions</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingRejectLiveVersions">
+                            <span class="toggle-slider"></span>
+                        </div>
+                        <span class="settings-hint settings-hint-full">When a downloaded track is confidently identified as a live recording (and you did not ask for a live version), bin it and try again. Songs that simply have 'live' in the title, like 'Live and Let Die', are never affected.</span>
+                    </label>
                     <label class="settings-label settings-label-top admin-only">
                         <span>Search Sources</span>
                         <div class="source-toggle-list">

@@ -37,7 +37,7 @@ from constants import (
 )
 from coverart import fetch_cover_art, get_album_art_context, ensure_album_cover_files, cache_cover_art, _fetch_caa_cover
 from db import db_conn, log_match_mismatch, get_album_track_lock, complete_album_track_lock
-from metadata import lookup_metadata, lookup_musicbrainz_by_isrc, fetch_lyrics, save_lyrics_file, apply_metadata_to_file, read_existing_track_number
+from metadata import lookup_metadata, lookup_musicbrainz_by_isrc, fetch_lyrics, save_lyrics_file, apply_metadata_to_file, read_existing_track_number, verify_recording
 from notifications import send_notification
 from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir, get_albums_dir, resolve_custom_subdir
 from slskd import (
@@ -594,6 +594,67 @@ def _note_blacklist_entry(
             conn.commit()
     except Exception as e:
         print(f"Blacklist write skipped: {e}")
+
+
+def _reject_if_live_version(
+    job_id: str,
+    audio_file,
+    mb_metadata: dict | None,
+    *,
+    artist: str,
+    title: str,
+    video_id: str | None,
+    source: str,
+    user_id: str | None,
+) -> bool:
+    """Layer 3 single-flow backstop for unwanted live takes.
+
+    Returns True if the file was rejected (the caller must then fail the job and
+    stop). Conservative by design: it only ever acts on a confident AcoustID
+    fingerprint identification of a live recording the user did not ask for.
+    Anything uncertain keeps the file; the asymmetry is the whole safety of the
+    feature. See docs/isrc-anchored-album-download.md, Part 1.5, Layer 3.
+    """
+    # Feature off -> behave exactly as today.
+    if not get_setting_bool("reject_live_versions", False, user_id=user_id):
+        return False
+
+    # Only act when AcoustID actually fingerprinted the file. Text-search or
+    # Deezer metadata is not a reliable identification, so we do not gamble.
+    if not (mb_metadata and mb_metadata.get("metadata_source") == "acoustid_fingerprint"):
+        return False
+
+    # Single-flow: no expected recording MBID, so verify_recording only ever
+    # returns 'reject_live' or 'ok'/'uncertain'. 'uncertain' means keep.
+    verdict = verify_recording(
+        mb_metadata,
+        expected_recording_mbid=None,
+        query=f"{artist} - {title}".strip(" -"),
+    )
+    if verdict not in ("reject_live", "reject_wrong"):
+        return False
+
+    reason = "live_version" if verdict == "reject_live" else "wrong_recording"
+    identified = (mb_metadata.get("title") or "").strip() or "unknown"
+    note = f"AcoustID identified this as '{identified}' ({verdict}); we wanted '{title}'"
+    # Blacklist only when we have a precise per-result id (web sources), so a retry
+    # skips this exact result. slskd has no stable per-file id, and blacklisting the
+    # peer would punish their whole catalogue for one mislabelled track, so there we
+    # just bin and fail; a retry may re-grab it, which is the lesser evil.
+    if video_id:
+        _note_blacklist_entry(
+            source=source,
+            reason=reason,
+            note=note,
+            job_id=job_id,
+            video_id=video_id,
+        )
+    move_to_trash(audio_file, user_id=user_id)
+    print(
+        f"Rejected {source} download for {artist} - {title}: {verdict} "
+        f"(AcoustID said '{identified}'); file binned and blacklisted"
+    )
+    return True
 
 
 def _find_alternate_search_candidate(
@@ -3169,6 +3230,16 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         trigger_navidrome_scan(user_id=user_id)
         trigger_jellyfin_scan(user_id=user_id)
 
+        # Layer 3 backstop: a confident AcoustID fingerprint says this is a live take
+        # the user did not ask for. Bin it, blacklist the peer, fail the job for retry.
+        if _reject_if_live_version(
+            job_id, final_file, mb_metadata,
+            artist=artist, title=title,
+            video_id=None, source="soulseek", user_id=user_id,
+        ):
+            _update_job(job_id, status="failed", error="Rejected live version (AcoustID)", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
+            return
+
         # Update job status
         _update_job(
             job_id,
@@ -4145,6 +4216,16 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         _update_job(job_id, progress_stage="Scanning library")
         trigger_navidrome_scan(user_id=user_id)
         trigger_jellyfin_scan(user_id=user_id)
+
+        # Layer 3 backstop: a confident AcoustID fingerprint says this is a live take
+        # the user did not ask for. Bin it, blacklist it, fail the job so retry avoids it.
+        if _reject_if_live_version(
+            job_id, audio_file, mb_metadata,
+            artist=artist, title=title,
+            video_id=video_id, source=source_label, user_id=user_id,
+        ):
+            _update_job(job_id, status="failed", error="Rejected live version (AcoustID)", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
+            return
 
         # Update job status
         _update_job(

@@ -170,6 +170,9 @@ SETTINGS_SCHEMA = {
     "opus_bitrate": {"type": "str", "default": "320k", "env": "OPUS_BITRATE"},
     "alac_bitrate": {"type": "str", "default": "lossless", "env": "ALAC_BITRATE"},
     "min_audio_bitrate": {"type": "int", "default": 0, "env": "MIN_AUDIO_BITRATE"},
+    # Reject live versions. Off by default; opt-in, and deliberately so since it's
+    # destructive (bins a confidently-identified live recording and tries again).
+    "reject_live_versions": {"type": "bool", "default": False, "env": "REJECT_LIVE_VERSIONS"},
     # Track upgrades (Lidarr-style). Off by default; opt-in. The scan flags library
     # files sitting below the quality you already download at, ready for a manual upgrade.
     "enable_track_upgrades": {"type": "bool", "default": False, "env": "ENABLE_TRACK_UPGRADES"},

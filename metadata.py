@@ -21,7 +21,7 @@ from constants import (
     DEEZER_SEARCH_URL, DEEZER_API_URL, TIMEOUT_DEEZER,
     DEEZER_METADATA_MATCH_FLOOR, DEEZER_METADATA_SEARCH_LIMIT,
 )
-from matching import compute_match_confidence
+from matching import compute_match_confidence, query_requests_variant, _HEAVY_VERSION_KEYWORDS
 from settings import get_setting, get_setting_bool
 from utils import set_file_permissions
 
@@ -663,6 +663,201 @@ def _lookup_musicbrainz_by_id(recording_id: str, expected_artist: str = "") -> O
 
     except Exception:
         return None
+
+
+# The "live" family of version keywords, pulled out of matching.py's shared
+# list. We deliberately only treat these as a version *annotation*, never as a
+# bare substring of the title. "Live and Let Die" is studio music; the band
+# "Live" is studio music; "Livin' on a Prayer" does not even contain the word.
+# See the cross-cutting live-detection rules in the ISRC-anchored album plan.
+_LIVE_VERSION_KEYWORDS = tuple(
+    kw for kw in _HEAVY_VERSION_KEYWORDS
+    if kw in ("live", "live at", "live from", "in concert", "unplugged")
+)
+
+
+def _title_has_live_annotation(title: str) -> bool:
+    """True only when "live"/"unplugged"/"in concert" appears as a positional
+    version annotation, never as part of the core song title.
+
+    This mirrors matching.py `similarity()`: that function only treats a heavy
+    version keyword as significant when it is in the *trailing* segment after a
+    prefix match, so a bare substring like "Live and Let Die" or the band
+    "Live" never trips it. We apply the same discipline here:
+
+    - bracketed:    "(live...)", "[live...]"
+    - trailing dash: " - live", " - live at/from/in ..."
+    - explicit live phrases anywhere: "live at", "live from", "live in",
+      "in concert", "recorded live", "unplugged"
+
+    A naive `"live" in title.lower()` is explicitly NOT used; it is a bug.
+    """
+    if not title:
+        return False
+    t = title.lower().strip()
+
+    # Helper: does a trailing segment START with a live annotation? Prefix
+    # discipline, never a bare substring, so "Deliver" / "Alive" never register.
+    def _segment_is_live(seg: str) -> bool:
+        seg = seg.strip().lstrip(' -')  # tolerate "(- live)" style separators
+        if not seg:
+            return False
+        triggers = set(_LIVE_VERSION_KEYWORDS) | {"unplugged", "recorded live", "in concert"}
+        return any(seg == kw or seg.startswith(kw + " ") for kw in triggers)
+
+    # 1. Bracketed annotation: "(Live)", "(Live at Wembley)", "[Live from Slane Castle]".
+    for match in re.finditer(r'[\(\[]([^\)\]]*)[\)\]]', t):
+        if _segment_is_live(match.group(1)):
+            return True
+
+    # 2. Trailing dash annotation: " - Live", " - Live at the Apollo".
+    #    Reuse matching.py's discipline of looking only at the trailing segment.
+    dash_split = re.split(r'\s[-–]\s', t)
+    if len(dash_split) > 1 and _segment_is_live(dash_split[-1]):
+        return True
+
+    # 3. Explicit live phrases anywhere in the title. These cannot be part of a
+    #    core song name; "live at", "live from", "live in <place>" etc. always
+    #    denote a recording context.
+    for phrase in ("live at", "live from", "live in", "in concert", "recorded live"):
+        if phrase in t:
+            return True
+
+    return False
+
+
+def _disambiguation_is_live(disambiguation: str) -> bool:
+    """True if a MusicBrainz recording disambiguation marks it as live.
+
+    MB writes things like "live, 2001-06-23: Slane Castle". This is
+    authoritative, so a hit here is enough on its own.
+    """
+    if not disambiguation:
+        return False
+    d = disambiguation.lower()
+    # Word-boundary so "alive" / "deliverance" do not register.
+    return bool(re.search(r'\blive\b', d)) or "unplugged" in d or "in concert" in d
+
+
+def _lookup_recording_disambiguation(recording_id: str) -> Optional[str]:
+    """Fetch a recording's MusicBrainz `disambiguation` string, or None.
+
+    Kept as its own tiny function (rather than folded into _lookup_musicbrainz_by_id)
+    so the verification path can ask MB the one question it cares about and so the
+    tests can monkeypatch it without faking the whole release-scoring round trip.
+    Returns None on any failure; the caller treats None as "no live signal".
+    """
+    if not recording_id:
+        return None
+    if not get_setting_bool("enable_musicbrainz", True):
+        return None
+    try:
+        headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+        url = f"https://musicbrainz.org/ws/2/recording/{recording_id}"
+        params = {"fmt": "json"}
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
+            response = client.get(url, params=params, headers=headers)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        return data.get("disambiguation") or None
+    except Exception:
+        return None
+
+
+def verify_recording(acoustid_result: Optional[dict], *,
+                     expected_recording_mbid: Optional[str] = None,
+                     query: Optional[str] = None,
+                     high_confidence: bool = True) -> str:
+    """Return a verdict on whether the downloaded file is the recording we wanted.
+
+    Returns one of 'ok' | 'reject_live' | 'reject_wrong' | 'uncertain'. The
+    caller (Task G) treats 'uncertain' exactly like 'ok' (keep the file); only
+    a CONFIDENT contrary identification ever produces a reject_* verdict. The
+    asymmetry is the whole safety of the feature: a false reject trashes a
+    legitimate download of something obscure, so when in doubt we do nothing.
+
+    Args:
+        acoustid_result: the metadata dict from `_lookup_acoustid` (carries
+            `recording_id` and `title`), or None if AcoustID could not place
+            the file. None / a result below `ACOUSTID_MIN_SCORE` (which
+            `_lookup_acoustid` already filters out, returning None) is
+            'uncertain'.
+        expected_recording_mbid: the studio recording MBID we asked for, known
+            on the album flow via `fetch_album_tracks`. Absent on the single flow.
+        query: the original free-text search query. If the user explicitly asked
+            for a live/unplugged take, we never reject for live-ness.
+        high_confidence: whether the AcoustID identification is confident enough
+            to act on a "wrong recording" verdict. Defaults True (the presence of
+            a non-None result already means it cleared `ACOUSTID_MIN_SCORE` and the
+            recording-match floor inside `_lookup_acoustid`). A caller with extra
+            doubt can pass False to soften a reject_wrong down to 'uncertain'.
+
+    Live detection follows the cross-cutting rules: identity beats strings (an
+    exact MBID match is 'ok' and never re-examined), a bare "live" substring is
+    never a trigger, MusicBrainz `disambiguation` is authoritative, and the
+    exemptions (query asked for it, title-word "live", any uncertainty) always win.
+    """
+    # No confident AcoustID match at all -> we cannot say anything. Keep.
+    if not acoustid_result:
+        return "uncertain"
+
+    matched_mbid = acoustid_result.get("recording_id")
+    matched_title = acoustid_result.get("title") or ""
+
+    # The user explicitly asked for a variant (live/unplugged/acoustic/...).
+    # In that case live-ness is wanted, not a defect: never reject for it.
+    user_wants_variant = query_requests_variant(query) if query else False
+
+    # --- Album flow: we have the exact recording MBID we wanted. ------------
+    if expected_recording_mbid:
+        # Identity beats strings. An exact match is the recording we wanted,
+        # full stop; the word "live" in the title is irrelevant here.
+        if matched_mbid and matched_mbid == expected_recording_mbid:
+            return "ok"
+
+        # Different recording. Is it a live take?
+        if _is_live_recording(acoustid_result) and not user_wants_variant:
+            return "reject_live"
+
+        # Different, not live. Could be a remaster/reissue (different MBID, same
+        # performance, perfectly fine) -> only reject on a confident signal.
+        if matched_mbid and high_confidence:
+            return "reject_wrong"
+        return "uncertain"
+
+    # --- Single flow: no expected MBID, judge live-ness alone. --------------
+    if _is_live_recording(acoustid_result) and not user_wants_variant:
+        return "reject_live"
+
+    return "ok"
+
+
+def _is_live_recording(acoustid_result: dict) -> bool:
+    """True if the identified recording looks like a live take.
+
+    Prefers MusicBrainz `disambiguation` (authoritative) when available, and
+    otherwise falls back to a positional annotation check on the title. Never a
+    bare substring; see `_title_has_live_annotation`.
+    """
+    title = acoustid_result.get("title") or ""
+
+    # Title annotation is cheap and offline; check it first.
+    if _title_has_live_annotation(title):
+        return True
+
+    # MusicBrainz disambiguation is authoritative. The AcoustID metadata does
+    # not carry it (the lookup asks for "recordings releasegroups"), so we ask
+    # MB the one question, reusing the by-recording-id endpoint. Best-effort:
+    # None / a network wobble just means "no extra live signal", which keeps
+    # the file (the safe direction).
+    rec_id = acoustid_result.get("recording_id")
+    if rec_id:
+        disambiguation = _lookup_recording_disambiguation(rec_id)
+        if _disambiguation_is_live(disambiguation or ""):
+            return True
+
+    return False
 
 
 def lookup_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional[dict]:
