@@ -177,12 +177,20 @@ def start_bulk_import_for_tracks(
     album_total_tracks: Optional[int] = None,
     custom_subdir: Optional[str] = None,
     priority_source: Optional[str] = None,
+    *,
+    track_isrcs: Optional[list[str | None]] = None,
 ) -> str:
     """Create a bulk import job from a list of (artist, title) tuples.
 
     priority_source, when set, applies a large quality-score bonus to results
     from that source during selection, so the user's preferred indexer wins
     nearly every close call (see PRIORITY_SOURCE_BOOST).
+
+    track_isrcs, when provided, is a per-track list aligned by index with
+    tracks; the matching ISRC is stored against each row so the worker can try
+    a precise ISRC-first lookup before falling back to free-text search. Only
+    the Albums tab passes this; every other caller leaves it None and each row
+    gets a NULL isrc, behaving exactly as before.
     """
     import_id = str(uuid.uuid4())[:8]
 
@@ -205,9 +213,16 @@ def start_bulk_import_for_tracks(
         )
 
         for line_num, (artist, song) in enumerate(tracks, 1):
+            # Guard the index in case track_isrcs is shorter than tracks; a
+            # missing entry just means "no ISRC", same as not passing the list.
+            _isrc = (
+                track_isrcs[line_num - 1]
+                if track_isrcs and line_num - 1 < len(track_isrcs)
+                else None
+            )
             conn.execute(
-                "INSERT INTO bulk_import_tracks (import_id, line_num, artist, song, status) VALUES (?, ?, ?, ?, 'pending')",
-                (import_id, line_num, artist, song)
+                "INSERT INTO bulk_import_tracks (import_id, line_num, artist, song, status, isrc) VALUES (?, ?, ?, ?, 'pending', ?)",
+                (import_id, line_num, artist, song, _isrc)
             )
 
         conn.commit()
@@ -296,77 +311,36 @@ def process_bulk_import_worker(import_id: str):
             # Search preferred (or all) sources in parallel, ranked by quality score
             try:
                 search_query = f"{artist} - {song}"
-                search_results, _ = search_all(search_query, limit=10, sources=preferred_sources_list, include_soulseek=True)
 
-                # Apply the priority-source boost before logging so the ranked log
-                # reflects what the worker will actually pick.
-                search_results = apply_priority_source_boost(search_results, priority_source)
+                # Layer 1: ISRC-first. If the Albums tab handed us an ISRC for this
+                # track, ask Monochrome for that exact studio recording. A hit pins
+                # one recording, so a live take cannot sneak through; we then bypass
+                # the free-text search and its filters entirely. A miss (or no ISRC)
+                # leaves best_match None and the normal free-text leg runs below.
+                isrc = (track.get("isrc") or "").strip()
+                best_match = None
+                if isrc:
+                    from monochrome import resolve_by_isrc
+                    best_match = resolve_by_isrc(isrc, artist, song)
 
-                log_ranked_results(f"Bulk import {import_id}", search_query, search_results)
+                if best_match:
+                    # Precise pick: the decision log only needs the query for context.
+                    search_results = [best_match]
+                    log_ranked_results(f"Bulk import {import_id}", search_query, search_results)
+                else:
+                    search_results, _ = search_all(search_query, limit=10, sources=preferred_sources_list, include_soulseek=True)
 
-                if not search_results:
-                    with db_conn() as conn:
-                        conn.execute(
-                            "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
-                            ("No results found", track_id)
-                        )
-                        conn.execute(
-                            "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
-                            (import_id,)
-                        )
-                        conn.commit()
-                    time.sleep(base_delay)
-                    continue
+                    # Apply the priority-source boost before logging so the ranked log
+                    # reflects what the worker will actually pick.
+                    search_results = apply_priority_source_boost(search_results, priority_source)
 
-                # Results are already sorted by quality_score descending.
-                best_match = search_results[0]
-                if override_dir and artist:
-                    # Album mode: be strict on artist to avoid tribute/cover uploads.
-                    strict_matches = [
-                        c for c in search_results
-                        if not _candidate_looks_like_cover(c)
-                        and _candidate_channel_matches_expected_artist(c, artist)
-                    ]
-                    if strict_matches:
-                        best_match = strict_matches[0]
-                    else:
+                    log_ranked_results(f"Bulk import {import_id}", search_query, search_results)
+
+                    if not search_results:
                         with db_conn() as conn:
                             conn.execute(
                                 "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
-                                ("No strict artist match found", track_id)
-                            )
-                            conn.execute(
-                                "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
-                                (import_id,)
-                            )
-                            conn.commit()
-                        print(
-                            f"Album import {import_id}: no strict artist match for "
-                            f"'{artist} - {song}', skipping track"
-                        )
-                        time.sleep(base_delay)
-                        continue
-                elif (watch_playlist_id or watch_artist_id) and artist:
-                    # Watched imports: prefer a result that mentions the expected artist.
-                    # If nothing matches, fail rather than downloading a random top result
-                    # that could be a completely different song.
-                    for candidate in search_results:
-                        if _candidate_mentions_expected_artist(candidate, artist):
-                            best_match = candidate
-                            break
-                    else:
-                        wid = watch_playlist_id or watch_artist_id
-                        top_title = search_results[0].get("title", "?")
-                        top_channel = search_results[0].get("channel", "?")
-                        print(
-                            f"Watched import {wid}: no candidate matched "
-                            f"expected artist '{artist}' for '{song}', "
-                            f"refusing top result '{top_title}' by {top_channel}"
-                        )
-                        with db_conn() as conn:
-                            conn.execute(
-                                "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
-                                (f"No artist match (top result was '{top_title}' by {top_channel})", track_id)
+                                ("No results found", track_id)
                             )
                             conn.execute(
                                 "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
@@ -375,6 +349,64 @@ def process_bulk_import_worker(import_id: str):
                             conn.commit()
                         time.sleep(base_delay)
                         continue
+
+                    # Results are already sorted by quality_score descending.
+                    best_match = search_results[0]
+                    if override_dir and artist:
+                        # Album mode: be strict on artist to avoid tribute/cover uploads.
+                        strict_matches = [
+                            c for c in search_results
+                            if not _candidate_looks_like_cover(c)
+                            and _candidate_channel_matches_expected_artist(c, artist)
+                        ]
+                        if strict_matches:
+                            best_match = strict_matches[0]
+                        else:
+                            with db_conn() as conn:
+                                conn.execute(
+                                    "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
+                                    ("No strict artist match found", track_id)
+                                )
+                                conn.execute(
+                                    "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                                    (import_id,)
+                                )
+                                conn.commit()
+                            print(
+                                f"Album import {import_id}: no strict artist match for "
+                                f"'{artist} - {song}', skipping track"
+                            )
+                            time.sleep(base_delay)
+                            continue
+                    elif (watch_playlist_id or watch_artist_id) and artist:
+                        # Watched imports: prefer a result that mentions the expected artist.
+                        # If nothing matches, fail rather than downloading a random top result
+                        # that could be a completely different song.
+                        for candidate in search_results:
+                            if _candidate_mentions_expected_artist(candidate, artist):
+                                best_match = candidate
+                                break
+                        else:
+                            wid = watch_playlist_id or watch_artist_id
+                            top_title = search_results[0].get("title", "?")
+                            top_channel = search_results[0].get("channel", "?")
+                            print(
+                                f"Watched import {wid}: no candidate matched "
+                                f"expected artist '{artist}' for '{song}', "
+                                f"refusing top result '{top_title}' by {top_channel}"
+                            )
+                            with db_conn() as conn:
+                                conn.execute(
+                                    "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
+                                    (f"No artist match (top result was '{top_title}' by {top_channel})", track_id)
+                                )
+                                conn.execute(
+                                    "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                                    (import_id,)
+                                )
+                                conn.commit()
+                            time.sleep(base_delay)
+                            continue
 
                 video_id = best_match["video_id"]
                 source = best_match.get("source", "youtube")

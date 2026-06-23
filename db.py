@@ -236,6 +236,7 @@ def init_db():
             status TEXT DEFAULT 'pending',
             job_id TEXT,
             video_id TEXT,
+            isrc TEXT,
             error TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (import_id) REFERENCES bulk_imports(id)
@@ -256,6 +257,12 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE bulk_imports ADD COLUMN album_total_tracks INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        # Album flow carries a per-track ISRC so we can chase the exact studio recording;
+        # every other importer leaves this NULL and behaves exactly as before.
+        try:
+            conn.execute("ALTER TABLE bulk_import_tracks ADD COLUMN isrc TEXT")
         except sqlite3.OperationalError:
             pass
 

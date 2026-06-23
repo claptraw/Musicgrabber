@@ -4278,6 +4278,7 @@ def _album_track_status(artist: str, album_title: str, tracks: list[dict], user_
         track_status.append({
             "position": t.get("position"),
             "title": title,
+            "isrc": t.get("isrc"),
             "exists": exists,
         })
 
@@ -4533,7 +4534,10 @@ def albums_download(body: AlbumDownloadRequest, http_request: Request):
         }
 
     # Queue only missing tracks; already-present tracks are left as-is.
+    # ISRC list runs parallel to track_pairs (same list, same order) so the bulk
+    # importer can try the exact studio recording before falling back to free text.
     track_pairs = [(artist, t["title"]) for t in missing_tracks]
+    track_isrcs = [t.get("isrc") for t in missing_tracks]
 
     if not track_pairs:
         updated_m3u = None
@@ -4554,6 +4558,7 @@ def albums_download(body: AlbumDownloadRequest, http_request: Request):
     from bulk_import import start_bulk_import_for_tracks
     import_id = start_bulk_import_for_tracks(
         tracks=track_pairs,
+        track_isrcs=track_isrcs,
         convert_to_flac=convert_to_flac,
         user_id=user_id,
         override_dir=str(album_dir),

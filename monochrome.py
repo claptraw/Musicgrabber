@@ -492,6 +492,92 @@ def _deezer_rank_bonus(rank: int | None) -> tuple[int, str | None]:
     return bonus, f"deezer_rank=+{bonus}"
 
 
+def _build_monochrome_result(track_id, isrc: str, quality: str, src: str,
+                             title: str, artist: str, duration,
+                             cover: str, quality_score: int,
+                             score_breakdown: list[str]) -> dict:
+    """Stamp out the normalised result dict every Monochrome leg emits.
+
+    The download path keys off the ISRC baked into the monochrome:// URL, so the
+    netloc (track_id) is purely informational. Keeps the source_url / video_id
+    recipe in one place so the legs cannot drift apart.
+    """
+    params = urlencode({"isrc": isrc, "quality": quality, "src": src})
+    source_url = f"monochrome://{track_id}?{params}"
+    video_id = f"mono_{hashlib.md5(source_url.encode()).hexdigest()[:12]}"
+    return {
+        "video_id": video_id,
+        "title": title,
+        "channel": artist,
+        "duration": parse_duration(duration) if duration else "",
+        "thumbnail": cover,
+        "is_playlist": False,
+        "video_count": None,
+        "source": "monochrome",
+        "source_url": source_url,
+        "quality": quality,
+        "quality_score": quality_score,
+        "score_breakdown": score_breakdown,
+        "slskd_username": None,
+        "slskd_filename": None,
+        "slskd_size": None,
+    }
+
+
+def resolve_by_isrc(isrc: str, artist: str = "", title: str = "") -> dict | None:
+    """Resolve a known ISRC straight to a downloadable Monochrome result.
+
+    The precise first attempt for a track whose studio recording we have already
+    identified (e.g. from a MusicBrainz album fetch). Returns a normalised result
+    dict on a hit, or None when Qobuz cleanly has nothing for this ISRC, which is
+    the caller's signal to fall back to a free-text search.
+
+    Deliberately conservative on transport failure: if every proxy is face-down
+    we return None rather than gambling on a maybe-dead ISRC. The fallback search
+    is safer than blindly queueing a recording we could not confirm exists. This
+    differs on purpose from _deezer_search_leg's optimistic "label it and hope"
+    behaviour; here we have a clean fallback waiting, so we use it.
+    """
+    isrc = (isrc or "").strip().upper()
+    if not _isrc_valid(isrc):
+        return None
+
+    matches, transport_failure = _qobuz_isrc_lookup(isrc)
+    if not matches:
+        # Clean miss or proxies all down; either way, let the caller fall back.
+        return None
+
+    quality = "HI_RES_LOSSLESS" if any(t.get("hires") for t in matches) else "LOSSLESS"
+
+    # Prefer the catalogue's own metadata; fall back to the caller's hints when a
+    # field is missing (the download keys off the ISRC, so this is cosmetic).
+    item = matches[0]
+    item_artist = ((item.get("performer") or {}).get("name") or "").strip()
+    item_title = (item.get("title") or "").strip()
+    cover = (((item.get("album") or {}).get("image") or {}).get("large", "") or
+             ((item.get("album") or {}).get("image") or {}).get("thumbnail", "")) or ""
+    duration = item.get("duration") or 0
+
+    bonus = _QUALITY_BONUS[quality]
+    # Flat high score: this is a direct, identity-pinned pick, not a contender in
+    # a ranked free-text list, so it sits above anything the search legs produce.
+    quality_score = 1000 + bonus
+    score_breakdown = ["via=isrc-direct", f"source_quality=+{bonus}"]
+
+    return _build_monochrome_result(
+        track_id=item.get("id", ""),
+        isrc=isrc,
+        quality=quality,
+        src="deezer",
+        title=item_title or title,
+        artist=item_artist or artist,
+        duration=duration,
+        cover=cover,
+        quality_score=quality_score,
+        score_breakdown=score_breakdown,
+    )
+
+
 def _deezer_search_leg(query: str, limit: int) -> list[dict]:
     """Primary Monochrome search leg: Deezer finds the track, Qobuz confirms it.
 
@@ -583,27 +669,18 @@ def _deezer_search_leg(query: str, limit: int) -> list[dict]:
         quality_score = cand["quality_score"] + bonus
         breakdown = cand["score_breakdown"] + [f"source_quality=+{bonus}", "via=deezer-isrc"]
 
-        params = urlencode({"isrc": cand["isrc"], "quality": quality_str, "src": "deezer"})
-        source_url = f"monochrome://{cand['deezer_id']}?{params}"
-        video_id = f"mono_{hashlib.md5(source_url.encode()).hexdigest()[:12]}"
-
-        results.append({
-            "video_id": video_id,
-            "title": cand["title"],
-            "channel": cand["artist"],
-            "duration": parse_duration(cand["duration"]) if cand["duration"] else "",
-            "thumbnail": cand["cover"],
-            "is_playlist": False,
-            "video_count": None,
-            "source": "monochrome",
-            "source_url": source_url,
-            "quality": quality_str,
-            "quality_score": quality_score,
-            "score_breakdown": breakdown,
-            "slskd_username": None,
-            "slskd_filename": None,
-            "slskd_size": None,
-        })
+        results.append(_build_monochrome_result(
+            track_id=cand["deezer_id"],
+            isrc=cand["isrc"],
+            quality=quality_str,
+            src="deezer",
+            title=cand["title"],
+            artist=cand["artist"],
+            duration=cand["duration"],
+            cover=cand["cover"],
+            quality_score=quality_score,
+            score_breakdown=breakdown,
+        ))
 
     results.sort(key=lambda x: x["quality_score"], reverse=True)
     return results
@@ -712,30 +789,21 @@ def _qbdlx_search_fallback(query: str, limit: int) -> list[dict]:
                 quality_score += delta
                 score_breakdown.append(reason)
 
-        # tidal_id slot carries the Qobuz track id here; the download path keys
+        # The item id slot carries the Qobuz track id here; the download path keys
         # off the ISRC, so the netloc is purely informational. The src marker
         # stops the Tidal stream fallback treating a Qobuz id as a Tidal one.
-        params = urlencode({"isrc": isrc, "quality": "LOSSLESS", "src": "qbdlx"})
-        source_url = f"monochrome://{item.get('id', '')}?{params}"
-        video_id = f"mono_{hashlib.md5(source_url.encode()).hexdigest()[:12]}"
-
-        results.append({
-            "video_id": video_id,
-            "title": title,
-            "channel": artist,
-            "duration": parse_duration(duration) if duration else "",
-            "thumbnail": cover,
-            "is_playlist": False,
-            "video_count": None,
-            "source": "monochrome",
-            "source_url": source_url,
-            "quality": "LOSSLESS",
-            "quality_score": quality_score,
-            "score_breakdown": score_breakdown,
-            "slskd_username": None,
-            "slskd_filename": None,
-            "slskd_size": None,
-        })
+        results.append(_build_monochrome_result(
+            track_id=item.get("id", ""),
+            isrc=isrc,
+            quality="LOSSLESS",
+            src="qbdlx",
+            title=title,
+            artist=artist,
+            duration=duration,
+            cover=cover,
+            quality_score=quality_score,
+            score_breakdown=score_breakdown,
+        ))
 
     results.sort(key=lambda x: x["quality_score"], reverse=True)
     if results:

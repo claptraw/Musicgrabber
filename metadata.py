@@ -1462,12 +1462,15 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
 def fetch_album_tracks(release_mbid: str) -> list[dict]:
     """Fetch the tracklist for a specific release from MusicBrainz.
 
-    Returns [{position, title}, ...] in track order.
+    Returns [{position, title, isrc, recording_mbid}, ...] in track order.
     Position is a string (e.g. "1", "A1") as MusicBrainz provides it.
+    The ISRC pins the exact studio recording so the album download path can grab
+    that specific cut rather than a live take; recording_mbid is for the
+    post-download fingerprint check. Both are None when MusicBrainz has nothing.
     Raises MusicBrainzUnavailable when MB is unreachable after retries.
     """
     headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
-    params = {"inc": "recordings", "fmt": "json"}
+    params = {"inc": "recordings+isrcs", "fmt": "json"}
     response = _mb_get_with_retry(
         f"https://musicbrainz.org/ws/2/release/{release_mbid}",
         params=params, headers=headers, timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
@@ -1486,6 +1489,14 @@ def fetch_album_tracks(release_mbid: str) -> list[dict]:
             recording = track.get("recording") or {}
             title = recording.get("title") or track.get("title", "")
             position = str(track.get("position") or track.get("number") or "")
+            # MusicBrainz hands back a list of ISRCs per recording; take the first
+            # populated one. Most studio recordings have exactly one.
+            isrc = next((code.strip() for code in (recording.get("isrcs") or []) if (code or "").strip()), None)
             if title:
-                tracks.append({"position": position, "title": title})
+                tracks.append({
+                    "position": position,
+                    "title": title,
+                    "isrc": isrc,
+                    "recording_mbid": recording.get("id") or None,
+                })
     return tracks
