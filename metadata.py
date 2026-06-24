@@ -1432,6 +1432,72 @@ def apply_metadata_to_file(
         pass
 
 
+def set_playlist_comment(file_path: Path, playlist_names: list[str]) -> bool:
+    """Write playlist name(s) into the audio COMMENT tag, and nothing else.
+
+    macOS Music has no notion of our M3U files, but it can build smart playlists
+    that match on the Comments field, so stuffing the playlist name(s) there lets
+    Mac folk recreate the playlist natively. A track on several playlists gets the
+    lot, joined with ' | '.
+
+    Deliberately comment-only: it never touches artist/title/album, so it is safe to
+    call retroactively over an already-tagged library without clobbering anything
+    AcoustID/MusicBrainz worked out.
+
+    Idempotent: if the COMMENT already matches, it returns without rewriting the file,
+    so it is cheap to call on every M3U rebuild. Returns True only when it wrote.
+    """
+    names = sorted({(n or "").strip() for n in (playlist_names or []) if (n or "").strip()})
+    if not names:
+        return False
+    comment = " | ".join(names)
+    try:
+        suffix = file_path.suffix.lower()
+        if suffix == '.flac':
+            audio = FLAC(str(file_path))
+            if audio.get("COMMENT") == [comment]:
+                return False
+            audio["COMMENT"] = [comment]
+            audio.save()
+        elif suffix == '.mp3':
+            # A proper ID3v2.3 COMM frame is what modern macOS Music reads as "Comments";
+            # we also refresh the legacy ID3v1 trailer (v1=2) as belt-and-braces for older
+            # setups. Drop any existing COMM (incl. yt-dlp's source-URL one) first.
+            from mutagen.id3 import ID3, COMM, ID3NoHeaderError
+            try:
+                tags = ID3(str(file_path))
+            except ID3NoHeaderError:
+                tags = ID3()
+            existing = tags.getall("COMM")
+            if len(existing) == 1 and existing[0].desc == "" and existing[0].text == [comment]:
+                return False
+            tags.delall("COMM")
+            tags.add(COMM(encoding=3, lang="eng", desc="", text=[comment]))
+            # v1=2 writes/refreshes the ID3v1 tag (replacing any stale one) alongside v2.3.
+            tags.save(str(file_path), v2_version=3, v1=2)
+        elif suffix in ('.m4a', '.mp4'):
+            from mutagen.mp4 import MP4
+            audio = MP4(str(file_path))
+            if audio.get("\xa9cmt") == [comment]:
+                return False
+            audio["\xa9cmt"] = [comment]
+            audio.save()
+        elif suffix in ('.ogg', '.opus'):
+            from mutagen.oggopus import OggOpus
+            from mutagen.oggvorbis import OggVorbis
+            audio = OggOpus(str(file_path)) if suffix == '.opus' else OggVorbis(str(file_path))
+            if audio.get("COMMENT") == [comment]:
+                return False
+            audio["COMMENT"] = [comment]
+            audio.save()
+        else:
+            return False  # webm and friends: yt-dlp owns those tags, leave them be
+        return True
+    except Exception as e:
+        print(f"set_playlist_comment failed for {file_path}: {e}")
+        return False
+
+
 def search_artist_mbid(name: str) -> list[dict]:
     """Search MusicBrainz for an artist by name.
 

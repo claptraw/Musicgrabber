@@ -1440,6 +1440,58 @@ def _watched_track_matches_expected(expected_artist: str, expected_title: str, a
     return got_words.issubset(exp_words) or exp_words.issubset(got_words)
 
 
+def _all_playlist_names_for_track(conn, artist: str, title: str) -> list[str]:
+    """Every watched-playlist name a downloaded track appears on.
+
+    Used so the COMMENT tag can carry the full set when a track sits on more than
+    one playlist. Matches case-insensitively on artist/title since that is how the
+    watched_playlist_tracks rows are keyed. Uses the caller's connection.
+    """
+    if not (artist and title):
+        return []
+    try:
+        rows = conn.execute(
+            """SELECT DISTINCT wp.name
+               FROM watched_playlist_tracks wpt
+               JOIN watched_playlists wp ON wp.id = wpt.playlist_id
+               WHERE wpt.downloaded_at IS NOT NULL
+                 AND LOWER(wpt.artist) = LOWER(?)
+                 AND LOWER(wpt.title) = LOWER(?)""",
+            (artist, title),
+        ).fetchall()
+    except Exception:
+        return []
+    return sorted({r[0] for r in rows if r[0]})
+
+
+def _tag_track_comment(file_path, artist: str, title: str, conn=None) -> None:
+    """Idempotently stamp a track's COMMENT with all the watched playlists it sits on.
+
+    Gated behind the playlist_comment_tagging setting, so it is a cheap no-op when
+    off. Pass an open conn to reuse it (completion path), or leave it None and we open
+    our own (M3U rebuild path, where the caller's connection has already closed).
+    set_playlist_comment only rewrites the file when the COMMENT actually changes, so
+    calling this on every rebuild does not churn unchanged files.
+    """
+    if not get_setting_bool("playlist_comment_tagging", False):
+        return
+    try:
+        p = Path(file_path)
+        if not p.exists():
+            return
+        if conn is not None:
+            names = _all_playlist_names_for_track(conn, artist, title)
+        else:
+            with db_conn() as own:
+                own.row_factory = sqlite3.Row
+                names = _all_playlist_names_for_track(own, artist, title)
+        if names:
+            from metadata import set_playlist_comment
+            set_playlist_comment(p, names)
+    except Exception as e:
+        print(f"Playlist COMMENT tag failed for {file_path}: {e}")
+
+
 def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = None, skip_mismatch: bool = False) -> bool:
     """Mark a watched playlist track as downloaded and rebuild the M3U if enabled.
 
@@ -1514,6 +1566,12 @@ def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = 
             (resolved_path_str, job_id)
         )
         conn.commit()
+
+        # macOS Music smart-playlist support: stamp the playlist name(s) into the
+        # file's COMMENT tag (opt-in). Covers playlists without an M3U too, since the
+        # rebuild path below only fires when make_m3u is on. Reuses this connection.
+        if resolved_path:
+            _tag_track_comment(resolved_path, exp_artist_raw, exp_title_raw, conn=conn)
 
         # Rebuild the M3U immediately if this job belongs to a watched playlist
         # so the file grows track-by-track rather than waiting for the next full refresh.
@@ -2371,6 +2429,11 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
         return p is not None and not _is_real_path(p)
 
     for row in rows:
+        # Watched track's stored names, used to look up all playlists this track is on
+        # for the COMMENT tag (matches how watched_playlist_tracks is keyed).
+        _cm_artist = row["wpt_artist"] or row["job_artist"] or ""
+        _cm_title = row["wpt_title"] or row["job_title"] or ""
+
         # Fast path: if we stored the actual on-disk path at download time, use it directly.
         # This bypasses the artist/title lookup entirely, which is exactly what we need for
         # non-ASCII names where Spotify sends '山下達郎' but the file is 'Tatsuro Yamashita'.
@@ -2397,6 +2460,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                 if entry not in seen_paths:
                     seen_paths.add(entry)
                     playlist_files.append(entry)
+                _tag_track_comment(stored_path, _cm_artist, _cm_title)
                 continue
             # Stored path exists in DB but file is gone (manually deleted etc.)  -
             # fall through to normal lookup so at least the unresolved warning fires.
@@ -2411,6 +2475,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
             if resolved and resolved not in seen_paths:
                 seen_paths.add(resolved)
                 playlist_files.append(resolved)
+                _tag_track_comment(track_dir / Path(resolved).name, _cm_artist, _cm_title)
                 continue
 
             # Track wasn't resolved inside the playlist folder  -  fall back through
@@ -2441,6 +2506,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                     # Absolute path from Navidrome that doesn't exist on our filesystem = stale entry
                     if existing.is_absolute() and not existing.exists():
                         stale_navidrome_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
+                _tag_track_comment(existing, _cm_artist, _cm_title)
             elif navidrome_sentinel_hit:
                 synthetic_path_rows.append((row["wpt_artist"] or "", row["wpt_title"] or ""))
             else:
@@ -2470,6 +2536,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
                     navidrome_sentinel_hit = True
 
             if audio_file:
+                _tag_track_comment(audio_file, _cm_artist, _cm_title)
                 try:
                     rel_path = audio_file.relative_to(get_singles_dir(user_id=user_id))
                     rel_path_str = str(rel_path)

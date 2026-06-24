@@ -3793,6 +3793,49 @@ def check_all_watched_playlists(http_request: Request):
     }
 
 
+@app.post("/api/watched-playlists/tag-all-playlists-comment")
+def tag_all_playlists_comment(http_request: Request):
+    """One-shot backfill: stamp playlist name(s) into COMMENT for every downloaded
+    watched track, so an existing library catches up with the macOS Music feature.
+    New downloads are tagged automatically at completion; this is for what came before.
+    """
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not get_setting_bool("playlist_comment_tagging", False):
+        raise HTTPException(status_code=400, detail="Enable 'Tag playlist names in COMMENT' in Settings first")
+
+    from metadata import set_playlist_comment
+    from downloads import _all_playlist_names_for_track
+
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT DISTINCT artist, title, resolved_path
+               FROM watched_playlist_tracks
+               WHERE downloaded_at IS NOT NULL AND resolved_path IS NOT NULL"""
+        ).fetchall()
+
+    tagged = skipped = errors = 0
+    for row in rows:
+        audio_file = Path(row["resolved_path"])
+        if not audio_file.exists():
+            skipped += 1
+            continue
+        try:
+            with db_conn() as conn2:
+                conn2.row_factory = sqlite3.Row
+                names = _all_playlist_names_for_track(conn2, row["artist"], row["title"])
+            if names and set_playlist_comment(audio_file, names):
+                tagged += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            print(f"Tag-all COMMENT failed for {audio_file}: {e}")
+            errors += 1
+
+    return {"tagged": tagged, "skipped": skipped, "errors": errors}
+
+
 # ---------------------------------------------------------------------------
 # Watched Artists
 # ---------------------------------------------------------------------------

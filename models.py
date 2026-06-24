@@ -97,6 +97,7 @@ class SettingsUpdate(BaseModel):
     alac_bitrate: Optional[str] = None   # "lossless" (true ALAC) or AAC kbps "320k"/"256k"/"192k"/"128k"
     min_audio_bitrate: Optional[int] = None
     reject_live_versions: Optional[bool] = None
+    playlist_comment_tagging: Optional[bool] = None
     enable_track_upgrades: Optional[bool] = None
     upgrade_scan_interval_hours: Optional[int] = None
     singles_subdir: Optional[str] = None

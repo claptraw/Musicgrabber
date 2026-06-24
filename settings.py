@@ -173,6 +173,9 @@ SETTINGS_SCHEMA = {
     # Reject live versions. Off by default; opt-in, and deliberately so since it's
     # destructive (bins a confidently-identified live recording and tries again).
     "reject_live_versions": {"type": "bool", "default": False, "env": "REJECT_LIVE_VERSIONS"},
+    # Stamp watched-playlist names into the COMMENT tag so macOS Music can build
+    # smart playlists off them. Off by default; it writes to every playlist file.
+    "playlist_comment_tagging": {"type": "bool", "default": False, "env": "PLAYLIST_COMMENT_TAGGING"},
     # Track upgrades (Lidarr-style). Off by default; opt-in. The scan flags library
     # files sitting below the quality you already download at, ready for a manual upgrade.
     "enable_track_upgrades": {"type": "bool", "default": False, "env": "ENABLE_TRACK_UPGRADES"},
