@@ -14,6 +14,9 @@
 - **Fallback now covers YouTube and SoundCloud too**: previously only the direct sources (Monochrome, MP3Phoenix and friends) would hand off when they fell over. A hard YouTube/SoundCloud failure now triggers the same chain, so the setting genuinely means "all sources" rather than "all sources except the noisy ones".
 - **The chain stops climbing back onto a dead platform**: once a source has been written off as offline during a fallback run, it stays excluded for the rest of that track's attempts, so a flat Monochrome won't get poked again via its second- and third-best results.
 
+### Fixed
+- **A single sluggish source no longer holds your whole search hostage**: a multi-source search was meant to cap each source and move on, but the thread pool was being shut down (which politely waits for everyone) before that cap was ever checked, so the per-source timeout was quietly dead code. The upshot: every search ran only as fast as its slowest source, and one limping site (a certain free-MP3 outfit fond of sitting on a 40-to-60 second read timeout) made the whole thing look stone dead. Searches now collect against a hard wall-clock deadline (`SEARCH_ALL_DEADLINE`, 15s): whatever has finished is returned, and any source still dawdling is left to get on with it in the background. Healthy searches still come back in a second or two; the ceiling only bites when something is genuinely stuck. Unearthed by the wonderfully cursed "LIEBE - BUNT." search, which used to hang for the best part of a minute.
+
 ## v2.9.4 (2026-06-12)
 
 ### Added

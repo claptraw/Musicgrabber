@@ -19,6 +19,10 @@ def _normalise_root_path(value: str) -> str:
 # Timeout values (in seconds)
 TIMEOUT_YTDLP_INFO = 30          # Getting video/playlist info
 TIMEOUT_YTDLP_SEARCH = 30        # Search queries
+# Wall-clock ceiling for a whole multi-source search. Fast sources finish in a
+# second or two; this stops one limping source (looking at you, freemp3cloud)
+# from holding the entire response hostage. Stragglers are abandoned, not awaited.
+SEARCH_ALL_DEADLINE = 15         # Multi-source search collection deadline
 TIMEOUT_YTDLP_DOWNLOAD = int(os.getenv("TIMEOUT_YTDLP_DOWNLOAD", "300"))  # Downloading a track (5 minutes)
 TIMEOUT_YTDLP_PREVIEW = 15       # Getting preview URL
 TIMEOUT_YTDLP_PLAYLIST = 60      # Getting playlist contents

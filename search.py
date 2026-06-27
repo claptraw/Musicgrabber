@@ -8,10 +8,13 @@ Adding a new source is one function and one registry entry.
 import json
 import re
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError,
+)
 
 from constants import (
     TIMEOUT_YTDLP_SEARCH,
+    SEARCH_ALL_DEADLINE,
     TIMEOUT_SLSKD_SEARCH,
     SOUNDCLOUD_SEARCH_MULTIPLIER, SOUNDCLOUD_SEARCH_MIN_FETCH,
     SEARCH_MAX_PER_SOURCE,
@@ -395,35 +398,51 @@ def search_all(query: str, limit: int, sources: list[str] | None = None, include
     # show up only to fall over at play or download time. Single-source explicit
     # search deliberately skips this; if the user asks for it, they get it.
     active = {name: cfg for name, cfg in active.items() if servicecheck.is_source_available(name)}
+
+    # NOTE: do NOT wrap this pool in a `with` block. Exiting a ThreadPoolExecutor
+    # context manager calls shutdown(wait=True), which blocks until every source
+    # has finished, slowest included, which quietly defeated the whole point of
+    # the per-future timeout below. Instead we collect with a hard wall-clock
+    # deadline and walk away from any source still dawdling past it.
     futures = {}
-    with ThreadPoolExecutor(max_workers=len(active) + 2) as pool:
+    pool = ThreadPoolExecutor(max_workers=len(active) + 2)
+    all_results = []
+    try:
         for name, cfg in active.items():
             futures[pool.submit(cfg["search_fn"], query, limit)] = name
         # MB lookups run alongside the source searches at no extra cost
         mb_future = pool.submit(_mb_duration_lookup, query)
         mb_album_future = pool.submit(_mb_album_lookup, query)
 
-    all_results = []
-    for future in as_completed(futures):
-        source_name = futures[future]
         try:
-            source_results = future.result(timeout=TIMEOUT_YTDLP_SEARCH + 5)
-            # Cap per-source contribution so one prolific source can't drown out the rest.
-            # Each source gets its best N results; scoring decides the final order.
-            per_source_cap = SEARCH_MAX_PER_SOURCE_BY_SOURCE.get(source_name, SEARCH_MAX_PER_SOURCE)
-            all_results.extend(source_results[:per_source_cap])
-        except Exception as e:
-            print(f"search_all: {source_name} failed: {e}")
+            for future in as_completed(futures, timeout=SEARCH_ALL_DEADLINE):
+                source_name = futures[future]
+                try:
+                    source_results = future.result()
+                    # Cap per-source contribution so one prolific source can't drown
+                    # out the rest. Each source gets its best N results; scoring
+                    # decides the final order.
+                    per_source_cap = SEARCH_MAX_PER_SOURCE_BY_SOURCE.get(source_name, SEARCH_MAX_PER_SOURCE)
+                    all_results.extend(source_results[:per_source_cap])
+                except Exception as e:
+                    print(f"search_all: {source_name} failed: {e}")
+        except FuturesTimeoutError:
+            # Deadline hit. Return what made it in time; the laggards keep running
+            # in the background with nobody waiting on them.
+            slow = [futures[f] for f in futures if not f.done()]
+            print(f"search_all: {SEARCH_ALL_DEADLINE}s deadline hit, dropped slow sources: {slow}")
 
-    try:
-        expected_dur = mb_future.result(timeout=1)
+        # MB scoring is a best-effort bonus. If the lookup hasn't landed by now,
+        # skip it rather than block; the results are already good enough to ship.
+        expected_dur = mb_future.result(timeout=0.01) if mb_future.done() else None
+        album_suggestion = mb_album_future.result(timeout=0.01) if mb_album_future.done() else None
     except Exception:
         expected_dur = None
-
-    try:
-        album_suggestion = mb_album_future.result(timeout=2)
-    except Exception:
         album_suggestion = None
+    finally:
+        # wait=False so a stuck source can't re-introduce the very hang we just
+        # killed; cancel_futures tidies up anything that never got to start.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     all_results = _apply_blacklist_filter(all_results)
     if expected_dur:

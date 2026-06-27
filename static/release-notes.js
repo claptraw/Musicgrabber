@@ -26,6 +26,12 @@ const RELEASE_NOTES = {
                     "The 'Fallback' setting (Settings, Sources) got a lot more trustworthy. When a download fails and it re-routes to another source, the replacement now has to pass a same-track confidence check first, so it won't quietly swap in a live version, a remix, or an entirely different song just because it scored well.",
                     "Fallback now also kicks in for YouTube and SoundCloud, not just Monochrome and the MP3 sources, and once a source has been marked offline mid-attempt it stays out of the running so the chain doesn't keep retrying a platform that's clearly having a bad day.",
                 ]
+            },
+            {
+                heading: "Fixed",
+                items: [
+                    "Searches no longer hang for the best part of a minute when one source is being slow. A multi-source search used to run only as fast as its slowest source, so a single sluggish site could leave the whole search looking dead. There's now a hard 15-second ceiling: results from the sources that answered in time come straight back, and anything still dragging its heels is simply left behind. Healthy searches are still near-instant.",
+                ]
             }
         ]
     },
