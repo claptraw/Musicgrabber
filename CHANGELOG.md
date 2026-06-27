@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.9.5 (DEV)
+## v2.9.5 (2026-06-27)
 
 ### Added
 - **Group a playlist as one compilation** (Settings, File Organisation): a new opt-in toggle that stops your library splintering a mixed playlist into a separate one-track album per song. When on, every track downloaded into a playlist folder is tagged with the playlist name as the album, `Various Artists` as the album artist, and the iTunes compilation flag, so Plex/Navidrome file the whole lot together. Off by default; nothing changes for anyone who likes their real album tags. Perfect for the Shazam-into-a-playlist crowd who don't want "Bloody Tourists" turning up as its own one-song album. While we were in there: a track collapsed into a compilation now has its original studio-album track number dropped rather than stamped, so the playlist doesn't inherit a jumble of "8 of 13" positions that scramble its running order (now that the new Deezer album fallback resolves those numbers far more often, this matters). Ordering is left to the M3U and filenames, where it belongs.
