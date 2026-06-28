@@ -47,7 +47,7 @@ from constants import (
 )
 from matching import compute_match_confidence
 from settings import get_setting_bool
-from youtube import score_search_result_with_breakdown, parse_duration
+from youtube import score_search_result_with_breakdown, parse_duration, _parse_query_artist_title
 
 # ISRC: two-letter country, three alphanumeric registrant, two-digit year,
 # five-digit designation. Twelve characters, no punctuation, no exceptions,
@@ -452,6 +452,51 @@ def _deezer_search_tracks(query: str, limit: int) -> list[dict]:
     return (body.get("data") or []) if isinstance(body, dict) else []
 
 
+def _deezer_phrase(text: str) -> str:
+    """Sanitise a field for a Deezer structured query phrase.
+
+    Deezer wraps phrases in double quotes (artist:"x" track:"y"), so an embedded
+    quote would slam the phrase shut early. We just swap them for spaces; nobody's
+    artist name hinges on a literal double quote.
+    """
+    return (text or "").replace('"', " ").strip()
+
+
+def _deezer_search_candidates(query: str, limit: int) -> list[dict]:
+    """Gather Deezer track candidates: freetext, plus structured field queries.
+
+    Deezer's freetext relevance can bury an exact track under fuzzier noise (a
+    real casualty: 'BUNT. - LIEBE' vanishing under a heap of 'Immer Liebe'),
+    whereas an artist:"x" track:"y" query pins it at the top. When the query
+    splits cleanly into artist/title we fire BOTH orderings, because users
+    transpose artist and title far more often than they'd like to admit. Results
+    are de-duplicated by Deezer id; the caller's ISRC dedup mops up the rest.
+    """
+    raw_items: list[dict] = []
+    seen_ids: set = set()
+
+    def _gather(q: str) -> None:
+        try:
+            for item in _deezer_search_tracks(q, limit):
+                did = item.get("id")
+                if did is not None and did in seen_ids:
+                    continue
+                if did is not None:
+                    seen_ids.add(did)
+                raw_items.append(item)
+        except Exception as exc:
+            print(f"Monochrome: Deezer search variant {q!r} failed: {exc}")
+
+    _gather(query)
+
+    artist, title = _parse_query_artist_title(query)
+    if artist and title:
+        for a, b in ((artist, title), (title, artist)):
+            _gather(f'artist:"{_deezer_phrase(a)}" track:"{_deezer_phrase(b)}"')
+
+    return raw_items
+
+
 def _qobuz_isrc_lookup(isrc: str) -> tuple[list[dict], bool]:
     """Ask the Qobuz proxies whether an ISRC exists in the catalogue.
 
@@ -461,6 +506,13 @@ def _qobuz_isrc_lookup(isrc: str) -> tuple[list[dict], bool]:
     """
     transport = True
     for base in _qobuz_proxy_urls():
+        # Don't burn a 15s timeout on a proxy we already know is face-down. The
+        # background probe re-checks and clears the mark when it recovers, so this
+        # self-heals; meanwhile a whole page of ISRC lookups fails fast instead of
+        # waiting ~15s per dead proxy per candidate (which is how a Monochrome
+        # search ballooned to ~47s and got dropped by the search deadline).
+        if _qobuz_proxy_recently_failed(base):
+            continue
         try:
             resp = httpx.get(
                 f"{base}/api/get-music",
@@ -479,6 +531,9 @@ def _qobuz_isrc_lookup(isrc: str) -> tuple[list[dict], bool]:
         except Exception:
             _mark_qobuz_proxy_failed(base)
             continue
+    # Either every proxy errored, or they're all parked in the failure cooldown.
+    # Can't verify, so report transport failure: callers keep the candidate as
+    # unverified rather than wrongly dropping a track that may well exist.
     return [], transport
 
 
@@ -588,7 +643,7 @@ def _deezer_search_leg(query: str, limit: int) -> list[dict]:
     actually download, labelled with the quality Qobuz really has.
     """
     try:
-        raw_items = _deezer_search_tracks(query, limit * 3)
+        raw_items = _deezer_search_candidates(query, limit * 3)
     except Exception as exc:
         print(f"Monochrome: Deezer search leg errored: {exc}")
         return []
@@ -820,6 +875,32 @@ def _result_isrc(result: dict) -> str:
         return ""
 
 
+_DEEZER_CONFIDENT_MATCH_FLOOR = 0.8
+
+
+def _has_confident_match(results: list[dict], query: str) -> bool:
+    """True if any result is a confident artist/title match for the query.
+
+    Used to decide whether a full Deezer page is good enough to skip the Tidal
+    leg. Needs a clean 'Artist - Title' split to judge against; without one we
+    can't fairly score, so we keep the old "a full page is fine" behaviour.
+    """
+    artist, title = _parse_query_artist_title(query)
+    if not (artist and title):
+        return True
+    for r in results:
+        confidence, _bd = compute_match_confidence(
+            artist or None,
+            title or None,
+            r.get("title") or "",
+            r.get("channel") or None,
+            query=query,
+        )
+        if confidence >= _DEEZER_CONFIDENT_MATCH_FLOOR:
+            return True
+    return False
+
+
 def search_monochrome(query: str, limit: int) -> list[dict]:
     """Search the Monochrome ladder and return normalised result dicts.
 
@@ -829,7 +910,12 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
     safety net when both metadata legs are face-down.
     """
     deezer_results = _deezer_search_leg(query, limit)
-    if len(deezer_results) >= limit:
+    # A full page of Deezer hits is only worth trusting if one of them actually
+    # matches what was asked for. Deezer loves to return a tidy ten fuzzy
+    # near-misses, and that used to short-circuit the Tidal leg, the very source
+    # that might hold the track Deezer's ranking buried. So: full page AND a
+    # confident match before we call it a day.
+    if len(deezer_results) >= limit and _has_confident_match(deezer_results, query):
         return deezer_results[:limit]
 
     hifi_results = _hifi_search_leg(query, limit)

@@ -9,7 +9,17 @@
 const RELEASE_NOTES = {
     "2.9.6": {
         title: "What's New in v2.9.6",
-        sections: []
+        sections: [
+            {
+                heading: "Fixed",
+                items: [
+                    "Monochrome now finds tracks that Deezer's own search likes to hide. It searches Deezer by artist and title fields directly (and tries both orderings, in case you typed the title and artist the wrong way round), so an exact match that used to be buried under fuzzy near-misses now turns up at the top.",
+                    "When Deezer only returns a page of weak guesses, Monochrome now also checks Tidal instead of stopping early, so a track that lives on Tidal but not Deezer can still be found.",
+                    "Monochrome searches are fast again when its Qobuz proxies are having an outage. Dead proxies are skipped instead of being retried one by one, so a search that could previously stall for the best part of a minute (long enough to be dropped entirely) now returns in well under a second and its lossless results actually show up.",
+                    "Searches wait a little longer (up to 30 seconds) before giving up on a slow source, so a momentarily sluggish lossless source isn't dropped prematurely.",
+                ]
+            }
+        ]
     },
     "2.9.5": {
         title: "What's New in v2.9.5",

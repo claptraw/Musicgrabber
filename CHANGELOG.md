@@ -2,6 +2,12 @@
 
 ## v2.9.6 (DEV)
 
+### Fixed
+- **Monochrome can now actually find tracks Deezer's search likes to hide**: the Deezer leg searched by free text only, and Deezer's relevance ranking will cheerfully bury an exact match under a pile of fuzzy near-misses (the track that started all this, BUNT.'s "LIEBE", vanished beneath a heap of "Immer Liebe" and a German audiobook). When the query splits cleanly into "Artist - Title" we now also fire structured `artist:"x" track:"y"` queries straight at Deezer, in BOTH orderings, so a transposed "Title - Artist" search finds it too (because everyone, occasionally, types it backwards). The buried track now turns up at the top instead of nowhere at all.
+- **A full page of weak Deezer guesses no longer blocks the Tidal leg**: Monochrome used to stop the moment Deezer returned a full page, even when every result was a fuzzy miss, which meant the Tidal hifi-api leg (often the one actually holding the track) never got a look-in. It now only trusts a full Deezer page if one of the results is a confident match for what you asked for; otherwise it carries on and merges in Tidal's results too.
+- **Monochrome no longer crawls when its Qobuz proxies are down**: each ISRC verification was trying every proxy in turn at a 15-second timeout apiece, so with the proxies offline a single search could sit there for the best part of a minute, long enough that the new search deadline gave up and dropped Monochrome (and your lossless results) entirely. Known-dead proxies are now skipped on sight (the background health probe still re-checks and clears them when they recover), so a Monochrome search that used to take ~47 seconds now comes back in well under one, and its results make it into the merged list rather than the bin.
+- **Search deadline raised to 30s** (configurable via `SEARCH_ALL_DEADLINE`), so a momentarily slow lossless source has room to answer rather than being dropped. The proper long-term answer is showing search progress in the UI so a longer wait is visible and bearable rather than looking like a hang; that's on the list.
+
 ## v2.9.5 (2026-06-27)
 
 ### Added

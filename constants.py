@@ -22,7 +22,10 @@ TIMEOUT_YTDLP_SEARCH = 30        # Search queries
 # Wall-clock ceiling for a whole multi-source search. Fast sources finish in a
 # second or two; this stops one limping source (looking at you, freemp3cloud)
 # from holding the entire response hostage. Stragglers are abandoned, not awaited.
-SEARCH_ALL_DEADLINE = 15         # Multi-source search collection deadline
+# Set generously enough to let Monochrome's lossless ladder finish on a bad day
+# (proxies down, on the slow fallback) rather than silently dropping the one
+# source that actually serves FLAC. The proper fix for the wait is a progress UI.
+SEARCH_ALL_DEADLINE = int(os.getenv("SEARCH_ALL_DEADLINE", "30"))  # Multi-source search collection deadline
 TIMEOUT_YTDLP_DOWNLOAD = int(os.getenv("TIMEOUT_YTDLP_DOWNLOAD", "300"))  # Downloading a track (5 minutes)
 TIMEOUT_YTDLP_PREVIEW = 15       # Getting preview URL
 TIMEOUT_YTDLP_PLAYLIST = 60      # Getting playlist contents
