@@ -13,7 +13,7 @@ const RELEASE_NOTES = {
             {
                 heading: "Added",
                 items: [
-                    "Live search progress. Instead of one spinner that leaves you guessing, results now stream in as each source answers, with the best floated to the top, and a wee panel ticks each source off live: searching, done with a count, offline, or too slow. The status lines are cheeky but honest, and the panel tidies itself away once the search is done. Soulseek now appears in the same flow as every other source (turn it on under Search Sources).",
+                    "Live search progress. Instead of one spinner that leaves you guessing, results now stream in as each source answers, with the best floated to the top, and a wee panel ticks each source off live: searching, done with a count, offline, or too slow. Each row gently fades away as its source finishes, the status lines are cheeky but honest (with a whole section of funny failure lines), and Soulseek now appears in the same flow as every other source (turn it on under Search Sources).",
                 ]
             },
             {

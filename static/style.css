@@ -1128,6 +1128,13 @@ h1 {
     gap: 8px;
     font-size: 13px;
     color: var(--text-secondary);
+    opacity: 1;
+    transition: opacity 0.8s ease;
+}
+
+/* Each row drifts away on its own once its source has reported in */
+.search-progress-row-fading {
+    opacity: 0;
 }
 
 .search-progress-icon {

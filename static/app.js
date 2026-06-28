@@ -1015,6 +1015,7 @@
         let lastResults = [];
         let currentSearchToken = 0;
         let _searchProgressHideTimer = null;
+        let _searchProgressRowTimers = [];
         let currentArtworkUrl = null;
         let currentArtworkArtist = null;
         let currentArtworkTitle = null;
@@ -1453,85 +1454,119 @@
         }
 
         // ----- Live search progress panel -----
+        // Quip pools live in static/quips.js (global SEARCH_QUIPS), sectioned per
+        // source plus the funny-failure sections. Each row fades away on its own a
+        // moment after it reports in, so the panel empties itself as sources land.
 
-        // A few cheeky-but-honest lines per source for the "still searching" state.
-        const SEARCH_PROGRESS_QUIPS = {
-            youtube: ['Poking YouTube with a stick', 'Sifting the YouTube haystack'],
-            monochrome: ["Rummaging through Qobuz's bins", 'Leaning on the lossless lot'],
-            soulseek: ['Bribing the Soulseek peers', 'Queuing politely on Soulseek'],
-            soundcloud: ['Leafing through SoundCloud', 'Nudging the SoundClouders'],
-            mp3phoenix: ['Prodding MP3Phoenix', 'Fanning the Phoenix'],
-            zvu4no: ["Knocking on zvu4no's door", 'Whispering to zvu4no'],
-            freemp3cloud: ['Coaxing FreeMp3Cloud', 'Wringing out the cloud'],
-            _default: ['Having a rummage', 'Asking nicely']
-        };
+        function _randomQuip(list, fallback) {
+            if (!Array.isArray(list) || !list.length) return fallback;
+            return list[Math.floor(Math.random() * list.length)];
+        }
 
-        function _searchQuip(source) {
-            const pool = SEARCH_PROGRESS_QUIPS[source] || SEARCH_PROGRESS_QUIPS._default;
-            return pool[Math.floor(Math.random() * pool.length)];
+        function _searchingQuip(source) {
+            const s = (typeof SEARCH_QUIPS !== 'undefined' && SEARCH_QUIPS.searching) || null;
+            const pool = s && (s[source] || s._default);
+            return _randomQuip(pool, 'Having a rummage');
+        }
+
+        function _failureQuip(section, fallback) {
+            const pool = (typeof SEARCH_QUIPS !== 'undefined' && SEARCH_QUIPS[section]) || null;
+            return _randomQuip(pool, fallback);
+        }
+
+        function _clearProgressRowTimers() {
+            _searchProgressRowTimers.forEach(t => clearTimeout(t));
+            _searchProgressRowTimers = [];
         }
 
         function initSearchProgress() {
             const panel = document.getElementById('searchProgress');
             if (!panel) return;
             if (_searchProgressHideTimer) { clearTimeout(_searchProgressHideTimer); _searchProgressHideTimer = null; }
+            _clearProgressRowTimers();
             panel.classList.remove('search-progress-fading');
             panel.innerHTML = '';
             panel.style.display = '';
         }
 
-        function renderSearchProgressRows(sources) {
-            const panel = document.getElementById('searchProgress');
-            if (!panel) return;
-            panel.innerHTML = sources.map(src => `
+        function _progressRowHtml(src) {
+            return `
                 <div class="search-progress-row" data-source="${escapeHtml(src)}" data-status="searching">
                     <span class="search-progress-icon"><span class="watched-refresh-spinner"></span></span>
                     <span class="search-progress-name">${escapeHtml(getSourceLabel(src))}</span>
-                    <span class="search-progress-status">${escapeHtml(_searchQuip(src))}&hellip;</span>
+                    <span class="search-progress-status">${escapeHtml(_searchingQuip(src))}&hellip;</span>
                 </div>
-            `).join('');
+            `;
+        }
+
+        function renderSearchProgressRows(sources) {
+            const panel = document.getElementById('searchProgress');
+            if (!panel) return;
+            panel.innerHTML = sources.map(_progressRowHtml).join('');
             panel.style.display = sources.length ? '' : 'none';
         }
 
         function updateSourceStatus(source, status, count) {
             const panel = document.getElementById('searchProgress');
             if (!panel) return;
-            const row = panel.querySelector(`.search-progress-row[data-source="${CSS.escape(source)}"]`);
-            if (!row) return;
+            let row = panel.querySelector(`.search-progress-row[data-source="${CSS.escape(source)}"]`);
+            if (!row) {
+                // A status turned up for a source we never listed (e.g. a parked
+                // source skipped before its row existed). Make one so it's still seen.
+                panel.insertAdjacentHTML('beforeend', _progressRowHtml(source));
+                panel.style.display = '';
+                row = panel.querySelector(`.search-progress-row[data-source="${CSS.escape(source)}"]`);
+                if (!row) return;
+            }
             row.dataset.status = status;
             const icon = row.querySelector('.search-progress-icon');
             const text = row.querySelector('.search-progress-status');
             if (status === 'done') {
                 icon.innerHTML = '<i class="fa-solid fa-circle-check"></i>';
-                text.textContent = count ? `${count} result${count === 1 ? '' : 's'}` : 'nothing here';
+                text.textContent = count ? `${count} result${count === 1 ? '' : 's'}` : _failureQuip('empty', 'nothing here');
             } else if (status === 'timeout') {
                 icon.innerHTML = '<i class="fa-solid fa-hourglass-end"></i>';
-                text.textContent = 'took too long, moved on';
+                text.textContent = _failureQuip('timeout', 'took too long, moved on');
             } else if (status === 'skipped') {
                 icon.innerHTML = '<i class="fa-solid fa-circle-minus"></i>';
-                text.textContent = 'offline, skipped';
+                text.textContent = _failureQuip('offline', 'offline, skipped');
             } else if (status === 'error') {
                 icon.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
-                text.textContent = 'had a wobble';
+                text.textContent = _failureQuip('error', 'had a wobble');
             }
+            _fadeOutRow(row);
+        }
+
+        function _fadeOutRow(row) {
+            // Hold the final status briefly so it's readable, then drift it away.
+            const hold = setTimeout(() => {
+                row.classList.add('search-progress-row-fading');
+                const drop = setTimeout(() => {
+                    row.remove();
+                    const panel = document.getElementById('searchProgress');
+                    if (panel && !panel.querySelector('.search-progress-row')) hideSearchProgress();
+                }, 900);
+                _searchProgressRowTimers.push(drop);
+            }, 1600);
+            _searchProgressRowTimers.push(hold);
         }
 
         function finishSearchProgress() {
+            // Rows fade out individually as they finish, so this is just a safety net:
+            // if anything's still hanging about after a while, clear the panel.
             const panel = document.getElementById('searchProgress');
             if (!panel) return;
-            // Let the final ticks land, then fade the panel away so results aren't
-            // shoved down the page for good.
             if (_searchProgressHideTimer) clearTimeout(_searchProgressHideTimer);
             _searchProgressHideTimer = setTimeout(() => {
-                panel.classList.add('search-progress-fading');
-                _searchProgressHideTimer = setTimeout(() => hideSearchProgress(), 600);
-            }, 1200);
+                if (!panel.querySelector('.search-progress-row')) hideSearchProgress();
+            }, 5000);
         }
 
         function hideSearchProgress() {
             const panel = document.getElementById('searchProgress');
             if (!panel) return;
             if (_searchProgressHideTimer) { clearTimeout(_searchProgressHideTimer); _searchProgressHideTimer = null; }
+            _clearProgressRowTimers();
             panel.classList.remove('search-progress-fading');
             panel.style.display = 'none';
             panel.innerHTML = '';
