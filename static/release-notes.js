@@ -11,6 +11,12 @@ const RELEASE_NOTES = {
         title: "What's New in v2.9.6",
         sections: [
             {
+                heading: "Added",
+                items: [
+                    "Live search progress. Instead of one spinner that leaves you guessing, results now stream in as each source answers, with the best floated to the top, and a wee panel ticks each source off live: searching, done with a count, offline, or too slow. The status lines are cheeky but honest, and the panel tidies itself away once the search is done. Soulseek now appears in the same flow as every other source (turn it on under Search Sources).",
+                ]
+            },
+            {
                 heading: "Fixed",
                 items: [
                     "Monochrome now finds tracks that Deezer's own search likes to hide. It searches Deezer by artist and title fields directly (and tries both orderings, in case you typed the title and artist the wrong way round), so an exact match that used to be buried under fuzzy near-misses now turns up at the top.",

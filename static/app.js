@@ -1014,7 +1014,7 @@
         let downloadingIds = new Set();
         let lastResults = [];
         let currentSearchToken = 0;
-        let pendingSlskdToken = 0;
+        let _searchProgressHideTimer = null;
         let currentArtworkUrl = null;
         let currentArtworkArtist = null;
         let currentArtworkTitle = null;
@@ -1327,110 +1327,214 @@
             stopPreview(); // Stop any playing preview
 
             try {
-                const response = await apiFetch('/api/search', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query, limit: 15, source: currentSource })
-                });
-
-                if (!response.ok) throw new Error('Search failed');
-
-                const data = await response.json();
-                if (searchToken !== currentSearchToken) {
-                    return;
-                }
-                lastResults = data.results;
-                currentSearchLogToken = data.search_token || null;
-                showUnavailableSourcesToast(data.unavailable_sources);
-                renderResults(data.results);
-                showRelatedSuggestions(data.results, data.album_suggestion);
-
-                // Fire artwork fetch for "Artist - Title" queries
-                const artworkParsed = parseArtistTitle(query);
-                if (artworkParsed) {
-                    fetchAndApplyArtwork(artworkParsed.artist, artworkParsed.title, searchToken);
-                }
-
-                // If slskd is enabled and we're searching YouTube or All, fetch slskd results too
-                if (data.slskd_enabled && (currentSource === 'youtube' || currentSource === 'all')) {
-                    pendingSlskdToken = searchToken;
-                    // Show a small indicator so the user knows SLK is still working
-                    const slskdIndicator = document.createElement('div');
-                    slskdIndicator.id = 'slskd-searching';
-                    slskdIndicator.className = 'slskd-searching-indicator';
-                    slskdIndicator.innerHTML = '<span class="watched-refresh-spinner"></span> Searching Soulseek&hellip;';
-                    resultsTab.appendChild(slskdIndicator);
-                    fetchSlskdResults(query, searchToken);
-                }
+                await runSearchStream(query, searchToken);
             } catch (error) {
-                resultsTab.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon"><i class="fa-solid fa-circle-exclamation"></i></div>
-                        <p>Search failed. Try again.</p>
-                    </div>
-                `;
-                showToast('Search failed', true);
+                if (searchToken !== currentSearchToken) return;
+                // Streaming hiccup: fall back to the plain blocking search so the
+                // user never ends up worse off than before we had a stream.
+                console.log('search stream failed, falling back to blocking:', error);
+                hideSearchProgress();
+                try {
+                    await runSearchBlocking(query, searchToken);
+                } catch (err2) {
+                    if (searchToken !== currentSearchToken) return;
+                    resultsTab.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon"><i class="fa-solid fa-circle-exclamation"></i></div>
+                            <p>Search failed. Try again.</p>
+                        </div>
+                    `;
+                    showToast('Search failed', true);
+                }
             } finally {
-                searchBtn.disabled = false;
+                if (searchToken === currentSearchToken) searchBtn.disabled = false;
             }
         }
 
-        async function fetchSlskdResults(query, searchToken) {
-            try {
-                const response = await apiFetch('/api/search/slskd', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query, limit: 15 })
-                });
+        // Streaming search: consume the NDJSON event stream and render results
+        // progressively as each source lands, ticking off the source status panel.
+        async function runSearchStream(query, searchToken) {
+            const accumulator = [];
+            let albumSuggestion = null;
+            let renderedOnce = false;
 
-                if (!response.ok) {
-                    document.getElementById('slskd-searching')?.remove();
-                    return;
-                }
+            initSearchProgress();
 
-                const data = await response.json();
-                if (searchToken !== currentSearchToken || pendingSlskdToken !== searchToken) {
-                    return;
+            const response = await apiFetch('/api/search/stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, limit: 15, source: currentSource })
+            });
+            if (!response.ok || !response.body) throw new Error('stream unavailable');
+
+            // Artwork only needs the query, so kick it off straight away.
+            const artworkParsed = parseArtistTitle(query);
+            if (artworkParsed) fetchAndApplyArtwork(artworkParsed.artist, artworkParsed.title, searchToken);
+
+            function handleEvent(ev) {
+                if (searchToken !== currentSearchToken) return;
+                switch (ev.type) {
+                    case 'start':
+                        renderSearchProgressRows(ev.sources || []);
+                        break;
+                    case 'source':
+                        updateSourceStatus(ev.source, ev.status, ev.count);
+                        if (ev.status === 'done' && ev.results && ev.results.length) {
+                            accumulator.push(...ev.results);
+                            accumulator.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+                            renderResults(accumulator);
+                            renderedOnce = true;
+                            // Re-render wipes thumbnails, so re-apply any fetched artwork.
+                            if (currentArtworkUrl && currentArtworkArtist && currentArtworkTitle) {
+                                applyArtworkToResults(currentArtworkArtist, currentArtworkTitle, currentArtworkUrl);
+                            }
+                        }
+                        break;
+                    case 'album_suggestion':
+                        albumSuggestion = ev;
+                        break;
+                    case 'done':
+                        currentSearchLogToken = ev.search_token || null;
+                        showUnavailableSourcesToast(ev.unavailable_sources);
+                        if (!renderedOnce) renderResults(accumulator); // shows the empty state
+                        showRelatedSuggestions(accumulator, albumSuggestion);
+                        finishSearchProgress();
+                        break;
+                    case 'error':
+                        if (!renderedOnce) throw new Error(ev.detail || 'search failed');
+                        finishSearchProgress();
+                        break;
                 }
-                if (data.results && data.results.length > 0) {
-                    mergeSlskdResults(data.results);
-                } else {
-                    document.getElementById('slskd-searching')?.remove();
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (searchToken !== currentSearchToken) { try { reader.cancel(); } catch (e) {} return; }
+                buffer += decoder.decode(value, { stream: true });
+                let nl;
+                while ((nl = buffer.indexOf('\n')) >= 0) {
+                    const line = buffer.slice(0, nl).trim();
+                    buffer = buffer.slice(nl + 1);
+                    if (!line) continue;
+                    let ev;
+                    try { ev = JSON.parse(line); } catch (e) { continue; }
+                    handleEvent(ev);
                 }
-            } catch (error) {
-                console.log('slskd search failed:', error);
-                document.getElementById('slskd-searching')?.remove();
-            } finally {
-                if (pendingSlskdToken === searchToken) {
-                    pendingSlskdToken = 0;
-                }
+            }
+            const tail = buffer.trim();
+            if (tail) { try { handleEvent(JSON.parse(tail)); } catch (e) {} }
+        }
+
+        // Plain blocking search, kept as a fallback for when the stream falls over.
+        async function runSearchBlocking(query, searchToken) {
+            const response = await apiFetch('/api/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, limit: 15, source: currentSource })
+            });
+            if (!response.ok) throw new Error('Search failed');
+
+            const data = await response.json();
+            if (searchToken !== currentSearchToken) return;
+            lastResults = data.results;
+            currentSearchLogToken = data.search_token || null;
+            showUnavailableSourcesToast(data.unavailable_sources);
+            renderResults(data.results);
+            showRelatedSuggestions(data.results, data.album_suggestion);
+
+            const artworkParsed = parseArtistTitle(query);
+            if (artworkParsed) {
+                fetchAndApplyArtwork(artworkParsed.artist, artworkParsed.title, searchToken);
             }
         }
 
-        function mergeSlskdResults(slskdResults) {
-            // Interleave slskd results with existing YouTube results
-            // Insert 1 slskd result after every 2 YouTube results
-            const merged = [];
-            let ytIndex = 0;
-            let slskdIndex = 0;
+        // ----- Live search progress panel -----
 
-            while (ytIndex < lastResults.length || slskdIndex < slskdResults.length) {
-                // Add 2 YouTube results
-                for (let i = 0; i < 2 && ytIndex < lastResults.length; i++) {
-                    merged.push(lastResults[ytIndex++]);
-                }
-                // Add 1 slskd result
-                if (slskdIndex < slskdResults.length) {
-                    merged.push(slskdResults[slskdIndex++]);
-                }
-            }
+        // A few cheeky-but-honest lines per source for the "still searching" state.
+        const SEARCH_PROGRESS_QUIPS = {
+            youtube: ['Poking YouTube with a stick', 'Sifting the YouTube haystack'],
+            monochrome: ["Rummaging through Qobuz's bins", 'Leaning on the lossless lot'],
+            soulseek: ['Bribing the Soulseek peers', 'Queuing politely on Soulseek'],
+            soundcloud: ['Leafing through SoundCloud', 'Nudging the SoundClouders'],
+            mp3phoenix: ['Prodding MP3Phoenix', 'Fanning the Phoenix'],
+            zvu4no: ["Knocking on zvu4no's door", 'Whispering to zvu4no'],
+            freemp3cloud: ['Coaxing FreeMp3Cloud', 'Wringing out the cloud'],
+            _default: ['Having a rummage', 'Asking nicely']
+        };
 
-            lastResults = merged;
-            renderResults(merged);
-            // Re-apply artwork after the re-render wipes the thumbnails
-            if (currentArtworkUrl && currentArtworkArtist && currentArtworkTitle) {
-                applyArtworkToResults(currentArtworkArtist, currentArtworkTitle, currentArtworkUrl);
+        function _searchQuip(source) {
+            const pool = SEARCH_PROGRESS_QUIPS[source] || SEARCH_PROGRESS_QUIPS._default;
+            return pool[Math.floor(Math.random() * pool.length)];
+        }
+
+        function initSearchProgress() {
+            const panel = document.getElementById('searchProgress');
+            if (!panel) return;
+            if (_searchProgressHideTimer) { clearTimeout(_searchProgressHideTimer); _searchProgressHideTimer = null; }
+            panel.classList.remove('search-progress-fading');
+            panel.innerHTML = '';
+            panel.style.display = '';
+        }
+
+        function renderSearchProgressRows(sources) {
+            const panel = document.getElementById('searchProgress');
+            if (!panel) return;
+            panel.innerHTML = sources.map(src => `
+                <div class="search-progress-row" data-source="${escapeHtml(src)}" data-status="searching">
+                    <span class="search-progress-icon"><span class="watched-refresh-spinner"></span></span>
+                    <span class="search-progress-name">${escapeHtml(getSourceLabel(src))}</span>
+                    <span class="search-progress-status">${escapeHtml(_searchQuip(src))}&hellip;</span>
+                </div>
+            `).join('');
+            panel.style.display = sources.length ? '' : 'none';
+        }
+
+        function updateSourceStatus(source, status, count) {
+            const panel = document.getElementById('searchProgress');
+            if (!panel) return;
+            const row = panel.querySelector(`.search-progress-row[data-source="${CSS.escape(source)}"]`);
+            if (!row) return;
+            row.dataset.status = status;
+            const icon = row.querySelector('.search-progress-icon');
+            const text = row.querySelector('.search-progress-status');
+            if (status === 'done') {
+                icon.innerHTML = '<i class="fa-solid fa-circle-check"></i>';
+                text.textContent = count ? `${count} result${count === 1 ? '' : 's'}` : 'nothing here';
+            } else if (status === 'timeout') {
+                icon.innerHTML = '<i class="fa-solid fa-hourglass-end"></i>';
+                text.textContent = 'took too long, moved on';
+            } else if (status === 'skipped') {
+                icon.innerHTML = '<i class="fa-solid fa-circle-minus"></i>';
+                text.textContent = 'offline, skipped';
+            } else if (status === 'error') {
+                icon.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+                text.textContent = 'had a wobble';
             }
+        }
+
+        function finishSearchProgress() {
+            const panel = document.getElementById('searchProgress');
+            if (!panel) return;
+            // Let the final ticks land, then fade the panel away so results aren't
+            // shoved down the page for good.
+            if (_searchProgressHideTimer) clearTimeout(_searchProgressHideTimer);
+            _searchProgressHideTimer = setTimeout(() => {
+                panel.classList.add('search-progress-fading');
+                _searchProgressHideTimer = setTimeout(() => hideSearchProgress(), 600);
+            }, 1200);
+        }
+
+        function hideSearchProgress() {
+            const panel = document.getElementById('searchProgress');
+            if (!panel) return;
+            if (_searchProgressHideTimer) { clearTimeout(_searchProgressHideTimer); _searchProgressHideTimer = null; }
+            panel.classList.remove('search-progress-fading');
+            panel.style.display = 'none';
+            panel.innerHTML = '';
         }
 
         function parseArtistTitle(query) {

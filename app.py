@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
 
@@ -63,7 +63,7 @@ from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, parse_duration,
     get_cookies_expiry,
 )
-from search import search_source, search_all, get_available_sources, SOURCE_REGISTRY
+from search import search_source, search_all, _search_all_events, get_available_sources, SOURCE_REGISTRY
 import servicecheck
 from slskd import slskd_enabled, search_slskd
 from downloads import (
@@ -1728,6 +1728,95 @@ def search(request: SearchRequest, http_request: Request):
     except Exception as e:
         print(f"search error: {e}")
         raise HTTPException(status_code=500, detail="Search failed")
+
+
+def _search_result_payload(item: dict) -> dict:
+    """Project a raw source result dict to the same shape /api/search returns.
+
+    Keeps the streaming endpoint and the blocking one emitting identical result
+    objects so the frontend renderer doesn't care which path fed it.
+    """
+    return {
+        "video_id": item["video_id"],
+        "title": item["title"],
+        "artist": None,
+        "channel": item["channel"],
+        "duration": item["duration"],
+        "thumbnail": item["thumbnail"],
+        "is_playlist": item.get("is_playlist", False),
+        "video_count": item.get("video_count"),
+        "source": item["source"],
+        "source_url": item.get("source_url"),
+        "quality": item["quality"],
+        "quality_score": item["quality_score"],
+        "slskd_username": item["slskd_username"],
+        "slskd_filename": item["slskd_filename"],
+        "slskd_size": item.get("slskd_size") or item.get("size"),
+    }
+
+
+@app.post("/api/search/stream")
+def search_stream(request: SearchRequest, http_request: Request):
+    """Live multi-source search: NDJSON stream, one event per line.
+
+    Same inputs as /api/search, but instead of blocking until the slowest source
+    answers, it streams progress as it happens: a 'start', a 'source' event per
+    source as it lands (or times out / is skipped), an optional 'album_suggestion',
+    and a terminal 'done' carrying the search_token and any parked sources. The
+    browser renders results progressively and ticks off the source status panel.
+
+    Soulseek rides along here like any other source (gated on its Search Sources
+    toggle, as the Settings help has always advised), retiring the old bespoke
+    slskd fetch-and-merge dance.
+    """
+    source = request.source
+    if source != "all" and source not in SOURCE_REGISTRY:
+        raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
+
+    # "all" gets the availability filter (park dead sources); an explicit single
+    # source is honoured even if parked, mirroring the old single-source search.
+    sources = None if source == "all" else [source]
+    enforce_availability = source == "all"
+    user_id = getattr(http_request.state, "user_id", None)
+
+    def _event_lines():
+        try:
+            for ev in _search_all_events(
+                request.query,
+                request.limit,
+                sources=sources,
+                include_soulseek=True,
+                enforce_availability=enforce_availability,
+            ):
+                if ev["type"] == "source" and ev["status"] == "done":
+                    ev = {**ev, "results": [_search_result_payload(r) for r in ev["results"]]}
+                elif ev["type"] == "done":
+                    search_token = None
+                    try:
+                        # result_count is informational on the log row; the client
+                        # already counted what it rendered, so a rough total is fine.
+                        search_token = _log_search(request.query, 0, source=source, user_id=user_id)
+                    except Exception as log_error:
+                        print(f"search log error: {log_error}")
+                    parked = [
+                        u for u in servicecheck.unavailable_sources()
+                        if get_setting_bool(
+                            f"source_{u['id']}_enabled",
+                            SOURCE_REGISTRY.get(u["id"], {}).get("default_enabled", True),
+                        )
+                    ]
+                    ev = {
+                        **ev,
+                        "search_token": search_token,
+                        "unavailable_sources": parked,
+                        "slskd_enabled": slskd_enabled(),
+                    }
+                yield json.dumps(ev) + "\n"
+        except Exception as e:
+            print(f"search stream error: {e}")
+            yield json.dumps({"type": "error", "detail": "Search failed"}) + "\n"
+
+    return StreamingResponse(_event_lines(), media_type="application/x-ndjson")
 
 
 @app.post("/api/search/slskd")

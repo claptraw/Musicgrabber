@@ -1105,6 +1105,54 @@ h1 {
     font-size: 13px;
 }
 
+/* Live search progress panel: one row per source, ticked off as they land */
+.search-progress {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: opacity 0.5s ease;
+}
+
+.search-progress-fading {
+    opacity: 0;
+}
+
+.search-progress-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.search-progress-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+}
+
+.search-progress-name {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.search-progress-row[data-status="done"] .search-progress-icon { color: var(--accent); }
+.search-progress-row[data-status="timeout"] .search-progress-icon,
+.search-progress-row[data-status="skipped"] .search-progress-icon,
+.search-progress-row[data-status="error"] .search-progress-icon { color: var(--text-secondary); }
+
+.search-progress-status {
+    font-style: italic;
+    opacity: 0.85;
+}
+
 .job-item {
     display: flex;
     gap: 14px;

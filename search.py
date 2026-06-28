@@ -375,38 +375,69 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
     return results[:limit]
 
 
-def search_all(query: str, limit: int, sources: list[str] | None = None, include_soulseek: bool = False) -> tuple[list[dict], dict | None]:
-    """Search enabled sources in parallel, merge by quality score.
+def _search_all_events(
+    query: str,
+    limit: int,
+    sources: list[str] | None = None,
+    include_soulseek: bool = False,
+    enforce_availability: bool = True,
+):
+    """Run the multi-source fan-out, yielding progress events as sources land.
 
-    If *sources* is provided (list of source IDs), only those sources are used,
-    provided they are also enabled in settings. Falls back to all enabled sources
-    if the filtered set is empty (e.g. source disabled globally but playlist prefers it).
+    This is the single source of truth for multi-source search. The blocking
+    search_all() drains it into a merged list; the streaming search endpoint
+    forwards the very same events to the browser as NDJSON, so the two never
+    drift apart. Events (one dict per yield):
 
-    Returns (results, album_suggestion) where album_suggestion is a dict with
-    artist_name, artist_mbid, album_title, release_mbid, or None if the query
-    didn't resolve to a known album.
+      {"type": "start", "query": ..., "sources": [names]}
+      {"type": "source", "source": name, "status": "skipped", "reason": ...}
+      {"type": "source", "source": name, "status": "done", "count": n, "results": [...]}
+      {"type": "source", "source": name, "status": "timeout"}
+      {"type": "source", "source": name, "status": "error"}
+      {"type": "album_suggestion", <album fields>}
+      {"type": "done"}
+
+    Per-source results are already blacklist-filtered, capped and scored (with the
+    MB duration bonus applied once the MB lookup has resolved, which in practice
+    beats the slower source searches), so a consumer only needs to sort the union.
+
+    *enforce_availability* gates the servicecheck parking: True for the normal
+    multi-source search, False when the caller explicitly asked for a specific
+    source and should get it even if it's currently parked.
     """
     active = _enabled_sources(include_soulseek=include_soulseek)
     if sources:
         # Intersect requested sources with enabled ones; fall back to all if none survive
         filtered = {k: v for k, v in active.items() if k in sources}
         active = filtered if filtered else active
-    # Lazily refresh stale health checks before deciding which multi-source
-    # results are safe to show.
-    servicecheck.check_sources(set(active))
-    # Hide sources currently parked in a failure cooldown so their results don't
-    # show up only to fall over at play or download time. Single-source explicit
-    # search deliberately skips this; if the user asks for it, they get it.
-    active = {name: cfg for name, cfg in active.items() if servicecheck.is_source_available(name)}
+
+    parked: list[str] = []
+    if enforce_availability:
+        # Lazily refresh stale health checks before deciding which sources are safe
+        # to show, then park the ones currently in a failure cooldown so their
+        # results don't show up only to fall over at play or download time.
+        servicecheck.check_sources(set(active))
+        available = {n: c for n, c in active.items() if servicecheck.is_source_available(n)}
+        parked = [n for n in active if n not in available]
+        active = available
+
+    yield {"type": "start", "query": query, "sources": list(active)}
+    for name in parked:
+        yield {"type": "source", "source": name, "status": "skipped", "reason": "offline"}
+
+    if not active:
+        yield {"type": "done"}
+        return
 
     # NOTE: do NOT wrap this pool in a `with` block. Exiting a ThreadPoolExecutor
     # context manager calls shutdown(wait=True), which blocks until every source
-    # has finished, slowest included, which quietly defeated the whole point of
-    # the per-future timeout below. Instead we collect with a hard wall-clock
-    # deadline and walk away from any source still dawdling past it.
+    # has finished, slowest included, which would defeat the whole point of the
+    # wall-clock deadline below. We collect with a hard deadline and walk away
+    # from any source still dawdling past it.
     futures = {}
     pool = ThreadPoolExecutor(max_workers=len(active) + 2)
-    all_results = []
+    expected_dur = None
+    album_suggestion = None
     try:
         for name, cfg in active.items():
             futures[pool.submit(cfg["search_fn"], query, limit)] = name
@@ -414,39 +445,82 @@ def search_all(query: str, limit: int, sources: list[str] | None = None, include
         mb_future = pool.submit(_mb_duration_lookup, query)
         mb_album_future = pool.submit(_mb_album_lookup, query)
 
+        timed_out = False
         try:
             for future in as_completed(futures, timeout=SEARCH_ALL_DEADLINE):
                 source_name = futures[future]
+                # Grab the MB duration the instant it's ready so this and every
+                # later batch gets the duration bonus.
+                if expected_dur is None and mb_future.done():
+                    try:
+                        expected_dur = mb_future.result()
+                    except Exception:
+                        expected_dur = None
                 try:
                     source_results = future.result()
-                    # Cap per-source contribution so one prolific source can't drown
-                    # out the rest. Each source gets its best N results; scoring
-                    # decides the final order.
-                    per_source_cap = SEARCH_MAX_PER_SOURCE_BY_SOURCE.get(source_name, SEARCH_MAX_PER_SOURCE)
-                    all_results.extend(source_results[:per_source_cap])
                 except Exception as e:
                     print(f"search_all: {source_name} failed: {e}")
+                    yield {"type": "source", "source": source_name, "status": "error"}
+                    continue
+                # Cap per-source contribution so one prolific source can't drown out
+                # the rest; scoring decides the final order.
+                per_source_cap = SEARCH_MAX_PER_SOURCE_BY_SOURCE.get(source_name, SEARCH_MAX_PER_SOURCE)
+                batch = _apply_blacklist_filter(source_results[:per_source_cap], source=source_name)
+                if expected_dur:
+                    _apply_mb_duration_scores(batch, expected_dur)
+                batch.sort(key=lambda x: x["quality_score"], reverse=True)
+                yield {
+                    "type": "source",
+                    "source": source_name,
+                    "status": "done",
+                    "count": len(batch),
+                    "results": batch,
+                }
         except FuturesTimeoutError:
-            # Deadline hit. Return what made it in time; the laggards keep running
-            # in the background with nobody waiting on them.
-            slow = [futures[f] for f in futures if not f.done()]
-            print(f"search_all: {SEARCH_ALL_DEADLINE}s deadline hit, dropped slow sources: {slow}")
+            # Deadline hit. The laggards keep running in the background with nobody
+            # waiting on them; tell the client which ones didn't make it.
+            timed_out = True
 
-        # MB scoring is a best-effort bonus. If the lookup hasn't landed by now,
-        # skip it rather than block; the results are already good enough to ship.
-        expected_dur = mb_future.result(timeout=0.01) if mb_future.done() else None
-        album_suggestion = mb_album_future.result(timeout=0.01) if mb_album_future.done() else None
-    except Exception:
-        expected_dur = None
-        album_suggestion = None
+        if timed_out:
+            for f, name in futures.items():
+                if not f.done():
+                    yield {"type": "source", "source": name, "status": "timeout"}
+            print(f"search_all: {SEARCH_ALL_DEADLINE}s deadline hit")
+
+        # MB album suggestion is best-effort; if it hasn't landed by now, skip it.
+        try:
+            album_suggestion = mb_album_future.result(timeout=0.01) if mb_album_future.done() else None
+        except Exception:
+            album_suggestion = None
+        if album_suggestion:
+            yield {"type": "album_suggestion", **album_suggestion}
     finally:
-        # wait=False so a stuck source can't re-introduce the very hang we just
-        # killed; cancel_futures tidies up anything that never got to start.
+        # wait=False so a stuck source can't re-introduce the very hang we killed;
+        # cancel_futures tidies up anything that never got to start.
         pool.shutdown(wait=False, cancel_futures=True)
 
-    all_results = _apply_blacklist_filter(all_results)
-    if expected_dur:
-        _apply_mb_duration_scores(all_results, expected_dur)
+    yield {"type": "done"}
+
+
+def search_all(query: str, limit: int, sources: list[str] | None = None, include_soulseek: bool = False) -> tuple[list[dict], dict | None]:
+    """Search enabled sources in parallel, merge by quality score.
+
+    Thin blocking consumer of _search_all_events: it drains the progress events
+    into one merged, score-sorted list. If *sources* is provided (list of source
+    IDs), only those are used, falling back to all enabled sources if the filtered
+    set is empty (e.g. source disabled globally but a playlist prefers it).
+
+    Returns (results, album_suggestion) where album_suggestion is a dict with
+    artist_name, artist_mbid, album_title, release_mbid, or None if the query
+    didn't resolve to a known album.
+    """
+    all_results: list[dict] = []
+    album_suggestion = None
+    for ev in _search_all_events(query, limit, sources=sources, include_soulseek=include_soulseek):
+        if ev["type"] == "source" and ev["status"] == "done":
+            all_results.extend(ev["results"])
+        elif ev["type"] == "album_suggestion":
+            album_suggestion = {k: v for k, v in ev.items() if k != "type"}
     all_results.sort(key=lambda x: x["quality_score"], reverse=True)
     return all_results[:limit], album_suggestion
 

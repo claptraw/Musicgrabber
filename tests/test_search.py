@@ -88,3 +88,63 @@ def test_search_response_includes_unavailable_sources(api, base_url):
     d = r.json()
     assert "unavailable_sources" in d
     assert isinstance(d["unavailable_sources"], list)
+
+
+# ----- Live search progress stream (NDJSON) -----
+
+import json
+
+
+def _collect_stream_events(api, base_url, query, source="all", timeout=60):
+    """POST to the streaming endpoint and parse the NDJSON into a list of events."""
+    with api.post(
+        f"{base_url}/api/search/stream",
+        json={"query": query, "limit": 10, "source": source},
+        stream=True,
+        timeout=timeout,
+    ) as r:
+        assert r.status_code == 200
+        events = []
+        for line in r.iter_lines():
+            if not line:
+                continue
+            events.append(json.loads(line))
+        return events
+
+
+@pytest.mark.slow
+def test_search_stream_event_sequence(api, base_url):
+    """The stream opens with 'start', emits a 'source' per source, ends with 'done'."""
+    events = _collect_stream_events(api, base_url, "Nirvana Come As You Are", source="all")
+    assert events, "stream returned no events"
+    assert events[0]["type"] == "start"
+    assert isinstance(events[0].get("sources"), list)
+    assert events[-1]["type"] == "done"
+
+    # Every announced source should report a terminal status exactly once.
+    announced = set(events[0]["sources"])
+    reported = {e["source"] for e in events if e["type"] == "source"}
+    assert announced.issubset(reported), f"sources without a status: {announced - reported}"
+    for e in events:
+        if e["type"] == "source":
+            assert e["status"] in {"done", "timeout", "skipped", "error"}
+
+
+@pytest.mark.slow
+def test_search_stream_done_carries_token_and_parked(api, base_url):
+    events = _collect_stream_events(api, base_url, "Radiohead Creep", source="all")
+    done = events[-1]
+    assert done["type"] == "done"
+    assert "search_token" in done
+    assert isinstance(done.get("unavailable_sources"), list)
+
+
+@pytest.mark.slow
+def test_search_stream_results_have_expected_shape(api, base_url):
+    events = _collect_stream_events(api, base_url, "Bohemian Rhapsody Queen", source="youtube")
+    done_sources = [e for e in events if e["type"] == "source" and e["status"] == "done"]
+    flat = [r for e in done_sources for r in e.get("results", [])]
+    assert flat, "stream produced no results"
+    for item in flat:
+        for key in RESULT_KEYS:
+            assert key in item, f"streamed result missing key: {key}"
