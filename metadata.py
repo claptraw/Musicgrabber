@@ -1192,6 +1192,25 @@ def _is_source_branding(text: str) -> bool:
     )
 
 
+def read_artist_title(file_path: Path) -> tuple[str | None, str | None]:
+    """Read artist and title from an audio file's tags, format-agnostic.
+
+    Uses mutagen's easy mode so FLAC/MP3/M4A/Ogg all answer with the same keys.
+    Returns (artist, title), either may be None. Handy when we have a file on disk
+    but need to know what it is (e.g. re-tagging a restored track).
+    """
+    try:
+        import mutagen
+        audio = mutagen.File(str(file_path), easy=True)
+        if not audio:
+            return None, None
+        artist = (audio.get("artist", [None]) or [None])[0]
+        title = (audio.get("title", [None]) or [None])[0]
+        return (artist or None), (title or None)
+    except Exception:
+        return None, None
+
+
 def read_existing_track_number(file_path: Path) -> tuple[int | None, int | None]:
     """Read existing track number and total from an audio file's tags.
 

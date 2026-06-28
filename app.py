@@ -2849,6 +2849,19 @@ def restore_trash_file(http_request: Request, path: str = ""):
     if not restored:
         raise HTTPException(status_code=500, detail="Failed to restore file")
 
+    # Re-stamp the playlist COMMENT tag: a restore just moves the file back, so a
+    # track that was wrongly binned would otherwise come back untagged until the
+    # next manual playlist refresh. Read the artist/title off the file and let the
+    # shared helper (a no-op when the setting's off) put the playlist names back.
+    try:
+        from metadata import read_artist_title
+        from downloads import _tag_track_comment
+        r_artist, r_title = read_artist_title(restored)
+        if r_artist and r_title:
+            _tag_track_comment(restored, r_artist, r_title)
+    except Exception as e:
+        print(f"Restore COMMENT re-tag failed for {restored}: {e}")
+
     return {"restored": str(restored.name), "path": str(restored)}
 
 

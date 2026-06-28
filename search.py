@@ -8,6 +8,7 @@ Adding a new source is one function and one registry entry.
 import json
 import re
 import subprocess
+import time
 from concurrent.futures import (
     ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError,
 )
@@ -16,6 +17,7 @@ from constants import (
     TIMEOUT_YTDLP_SEARCH,
     SEARCH_ALL_DEADLINE,
     TIMEOUT_SLSKD_SEARCH,
+    SLSKD_EMPTY_RETRY_DELAY,
     SOUNDCLOUD_SEARCH_MULTIPLIER, SOUNDCLOUD_SEARCH_MIN_FETCH,
     SEARCH_MAX_PER_SOURCE,
     SEARCH_MAX_PER_SOURCE_YOUTUBE, SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
@@ -59,8 +61,16 @@ def search_soulseek(query: str, limit: int = 10) -> list[dict]:
     if not slskd_enabled():
         return []
 
+    raw = search_slskd(query, timeout_secs=TIMEOUT_SLSKD_SEARCH)
+    if not raw:
+        # Soulseek's distributed search is moody: a term can come back empty even
+        # when the files plainly exist, and a fresh search often reaches different
+        # peers. Give it one more go before we declare the network soulless.
+        time.sleep(SLSKD_EMPTY_RETRY_DELAY)
+        raw = search_slskd(query, timeout_secs=TIMEOUT_SLSKD_SEARCH)
+
     results = []
-    for item in search_slskd(query, timeout_secs=TIMEOUT_SLSKD_SEARCH)[:limit]:
+    for item in raw[:limit]:
         duration_raw = item.get("duration", "0")
         try:
             duration = parse_duration(int(duration_raw))

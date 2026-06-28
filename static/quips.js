@@ -100,6 +100,7 @@ const SEARCH_QUIPS = {
         ],
 
         soulseek: [
+            "Seeking souls on Soulseek",
             "Bribing the Soulseek peers",
             "Queuing politely on Soulseek",
             "Waiting for a free upload slot",
@@ -110,6 +111,8 @@ const SEARCH_QUIPS = {
             "Trusting a stranger's folder names",
             "Checking who's actually sharing today",
             "Tipping the uploader (in good vibes)",
+            "Communing with the Soulseek hive",
+            "Dowsing for souls",
         ],
 
         _default: [
@@ -135,6 +138,37 @@ const SEARCH_QUIPS = {
         "the cupboard's bare",
         "not a dickie bird",
         "computer says no",
+    ],
+
+    // Shown when a source is still going long after the others finished. Per
+    // source, with a fallback. Soulseek gets soul-themed lines for its retry.
+    slow: {
+        soulseek: [
+            "Soulseek's taking its time seeking souls, bear with it",
+            "Still seeking souls, they're a shy bunch",
+            "The souls are playing hard to get, having another go",
+            "Deep in the Soulseek catacombs, hang on",
+            "Giving the souls a second chance to answer",
+            "Souls are slow to surface, one more knock",
+        ],
+        _default: [
+            "This one's having a proper think",
+            "Still rummaging, won't be long",
+            "Taking the scenic route",
+            "Hang on, nearly there",
+            "Just coaxing the last drop out",
+        ],
+    },
+
+    // Soulseek-specific empty result, because "soulless" was right there
+    soulless: [
+        "came back soulless",
+        "not a soul in sight",
+        "no souls found, sorry",
+        "the souls have left the building",
+        "soulless, nothing doing",
+        "couldn't find a single soul",
+        "souls all out, try again later",
     ],
 
     timeout: [

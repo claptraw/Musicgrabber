@@ -35,6 +35,7 @@ TIMEOUT_HTTP_SPOTIFY = 30        # Spotify embed fetch
 SPOTIFY_EMBED_MAX_ATTEMPTS = 3   # Spotify's embed edge throws transient 502/503/504s; retry before giving up
 SPOTIFY_EMBED_RETRY_BACKOFF = 1.5  # Seconds, multiplied by attempt number for a simple linear backoff
 TIMEOUT_SLSKD_SEARCH = 12        # Soulseek search polling
+SLSKD_EMPTY_RETRY_DELAY = 1      # Pause before a single retry when Soulseek comes back empty (its distributed search is moody)
 TIMEOUT_SLSKD_DOWNLOAD = 600     # Soulseek download (10 minutes)
 TIMEOUT_SLSKD_API = 30           # slskd API calls
 TIMEOUT_SPOTIFY_BROWSER = 180    # Headless browser base/floor timeout (3 minutes)

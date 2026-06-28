@@ -1474,6 +1474,26 @@
             return _randomQuip(pool, fallback);
         }
 
+        function _slowQuip(source) {
+            const s = (typeof SEARCH_QUIPS !== 'undefined' && SEARCH_QUIPS.slow) || null;
+            const pool = s && (s[source] || s._default);
+            return _randomQuip(pool, 'Still going, hang on');
+        }
+
+        // If a source is still searching long after its mates finished, swap its
+        // line for a "taking a while" quip (Soulseek's retry is the usual culprit).
+        function _startRowSlowTimer(source) {
+            const t = setTimeout(() => {
+                const panel = document.getElementById('searchProgress');
+                if (!panel) return;
+                const row = panel.querySelector(`.search-progress-row[data-source="${CSS.escape(source)}"]`);
+                if (!row || row.dataset.status !== 'searching') return;
+                const text = row.querySelector('.search-progress-status');
+                if (text) text.textContent = _slowQuip(source) + '…';
+            }, 9000);
+            _searchProgressRowTimers.push(t);
+        }
+
         function _clearProgressRowTimers() {
             _searchProgressRowTimers.forEach(t => clearTimeout(t));
             _searchProgressRowTimers = [];
@@ -1504,6 +1524,7 @@
             if (!panel) return;
             panel.innerHTML = sources.map(_progressRowHtml).join('');
             panel.style.display = sources.length ? '' : 'none';
+            sources.forEach(_startRowSlowTimer);
         }
 
         function updateSourceStatus(source, status, count) {
@@ -1523,7 +1544,14 @@
             const text = row.querySelector('.search-progress-status');
             if (status === 'done') {
                 icon.innerHTML = '<i class="fa-solid fa-circle-check"></i>';
-                text.textContent = count ? `${count} result${count === 1 ? '' : 's'}` : _failureQuip('empty', 'nothing here');
+                if (count) {
+                    text.textContent = `${count} result${count === 1 ? '' : 's'}`;
+                } else {
+                    // Soulseek gets its own "soulless" line; everyone else the generic empty pool.
+                    text.textContent = source === 'soulseek'
+                        ? _failureQuip('soulless', 'no souls found')
+                        : _failureQuip('empty', 'nothing here');
+                }
             } else if (status === 'timeout') {
                 icon.innerHTML = '<i class="fa-solid fa-hourglass-end"></i>';
                 text.textContent = _failureQuip('timeout', 'took too long, moved on');
