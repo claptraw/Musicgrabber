@@ -467,32 +467,42 @@ def _deezer_search_candidates(query: str, limit: int) -> list[dict]:
 
     Deezer's freetext relevance can bury an exact track under fuzzier noise (a
     real casualty: 'BUNT. - LIEBE' vanishing under a heap of 'Immer Liebe'),
-    whereas an artist:"x" track:"y" query pins it at the top. When the query
-    splits cleanly into artist/title we fire BOTH orderings, because users
-    transpose artist and title far more often than they'd like to admit. Results
-    are de-duplicated by Deezer id; the caller's ISRC dedup mops up the rest.
+    whereas an artist:"x" track:"y" query pins it at the top. So when the query
+    splits cleanly into "Artist - Title" we fire the structured query in the
+    proper order first. The transposed ordering (Title - Artist) is only worth
+    trying when the proper order draws a blank, since reversing the fields
+    otherwise just drags in funny matches; it's there to rescue a query the user
+    typed back-to-front, not to second-guess a good one. Results are de-duplicated
+    by Deezer id; the caller's ISRC dedup mops up the rest.
     """
     raw_items: list[dict] = []
     seen_ids: set = set()
 
-    def _gather(q: str) -> None:
+    def _absorb(items: list[dict]) -> None:
+        for item in items:
+            did = item.get("id")
+            if did is not None and did in seen_ids:
+                continue
+            if did is not None:
+                seen_ids.add(did)
+            raw_items.append(item)
+
+    def _search(q: str) -> list[dict]:
         try:
-            for item in _deezer_search_tracks(q, limit):
-                did = item.get("id")
-                if did is not None and did in seen_ids:
-                    continue
-                if did is not None:
-                    seen_ids.add(did)
-                raw_items.append(item)
+            return _deezer_search_tracks(q, limit)
         except Exception as exc:
             print(f"Monochrome: Deezer search variant {q!r} failed: {exc}")
+            return []
 
-    _gather(query)
+    _absorb(_search(query))  # freetext primary
 
     artist, title = _parse_query_artist_title(query)
     if artist and title:
-        for a, b in ((artist, title), (title, artist)):
-            _gather(f'artist:"{_deezer_phrase(a)}" track:"{_deezer_phrase(b)}"')
+        forward = _search(f'artist:"{_deezer_phrase(artist)}" track:"{_deezer_phrase(title)}"')
+        _absorb(forward)
+        # Only reverse the fields if the proper order found nothing of its own.
+        if not forward:
+            _absorb(_search(f'artist:"{_deezer_phrase(title)}" track:"{_deezer_phrase(artist)}"'))
 
     return raw_items
 

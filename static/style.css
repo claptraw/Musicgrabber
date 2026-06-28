@@ -1129,7 +1129,7 @@ h1 {
     font-size: 13px;
     color: var(--text-secondary);
     opacity: 1;
-    transition: opacity 0.8s ease;
+    transition: opacity 1.2s ease;
 }
 
 /* Each row drifts away on its own once its source has reported in */

@@ -1538,16 +1538,17 @@
         }
 
         function _fadeOutRow(row) {
-            // Hold the final status briefly so it's readable, then drift it away.
+            // Hold the final status on screen for a good while so it's easy to read
+            // (success or failure alike), then drift it away on a gentle fade.
             const hold = setTimeout(() => {
                 row.classList.add('search-progress-row-fading');
                 const drop = setTimeout(() => {
                     row.remove();
                     const panel = document.getElementById('searchProgress');
                     if (panel && !panel.querySelector('.search-progress-row')) hideSearchProgress();
-                }, 900);
+                }, 1300);
                 _searchProgressRowTimers.push(drop);
-            }, 1600);
+            }, 3600);
             _searchProgressRowTimers.push(hold);
         }
 
@@ -1559,7 +1560,7 @@
             if (_searchProgressHideTimer) clearTimeout(_searchProgressHideTimer);
             _searchProgressHideTimer = setTimeout(() => {
                 if (!panel.querySelector('.search-progress-row')) hideSearchProgress();
-            }, 5000);
+            }, 8000);
         }
 
         function hideSearchProgress() {
