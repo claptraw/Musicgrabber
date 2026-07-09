@@ -8,6 +8,7 @@ import json
 import pathlib
 import random
 import re
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -31,13 +32,13 @@ from apple import fetch_apple_music_playlist
 from beatport import fetch_beatport_playlist
 from tidal import fetch_tidal_playlist
 from downloads import rebuild_watched_playlist_m3u
-from settings import get_playlists_dir, get_setting
+from settings import get_playlists_dir, get_setting, get_download_dir, resolve_custom_subdir
 from spotify import fetch_spotify_playlist_via_browser
 from utils import (
     extract_artist_title, hash_track, spawn_daemon_thread, sanitize_filename,
-    check_duplicate,
+    check_duplicate, sanitize_playlist_name,
 )
-from downloads import check_navidrome_duplicate
+from downloads import check_navidrome_duplicate, _tag_track_comment
 from youtube import _ytdlp_base_args
 
 import httpx
@@ -52,25 +53,22 @@ def _normalise_match_text(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
-def _playlist_file_exists(playlist_name: str, artist: str, title: str, user_id: str | None = None) -> bool:
-    """Check whether a track exists inside Playlists/<playlist_name>/."""
-    playlists_dir = get_playlists_dir(user_id=user_id)
-    if not playlists_dir:
-        return False
-    track_dir = playlists_dir / sanitize_filename(playlist_name)
+def _find_track_in_dir(track_dir: pathlib.Path, artist: str, title: str) -> pathlib.Path | None:
+    """Find a track's file in a folder by exact stem, then fuzzy match. None if absent."""
     if not track_dir.exists():
-        return False
+        return None
 
     stem = f"{sanitize_filename(artist or 'Unknown Artist')} - {sanitize_filename(title or 'Unknown Title')}"
     for ext in AUDIO_EXTENSIONS:
-        if (track_dir / f"{stem}{ext}").exists():
-            return True
+        candidate = track_dir / f"{stem}{ext}"
+        if candidate.exists():
+            return candidate
 
     # Fuzzy fallback so metadata wobble does not hide real files.
     artist_n = _normalise_match_text(artist)
     title_n = _normalise_match_text(title)
     if not artist_n or not title_n:
-        return False
+        return None
     for ext in AUDIO_EXTENSIONS:
         for p in track_dir.glob(f"*{ext}"):
             if " - " not in p.stem:
@@ -81,12 +79,25 @@ def _playlist_file_exists(playlist_name: str, artist: str, title: str, user_id: 
             artist_ok = fa and (artist_n in fa or fa in artist_n)
             title_ok = ft and (title_n in ft or ft in title_n)
             if artist_ok and title_ok:
-                return True
-    return False
+                return p
+    return None
 
 
-def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: str, title: str, job_artist: str = "", job_title: str = "", user_id: str | None = None, resolved_path: str | None = None) -> bool:
-    """Return True if we can resolve a local file for this watched track.
+def _find_playlist_file(playlist_name: str, artist: str, title: str, user_id: str | None = None) -> pathlib.Path | None:
+    """Find a track's file inside Playlists/<playlist_name>/, or None if absent."""
+    playlists_dir = get_playlists_dir(user_id=user_id)
+    if not playlists_dir:
+        return None
+    return _find_track_in_dir(playlists_dir / sanitize_filename(playlist_name), artist, title)
+
+
+def _locate_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: str, title: str, job_artist: str = "", job_title: str = "", user_id: str | None = None, resolved_path: str | None = None) -> tuple[bool, pathlib.Path | None]:
+    """Resolve a local file for this watched track.
+
+    Returns (found, local_path). found means "the track exists somewhere and should
+    not be re-downloaded"; local_path is the actual on-disk file when we have one
+    (so callers can store it and stamp COMMENT tags), or None when only Navidrome
+    vouches for it (we can't tag a file we can't see).
 
     Checks the stored resolved_path first (covers tracks found in album folders or
     other non-Singles locations), then MusicGrabber's own library, then falls back
@@ -97,7 +108,7 @@ def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: s
     if resolved_path:
         rp = pathlib.Path(resolved_path)
         if rp.is_absolute() and rp.exists():
-            return True
+            return True, rp
 
     pairs = []
     for a, t in ((job_artist, job_title), (artist, title)):
@@ -107,10 +118,13 @@ def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: s
             pairs.append((a, t))
 
     for a, t in pairs:
-        if check_duplicate(a, t, user_id=user_id):
-            return True
-        if use_playlists_dir and _playlist_file_exists(playlist_name, a, t, user_id=user_id):
-            return True
+        dupe = check_duplicate(a, t, user_id=user_id)
+        if dupe:
+            return True, dupe
+        if use_playlists_dir:
+            pf = _find_playlist_file(playlist_name, a, t, user_id=user_id)
+            if pf:
+                return True, pf
 
     # Last resort: check Navidrome. Any non-None return means Navidrome confirmed
     # the track is in the library; absolute paths are real on-disk locations,
@@ -121,9 +135,151 @@ def _has_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: s
     for a, t in pairs:
         nav_path = check_navidrome_duplicate(a, t, user_id=user_id)
         if nav_path is not None:
-            return True
+            local = nav_path if (nav_path.is_absolute() and nav_path.exists()) else None
+            return True, local
 
-    return False
+    return False, None
+
+
+def _playlist_track_dir(playlist: dict) -> pathlib.Path | None:
+    """The on-disk folder a watched playlist's tracks land in, or None if it hasn't one."""
+    custom = (playlist.get("custom_subdir") or "").strip()
+    user_id = playlist.get("user_id")
+    if custom:
+        base = resolve_custom_subdir(custom, user_id=user_id)
+    elif playlist.get("use_playlists_dir"):
+        base = get_playlists_dir(user_id=user_id)
+        if not base:
+            return None
+    else:
+        return None
+    return base / sanitize_playlist_name(playlist.get("name"), playlist.get("id"))
+
+
+def find_orphaned_playlist_files(playlists: list[dict]) -> list[dict]:
+    """Round up audio files in playlist folders that no playlist claims any more.
+
+    Mirror-mode removals deliberately leave files on disk (we don't bin music just
+    because a playlist changed its mind); this finds the leftovers so they can be
+    rehomed. Only the top level of each current watched playlist's folder is
+    scanned, and where several playlists share a folder (custom subdirs), a file
+    claimed by any of them is safe. Folders of playlists no longer being watched
+    at all are out of scope; we can't tell leftovers from keepsakes there.
+    """
+    # Group playlists by folder so shared custom folders pool their claims
+    folder_map: dict[pathlib.Path, list[dict]] = {}
+    for pl in playlists:
+        d = _playlist_track_dir(pl)
+        if d and d.is_dir():
+            folder_map.setdefault(d, []).append(pl)
+
+    orphans: list[dict] = []
+    for folder, pls in sorted(folder_map.items()):
+        claimed: set[pathlib.Path] = set()
+        for pl in pls:
+            with db_conn() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """SELECT wpt.artist, wpt.title, wpt.resolved_path,
+                              j.artist AS job_artist, j.title AS job_title
+                       FROM watched_playlist_tracks wpt
+                       LEFT JOIN jobs j ON j.id = wpt.job_id
+                       WHERE wpt.playlist_id = ? AND wpt.removed_at IS NULL""",
+                    (pl["id"],),
+                ).fetchall()
+            for row in rows:
+                if row["resolved_path"]:
+                    rp = pathlib.Path(row["resolved_path"])
+                    if rp.exists():
+                        claimed.add(rp)
+                for a, t in ((row["job_artist"], row["job_title"]), (row["artist"], row["title"])):
+                    if a and t:
+                        hit = _find_track_in_dir(folder, a, t)
+                        if hit:
+                            claimed.add(hit)
+
+        playlist_names = ", ".join(sorted({p["name"] for p in pls}))
+        for f in sorted(folder.iterdir()):
+            if not f.is_file() or f.suffix.lower() not in AUDIO_EXTENSIONS:
+                continue
+            if f in claimed:
+                continue
+            try:
+                size_mb = round(f.stat().st_size / (1024 * 1024), 1)
+            except OSError:
+                size_mb = None
+            orphans.append({
+                "file": str(f),
+                "name": f.name,
+                "playlist": playlist_names,
+                "size_mb": size_mb,
+            })
+    return orphans
+
+
+def move_orphans_to_singles(files: list[str], playlists: list[dict]) -> dict:
+    """Move orphaned playlist files into the Singles layout, .lrc riding along.
+
+    Only files sitting directly in a currently-watched playlist folder are
+    eligible, so a creatively crafted path can't winkle files out of anywhere
+    else. Artist comes from the file's tags, falling back to the filename's
+    "Artist - Title" stem; nothing is ever overwritten at the destination.
+    """
+    from metadata import read_artist_title
+
+    folder_owner: dict[pathlib.Path, str | None] = {}
+    for pl in playlists:
+        d = _playlist_track_dir(pl)
+        if d:
+            folder_owner[d.resolve()] = pl.get("user_id")
+
+    moved: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+    touched_users: set[str | None] = set()
+
+    for raw in files:
+        p = pathlib.Path(raw).resolve()
+        parent = p.parent
+        if parent not in folder_owner:
+            skipped.append({"file": raw, "reason": "not in a watched playlist folder"})
+            continue
+        if not p.is_file() or p.suffix.lower() not in AUDIO_EXTENSIONS:
+            skipped.append({"file": raw, "reason": "not an audio file"})
+            continue
+        user_id = folder_owner[parent]
+
+        artist = None
+        try:
+            artist, _ = read_artist_title(p)
+        except Exception:
+            pass
+        if not artist and " - " in p.stem:
+            artist = p.stem.split(" - ", 1)[0].strip()
+
+        dest_dir = get_download_dir(artist or "Unknown Artist", user_id=user_id)
+        dest = dest_dir / p.name
+        if dest.exists():
+            skipped.append({"file": raw, "reason": "already exists in Singles"})
+            continue
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(p), str(dest))
+            lrc = p.with_suffix(".lrc")
+            if lrc.exists() and not dest.with_suffix(".lrc").exists():
+                shutil.move(str(lrc), str(dest.with_suffix(".lrc")))
+            moved.append({"file": raw, "to": str(dest)})
+            touched_users.add(user_id)
+        except Exception as e:
+            errors.append({"file": raw, "reason": str(e)})
+
+    if moved:
+        from downloads import trigger_navidrome_scan, trigger_jellyfin_scan
+        for uid in touched_users:
+            trigger_navidrome_scan(user_id=uid)
+            trigger_jellyfin_scan(user_id=uid)
+
+    return {"moved": moved, "skipped": skipped, "errors": errors}
 
 
 def detect_playlist_platform(url: str) -> tuple[str, str]:
@@ -1053,7 +1209,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                 if existing["downloaded_at"]:
                     # File was deleted manually after being marked downloaded.
                     # If we cannot resolve it locally anymore, treat it as missing and re-queue.
-                    if not _has_local_track_file(
+                    found, local_file = _locate_local_track_file(
                         playlist["name"],
                         bool(playlist.get("use_playlists_dir", False)),
                         existing["artist"] or artist,
@@ -1062,13 +1218,24 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                         existing["job_title"] or "",
                         user_id=user_id,
                         resolved_path=existing["resolved_path"],
-                    ):
+                    )
+                    if not found:
                         conn.execute(
                             "UPDATE watched_playlist_tracks SET downloaded_at = NULL WHERE playlist_id = ? AND track_hash = ?",
                             (playlist_id, track_hash)
                         )
                         missing_tracks.append((artist, title, track_hash))
                         continue
+                    if local_file:
+                        # Heal the record while we're here: remember where the file
+                        # actually lives, and make sure its COMMENT tag carries the
+                        # playlist names (duplicate-skipped tracks used to miss out).
+                        if not existing["resolved_path"]:
+                            conn.execute(
+                                "UPDATE watched_playlist_tracks SET resolved_path = ? WHERE playlist_id = ? AND track_hash = ?",
+                                (str(local_file), playlist_id, track_hash)
+                            )
+                        _tag_track_comment(local_file, existing["artist"] or artist, existing["title"] or title, conn=conn)
                     continue
 
                 job_status = existing["job_status"]
@@ -1084,7 +1251,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
 
                 # Job failed (or never ran), but check if the file landed on disk anyway
                 # (e.g. a manual download, or a previous sync via a different playlist).
-                if _has_local_track_file(
+                found, local_file = _locate_local_track_file(
                     playlist["name"],
                     bool(playlist.get("use_playlists_dir", False)),
                     existing["artist"] or artist,
@@ -1093,11 +1260,17 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     existing["job_title"] or "",
                     user_id=user_id,
                     resolved_path=existing["resolved_path"],
-                ):
+                )
+                if found:
+                    # Store the real location (when we have one) so M3U rebuilds don't
+                    # have to reconstruct it, and stamp the playlist COMMENT tag; this
+                    # was the path where duplicate-found tracks dodged tagging entirely.
                     conn.execute(
-                        "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now') WHERE playlist_id = ? AND track_hash = ?",
-                        (playlist_id, track_hash)
+                        "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now'), resolved_path = COALESCE(?, resolved_path) WHERE playlist_id = ? AND track_hash = ?",
+                        (str(local_file) if local_file else None, playlist_id, track_hash)
                     )
+                    if local_file:
+                        _tag_track_comment(local_file, existing["artist"] or artist, existing["title"] or title, conn=conn)
                     continue
 
                 missing_tracks.append((artist, title, track_hash))

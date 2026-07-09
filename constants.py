@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "2.9.6"
+VERSION = "3.0.0"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -30,6 +30,15 @@ TIMEOUT_YTDLP_DOWNLOAD = int(os.getenv("TIMEOUT_YTDLP_DOWNLOAD", "300"))  # Down
 TIMEOUT_YTDLP_PREVIEW = 15       # Getting preview URL
 TIMEOUT_YTDLP_PLAYLIST = 60      # Getting playlist contents
 TIMEOUT_FFMPEG_CONVERT = int(os.getenv("TIMEOUT_FFMPEG_CONVERT", "120"))  # Converting audio formats
+
+# Loudness normalisation (EBU R128, two-pass ffmpeg loudnorm; lossy web sources only).
+# -14 LUFS is what Spotify and YouTube level to, so normalised grabs sit comfortably
+# next to streamed stuff instead of alternating between whisper and jet engine.
+LOUDNORM_TARGET_I = float(os.getenv("LOUDNORM_TARGET_I", "-14.0"))     # Integrated loudness target (LUFS)
+LOUDNORM_TARGET_TP = float(os.getenv("LOUDNORM_TARGET_TP", "-1.0"))    # True-peak ceiling (dBTP)
+LOUDNORM_TARGET_LRA = float(os.getenv("LOUDNORM_TARGET_LRA", "11.0"))  # Loudness range target (LU)
+LOUDNORM_SKIP_DELTA_LU = float(os.getenv("LOUDNORM_SKIP_DELTA_LU", "1.0"))  # Already this close to target? Skip the re-encode
+TIMEOUT_LOUDNORM = int(os.getenv("TIMEOUT_LOUDNORM", "180"))  # Per loudnorm ffmpeg pass
 TIMEOUT_HTTP_REQUEST = 10        # MusicBrainz, LRClib, Navidrome API calls
 TIMEOUT_HTTP_SPOTIFY = 30        # Spotify embed fetch
 SPOTIFY_EMBED_MAX_ATTEMPTS = 3   # Spotify's embed edge throws transient 502/503/504s; retry before giving up

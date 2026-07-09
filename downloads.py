@@ -25,6 +25,8 @@ from constants import (
     MUSIC_DIR,
     TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_SEARCH, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
     TIMEOUT_FFMPEG_CONVERT, TIMEOUT_HTTP_REQUEST,
+    LOUDNORM_TARGET_I, LOUDNORM_TARGET_TP, LOUDNORM_TARGET_LRA,
+    LOUDNORM_SKIP_DELTA_LU, TIMEOUT_LOUDNORM,
     YTDLP_403_MAX_RETRIES, YTDLP_403_RETRY_DELAY,
     SLSKD_MAX_RETRIES, TIMEOUT_SLSKD_SEARCH,
     FALLBACK_MATCH_CONFIDENCE_FLOOR,
@@ -959,6 +961,33 @@ def check_lidarr_duplicate(artist: str, title: str, user_id: str | None = None) 
 
     except Exception:
         return None  # Never let a dupe check failure block a download
+
+
+def _copy_to_auto_import(final_file: Path | None, user_id: str | None = None) -> None:
+    """Drop a copy of a freshly finished download into the auto-import folder (opt-in).
+
+    Point auto_import_dir at a mounted macOS Music "Automatically Add to Music"
+    folder and finished tracks import themselves, no clicking required. Copy, not
+    move: Music consumes whatever lands in that folder, and the library copy stays
+    put. The copy goes in under a dotfile name first so Music never grabs a
+    half-written file, then gets renamed into view.
+    """
+    target_dir = get_setting("auto_import_dir", "", user_id=user_id).strip()
+    if not target_dir:
+        return
+    if not final_file or not final_file.exists():
+        return
+    try:
+        dest_dir = Path(target_dir)
+        if not dest_dir.is_dir():
+            print(f"Auto-import folder missing or not mounted, skipping copy: {target_dir}")
+            return
+        staging = dest_dir / f".{final_file.name}.importing"
+        shutil.copy2(final_file, staging)
+        staging.replace(dest_dir / final_file.name)
+        print(f"Auto-import: copied {final_file.name} to {target_dir}")
+    except Exception as e:
+        print(f"Auto-import copy failed for {final_file}: {e}")
 
 
 def trigger_jellyfin_scan(user_id: str | None = None):
@@ -1977,6 +2006,173 @@ def _enforce_target_format(audio_file: Path, convert_to_flac: bool, user_id: str
     return audio_file
 
 
+# The sources whose volume is a lottery. Monochrome and Soulseek serve proper
+# masters/rips, so they are deliberately absent; we don't rewrite those.
+_LOUDNORM_SOURCES = {"youtube", "soundcloud", "mp3phoenix", "zvu4no", "freemp3cloud"}
+
+
+def _carry_over_artwork(src: Path, dest: Path) -> None:
+    """Best-effort copy of embedded cover art from src to dest (same container).
+
+    The loudnorm re-encode maps audio only (FLAC's muxer gets sniffy about
+    attached pictures), so any art yt-dlp embedded is ferried across with mutagen
+    instead. Failure here is cosmetic; proper album art usually lands later via
+    apply_metadata_to_file anyway.
+    """
+    try:
+        suffix = src.suffix.lower()
+        if suffix == ".flac":
+            from mutagen.flac import FLAC
+            pics = FLAC(str(src)).pictures
+            if pics:
+                out = FLAC(str(dest))
+                out.clear_pictures()
+                for pic in pics:
+                    out.add_picture(pic)
+                out.save()
+        elif suffix == ".mp3":
+            from mutagen.id3 import ID3
+            from mutagen.mp3 import MP3
+            apics = ID3(str(src)).getall("APIC")
+            if apics:
+                mp3 = MP3(str(dest))
+                if mp3.tags is None:
+                    mp3.add_tags()
+                mp3.tags.delall("APIC")
+                for frame in apics:
+                    mp3.tags.add(frame)
+                mp3.save()
+        elif suffix == ".m4a":
+            from mutagen.mp4 import MP4
+            covr = (MP4(str(src)).tags or {}).get("covr")
+            if covr:
+                out = MP4(str(dest))
+                if out.tags is None:
+                    out.add_tags()
+                out["covr"] = covr
+                out.save()
+        elif suffix in (".opus", ".ogg"):
+            from mutagen import File as MutagenFile
+            src_tags = MutagenFile(str(src))
+            pic = (src_tags.tags or {}).get("metadata_block_picture") if src_tags else None
+            if pic:
+                out = MutagenFile(str(dest))
+                if out is not None:
+                    if out.tags is None:
+                        out.add_tags()
+                    out.tags["metadata_block_picture"] = pic
+                    out.save()
+    except Exception as e:
+        print(f"Artwork carry-over failed for {dest.name}: {e}")
+
+
+def _measure_loudness(audio_file: Path) -> dict | None:
+    """Pass one of two-pass loudnorm: measure the file's loudness stats.
+
+    loudnorm prints a JSON blob to stderr at the end of the run; fish it out.
+    Returns None when ffmpeg fails or the JSON never shows up.
+    """
+    cmd = [
+        "ffmpeg", "-hide_banner", "-nostats", "-i", str(audio_file),
+        "-map", "a:0",
+        "-af", f"loudnorm=I={LOUDNORM_TARGET_I}:TP={LOUDNORM_TARGET_TP}:LRA={LOUDNORM_TARGET_LRA}:print_format=json",
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_LOUDNORM)
+    # The JSON sits among other ffmpeg chatter, not at the end; take the last
+    # brace-block that actually looks like loudnorm's report.
+    matches = re.findall(r"\{[^{}]*\"input_i\"[^{}]*\}", result.stderr or "")
+    if result.returncode != 0 or not matches:
+        return None
+    try:
+        return json.loads(matches[-1])
+    except ValueError:
+        return None
+
+
+def _normalise_loudness(audio_file: Path, source: str, user_id: str | None = None, job_id: str | None = None) -> None:
+    """Bake EBU R128 loudness normalisation into a lossy-web download (opt-in).
+
+    YouTube uploads famously range from whisper to jet engine, so when the
+    normalise_lossy_audio setting is on we run ffmpeg's two-pass loudnorm (linear
+    mode: pure gain, no pumping) against the targets in constants.py. Only fires
+    for sources in _LOUDNORM_SOURCES; lossless masters are never rewritten.
+    Any failure leaves the original file untouched, unnormalised beats unplayable.
+    """
+    if not get_setting_bool("normalise_lossy_audio", False, user_id=user_id):
+        return
+    if (source or "").lower() not in _LOUDNORM_SOURCES:
+        return
+    if job_id:
+        _update_job(job_id, progress_stage="Normalising loudness")
+
+    suffix = audio_file.suffix.lower()
+    if suffix == ".flac":
+        codec, extra_args = "flac", []
+    elif suffix in (".mp3", ".opus"):
+        codec, extra_args, _ext = _get_lossy_codec_args(suffix.lstrip("."), user_id=user_id)
+    elif suffix == ".m4a":
+        codec, extra_args, _ext = _get_lossy_codec_args("alac", user_id=user_id)
+    else:
+        print(f"Loudness normalisation skipped for {audio_file.name}: unsupported container {suffix}")
+        return
+
+    tmp_path = audio_file.parent / f"{audio_file.stem}.loudnorm{suffix}"
+    try:
+        stats = _measure_loudness(audio_file)
+        if not stats:
+            print(f"Loudness measurement failed for {audio_file.name}; leaving as-is")
+            return
+        input_i = float(stats.get("input_i", "0"))
+        input_tp = float(stats.get("input_tp", "0"))
+        if input_i < -60:
+            # Digital silence or as near as makes no difference; nothing to normalise
+            return
+        if abs(input_i - LOUDNORM_TARGET_I) <= LOUDNORM_SKIP_DELTA_LU and input_tp <= LOUDNORM_TARGET_TP:
+            print(f"Loudness already at {input_i:.1f} LUFS for {audio_file.name}; skipping re-encode")
+            return
+
+        # Keep the original sample rate; loudnorm quietly upsamples to 192 kHz otherwise,
+        # and nobody needs a 192 kHz remaster of a YouTube rip.
+        sample_rate = None
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=sample_rate", "-of", "csv=p=0", str(audio_file)],
+            capture_output=True, text=True, timeout=15,
+        )
+        if probe.returncode == 0 and probe.stdout.strip().isdigit():
+            sample_rate = probe.stdout.strip()
+
+        af = (
+            f"loudnorm=I={LOUDNORM_TARGET_I}:TP={LOUDNORM_TARGET_TP}:LRA={LOUDNORM_TARGET_LRA}"
+            f":measured_I={stats['input_i']}:measured_TP={stats['input_tp']}"
+            f":measured_LRA={stats['input_lra']}:measured_thresh={stats['input_thresh']}"
+            f":offset={stats.get('target_offset', '0.0')}:linear=true"
+        )
+        cmd = [
+            "ffmpeg", "-y", "-v", "error", "-i", str(audio_file),
+            "-map", "0:a:0", "-map_metadata", "0",
+            "-af", af,
+            *(["-ar", sample_rate] if sample_rate else []),
+            "-c:a", codec, *extra_args,
+            str(tmp_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_LOUDNORM)
+        if result.returncode != 0 or not tmp_path.exists() or tmp_path.stat().st_size == 0:
+            tmp_path.unlink(missing_ok=True)
+            print(f"Loudness normalisation failed for {audio_file.name}: {(result.stderr or '').strip()[:300]}")
+            return
+        _carry_over_artwork(audio_file, tmp_path)
+        tmp_path.replace(audio_file)
+        print(f"Normalised {audio_file.name}: {input_i:.1f} -> {LOUDNORM_TARGET_I:.1f} LUFS")
+    except subprocess.TimeoutExpired:
+        tmp_path.unlink(missing_ok=True)
+        print(f"Loudness normalisation timed out for {audio_file.name}; leaving as-is")
+    except Exception as e:
+        tmp_path.unlink(missing_ok=True)
+        print(f"Loudness normalisation error for {audio_file.name}: {e}")
+
+
 def _summarise_ytdlp_stderr(stderr: str) -> str:
     """Return a short, user-safe failure reason from yt-dlp stderr."""
     lower = (stderr or "").lower()
@@ -2803,6 +2999,9 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 # If yt-dlp's post-processor didn't convert, catch it here
                 audio_file = _enforce_target_format(audio_file, convert_to_flac, user_id=user_id)
 
+                # Optional loudness normalisation (playlist tracks come from YouTube)
+                _normalise_loudness(audio_file, "youtube", user_id=user_id)
+
                 # Set permissions for NAS/SMB compatibility
                 set_file_permissions(audio_file)
 
@@ -2880,6 +3079,8 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 lyrics = fetch_lyrics(artist, title)
                 if lyrics:
                     save_lyrics_file(audio_file, lyrics)
+
+                _copy_to_auto_import(audio_file, user_id=user_id)
 
                 if playlists_dir:
                     downloaded_files.append(f"{safe_playlist}/{audio_file.name}")
@@ -3322,6 +3523,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         if marked:
             _append_to_physical_m3u(final_file, playlist_name, use_playlists_dir, user_id=user_id, custom_subdir=custom_subdir)
             _refresh_album_m3u_if_present(override_dir)
+            _copy_to_auto_import(final_file, user_id=user_id)
         else:
             # Metadata came back as someone else entirely. Trash it so the user can listen
             # and decide, then fail so retry can have another go.
@@ -3588,6 +3790,10 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         else:
             output_path = source_path
 
+        # Optional loudness normalisation; the MP3 sites qualify as lossy web sources,
+        # Monochrome doesn't (its FLACs are real masters and are left well alone).
+        _normalise_loudness(output_path, source_label, user_id=user_id, job_id=job_id)
+
         set_file_permissions(output_path)
 
         # Probe quality for the job record
@@ -3712,6 +3918,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         if marked:
             _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir, user_id=user_id, custom_subdir=custom_subdir)
             _refresh_album_m3u_if_present(override_dir)
+            _copy_to_auto_import(output_path, user_id=user_id)
 
         print(f"{source_label}: Downloaded {artist} - {title}")
 
@@ -4136,6 +4343,9 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         _update_job(job_id, progress_stage="Converting audio")
         audio_file = _enforce_target_format(audio_file, convert_to_flac, user_id=user_id)
 
+        # Optional loudness normalisation for lossy web sources (YouTube/SoundCloud here)
+        _normalise_loudness(audio_file, source_label, user_id=user_id, job_id=job_id)
+
         # Set permissions for NAS/SMB compatibility
         set_file_permissions(audio_file)
 
@@ -4319,6 +4529,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         if marked:
             _append_to_physical_m3u(audio_file, playlist_name, use_playlists_dir, user_id=user_id, custom_subdir=custom_subdir)
             _refresh_album_m3u_if_present(override_dir)
+            _copy_to_auto_import(audio_file, user_id=user_id)
         else:
             # Wrong track downloaded (AcoustID/MusicBrainz identified it as something else).
             # Trash the file so the user can listen and decide; fail the job so watched

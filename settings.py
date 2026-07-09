@@ -133,7 +133,7 @@ SENSITIVE_SETTINGS = {
 # Settings that belong to each user (stored in user_settings table)
 USER_SETTINGS_KEYS = {
     "singles_subdir", "playlists_subdir", "albums_subdir", "organise_by_artist", "include_track_number_in_filename", "auto_album_singles", "auto_album_singles_use_albums_dir", "playlist_album_as_name",
-    "audio_format", "mp3_bitrate", "opus_bitrate", "alac_bitrate",
+    "audio_format", "mp3_bitrate", "opus_bitrate", "alac_bitrate", "normalise_lossy_audio", "auto_import_dir",
     "navidrome_url", "navidrome_user", "navidrome_pass", "navidrome_dupe_check",
     "jellyfin_url", "jellyfin_api_key",
     "lidarr_url", "lidarr_api_key",
@@ -173,6 +173,13 @@ SETTINGS_SCHEMA = {
     # Reject live versions. Off by default; opt-in, and deliberately so since it's
     # destructive (bins a confidently-identified live recording and tries again).
     "reject_live_versions": {"type": "bool", "default": False, "env": "REJECT_LIVE_VERSIONS"},
+    # Bake EBU R128 loudness normalisation into downloads from lossy web sources
+    # (YouTube et al are all over the shop volume-wise). Lossless sources are never
+    # touched; their masters stay exactly as mastered. Off by default.
+    "normalise_lossy_audio": {"type": "bool", "default": False, "env": "NORMALISE_LOSSY_AUDIO"},
+    # Copy each finished download into this folder (e.g. a mounted macOS Music
+    # "Automatically Add to Music" folder) so it imports itself. Empty = off.
+    "auto_import_dir": {"type": "str", "default": "", "env": "AUTO_IMPORT_DIR"},
     # Stamp watched-playlist names into the COMMENT tag so macOS Music can build
     # smart playlists off them. Off by default; it writes to every playlist file.
     "playlist_comment_tagging": {"type": "bool", "default": False, "env": "PLAYLIST_COMMENT_TAGGING"},

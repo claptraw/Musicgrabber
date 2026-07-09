@@ -7,13 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
-    "2.9.6": {
-        title: "What's New in v2.9.6",
+    "3.0.0": {
+        title: "What's New in v3.0.0",
         sections: [
             {
                 heading: "Added",
                 items: [
                     "Live search progress. Instead of one spinner that leaves you guessing, results now stream in as each source answers, with the best floated to the top, and a wee panel ticks each source off live: searching, done with a count, offline, or too slow. Each row gently fades away as its source finishes, the status lines are cheeky but honest (with a whole section of funny failure lines), and Soulseek now appears in the same flow as every other source (turn it on under Search Sources).",
+                    "New 'Normalise Loudness' toggle in Settings (off by default). YouTube downloads range from whisper-quiet to deafening; turn this on and every download from a lossy web source is levelled to the same streaming-standard volume as it arrives. It's a pure gain adjustment (no compression, no pumping), cover art survives, and lossless sources like Monochrome and Soulseek are never touched. Thanks to Upstairs-Brush for the suggestion.",
+                    "New 'Auto-Import Copy Folder' setting (File Organisation). Point it at a mounted macOS Music 'Automatically Add to Music' folder and every finished download drops a copy in there, so new tracks appear in Music by themselves. Your library keeps its own file; Music consumes the copy. Another smailpouri special.",
+                    "New 'Find Orphans' button in the Watched tab. Mirror-mode removals leave audio files behind in playlist folders (we don't delete music); this rounds up the leftovers and lets you move them, one by one or all at once, into your normal Singles layout, lyrics included. Nothing moves without you clicking.",
+                    "Singles searches now warn when Navidrome or Lidarr already knows about the track. It is a heads-up, not a hard stop; you can still download another copy if you are deliberately hoarding bangers.",
                 ]
             },
             {
@@ -23,6 +27,8 @@ const RELEASE_NOTES = {
                     "When Deezer only returns a page of weak guesses, Monochrome now also checks Tidal instead of stopping early, so a track that lives on Tidal but not Deezer can still be found.",
                     "Monochrome searches are fast again when its Qobuz proxies are having an outage. Dead proxies are skipped instead of being retried one by one, so a search that could previously stall for the best part of a minute (long enough to be dropped entirely) now returns in well under a second and its lossless results actually show up.",
                     "Searches wait a little longer (up to 30 seconds) before giving up on a slow source, so a momentarily sluggish lossless source isn't dropped prematurely.",
+                    "Restoring a wrongly-binned track now re-applies its playlist Comment tag straight away, rather than waiting for the next manual playlist refresh.",
+                    "Tracks skipped as duplicates during a playlist refresh now get their playlist Comment tag too, so macOS Music smart playlists see every member, not just the freshly downloaded ones.",
                 ]
             }
         ]

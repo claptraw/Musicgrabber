@@ -1303,6 +1303,27 @@
             showToast(`${first.label || first.id} unavailable${moreText}${retryText}`);
         }
 
+        function clearDuplicateNotice() {
+            const existing = document.getElementById('searchDuplicateNotice');
+            if (existing) existing.remove();
+        }
+
+        function renderDuplicateNotice(notice) {
+            clearDuplicateNotice();
+            if (!notice || !notice.message) return;
+            const sources = Array.isArray(notice.sources) ? notice.sources.map(s => s.source).filter(Boolean) : [];
+            const sourceText = sources.length ? `Found via ${sources.map(escapeHtml).join(', ')}` : 'Already in your library';
+            resultsTab.insertAdjacentHTML('afterbegin', `
+                <div id="searchDuplicateNotice" class="search-duplicate-notice">
+                    <i class="fa-solid fa-circle-info"></i>
+                    <div>
+                        <div class="search-duplicate-message">${escapeHtml(notice.message)}</div>
+                        <div class="search-duplicate-source">${sourceText}</div>
+                    </div>
+                </div>
+            `);
+        }
+
         async function search() {
             if (searchBtn.disabled) return;
             const query = searchInput.value.trim();
@@ -1316,6 +1337,7 @@
 
             searchBtn.disabled = true;
             resultsTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            clearDuplicateNotice();
             relatedSuggestions.style.display = 'none';
             exploreBar.style.display = 'none';
             const _destRow1 = document.getElementById('destinationPickerRow');
@@ -1398,6 +1420,7 @@
                         currentSearchLogToken = ev.search_token || null;
                         showUnavailableSourcesToast(ev.unavailable_sources);
                         if (!renderedOnce) renderResults(accumulator); // shows the empty state
+                        renderDuplicateNotice(ev.duplicate_notice);
                         showRelatedSuggestions(accumulator, albumSuggestion);
                         finishSearchProgress();
                         break;
@@ -1445,6 +1468,7 @@
             currentSearchLogToken = data.search_token || null;
             showUnavailableSourcesToast(data.unavailable_sources);
             renderResults(data.results);
+            renderDuplicateNotice(data.duplicate_notice);
             showRelatedSuggestions(data.results, data.album_suggestion);
 
             const artworkParsed = parseArtistTitle(query);
@@ -5105,6 +5129,72 @@
             if (!visible) document.getElementById('lbUsernameInput').focus();
         }
 
+        // ---------------------------------------------------------------
+        // Orphaned playlist tracks (mirror-mode leftovers)
+        // ---------------------------------------------------------------
+        async function findPlaylistOrphans() {
+            const btn = document.getElementById('findOrphansBtn');
+            const panel = document.getElementById('orphansResult');
+            btn.disabled = true;
+            btn.textContent = 'Scanning...';
+            try {
+                const response = await apiFetch('/api/watched-playlists/orphans');
+                if (!response.ok) throw new Error('Scan failed');
+                const data = await response.json();
+                renderOrphans(data.orphans || []);
+            } catch (e) {
+                panel.style.display = 'block';
+                panel.innerHTML = `<div class="form-error">Orphan scan failed: ${escapeHtml(e.message)}</div>`;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Find Orphans';
+            }
+        }
+
+        function renderOrphans(orphans) {
+            const panel = document.getElementById('orphansResult');
+            panel.style.display = 'block';
+            if (!orphans.length) {
+                panel.innerHTML = '<p class="watched-panel-text" style="margin-top:10px;">No orphans found. Every file in your playlist folders is claimed by a playlist, as it should be.</p>';
+                return;
+            }
+            const rows = orphans.map(o => `
+                <div class="orphan-row" data-file="${escapeAttr(o.file)}" style="display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--border);">
+                    <div style="flex:1; min-width:0;">
+                        <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeAttr(o.file)}">${escapeHtml(o.name)}</div>
+                        <div style="font-size:12px; color:var(--text-secondary);">${escapeHtml(o.playlist)}${o.size_mb ? ` &middot; ${o.size_mb} MB` : ''}</div>
+                    </div>
+                    <button class="btn" onclick="moveOrphans([this.closest('.orphan-row').dataset.file])">Move to Singles</button>
+                </div>`).join('');
+            panel.innerHTML = `
+                <div style="display:flex; align-items:center; justify-content:space-between; margin:10px 0 4px;">
+                    <strong>${orphans.length} orphaned track${orphans.length === 1 ? '' : 's'}</strong>
+                    <button class="btn btn-primary" onclick="moveOrphans(Array.from(document.querySelectorAll('#orphansResult .orphan-row')).map(r => r.dataset.file))">Move All to Singles</button>
+                </div>
+                ${rows}`;
+        }
+
+        async function moveOrphans(files) {
+            if (!files.length) return;
+            try {
+                const response = await apiFetch('/api/watched-playlists/orphans/move', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ files })
+                });
+                if (!response.ok) throw new Error('Move failed');
+                const data = await response.json();
+                const bits = [];
+                if (data.moved.length) bits.push(`${data.moved.length} moved`);
+                if (data.skipped.length) bits.push(`${data.skipped.length} skipped`);
+                if (data.errors.length) bits.push(`${data.errors.length} failed`);
+                showToast(`Orphans: ${bits.join(', ') || 'nothing to do'}`);
+                findPlaylistOrphans(); // rescan so the list reflects reality
+            } catch (e) {
+                showToast(`Orphan move failed: ${e.message}`);
+            }
+        }
+
         async function addListenBrainzPlaylists() {
             const username = document.getElementById('lbUsernameInput').value.trim();
             if (!username) {
@@ -6956,6 +7046,7 @@
             'mp3_bitrate': 'settingMp3Bitrate',
             'opus_bitrate': 'settingOpusBitrate',
             'alac_bitrate': 'settingAlacBitrate',
+            'normalise_lossy_audio': 'settingNormaliseLossyAudio',
             'min_audio_bitrate': 'settingMinBitrate',
             'reject_live_versions': 'settingRejectLiveVersions',
             'playlist_comment_tagging': 'settingPlaylistCommentTagging',
@@ -6964,6 +7055,7 @@
             'singles_subdir': 'settingSinglesSubdir',
             'playlists_subdir': 'settingPlaylistsSubdir',
             'albums_subdir': 'settingAlbumsSubdir',
+            'auto_import_dir': 'settingAutoImportDir',
             'organise_by_artist': 'settingOrganiseByArtist',
             'include_track_number_in_filename': 'settingIncludeTrackNumberInFilename',
             'auto_album_singles': 'settingAutoAlbumSingles',

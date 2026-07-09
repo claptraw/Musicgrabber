@@ -96,6 +96,8 @@ class SettingsUpdate(BaseModel):
     opus_bitrate: Optional[str] = None   # "320k"/"256k"/"192k"/"128k"/"96k"
     alac_bitrate: Optional[str] = None   # "lossless" (true ALAC) or AAC kbps "320k"/"256k"/"192k"/"128k"
     min_audio_bitrate: Optional[int] = None
+    normalise_lossy_audio: Optional[bool] = None
+    auto_import_dir: Optional[str] = None
     reject_live_versions: Optional[bool] = None
     playlist_comment_tagging: Optional[bool] = None
     enable_track_upgrades: Optional[bool] = None
@@ -259,6 +261,10 @@ class AlbumDownloadRequest(BaseModel):
 class RetryMissingTrackRequest(BaseModel):
     artist: str
     title: str
+
+class OrphanMoveRequest(BaseModel):
+    """Absolute paths of orphaned playlist files to move into Singles"""
+    files: list[str]
 
 class QueueMissingTrackCandidateRequest(BaseModel):
     artist: str

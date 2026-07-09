@@ -731,6 +731,35 @@ h1 {
     gap: 12px;
 }
 
+.search-duplicate-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.search-duplicate-notice i {
+    color: var(--warning);
+    margin-top: 2px;
+}
+
+.search-duplicate-message {
+    font-weight: 600;
+    line-height: 1.35;
+}
+
+.search-duplicate-source {
+    margin-top: 3px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
 .result-item {
     display: flex;
     flex-wrap: wrap;

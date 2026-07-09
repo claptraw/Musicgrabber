@@ -387,6 +387,15 @@
             </div>
             <div id="watchedList" class="results"></div>
 
+            <!-- Orphaned playlist tracks: what mirror-mode removals leave behind -->
+            <div id="orphansSection" class="watched-add-panel section-with-top-margin">
+                <div class="input-action">
+                    <span class="watched-panel-text" style="flex:1; margin:0;">Mirror-mode removals leave audio files behind in playlist folders (deleting music is not our department). Scan for these orphans and, if you like, rehome them in Singles.</span>
+                    <button class="btn accent-btn" id="findOrphansBtn" onclick="findPlaylistOrphans()">Find Orphans</button>
+                </div>
+                <div id="orphansResult" style="display:none;"></div>
+            </div>
+
             <!-- Watched Artists section -->
             <div id="watchedArtists" class="queue-header section-with-top-margin">
                 <h2 class="queue-section-heading">Watched Artists</h2>
@@ -699,6 +708,14 @@
                         <input type="hidden" id="settingAlacBitrate" value="lossless">
                     </label>
                     <label class="settings-label settings-label-wrap">
+                        <span>Normalise Loudness (lossy sources)</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingNormaliseLossyAudio">
+                            <span class="toggle-slider"></span>
+                        </div>
+                        <span class="settings-hint settings-hint-full">Evens out the wild volume differences between YouTube (and other lossy web source) downloads by normalising them to a streaming-standard -14 LUFS as they arrive. Pure gain adjustment, no compression or pumping. Lossless sources (Monochrome, Soulseek) are never touched.</span>
+                    </label>
+                    <label class="settings-label settings-label-wrap">
                         <span>Organise by Artist</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingOrganiseByArtist" checked>
@@ -809,6 +826,11 @@
                         </div>
                         <span class="settings-hint-sm">Folder for album downloads from the Albums tab. Files are organised as <code>Albums/Artist/Album/Track.flac</code>.</span>
                         <span id="albumsPathPreview" class="settings-path-preview"></span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="settingAutoImportDir">Auto-Import Copy Folder</label>
+                        <input type="text" id="settingAutoImportDir" placeholder="(disabled)" class="settings-input-path-text">
+                        <span class="settings-hint-sm">Copies every finished download into this folder, as seen from inside the container. Mount your macOS Music <code>Automatically Add to Music.localized</code> folder here and new tracks import themselves. The library copy stays put; leave empty to disable.</span>
                     </div>
                     <div class="settings-row admin-only">
                         <label for="settingFilePermissions">Downloaded File Permissions</label>

@@ -46,6 +46,7 @@ from models import (
     SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestLidarrRequest, TestYouTubeCookiesRequest,
     TestAppriseRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest, QueueMissingTrackCandidateRequest,
+    OrphanMoveRequest,
     AlbumDownloadRequest, ExploreRequest, PatchTagsRequest,
     LoginRequest, ChangePasswordRequest, CreateUserRequest,
     SetUserPasswordRequest, SetUserRoleRequest,
@@ -61,7 +62,7 @@ from auth import (
 from youtube import (
     _has_valid_cookie_entries, _cookie_lines_for_domain_check, _sync_cookies_file,
     _ytdlp_base_args, _is_ytdlp_403, parse_duration,
-    get_cookies_expiry,
+    get_cookies_expiry, _parse_query_artist_title,
 )
 from search import search_source, search_all, _search_all_events, get_available_sources, SOURCE_REGISTRY
 import servicecheck
@@ -70,6 +71,7 @@ from downloads import (
     process_download, process_playlist_download, process_slskd_download,
     rebuild_watched_playlist_m3u, rebuild_album_m3u,
     trigger_navidrome_scan, trigger_jellyfin_scan,
+    check_navidrome_duplicate, check_lidarr_duplicate,
 )
 from bulk_import import clean_bulk_import_line, start_bulk_import_for_tracks, process_bulk_import_worker
 from watched_playlists import (
@@ -1217,6 +1219,38 @@ def _validated_search_token(search_token: str | None, user_id: str | None = None
     return token if row else None
 
 
+def _search_duplicate_notice(query: str, user_id: str | None = None) -> dict | None:
+    """Return a best-effort library duplicate notice for Artist - Title searches."""
+    artist, title = _parse_query_artist_title(query)
+    if not artist or not title:
+        return None
+
+    matches = []
+    nav_path = check_navidrome_duplicate(artist, title, user_id=user_id)
+    if nav_path:
+        matches.append({"source": "Navidrome", "path": str(nav_path)})
+
+    lidarr_path = check_lidarr_duplicate(artist, title, user_id=user_id)
+    if lidarr_path:
+        matches.append({"source": "Lidarr", "path": str(lidarr_path)})
+
+    if not matches:
+        return None
+
+    sources = [m["source"] for m in matches]
+    source_text = sources[0] if len(sources) == 1 else ", ".join(sources[:-1]) + f" and {sources[-1]}"
+
+    return {
+        "artist": artist,
+        "title": title,
+        "sources": matches,
+        "message": (
+            f"{artist} - {title} already appears to be in {source_text}. "
+            "You can still download it again if you want another copy."
+        ),
+    }
+
+
 @app.get("/api/stats")
 def get_stats(http_request: Request):
     """Return download statistics for the dashboard."""
@@ -1716,6 +1750,7 @@ def search(request: SearchRequest, http_request: Request):
             "slskd_enabled": slskd_enabled(),
             "search_token": search_token,
             "unavailable_sources": parked,
+            "duplicate_notice": _search_duplicate_notice(request.query, user_id=http_request.state.user_id),
         }
         if album_suggestion:
             resp["album_suggestion"] = album_suggestion
@@ -1810,6 +1845,7 @@ def search_stream(request: SearchRequest, http_request: Request):
                         "search_token": search_token,
                         "unavailable_sources": parked,
                         "slskd_enabled": slskd_enabled(),
+                        "duplicate_notice": _search_duplicate_notice(request.query, user_id=user_id),
                     }
                 yield json.dumps(ev) + "\n"
         except Exception as e:
@@ -3418,6 +3454,45 @@ def get_watched_schedule():
         "check_interval_hours": WATCHED_PLAYLIST_CHECK_HOURS,
         "enabled": WATCHED_PLAYLIST_CHECK_HOURS > 0
     }
+
+
+def _scoped_playlist_dicts(http_request: Request) -> list[dict]:
+    """The caller's watched playlists as plain dicts (admins get the lot)."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        frag, params = _user_scope(user_id, is_admin)
+        rows = conn.execute(
+            f"""SELECT id, name, user_id, use_playlists_dir, custom_subdir
+                FROM watched_playlists WHERE {frag}""",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/watched-playlists/orphans")
+def list_playlist_orphans(http_request: Request):
+    """Audio files sitting in playlist folders that no watched playlist claims.
+
+    Mirror-mode removals leave files behind by design; this rounds them up so the
+    user can decide whether to rehome them in Singles. Read-only; nothing moves.
+    """
+    from watched_playlists import find_orphaned_playlist_files
+    return {"orphans": find_orphaned_playlist_files(_scoped_playlist_dicts(http_request))}
+
+
+@app.post("/api/watched-playlists/orphans/move")
+def move_playlist_orphans(request: OrphanMoveRequest, http_request: Request):
+    """Move selected orphaned playlist files into the Singles layout.
+
+    Only files directly inside the caller's watched playlist folders are eligible;
+    anything else is skipped, not errored, so a stale UI list can't cause drama.
+    """
+    if not request.files:
+        raise HTTPException(status_code=400, detail="No files given")
+    from watched_playlists import move_orphans_to_singles
+    return move_orphans_to_singles(request.files, _scoped_playlist_dicts(http_request))
 
 
 @app.get("/api/watched-playlists/{playlist_id}")
