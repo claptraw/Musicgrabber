@@ -7,6 +7,17 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "3.0.1": {
+        title: "What's New in v3.0.1",
+        sections: [
+            {
+                heading: "Development",
+                items: [
+                    "v3.0.1 is open for development after the v3.0.0 release. No user-facing changes yet; just the workshop lights coming back on.",
+                ]
+            }
+        ]
+    },
     "3.0.0": {
         title: "What's New in v3.0.0",
         sections: [

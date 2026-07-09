@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.0.1 (DEV)
+
+Development cycle opened after v3.0.0. Nothing user-facing yet; the kettle has only just boiled.
+
 ## v3.0.0 (2026-07-09)
 
 The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live search progress, a volume normaliser, self-importing downloads for macOS Music, and a tidy-up crew for playlist folders. Version number promoted to match.
