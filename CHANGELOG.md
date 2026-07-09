@@ -2,7 +2,12 @@
 
 ## v3.0.1 (DEV)
 
-Development cycle opened after v3.0.0. Nothing user-facing yet; the kettle has only just boiled.
+Development cycle opened after v3.0.0. The kettle boiled, then promptly needed refilling: two of the cheap MP3 sources had quietly changed addresses without leaving a forwarding note.
+
+### Fixed
+- **zvu4no search stopped returning anything**: the site rebranded from zvu4no.org to zvu4it.org (the old domain still redirects, bless it), but our download-link and thumbnail regexes were hardcoded to the old CDN hostnames, so every result got silently filtered out. Regexes are now domain-agnostic so the next rebrand doesn't do this again.
+- **FreeMp3Cloud search stopped returning anything**: `g2.freemp3cloud.com` now 301s to `a2.freemp3cloud.com`, and posting the search to the pre-redirect URL was getting quietly downgraded to a GET by the redirect follow (standard HTTP behaviour, unhelpful here), so we always got the plain landing page back instead of results. Now posts to wherever the landing-page fetch actually landed.
+- MP3Phoenix is now sat behind a genuine Cloudflare JS challenge and is currently returning nothing; that one needs a proper look (headless browser or similar) rather than a regex tweak, so it's still down for now.
 
 ## v3.0.0 (2026-07-09)
 

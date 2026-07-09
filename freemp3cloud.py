@@ -76,6 +76,10 @@ def search_freemp3cloud(query: str, limit: int) -> list[dict]:
             follow_redirects=True,
         ) as client:
             # Step 1: landing page hands us the session cookie + antiforgery token.
+            # g2 currently 301s to a2 (load-balanced subdomain, changes without
+            # warning), and a POST to the pre-redirect URL gets silently downgraded
+            # to a GET by the redirect follow, so post to wherever we actually
+            # landed rather than back to _BASE_URL.
             landing = client.get(_BASE_URL + "/")
             landing.raise_for_status()
             token_m = _RE_TOKEN.search(landing.text)
@@ -85,7 +89,7 @@ def search_freemp3cloud(query: str, limit: int) -> list[dict]:
 
             # Step 2: post the search; cookie travels on the client automatically.
             resp = client.post(
-                _BASE_URL + "/",
+                str(landing.url),
                 data={
                     "searchSong": query,
                     "__RequestVerificationToken": token_m.group(1),

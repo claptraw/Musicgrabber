@@ -27,8 +27,11 @@ _RE_BLOCK = re.compile(r'<div class="f-table">.*?(?=<div class="f-table">|<div i
 _RE_ARTIST = re.compile(r'<div class="artist-name">\s*<a [^>]*>(.*?)</a>\s*</div>', re.DOTALL)
 _RE_TITLE = re.compile(r'<div class="track-name">(.*?)</div>', re.DOTALL)
 _RE_DUR = re.compile(r'<div class="time-text">(.*?)</div>', re.DOTALL)
-_RE_HREF = re.compile(r'<a class="mp3" href="(//data\.zvu4no\.org/download-track/[^"]+\.mp3)"', re.DOTALL)
-_RE_IMG = re.compile(r'<img src="(//img\.zvu4no\.org/[^"]+)"', re.DOTALL)
+# Domain-agnostic: the site rebranded from zvu4no.org to zvu4it.org under our
+# feet (zvu4no.org still redirects there), so we match whatever CDN host is
+# serving on the day rather than hardcoding one that'll just flip again.
+_RE_HREF = re.compile(r'<a class="mp3" href="(//data\.[a-z0-9.-]+/download-track/[^"]+\.mp3)"', re.DOTALL)
+_RE_IMG = re.compile(r'<img src="(//img\.[a-z0-9.-]+/[^"]+)"', re.DOTALL)
 _RE_TAGS = re.compile(r"<[^>]+>")
 
 
