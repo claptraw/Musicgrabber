@@ -88,8 +88,8 @@ from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks
 from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 from coverart import fetch_cover_art_url
 
-URL_BASED_SOURCES = {"soundcloud", "mp3phoenix", "zvu4no", "freemp3cloud", "monochrome"}
-DIRECT_PREVIEW_SOURCES = {"mp3phoenix", "zvu4no", "freemp3cloud"}
+URL_BASED_SOURCES = {"soundcloud", "zvu4no", "freemp3cloud", "monochrome"}
+DIRECT_PREVIEW_SOURCES = {"zvu4no", "freemp3cloud"}
 MONOCHROME_PREVIEW_SOURCES = {"monochrome"}
 
 
@@ -2415,7 +2415,7 @@ def retry_job(job_id: str, http_request: Request):
             slskd_size=job.get("slskd_size"),
         )
     else:
-        # For both YouTube and URL-based sources (SoundCloud, mp3phoenix):
+        # For both YouTube and URL-based sources (SoundCloud, zvu4no, etc):
         # search across all sources and pick the best untried candidate.
         # Re-trying the same source_url or video_id that already failed is pointless.
         prior_id = job.get("video_id") or ""

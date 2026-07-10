@@ -66,17 +66,6 @@ const SEARCH_QUIPS = {
             "Hunting the real upload, not the rip",
         ],
 
-        mp3phoenix: [
-            "Prodding MP3Phoenix",
-            "Fanning the Phoenix",
-            "Coaxing it back from the ashes",
-            "Asking the Phoenix for a favour",
-            "Waiting for it to rise (again)",
-            "Knocking on the Phoenix's door",
-            "Giving the embers a poke",
-            "Hoping it hasn't combusted today",
-        ],
-
         zvu4no: [
             "Knocking on zvu4no's door",
             "Whispering to zvu4no",

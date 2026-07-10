@@ -9,7 +9,7 @@ download link, and  -  crucially  -  an "HQ" label on the good ones.
 
 Quality is the whole story here: HQ-tagged results are 320 kbps (some 256) and
 even ship embedded cover art; the un-tagged ones are a sad 128 kbps. We score
-HQ at the MP3Phoenix 320 tier and demote the rest so they only ever win when
+HQ at the top lossy tier and demote the rest so they only ever win when
 nothing better exists.
 
 The download URL carries its own session_key + hash, so it works later from the
@@ -125,9 +125,9 @@ def search_freemp3cloud(query: str, limit: int) -> list[dict]:
                 duration_seconds=duration_secs or None,
                 view_count=None,
             )
-            # HQ results are genuine 320 kbps  -  same tier as MP3Phoenix, so the
-            # same +30. The un-tagged ones are 128 kbps; give them a token +5 so
-            # they only surface when nothing better turned up.
+            # HQ results are genuine 320 kbps, so they get the same top lossy
+            # bonus as other 320kbps sources. The un-tagged ones are 128 kbps;
+            # give them a token +5 so they only surface when nothing better turned up.
             if is_hq:
                 quality_score += 30
                 score_breakdown.append("source_quality=+30 (HQ)")

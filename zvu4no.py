@@ -84,8 +84,8 @@ def search_zvu4no(query: str, limit: int) -> list[dict]:
                 duration_seconds=duration_secs or None,
                 view_count=None,
             )
-            # Direct MP3s are useful, but observed bitrate varies. Keep it below
-            # MP3Phoenix and let existing title/duration scoring do the real work.
+            # Direct MP3s are useful, but observed bitrate varies. Keep this modest
+            # and let existing title/duration scoring do the real work.
             quality_score += 10
             score_breakdown.append("source_quality=+10")
 

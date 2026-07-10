@@ -11,9 +11,16 @@ const RELEASE_NOTES = {
         title: "What's New in v3.0.1",
         sections: [
             {
-                heading: "Development",
+                heading: "Fixed",
                 items: [
-                    "v3.0.1 is open for development after the v3.0.0 release. No user-facing changes yet; just the workshop lights coming back on.",
+                    "The zvu4no MP3 search returns results again. The site quietly moved house (zvu4no.org became zvu4it.org) and our search was left knocking at the old door, so every result got filtered out. We now follow it wherever it lands, and we've made the fix rebrand-proof so the next moonlight flit doesn't catch us out.",
+                    "FreeMp3Cloud search is back too. It had also shuffled to a new address, and our search kept landing on the plain front page instead of the actual results. Now it follows the move properly, so tracks turn up again.",
+                ]
+            },
+            {
+                heading: "Removed",
+                items: [
+                    "MP3Phoenix has been retired as a search source. It put up a full Cloudflare 'Just a moment...' wall that we couldn't get a download through, despite a proper scrap (three different bypass tools, all on a clean residential connection). Rather than build an entire browser just to chase one lossy 320kbps source, we've let it go. It had a good run, mostly setting the fire alarm off.",
                 ]
             }
         ]

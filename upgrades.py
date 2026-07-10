@@ -435,7 +435,7 @@ def _estimate_result_tier(result: dict) -> tuple[int, bool]:
         # HQ-tagged results carry a "320kbps" quality label, the rest are 128.
         digits = "".join(ch for ch in quality if ch.isdigit())
         return (_kbps_to_tier(int(digits)) if digits else TIER_LOSSY_320), False
-    return TIER_LOSSY_320, False  # mp3phoenix / zvu4no etc, estimate, unverified
+    return TIER_LOSSY_320, False  # zvu4no etc, estimate, unverified
 
 
 def _candidate_public(row) -> dict:

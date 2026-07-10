@@ -404,7 +404,7 @@ def compute_match_confidence(
     expected_duration_s: float | None = None,
     query: str | None = None,
 ) -> tuple[float, list[str]]:
-    """Match confidence for flat-title sources (YouTube, MP3Phoenix, Monochrome).
+    """Match confidence for flat-title sources (YouTube, Monochrome, etc).
 
     Unlike score_track_against_filename this does not split paths; the
     candidate_title is treated as a single string and candidate_artist as

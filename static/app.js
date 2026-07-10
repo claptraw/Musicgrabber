@@ -1109,7 +1109,7 @@
                     // Build preview URL with source params
                     const previewSource = (result && result.source) || 'youtube';
                     const params = new URLSearchParams({ source: previewSource });
-                    if ((previewSource === 'soundcloud' || previewSource === 'mp3phoenix' || previewSource === 'zvu4no' || previewSource === 'freemp3cloud' || previewSource === 'monochrome') && result.source_url) {
+                    if ((previewSource === 'soundcloud' || previewSource === 'zvu4no' || previewSource === 'freemp3cloud' || previewSource === 'monochrome') && result.source_url) {
                         params.set('url', result.source_url);
                     }
                     const response = await apiFetch(`/api/preview/${encodeURIComponent(videoId)}?${params}`);
@@ -2334,7 +2334,7 @@
                 }
 
                 // URL-based sources need the full URL for downloading
-                if ((result.source === 'soundcloud' || result.source === 'mp3phoenix' || result.source === 'zvu4no' || result.source === 'freemp3cloud' || result.source === 'monochrome') && result.source_url) {
+                if ((result.source === 'soundcloud' || result.source === 'zvu4no' || result.source === 'freemp3cloud' || result.source === 'monochrome') && result.source_url) {
                     payload.source_url = result.source_url;
                 }
 
@@ -7063,7 +7063,6 @@
             'playlist_album_as_name': 'settingPlaylistAlbumAsName',
             'singles_only_mode': 'settingSinglesOnlyMode',
             'source_youtube_enabled': 'settingSourceYoutube',
-            'source_mp3phoenix_enabled': 'settingSourceMp3phoenix',
             'source_soundcloud_enabled': 'settingSourceSoundcloud',
             'source_zvu4no_enabled': 'settingSourceZvu4no',
             'source_freemp3cloud_enabled': 'settingSourceFreemp3cloud',

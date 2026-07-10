@@ -56,7 +56,7 @@ def test_priority_boost_does_not_invent_results():
     bulk_import = _import_bulk_import_or_skip()
     results = [
         {"source": "youtube",  "quality_score": 120},
-        {"source": "mp3phoenix", "quality_score": 80},
+        {"source": "soundcloud", "quality_score": 80},
     ]
     out = bulk_import.apply_priority_source_boost(results, "soulseek")
     assert out[0]["source"] == "youtube", \

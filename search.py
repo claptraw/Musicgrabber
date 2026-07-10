@@ -1,7 +1,7 @@
 """
 MusicGrabber - Search Source Registry
 
-Extensible source architecture. YouTube, SoundCloud, and MP3Phoenix are supported.
+Extensible source architecture. YouTube, SoundCloud and friends are supported.
 Adding a new source is one function and one registry entry.
 """
 
@@ -20,7 +20,7 @@ from constants import (
     SLSKD_EMPTY_RETRY_DELAY,
     SOUNDCLOUD_SEARCH_MULTIPLIER, SOUNDCLOUD_SEARCH_MIN_FETCH,
     SEARCH_MAX_PER_SOURCE,
-    SEARCH_MAX_PER_SOURCE_YOUTUBE, SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
+    SEARCH_MAX_PER_SOURCE_YOUTUBE,
     SEARCH_MAX_PER_SOURCE_SOUNDCLOUD, SEARCH_MAX_PER_SOURCE_ZVU4NO,
     SEARCH_MAX_PER_SOURCE_FREEMP3CLOUD,
     SEARCH_MAX_PER_SOURCE_SOULSEEK, SEARCH_MAX_PER_SOURCE_MONOCHROME,
@@ -29,7 +29,6 @@ from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration, search_artist_mbid, lookup_musicbrainz
 from settings import get_setting, get_setting_bool
 from monochrome import search_monochrome, monochrome_enabled
-from mp3phoenix import search_mp3phoenix
 from slskd import slskd_enabled, search_slskd
 from zvu4no import search_zvu4no
 from freemp3cloud import search_freemp3cloud
@@ -170,13 +169,6 @@ SOURCE_REGISTRY = {
         "search_fn": search_youtube,
         "has_preview": True,
     },
-    "mp3phoenix": {
-        "label": "MP3Phoenix",
-        "badge": "PX",
-        "colour": "#e05c00",
-        "search_fn": search_mp3phoenix,
-        "has_preview": True,
-    },
     "soundcloud": {
         "label": "SoundCloud",
         "badge": "SC",
@@ -218,7 +210,6 @@ SOURCE_REGISTRY = {
 
 SEARCH_MAX_PER_SOURCE_BY_SOURCE = {
     "youtube": SEARCH_MAX_PER_SOURCE_YOUTUBE,
-    "mp3phoenix": SEARCH_MAX_PER_SOURCE_MP3PHOENIX,
     "soundcloud": SEARCH_MAX_PER_SOURCE_SOUNDCLOUD,
     "zvu4no": SEARCH_MAX_PER_SOURCE_ZVU4NO,
     "freemp3cloud": SEARCH_MAX_PER_SOURCE_FREEMP3CLOUD,

@@ -1,7 +1,7 @@
 # Music Grabber
 **v3.0.0**
 
-A self-hosted music acquisition service. Search YouTube, SoundCloud, MP3Phoenix, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
+A self-hosted music acquisition service. Search YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
 If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 
@@ -21,7 +21,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 ## Features
 
-- **Multi-source search:** YouTube, SoundCloud, MP3Phoenix, zvu4no, Monochrome/Qobuz, and optional Soulseek searched in parallel; quality-ranked results with source badges and score explanations
+- **Multi-source search:** YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek searched in parallel; quality-ranked results with source badges and score explanations
 - **Monochrome/Qobuz source:** searches the Tidal catalogue via hifi-api metadata, then resolves matching Qobuz FLAC streams by ISRC. It can serve proper lossless when the proxy gods are smiling. Enabled by default and configurable in Search Sources
 - **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
 - **Watched Artists:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles only: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Tracks already on disk are recognised immediately. Per-artist check interval, convert-to-FLAC toggle, pause/resume, missing and track list panels
@@ -58,7 +58,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 ## Why FLAC?
 
-For YouTube, SoundCloud, MP3Phoenix, zvu4no, and FreeMp3Cloud, FLAC conversion is primarily for standardisation and consistent tagging. It does not improve audio quality beyond the source; it only preserves what is already there. Monochrome and Soulseek may already provide proper FLAC, in which case MusicGrabber keeps the good stuff and tags it properly. If you prefer to keep the original format where possible, disable conversion and files will be saved as-is.
+For YouTube, SoundCloud, zvu4no, and FreeMp3Cloud, FLAC conversion is primarily for standardisation and consistent tagging. It does not improve audio quality beyond the source; it only preserves what is already there. Monochrome and Soulseek may already provide proper FLAC, in which case MusicGrabber keeps the good stuff and tags it properly. If you prefer to keep the original format where possible, disable conversion and files will be saved as-is.
 
 ## Screenshots
 
@@ -218,7 +218,7 @@ The easiest way to configure MusicGrabber is via the **Settings tab** in the UI.
 - **General**: MusicBrainz metadata, lyrics fetching, default FLAC conversion, minimum audio bitrate, artist subfolder organisation
 - **Audio format**: FLAC, ALAC/AAC-in-M4A, Opus, or MP3, including MP3/Opus/ALAC quality presets
 - **Library layout**: Singles, Playlists, and Albums subfolders, track-number filenames, auto-album routing, singles-only mode, and file permissions
-- **Search sources**: enable/disable YouTube, SoundCloud, MP3Phoenix, zvu4no, Soulseek, and Monochrome
+- **Search sources**: enable/disable YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Soulseek, and Monochrome
 - **Monochrome**: hifi-api URL and Qobuz proxy URL
 - **Soulseek (slskd)**: enable toggle, URL, credentials, downloads path
 - **Navidrome**: URL and credentials for library refresh
@@ -278,7 +278,6 @@ Settings are stored in the database and persist across container restarts.
 | `LIDARR_URL` | - | Lidarr server URL |
 | `LIDARR_API_KEY` | - | Lidarr API key for library refresh |
 | `SOURCE_YOUTUBE_ENABLED` | `true` | Enable YouTube search results |
-| `SOURCE_MP3PHOENIX_ENABLED` | `true` | Enable MP3Phoenix search results |
 | `SOURCE_SOUNDCLOUD_ENABLED` | `true` | Enable SoundCloud search results |
 | `SOURCE_ZVU4NO_ENABLED` | `true` | Enable zvu4no search results |
 | `SOURCE_SOULSEEK_ENABLED` | `false` | Enable Soulseek/slskd search results. Credentials alone do not enable Soulseek |
@@ -318,7 +317,6 @@ Settings are stored in the database and persist across container restarts.
 | `MAX_CONCURRENT_DOWNLOADS` | `3` | Number of concurrent download workers |
 | `TIMEOUT_YTDLP_DOWNLOAD` | `300` | Timeout in seconds for yt-dlp to download a single track. Increase for long mixes or slow connections |
 | `TIMEOUT_FFMPEG_CONVERT` | `120` | Timeout in seconds for ffmpeg format conversion. Increase if long tracks are producing broken files |
-| `TIMEOUT_MP3PHOENIX_DOWNLOAD` | `120` | Timeout in seconds for MP3Phoenix HTTP stream downloads |
 | `TIMEOUT_ZVU4NO_DOWNLOAD` | `120` | Timeout in seconds for zvu4no direct MP3 downloads |
 | `TIMEOUT_MONOCHROME_DOWNLOAD` | `300` | Timeout in seconds for Monochrome/Qobuz FLAC downloads |
 
@@ -841,17 +839,17 @@ music.yourdomain.com {
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/sources` | List available search sources (for source selector UI) |
-| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "all/youtube/soundcloud/mp3phoenix/zvu4no/monochrome/soulseek"}`) |
+| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "all/youtube/soundcloud/zvu4no/monochrome/soulseek"}`) |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
 | `GET` | `/api/search/artwork` | Find display artwork for a search result (`?artist=...&title=...`) |
-| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for URL-based sources like SoundCloud/MP3Phoenix) |
+| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for URL-based sources like SoundCloud/zvu4no) |
 | `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
 
 ### Downloads
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/mp3phoenix/zvu4no/monochrome/soulseek", "download_type": "single/playlist"}`) |
+| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/zvu4no/monochrome/soulseek", "download_type": "single/playlist"}`) |
 | `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` for provenance) |
 | `GET` | `/api/jobs/downloadable` | Paginated list of completed jobs available to save to device (`?page=1&per_page=50`) |
 | `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |

@@ -83,11 +83,6 @@ def _check_soundcloud() -> tuple[bool, str]:
     return _http_ok("https://soundcloud.com", method="HEAD")
 
 
-def _check_mp3phoenix() -> tuple[bool, str]:
-    from mp3phoenix import _BASE_URL
-    return _http_ok(_BASE_URL)
-
-
 def _check_zvu4no() -> tuple[bool, str]:
     from zvu4no import _BASE_URL
     return _http_ok(_BASE_URL)
@@ -118,7 +113,6 @@ _CHECKS = {
     "monochrome": _check_monochrome,
     "youtube": _check_youtube,
     "soundcloud": _check_soundcloud,
-    "mp3phoenix": _check_mp3phoenix,
     "zvu4no": _check_zvu4no,
     "freemp3cloud": _check_freemp3cloud,
     "soulseek": _check_soulseek,

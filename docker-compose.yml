@@ -32,7 +32,6 @@ services:
       # Optional: increase timeouts for long tracks (DJ mixes, symphonies) or slow connections
       # - TIMEOUT_YTDLP_DOWNLOAD=300      # yt-dlp download (default 5 min)
       # - TIMEOUT_FFMPEG_CONVERT=120      # ffmpeg format conversion (default 2 min)
-      # - TIMEOUT_MP3PHOENIX_DOWNLOAD=120 # MP3Phoenix stream download (default 2 min)
     # Optional: add to your existing network if running with Navidrome/Jellyfin
     # networks:
     #   - your-network

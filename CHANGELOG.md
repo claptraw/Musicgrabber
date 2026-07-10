@@ -7,7 +7,9 @@ Development cycle opened after v3.0.0. The kettle boiled, then promptly needed r
 ### Fixed
 - **zvu4no search stopped returning anything**: the site rebranded from zvu4no.org to zvu4it.org (the old domain still redirects, bless it), but our download-link and thumbnail regexes were hardcoded to the old CDN hostnames, so every result got silently filtered out. Regexes are now domain-agnostic so the next rebrand doesn't do this again.
 - **FreeMp3Cloud search stopped returning anything**: `g2.freemp3cloud.com` now 301s to `a2.freemp3cloud.com`, and posting the search to the pre-redirect URL was getting quietly downgraded to a GET by the redirect follow (standard HTTP behaviour, unhelpful here), so we always got the plain landing page back instead of results. Now posts to wherever the landing-page fetch actually landed.
-- MP3Phoenix is now sat behind a genuine Cloudflare JS challenge and is currently returning nothing; that one needs a proper look (headless browser or similar) rather than a regex tweak, so it's still down for now.
+
+### Removed
+- **MP3Phoenix as a search source**: the site went from a plain 403 to a proper Cloudflare "Just a moment..." challenge, and it turns out that's not a Tuesday-afternoon fix. We tried a stealth-patched Playwright, then Patchright (an "undetected" Playwright fork that claims to beat Cloudflare outright), then FlareSolverr, running on Karl's own residential IP throughout so it was never an IP-reputation problem. FlareSolverr got furthest: it genuinely solved the challenge and fetched real search results, but its API only speaks HTML pages, not files, and it just times out against the actual MP3 download link. We also tried replaying a real cf_clearance cookie (both hand-exported from a browser and freshly minted by FlareSolverr itself, matched UA and all) through our own HTTP client, and Cloudflare still said no, so something beyond cookie and User-Agent is being checked. Rather than build our own browser automation from scratch to chase a lossy 320kbps source, MP3Phoenix has been retired. It had a good run setting the fire alarm off regularly.
 
 ## v3.0.0 (2026-07-09)
 

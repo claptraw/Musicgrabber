@@ -284,7 +284,7 @@ def test_query_requests_variant():
     assert not query_requests_variant("Just a regular song")
 
 
-# ---- compute_match_confidence (YouTube/MP3Phoenix/Monochrome) -------------
+# ---- compute_match_confidence (YouTube/Monochrome/etc) -------------
 
 def test_streaming_official_video_high_confidence():
     # Classic YouTube shape: "Artist - Title (Official Video)" against

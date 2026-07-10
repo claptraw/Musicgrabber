@@ -504,9 +504,6 @@ def process_bulk_import_worker(import_id: str):
 
                     conn.commit()
 
-                # mp3phoenix is a fast HTTP stream — skip the pool entirely so it
-                # doesn't queue behind slow yt-dlp jobs.  Everything else goes through
-                # the bounded pool (max 3 concurrent) to avoid hammering YouTube.
                 _pname = playlist_name if (use_playlists_dir or custom_subdir) else None
                 # Album downloads (override_dir set) bypass dupe checks — you picked the album
                 # intentionally, and the track lives in Albums/ not Singles/ anyway.
@@ -537,11 +534,6 @@ def process_bulk_import_worker(import_id: str):
                         custom_subdir=custom_subdir,
                         slskd_size=slskd_size,
                     )
-                elif source == "mp3phoenix":
-                    spawn_daemon_thread(process_download, job_id, video_id, convert_to_flac,
-                                        source_url, _pname, use_playlists_dir,
-                                        user_id=user_id, override_dir=override_dir,
-                                        skip_dupe_check=_skip_dupes, custom_subdir=custom_subdir)
                 else:
                     _get_download_pool().submit(process_download, job_id, video_id, convert_to_flac,
                                           source_url, _pname, use_playlists_dir,
