@@ -1471,7 +1471,8 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
             # Original job still exists, reset it with the skip flag
             conn.execute(
                 "UPDATE jobs SET status = 'queued', error = NULL, completed_at = NULL, "
-                "file_deleted = 0, skip_mismatch_check = 1 WHERE id = ?",
+                "file_deleted = 0, skip_mismatch_check = 1, progress_at = datetime('now') "
+                "WHERE id = ?",
                 (job_id,)
             )
         else:
@@ -2363,7 +2364,8 @@ def retry_job(job_id: str, http_request: Request):
 
         # Reset job status
         conn.execute(
-            "UPDATE jobs SET status = ?, error = NULL, completed_at = NULL, file_deleted = 0 WHERE id = ?",
+            "UPDATE jobs SET status = ?, error = NULL, completed_at = NULL, file_deleted = 0, "
+            "progress_at = datetime('now') WHERE id = ?",
             ("queued", job_id)
         )
         conn.commit()

@@ -7,7 +7,7 @@ Authentication, search, download, and quality parsing.
 import re
 import shutil
 import time
-import uuid
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -399,7 +399,11 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                         score_breakdown.append("fast_uploader=+5")
 
                     results.append({
-                        "id": f"slskd_{uuid.uuid4().hex[:8]}",
+                        # Stable id derived from who's sharing what: the same
+                        # file gets the same id across searches, so blacklists
+                        # and already-tried lists actually stick (a random uuid
+                        # here made every retry a case of amnesia).
+                        "id": "slskd_" + hashlib.md5(f"{username}|{filepath}".encode()).hexdigest()[:12],
                         "title": title,
                         "artist": artist,
                         "channel": username,  # Show username as "channel"

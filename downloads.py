@@ -1275,7 +1275,11 @@ _ALLOWED_JOB_COLS = frozenset({
 
 
 def _update_job(job_id: str, **fields) -> None:
-    """Update job fields in the database."""
+    """Update job fields in the database.
+
+    Every update also bumps progress_at, the heartbeat the stale-job monitor
+    watches; as long as a worker keeps touching its job, nobody calls the
+    coroner on it."""
     if not fields:
         return
     unknown = set(fields) - _ALLOWED_JOB_COLS
@@ -1284,7 +1288,10 @@ def _update_job(job_id: str, **fields) -> None:
     columns = ", ".join(f"{key} = ?" for key in fields)
     values = list(fields.values())
     with db_conn() as conn:
-        conn.execute(f"UPDATE jobs SET {columns} WHERE id = ?", (*values, job_id))
+        conn.execute(
+            f"UPDATE jobs SET {columns}, progress_at = datetime('now') WHERE id = ?",
+            (*values, job_id),
+        )
         conn.commit()
 
 

@@ -95,10 +95,13 @@ _KNOWN_PUBLIC_QOBUZ_PROXY_URLS = {
 }
 _qobuz_proxy_url_cache: str | None = None
 
-# Per-proxy failure tracking. A 4xx/5xx records a timestamp here; the proxy is
-# deprioritised until _QOBUZ_FAILURE_TTL seconds have passed.
+# Per-proxy failure tracking. A 4xx/5xx or a timeout records a timestamp here;
+# the proxy is skipped until _QOBUZ_FAILURE_TTL seconds have passed. Ten minutes
+# (matching SOURCE_HEALTH_COOLDOWN) rather than the old thirty: now that the
+# download leg honours these marks too, a proxy that hiccuped once shouldn't
+# spend half an hour on the naughty step.
 _qobuz_proxy_failures: dict[str, float] = {}
-_QOBUZ_FAILURE_TTL = 1800  # 30 minutes
+_QOBUZ_FAILURE_TTL = 600  # 10 minutes
 
 # Background health-probe state.
 _qobuz_probe_last_run: float = 0.0
@@ -248,8 +251,10 @@ def _probe_qobuz_proxies() -> bool:
     defaults = _split_endpoint_urls(MONOCHROME_QOBUZ_PROXY_URL)
     urls = list(dict.fromkeys(configured + defaults))  # configured first, deduped
 
-    found_healthy = False
-    for url in urls:
+    if not urls:
+        return False
+
+    def _probe_one(url: str) -> bool:
         try:
             resp = httpx.get(
                 f"{url}/api/get-music",
@@ -260,20 +265,29 @@ def _probe_qobuz_proxies() -> bool:
             if resp.is_success:
                 items = (((resp.json().get("data") or {}).get("tracks") or {}).get("items")) or []
                 if items:
-                    _remember_qobuz_proxy_url(url)
-                    if not found_healthy:
-                        print(f"Monochrome: Qobuz proxy healthy: {url}")
-                    found_healthy = True
-                    continue
+                    return True
             _mark_qobuz_proxy_failed(url)
             print(f"Monochrome: Qobuz proxy unhealthy ({resp.status_code}): {url}")
         except Exception as exc:
             # Connection errors: don't blacklist (might be transient network), just note
             print(f"Monochrome: Qobuz proxy unreachable: {url} ({exc})")
+        return False
 
-    if not found_healthy:
+    # Probe the lot in parallel; a serial sweep of three dead proxies at 8s
+    # apiece is 24 seconds of thumb-twiddling for the same answer.
+    with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+        verdicts = dict(zip(urls, pool.map(_probe_one, urls)))
+
+    healthy_urls = [u for u in urls if verdicts.get(u)]
+    for url in healthy_urls:
+        _qobuz_proxy_failures.pop(url, None)  # clean bill of health
+    if healthy_urls:
+        # Deterministically prefer the first healthy one in configured order.
+        _remember_qobuz_proxy_url(healthy_urls[0])
+        print(f"Monochrome: Qobuz proxy healthy: {healthy_urls[0]}")
+    else:
         print("Monochrome: all Qobuz proxies are currently unhealthy")
-    return found_healthy
+    return bool(healthy_urls)
 
 
 def download_leg_healthy() -> tuple[bool, str]:
@@ -1060,11 +1074,14 @@ def _hifi_search_leg(query: str, limit: int) -> list[dict]:
 class QobuzProxyError(RuntimeError):
     """Raised when no proxy could serve a stream URL.
 
-    `transport_failure` is True when at least one proxy died at the transport/HTTP
-    level (connection refused, no route to host, 5xx, 4xx) rather than cleanly
-    reporting "no track for this ISRC". That distinction tells the caller whether
-    it's worth waiting and retrying (flaky infra) or pointless (track genuinely
-    missing), so we don't burn retry rounds on tracks Qobuz simply doesn't have.
+    `transport_failure` is True when not one proxy managed a catalogue-level
+    answer (they all died at the transport/HTTP layer before saying anything
+    useful); that's the caller's cue that a short wait and another sweep might
+    genuinely help. False means retrying is pointless: either some proxy
+    answered cleanly (the track simply isn't there), or every proxy is parked
+    in its failure cooldown (the background probe owns recovery, not us). Stops
+    us burning retry rounds on tracks Qobuz doesn't have, or on proxies we
+    already know are face-down.
     """
     def __init__(self, message: str, transport_failure: bool):
         super().__init__(message)
@@ -1076,10 +1093,21 @@ def _get_qobuz_stream_url(isrc: str, quality_fmt: int) -> str:
 
     Tries each configured proxy in turn; the first one that returns a usable
     CDN URL wins and is remembered for future calls this process lifetime.
+    Proxies parked in the failure cooldown are skipped outright, same rule as
+    _qobuz_isrc_lookup: no burning a 15s timeout on a corpse we've already
+    identified. The background probe clears the marks when they recover.
     """
+    bases = [b for b in _qobuz_proxy_urls() if not _qobuz_proxy_recently_failed(b)]
+    if not bases:
+        raise QobuzProxyError(
+            f"Qobuz proxy: all instances failed for ISRC {isrc!r} quality {quality_fmt}: "
+            f"every proxy is in its failure cooldown",
+            transport_failure=False,
+        )
+
     errors = []
-    had_transport_failure = False
-    for base in _qobuz_proxy_urls():
+    got_clean_answer = False
+    for base in bases:
         try:
             resp = httpx.get(
                 f"{base}/api/get-music",
@@ -1091,6 +1119,9 @@ def _get_qobuz_stream_url(isrc: str, quality_fmt: int) -> str:
 
             body = resp.json()
             items = (((body.get("data") or {}).get("tracks") or {}).get("items")) or []
+            # This proxy is alive and talking catalogue; whatever it says next
+            # ("no such ISRC", "download refused") is an answer, not a fault.
+            got_clean_answer = True
             # The proxy degrades to fulltext search when the query misses the
             # ISRC index, so insist on an exact ISRC match; and when several
             # editions carry the same ISRC, prefer the hi-res master.
@@ -1133,17 +1164,23 @@ def _get_qobuz_stream_url(isrc: str, quality_fmt: int) -> str:
         except httpx.HTTPStatusError as exc:
             _mark_qobuz_proxy_failed(base)
             errors.append(f"{base}: HTTP {exc.response.status_code}")
-            had_transport_failure = True
+            continue
+        except httpx.TimeoutException as exc:
+            # A timing-out proxy charges 15 seconds per visit; park it so the
+            # next lookup doesn't pay the same toll. (Fast connection errors
+            # below stay unmarked: they cost nothing to retry and might just
+            # be our own network having a moment.)
+            _mark_qobuz_proxy_failed(base)
+            errors.append(f"{base}: timed out ({exc})")
             continue
         except Exception as exc:
             errors.append(f"{base}: {exc}")
-            had_transport_failure = True
             continue
 
     raise QobuzProxyError(
         f"Qobuz proxy: all instances failed for ISRC {isrc!r} quality {quality_fmt}: "
         f"{'; '.join(errors)}",
-        transport_failure=had_transport_failure,
+        transport_failure=not got_clean_answer,
     )
 
 
@@ -1263,7 +1300,12 @@ def download_monochrome_track(source_url: str, output_path: Path,
                 return url, None, False
             except QobuzProxyError as exc:
                 last_err = exc
-                transport = transport or exc.transport_failure
+                if exc.transport_failure:
+                    # Not one proxy answered. A proxy that's dead for HI_RES is
+                    # equally dead for LOSSLESS, so stepping down the tiers would
+                    # just re-run the same funeral twice more. Bail out early.
+                    transport = True
+                    break
                 continue
             except Exception as exc:
                 last_err = exc

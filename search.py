@@ -5,6 +5,7 @@ Extensible source architecture. YouTube, SoundCloud and friends are supported.
 Adding a new source is one function and one registry entry.
 """
 
+import hashlib
 import json
 import re
 import subprocess
@@ -76,7 +77,14 @@ def search_soulseek(query: str, limit: int = 10) -> list[dict]:
         except (TypeError, ValueError):
             duration = str(duration_raw or "")
         result = dict(item)
-        result["video_id"] = item.get("id") or f"slskd_{len(results)}"
+        # Fallback id mirrors slskd.py's stable recipe (same file, same id
+        # across searches); a positional slskd_0 would mean a different
+        # "identity" every search, and blacklists would never stick.
+        result["video_id"] = item.get("id") or (
+            "slskd_" + hashlib.md5(
+                f"{item.get('slskd_username', '')}|{item.get('slskd_filename', '')}".encode()
+            ).hexdigest()[:12]
+        )
         result["duration"] = duration
         result["thumbnail"] = ""
         result["source_url"] = f"soulseek://{item.get('slskd_username', '')}/{item.get('slskd_filename', '')}"
@@ -414,10 +422,12 @@ def _search_all_events(
 
     parked: list[str] = []
     if enforce_availability:
-        # Lazily refresh stale health checks before deciding which sources are safe
-        # to show, then park the ones currently in a failure cooldown so their
-        # results don't show up only to fall over at play or download time.
-        servicecheck.check_sources(set(active))
+        # Park the sources last seen unhealthy so their results don't show up
+        # only to fall over at play or download time. Stale verdicts refresh in
+        # a background thread; a probe must NEVER block the search itself, or a
+        # dead Monochrome proxy sweep turns every search into 25s of dead air
+        # (this happened; nobody enjoyed it).
+        servicecheck.refresh_sources_async(set(active))
         available = {n: c for n, c in active.items() if servicecheck.is_source_available(n)}
         parked = [n for n in active if n not in available]
         active = available
@@ -470,6 +480,7 @@ def _search_all_events(
                 if expected_dur:
                     _apply_mb_duration_scores(batch, expected_dur)
                 batch.sort(key=lambda x: x["quality_score"], reverse=True)
+                servicecheck.record_search_success(source_name)
                 yield {
                     "type": "source",
                     "source": source_name,
@@ -485,6 +496,10 @@ def _search_all_events(
         if timed_out:
             for f, name in futures.items():
                 if not f.done():
+                    # Three consecutive deadline blow-outs and servicecheck parks
+                    # the source, so a limping platform can't bleed a 500-track
+                    # bulk import 30 seconds at a time.
+                    servicecheck.record_search_timeout(name)
                     yield {"type": "source", "source": name, "status": "timeout"}
             print(f"search_all: {SEARCH_ALL_DEADLINE}s deadline hit")
 

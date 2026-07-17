@@ -188,6 +188,79 @@ def test_get_qobuz_stream_url_raises_when_all_fail(monkeypatch):
         monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
 
 
+def test_get_qobuz_stream_url_timeout_blacklists_proxy(monkeypatch):
+    """A timing-out proxy charges 15s per visit, so it must be parked on sight."""
+    import monochrome
+
+    failures = {}
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
+    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
+    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+
+    def fake_get(url, params, headers, timeout):
+        if "kennyy" in url:
+            raise httpx.ReadTimeout("glacial proxy")
+        if "api/get-music" in url:
+            return _FakeHTTPResponse(_make_qobuz_search_response())
+        return _FakeHTTPResponse(_make_qobuz_download_response())
+
+    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
+
+    cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
+
+    assert cdn_url  # scavengerfurs served it
+    assert "https://qobuz.kennyy.com.br" in failures
+
+
+def test_get_qobuz_stream_url_fails_fast_when_all_proxies_parked(monkeypatch):
+    """Every proxy in cooldown: no HTTP calls, instant no-retry error."""
+    import monochrome
+
+    now = time.time()
+    failures = {
+        "https://qobuz.kennyy.com.br": now,
+        "https://mono.scavengerfurs.net": now,
+        "https://qdl-api.monochrome.tf": now,
+    }
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
+    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", now)
+    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+
+    def fake_get(url, params, headers, timeout):
+        raise AssertionError("no HTTP call should be made when every proxy is parked")
+
+    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
+
+    with pytest.raises(monochrome.QobuzProxyError, match="failure cooldown") as excinfo:
+        monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
+
+    # False = "retrying won't help"; the retry rounds must not grind on this
+    assert excinfo.value.transport_failure is False
+
+
+def test_get_qobuz_stream_url_clean_no_isrc_answer_is_not_transport_failure(monkeypatch):
+    """A live proxy saying 'never heard of it' means the track is missing, not the infra."""
+    import monochrome
+
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
+    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
+    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+
+    def fake_get(url, params, headers, timeout):
+        # Proxy is up and answers, just with an empty catalogue result
+        return _FakeHTTPResponse({"success": True, "data": {"tracks": {"items": []}}})
+
+    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
+
+    with pytest.raises(monochrome.QobuzProxyError, match="all instances failed") as excinfo:
+        monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
+
+    assert excinfo.value.transport_failure is False
+
+
 def test_get_qobuz_stream_url_connection_error_does_not_blacklist(monkeypatch):
     import monochrome
 

@@ -42,6 +42,21 @@ _HEADERS = {
 _HEALTH: dict[str, dict] = {}
 _LOCK = threading.RLock()
 
+# source_id -> unix timestamp of when a probe started. Stops a stampede of
+# concurrent searches all launching their own identical probe of the same
+# dead service; one probe at a time is plenty.
+_IN_FLIGHT: dict[str, float] = {}
+# A probe older than this is presumed wedged (hung socket, misbehaving proxy)
+# and a fresh one is allowed past the guard.
+_PROBE_STUCK_SECONDS = 120
+
+# Search-side strike tracking: a source that blows through the multi-source
+# search deadline repeatedly is clearly having a bad day, so after a few
+# consecutive timeouts we park it without waiting for the next scheduled
+# probe to notice. One success wipes the slate clean.
+_SEARCH_TIMEOUT_STRIKE_LIMIT = 3
+_search_timeout_strikes: dict[str, int] = {}
+
 
 # ---------------------------------------------------------------------------
 # Low-level reachability helpers
@@ -146,8 +161,10 @@ def _cooldown() -> float:
 def is_source_available(source_id: str) -> bool:
     """Fast, no-network check: is this source currently allowed to return results?
 
-    True unless we've recorded a failure whose cooldown hasn't expired. Checks
-    being globally disabled means everything is always "available".
+    Unknown sources are innocent until a check proves otherwise; a source last
+    seen unhealthy stays hidden until a fresh probe clears it (the cooldown
+    expiring merely schedules that re-probe, it isn't a pardon). Checks being
+    globally disabled means everything is always "available".
     """
     if not _checks_enabled():
         return True
@@ -155,9 +172,22 @@ def is_source_available(source_id: str) -> bool:
         entry = _HEALTH.get(source_id)
         if not entry:
             return True  # unknown == innocent until a check proves otherwise
-        if entry["healthy"]:
-            return True
-        return time.time() >= entry.get("disabled_until", 0)
+        return bool(entry["healthy"])
+
+
+def _needs_check(entry: dict | None, now: float) -> bool:
+    """Is this health entry due a re-probe? (Missing, cooldown expired, or stale.)"""
+    if not entry:
+        return True
+    if not entry.get("healthy") and now >= entry.get("disabled_until", 0):
+        return True
+    return (now - entry.get("checked_at", 0)) >= _check_interval()
+
+
+def _probe_in_flight(source_id: str, now: float) -> bool:
+    """True if a live (not wedged) probe for this source is already running."""
+    started = _IN_FLIGHT.get(source_id)
+    return started is not None and (now - started) < _PROBE_STUCK_SECONDS
 
 
 def check_source(source_id: str, force: bool = False) -> dict:
@@ -173,45 +203,93 @@ def check_source(source_id: str, force: bool = False) -> dict:
     now = time.time()
     with _LOCK:
         entry = _HEALTH.get(source_id)
-        cooldown_expired = entry and not entry.get("healthy") and now >= entry.get("disabled_until", 0)
-        if entry and not force and not cooldown_expired and (now - entry.get("checked_at", 0)) < _check_interval():
+        if entry and not force and not _needs_check(entry, now):
             return entry
+        # Someone's already probing this one; serve what we have rather than
+        # piling a second identical probe on a service that's likely down.
+        if not force and _probe_in_flight(source_id, now):
+            return entry or {"healthy": True, "checked_at": 0.0, "reason": "first check in flight", "disabled_until": 0}
+        _IN_FLIGHT[source_id] = now
 
     try:
-        healthy, reason = check_fn()
-    except Exception as exc:
-        healthy, reason = False, f"check error: {exc}"
+        try:
+            healthy, reason = check_fn()
+        except Exception as exc:
+            healthy, reason = False, f"check error: {exc}"
 
-    entry = {
-        "healthy": healthy,
-        "checked_at": time.time(),
-        "reason": "" if healthy else reason,
-        "disabled_until": 0 if healthy else time.time() + _cooldown(),
-    }
-    with _LOCK:
-        _HEALTH[source_id] = entry
+        entry = {
+            "healthy": healthy,
+            "checked_at": time.time(),
+            "reason": "" if healthy else reason,
+            "disabled_until": 0 if healthy else time.time() + _cooldown(),
+        }
+        with _LOCK:
+            _HEALTH[source_id] = entry
+    finally:
+        with _LOCK:
+            _IN_FLIGHT.pop(source_id, None)
+
     if not healthy:
         print(f"servicecheck: {source_id} unavailable: {reason} (parked ~{int(_cooldown() // 60)}m)")
     return entry
 
 
 def check_sources(source_ids: list[str] | tuple[str, ...] | set[str], force: bool = False) -> dict[str, dict]:
-    """Check a subset of sources in parallel, usually the active search sources."""
+    """Check a subset of sources in parallel, usually the active search sources.
+
+    Deliberately NOT a `with` block: exiting a ThreadPoolExecutor context calls
+    shutdown(wait=True), which would make the per-future timeout below purely
+    decorative by then waiting for the slowest probe anyway. We collect what
+    lands in time and walk away; a straggler probe finishes in the background
+    and writes its own verdict into _HEALTH via check_source.
+    """
     ids = [sid for sid in source_ids if sid in _CHECKS]
     if not ids or not _checks_enabled():
         return {}
-    with ThreadPoolExecutor(max_workers=len(ids)) as pool:
+    pool = ThreadPoolExecutor(max_workers=len(ids))
+    try:
         futures = {pool.submit(check_source, sid, force): sid for sid in ids}
         results = {}
         for fut in futures:
             sid = futures[fut]
             try:
                 results[sid] = fut.result(timeout=SERVICECHECK_TIMEOUT + 5)
-            except Exception as exc:
-                results[sid] = {"healthy": False, "checked_at": time.time(), "reason": f"probe crashed: {exc}", "disabled_until": time.time() + _cooldown()}
+            except Exception:
+                # Probe still running (or crashed); don't fabricate a verdict,
+                # the in-flight probe will record the real one when it lands.
                 with _LOCK:
-                    _HEALTH[sid] = results[sid]
+                    entry = _HEALTH.get(sid)
+                results[sid] = entry or {"healthy": True, "checked_at": 0.0, "reason": "check still running", "disabled_until": 0}
         return results
+    finally:
+        pool.shutdown(wait=False)
+
+
+def refresh_sources_async(source_ids: list[str] | tuple[str, ...] | set[str]) -> list[str]:
+    """Kick off background re-probes for any stale sources; never blocks.
+
+    This is what the search fan-out calls: it serves the last-known health
+    verdicts immediately and lets a daemon thread bring stale ones up to date
+    for the next search. Returns the ids being refreshed, purely for logging.
+    """
+    if not _checks_enabled():
+        return []
+    now = time.time()
+    with _LOCK:
+        stale = [
+            sid for sid in source_ids
+            if sid in _CHECKS
+            and _needs_check(_HEALTH.get(sid), now)
+            and not _probe_in_flight(sid, now)
+        ]
+    if not stale:
+        return []
+    threading.Thread(
+        target=lambda: check_sources(stale),
+        daemon=True,
+        name="source-health-refresh",
+    ).start()
+    return stale
 
 
 def check_all_sources(force: bool = False) -> dict[str, dict]:
@@ -238,10 +316,38 @@ def mark_unhealthy(source_id: str, reason: str) -> None:
     print(f"servicecheck: {source_id} marked unhealthy from download failure: {reason}")
 
 
+def record_search_timeout(source_id: str) -> None:
+    """Count a multi-source search timeout against a source; three strikes parks it.
+
+    The scheduled probes only notice a source is down when they next run; this
+    lets the searches themselves rat out a limping source (up per its probe, yet
+    never answering inside the deadline) so bulk imports don't burn the full
+    deadline on it for hundreds of tracks in a row.
+    """
+    if source_id not in _CHECKS or not _checks_enabled():
+        return
+    with _LOCK:
+        strikes = _search_timeout_strikes.get(source_id, 0) + 1
+        if strikes < _SEARCH_TIMEOUT_STRIKE_LIMIT:
+            _search_timeout_strikes[source_id] = strikes
+            return
+        _search_timeout_strikes[source_id] = 0
+    mark_unhealthy(source_id, f"timed out {_SEARCH_TIMEOUT_STRIKE_LIMIT} consecutive searches")
+
+
+def record_search_success(source_id: str) -> None:
+    """A source answered a search in time; wipe its timeout strikes."""
+    with _LOCK:
+        _search_timeout_strikes.pop(source_id, None)
+
+
 def unavailable_sources() -> list[dict]:
-    """Sources currently parked in cooldown, for the API / search toast.
+    """Sources currently parked as unhealthy, for the API / search toast.
 
     Returns [{id, label, reason, retry_at}] where retry_at is a unix timestamp.
+    A source stays listed until a probe clears it, even if its cooldown has
+    technically expired (matching is_source_available's guilty-until-re-proven
+    stance), so retry_at is clamped to now for anything overdue a re-check.
     """
     if not _checks_enabled():
         return []
@@ -254,12 +360,12 @@ def unavailable_sources() -> list[dict]:
     out = []
     with _LOCK:
         for sid, entry in _HEALTH.items():
-            if not entry["healthy"] and now < entry.get("disabled_until", 0):
+            if not entry["healthy"]:
                 out.append({
                     "id": sid,
                     "label": labels.get(sid, sid),
                     "reason": entry.get("reason", ""),
-                    "retry_at": entry.get("disabled_until", 0),
+                    "retry_at": max(entry.get("disabled_until", 0), now),
                 })
     return out
 

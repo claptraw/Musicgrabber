@@ -13,6 +13,11 @@ const RELEASE_NOTES = {
             {
                 heading: "Fixed",
                 items: [
+                    "Searches no longer sit in silence for up to half a minute when a source's health check has gone stale. Health probes now run quietly in the background instead of making your search wait for them, so results start streaming in straight away even when Monochrome's proxies are having one of their days.",
+                    "When Monochrome's proxies are down, downloads now give up on them in about a minute and move on to another source, instead of grinding through every proxy, quality tier and retry round for up to a quarter of an hour first. Your track arrives from elsewhere while the proxies sulk in peace.",
+                    "A source that keeps timing out during searches now gets benched after three strikes rather than slowing every search (and every track of a bulk import) to a crawl until its next scheduled check-up.",
+                    "Slow-but-alive downloads are no longer declared dead at 15 minutes flat. Jobs now have a proper heartbeat, so the timeout only fires when a download has genuinely stopped making progress, not just because a big FLAC was taking the scenic route.",
+                    "Blacklisting a bad Soulseek file now actually sticks. Results used to get a new random identity every search, so the same dodgy file could waltz back in wearing a fresh moustache; it's now recognised on sight.",
                     "The zvu4no MP3 search returns results again. The site quietly moved house (zvu4no.org became zvu4it.org) and our search was left knocking at the old door, so every result got filtered out. We now follow it wherever it lands, and we've made the fix rebrand-proof so the next moonlight flit doesn't catch us out.",
                     "FreeMp3Cloud search is back too. It had also shuffled to a new address, and our search kept landing on the plain front page instead of the actual results. Now it follows the move properly, so tracks turn up again.",
                 ]

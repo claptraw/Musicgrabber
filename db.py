@@ -668,6 +668,12 @@ def init_db():
             conn.execute("ALTER TABLE jobs ADD COLUMN progress_stage TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            # Heartbeat for the stale-job monitor: bumped on every job update so
+            # a slow-but-alive download isn't declared dead on age alone.
+            conn.execute("ALTER TABLE jobs ADD COLUMN progress_at TIMESTAMP")
+        except sqlite3.OperationalError:
+            pass
 
         # Watched track match mismatches  -  persistent audit log so we can spot
         # normalisation gaps without relying on Docker log retention.
@@ -1179,14 +1185,16 @@ def cleanup_old_search_logs(retention_days: int = SEARCH_LOG_RETENTION_DAYS) -> 
 
 
 def cleanup_stale_jobs():
-    """Mark any downloading/queued jobs older than STALE_JOB_TIMEOUT as failed.
-    Handles cases where the background task crashed or the container restarted."""
+    """Mark any downloading/queued jobs with no progress for STALE_JOB_TIMEOUT as failed.
+    Handles cases where the background task crashed or the container restarted.
+    Judged on the progress heartbeat (falling back to created_at for jobs that
+    never got one), so a slow-but-alive download isn't shot for taking its time."""
     with db_conn() as conn:
         cursor = conn.execute(
             """UPDATE jobs SET status = 'failed', error = 'Timed out (no progress)',
                progress_stage = NULL, completed_at = datetime('now')
                WHERE status IN ('downloading', 'queued')
-               AND created_at < datetime('now', ? || ' seconds')""",
+               AND COALESCE(progress_at, created_at) < datetime('now', ? || ' seconds')""",
             (str(-STALE_JOB_TIMEOUT),)
         )
         if cursor.rowcount > 0:
