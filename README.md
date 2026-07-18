@@ -1,5 +1,5 @@
 # Music Grabber
-**v3.0.0**
+**v3.0.1**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -22,17 +22,22 @@ MusicGrabber is intentionally narrow. It is **not**:
 ## Features
 
 - **Multi-source search:** YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek searched in parallel; quality-ranked results with source badges and score explanations
+- **Live search progress:** results stream in as each source answers, with live status for completed, slow, parked, or unavailable sources; repeated timeouts automatically bench an unhealthy source until a background probe clears it
 - **Monochrome/Qobuz source:** searches the Tidal catalogue via hifi-api metadata, then resolves matching Qobuz FLAC streams by ISRC. It can serve proper lossless when the proxy gods are smiling. Enabled by default and configurable in Search Sources
 - **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
 - **Watched Artists:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles only: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Tracks already on disk are recognised immediately. Per-artist check interval, convert-to-FLAC toggle, pause/resume, missing and track list panels
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
+- **Playlist housekeeping:** find audio left behind by mirror-mode playlist removals and move it safely into Singles; optionally stamp watched-playlist names into audio Comment tags for macOS Music smart playlists
 - **Album mode:** browse MusicBrainz artists, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Search results can also jump straight to the matching album when MusicBrainz can identify it
 - **Auto-album routing for singles:** optional setting to file single-track downloads into artist/album folders when MusicBrainz resolves an album, either under Singles or the Albums directory
 - **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches enabled sources in parallel and grabs the best result for each. It can also create a playlist and route files into the Playlists directory or a custom watched-playlist folder
 - **Similar artist discovery:** hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
 - **Apprise notifications:** one URL covers Gotify, ntfy, Discord, Pushover, Slack, and about 50 others. Also supports Telegram webhook and SMTP email
-- **Navidrome pre-download duplicate check:** queries the Subsonic API before downloading; if the track is already in your library, the existing path is used for playlist routing without re-downloading
+- **Navidrome/Lidarr duplicate heads-up:** searches warn when a track is already known to either library; Navidrome can also prevent the duplicate download and reuse the existing path for playlist routing
 - **Best quality audio:** output format is configurable (FLAC, ALAC/AAC-in-M4A, Opus, or MP3), with quality settings for lossy formats
+- **Track upgrades:** opt-in library scanner flags files below your configured quality tier, lets you compare replacement candidates, and keeps upgrades manual unless you explicitly choose Upgrade All
+- **Loudness normalisation:** optional two-pass EBU R128 normalisation brings lossy web sources to -14 LUFS without touching lossless masters
+- **Automatic Music import:** optionally copy each completed download into a mounted macOS Music "Automatically Add to Music" folder
 - **Enhanced metadata:** AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source tags. For "Artist - Title" queries, MusicBrainz expected duration is used as a scoring signal at search time, so a 1:41 DJ edit won't outrank the 3:31 original
 - **Synced lyrics:** automatic lyrics fetching from LRClib, saved as `.lrc` files
 - **Auto-organise:** `Singles/Artist/Title.flac` (or flat `Singles/Artist - Title.flac` with "Organise by Artist" off). Optional track-number filenames produce `Singles/Artist/1 - Title.flac` when metadata includes a track number. Album mode uses `Albums/Artist/Album/Track.flac`
@@ -215,10 +220,11 @@ Both scripts are copied to `%APPDATA%\MusicGrabber` during setup. You can also p
 
 The easiest way to configure MusicGrabber is via the **Settings tab** in the UI. You can configure:
 
-- **General**: MusicBrainz metadata, lyrics fetching, default FLAC conversion, minimum audio bitrate, artist subfolder organisation
+- **General**: MusicBrainz and Deezer metadata, lyrics fetching, default conversion, minimum bitrate, live-version rejection, and optional loudness normalisation
 - **Audio format**: FLAC, ALAC/AAC-in-M4A, Opus, or MP3, including MP3/Opus/ALAC quality presets
-- **Library layout**: Singles, Playlists, and Albums subfolders, track-number filenames, auto-album routing, singles-only mode, and file permissions
-- **Search sources**: enable/disable YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Soulseek, and Monochrome
+- **Library layout**: Singles, Playlists, and Albums subfolders, track-number filenames, auto-album routing, playlist album/comment tagging, automatic Music import, singles-only mode, and file permissions
+- **Search sources**: enable/disable YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Soulseek, and Monochrome; configure cross-source fallback and automatic health checks
+- **Track upgrades**: scan the library for files below the configured quality tier and control the scan interval
 - **Monochrome**: hifi-api URL and Qobuz proxy URL
 - **Soulseek (slskd)**: enable toggle, URL, credentials, downloads path
 - **Navidrome**: URL and credentials for library refresh
@@ -227,6 +233,7 @@ The easiest way to configure MusicGrabber is via the **Settings tab** in the UI.
 - **Notifications**: Apprise URL, Telegram webhook, generic webhook URL, and SMTP settings
 - **YouTube**: Upload browser cookies for authenticated downloads
 - **Spotify**: Upload browser cookies to access private playlists
+- **Apple Music**: Add a user token for private library playlists
 - **Blacklist**: View and manage reported tracks and blocked uploaders
 - **Security**: API key for authentication
 - **Users** (admin only): create and manage user accounts, reset passwords
@@ -247,6 +254,7 @@ Settings are stored in the database and persist across container restarts.
 | `DB_PATH` | `/data/music_grabber.db` | SQLite database path |
 | `ROOT_PATH` | *(empty)* | URL prefix when serving behind a reverse proxy subpath, e.g. `/musicgrabber`. Your proxy should strip this prefix before forwarding to MusicGrabber |
 | `ENABLE_MUSICBRAINZ` | `true` | Enable MusicBrainz metadata lookups |
+| `ENABLE_DEEZER_METADATA` | `true` | Fill album details from Deezer when MusicBrainz has no suitable release metadata |
 | `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
 | `ACOUSTID_API_KEY` | *(shared built-in)* | AcoustID API key for audio fingerprinting. A shared key is built in but **may hit rate limits**. Register a free key at [acoustid.org](https://acoustid.org/login) and set it here (or via Settings tab) to avoid sharing quota |
 | `DEFAULT_CONVERT_TO_FLAC` | `true` | Convert downloads to FLAC by default (can be toggled per-download in UI) |
@@ -255,6 +263,12 @@ Settings are stored in the database and persist across container restarts.
 | `OPUS_BITRATE` | `320k` | Opus bitrate: `320k`, `256k`, `192k`, `128k`, or `96k` |
 | `ALAC_BITRATE` | `lossless` | ALAC/M4A quality: `lossless` for true ALAC, or `320k`, `256k`, `192k`, `128k` for AAC-in-M4A |
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
+| `REJECT_LIVE_VERSIONS` | `false` | Reject a confidently identified live recording when the query did not request one |
+| `NORMALISE_LOSSY_AUDIO` | `false` | Apply two-pass EBU R128 loudness normalisation to lossy web sources; lossless sources are untouched |
+| `AUTO_IMPORT_DIR` | *(empty)* | Copy completed downloads into this directory, such as macOS Music's Automatically Add folder |
+| `PLAYLIST_COMMENT_TAGGING` | `false` | Write watched-playlist names into each track's Comment tag |
+| `ENABLE_TRACK_UPGRADES` | `false` | Enable scanning for library files below the configured output quality tier |
+| `UPGRADE_SCAN_INTERVAL_HOURS` | `24` | Hours between automatic track-upgrade scans |
 | `SINGLES_SUBDIR` | `Singles` | Subfolder under `MUSIC_DIR` for normal single-track downloads. Use `.` for the music root |
 | `PLAYLISTS_SUBDIR` | *(empty)* | Optional subfolder under `MUSIC_DIR` for playlist-routed downloads. Empty means playlist files use the Singles layout |
 | `ALBUMS_SUBDIR` | `Albums` | Subfolder under `MUSIC_DIR` for album-mode downloads. Use `.` for the music root |
@@ -262,6 +276,7 @@ Settings are stored in the database and persist across container restarts.
 | `INCLUDE_TRACK_NUMBER_IN_FILENAME` | `false` | Prefix saved filenames with the resolved track number when one is available, e.g. `Singles/Artist/1 - Title.flac` |
 | `AUTO_ALBUM_SINGLES` | `false` | If MusicBrainz finds album context for a single, move it into `Artist/Album/` automatically |
 | `AUTO_ALBUM_SINGLES_USE_ALBUMS_DIR` | `false` | Put auto-routed singles under the Albums directory instead of under Singles |
+| `PLAYLIST_ALBUM_AS_NAME` | `false` | Tag playlist-routed tracks as one compilation using the playlist name as the album |
 | `SINGLES_ONLY_MODE` | `false` | Hide the Albums tab while keeping single-track auto-album routing available |
 | `FILE_PERMISSIONS` | `666` | File mode applied after downloads. `777` is available for stubborn NAS/share setups |
 | `SKIP_DUPES` | `true` | Skip downloads when a matching local file is already found |
@@ -280,10 +295,16 @@ Settings are stored in the database and persist across container restarts.
 | `SOURCE_YOUTUBE_ENABLED` | `true` | Enable YouTube search results |
 | `SOURCE_SOUNDCLOUD_ENABLED` | `true` | Enable SoundCloud search results |
 | `SOURCE_ZVU4NO_ENABLED` | `true` | Enable zvu4no search results |
+| `SOURCE_FREEMP3CLOUD_ENABLED` | `true` | Enable FreeMp3Cloud search results |
 | `SOURCE_SOULSEEK_ENABLED` | `false` | Enable Soulseek/slskd search results. Credentials alone do not enable Soulseek |
 | `SOURCE_MONOCHROME_ENABLED` | `true` | Enable Monochrome/Qobuz search results |
+| `SOURCE_OFFLINE_FALLBACK` | `true` | Try another enabled source after a download source fails |
+| `SOURCE_HEALTH_CHECKS_ENABLED` | `true` | Hide unhealthy sources until a background probe confirms recovery |
+| `SOURCE_HEALTH_CHECK_INTERVAL_MINUTES` | `10` | Minutes between scheduled source health probes |
+| `SOURCE_HEALTH_COOLDOWN_MINUTES` | `10` | Minimum time a failed source remains parked before it can be probed again |
 | `MONOCHROME_HIFI_API_URL` | `https://monochrome-api.samidy.com,https://api.monochrome.tf,https://eu-central.monochrome.tf` | hifi-api compatible endpoint(s) used for Tidal metadata/ISRC lookups. Comma or newline separated lists are tried in order |
 | `MONOCHROME_QOBUZ_PROXY_URL` | `https://qdl-api.monochrome.tf` | Qobuz proxy used to resolve direct audio streams |
+| `QBDLX_FALLBACK_ENABLED` | `true` | Use qbdlx's direct Qobuz API as the last fallback when public proxies fail |
 | `SLSKD_URL` | - | slskd API URL (e.g., `http://slskd:5030`) |
 | `SLSKD_USER` | - | slskd username |
 | `SLSKD_PASS` | - | slskd password |
@@ -296,6 +317,7 @@ Settings are stored in the database and persist across container restarts.
 | `LIBRARY_RECONCILE_INTERVAL` | `1800` | How often MusicGrabber reconciles deleted/renamed files against the job database (seconds) |
 | `SPOTIFY_BROWSER_TIMEOUT_SECONDS` | `180` | Maximum runtime for the headless Spotify playlist browser fallback |
 | `SPOTIFY_BROWSER_STALL_SECONDS` | `30` | Abort Spotify browser scrolling after this many seconds without finding more tracks |
+| `APPLE_MUSIC_USER_TOKEN` | - | Apple Music user token for private `music.apple.com/library/...` playlists |
 | `NOTIFY_ON` | `playlists,bulk,errors` | Notification triggers (applies to all channels): `singles`, `playlists`, `bulk`, `errors` |
 | `APPRISE_URL` | - | Apprise notification URL (covers Gotify, ntfy, Discord, Pushover, Slack, and ~50 others) |
 | `TELEGRAM_WEBHOOK_URL` | - | Full Telegram webhook URL (see Notifications section below) |
@@ -315,9 +337,11 @@ Settings are stored in the database and persist across container restarts.
 | `LOGIN_ATTEMPT_WINDOW` | `900` | Window for counting failed logins |
 | `DOWNLOAD_TOKEN_TTL_SECONDS` | `60` | Single-use browser download token lifetime |
 | `MAX_CONCURRENT_DOWNLOADS` | `3` | Number of concurrent download workers |
+| `SEARCH_ALL_DEADLINE` | `30` | Maximum collection time for one multi-source search before slow sources are left behind |
 | `TIMEOUT_YTDLP_DOWNLOAD` | `300` | Timeout in seconds for yt-dlp to download a single track. Increase for long mixes or slow connections |
 | `TIMEOUT_FFMPEG_CONVERT` | `120` | Timeout in seconds for ffmpeg format conversion. Increase if long tracks are producing broken files |
 | `TIMEOUT_ZVU4NO_DOWNLOAD` | `120` | Timeout in seconds for zvu4no direct MP3 downloads |
+| `TIMEOUT_FREEMP3CLOUD_DOWNLOAD` | `120` | Timeout in seconds for FreeMp3Cloud direct MP3 downloads |
 | `TIMEOUT_MONOCHROME_DOWNLOAD` | `300` | Timeout in seconds for Monochrome/Qobuz FLAC downloads |
 
 ### Navidrome Integration
@@ -839,7 +863,9 @@ music.yourdomain.com {
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/sources` | List available search sources (for source selector UI) |
-| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "all/youtube/soundcloud/zvu4no/monochrome/soulseek"}`) |
+| `GET` | `/api/sources/health` | Get current source and Monochrome proxy health state |
+| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "all/youtube/soundcloud/zvu4no/freemp3cloud/monochrome/soulseek"}`) |
+| `POST` | `/api/search/stream` | Stream per-source status and ranked results as NDJSON |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
 | `GET` | `/api/search/artwork` | Find display artwork for a search result (`?artist=...&title=...`) |
 | `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for URL-based sources like SoundCloud/zvu4no) |
@@ -849,7 +875,7 @@ music.yourdomain.com {
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/zvu4no/monochrome/soulseek", "download_type": "single/playlist"}`) |
+| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/zvu4no/freemp3cloud/monochrome/soulseek", "download_type": "single/playlist"}`) |
 | `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` for provenance) |
 | `GET` | `/api/jobs/downloadable` | Paginated list of completed jobs available to save to device (`?page=1&per_page=50`) |
 | `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |
@@ -898,6 +924,8 @@ music.yourdomain.com {
 | `GET` | `/api/watched-playlists` | List all watched playlists |
 | `POST` | `/api/watched-playlists` | Add a playlist to watch |
 | `GET` | `/api/watched-playlists/schedule` | Get next scheduled check time |
+| `GET` | `/api/watched-playlists/orphans` | Find unclaimed audio left in watched-playlist folders |
+| `POST` | `/api/watched-playlists/orphans/move` | Move selected orphaned files into the normal Singles layout |
 | `GET` | `/api/watched-playlists/{id}` | Get watched playlist details |
 | `PUT` | `/api/watched-playlists/{id}` | Update watched playlist settings |
 | `DELETE` | `/api/watched-playlists/{id}` | Remove a watched playlist |
@@ -908,6 +936,7 @@ music.yourdomain.com {
 | `POST` | `/api/watched-playlists/{id}/queue-track-candidate` | Queue a specific watched-playlist candidate (`{artist, title, video_id, source, source_url?, slskd_username?, slskd_filename?}`) |
 | `POST` | `/api/watched-playlists/{id}/retry-track` | Retry a specific missing track with the automatic watched-playlist search (`{artist, title}`) |
 | `POST` | `/api/watched-playlists/check-all` | Check all watched playlists |
+| `POST` | `/api/watched-playlists/tag-all-playlists-comment` | Backfill watched-playlist Comment tags across existing files |
 
 ### Watched Artists
 
@@ -924,6 +953,17 @@ music.yourdomain.com {
 | `POST` | `/api/watched-artists/{id}/retry-track` | Retry a specific missing single (`{artist, title}`) |
 | `POST` | `/api/watched-artists/{id}/retry-all-missing` | Queue all undownloaded singles as a bulk import |
 | `POST` | `/api/watched-artists/check-all` | Check all watched artists |
+
+### Track Upgrades
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/upgrades/candidates` | List library files below the configured quality tier |
+| `POST` | `/api/upgrades/candidates/{id}/search` | Find replacement candidates for one file |
+| `POST` | `/api/upgrades/candidates/{id}/dismiss` | Dismiss one upgrade candidate |
+| `POST` | `/api/upgrades/candidates/{id}/upgrade` | Queue the selected replacement for one file |
+| `POST` | `/api/upgrades/upgrade-all` | Queue all currently eligible upgrades |
+| `POST` | `/api/upgrades/rescan` | Start a fresh library quality scan |
 
 ### Album Downloads
 

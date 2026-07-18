@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.0.1 (DEV)
+## v3.0.1 (2026-07-18)
 
 Development cycle opened after v3.0.0. The kettle boiled, then promptly needed refilling: two of the cheap MP3 sources had quietly changed addresses without leaving a forwarding note.
 
