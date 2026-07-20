@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.0.2 (DEV)
+## v3.0.2 (2026-07-20)
 
 Development cycle opened after v3.0.1. The workbench is clear, which should last until someone presses Search.
 
