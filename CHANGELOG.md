@@ -4,6 +4,20 @@
 
 Development cycle opened after v3.0.1. The workbench is clear, which should last until someone presses Search.
 
+### Added
+- **Source health is now visible before you search**: a compact strip beneath the search box shows every enabled service as available, checking, or unavailable, with the last verdict and cooldown detail in its tooltip. Admins can start a fresh background check from the strip, and if a source gets parked while the page is open a toast says so instead of leaving you to discover the gap by accident. Health verdicts now survive container restarts in SQLite, so rebooting does not give a dead provider an undeserved clean slate.
+- **Timed-out search sources can be retried in place**: timeout and error rows now stay put with a “Retry this source” button. The retry searches only that provider, merges any recovered matches into the current ranking, and leaves results from the sources that already succeeded alone.
+- **Queue jobs now show their source journey**: when automatic fallback moves a download through several providers, the full route is retained and shown in the expanded Queue details, for example `MONO → SLK → YT`. The current source and error still describe what is happening now; the journey explains how it got there.
+
+### Changed
+- **Search results now make better use of a small source selection**: the fixed per-source merge caps still stop one service flooding a normal all-source search, but now expand to a fair share of the 15-result page when only one or two enabled, healthy services are available. A one-source setup can return all 15 matches and a two-source setup can contribute eight apiece, instead of leaving most of the results view needlessly empty.
+- **Repeated automated searches now share a short-lived cache**: bulk imports and watched refreshes reuse an identical recent search for up to 15 minutes. Entries are bounded, empty failures are never cached, source availability is part of the key, blacklist changes clear the cache, and every caller receives its own copy so a preferred-source score boost cannot wander into somebody else's job wearing a false moustache.
+- **Slow search legs are now bounded at the provider level**: only one live call per source is admitted, so a request left running after the 30-second collection deadline cannot be duplicated by every track in a bulk import. A busy source fails that leg immediately until its earlier call finishes. Soulseek keeps its empty-result retry when searched alone but skips it when competing for a multi-source deadline, and Monochrome's hifi metadata search now has one 15-second budget across every endpoint and query variant instead of serially spending up to a minute.
+
+### Fixed
+- **Expired Qobuz proxy failures are now discarded**: old cooldown records, including proxies removed from the configuration, are pruned as the proxy pool is used instead of accumulating for the life of the process.
+- **Monochrome hover previews now use the complete lossless fallback chain**: preview resolution used to discard everything except the ISRC, leaving it unable to use the download path's Deezer rescue or Tidal fallback when Qobuz was having a moment. Preview and download now share one resolver; hover keeps a single quick proxy sweep, then tries direct Qobuz, Deezer ISRC rescue, and Tidal LOSSLESS for Tidal-backed results. It never drops to the lossy HIGH tier, and expired or failed CDN URLs are evicted from the browser cache instead of poisoning every later hover.
+
 ## v3.0.1 (2026-07-18)
 
 Development cycle opened after v3.0.0. The kettle boiled, then promptly needed refilling: two of the cheap MP3 sources had quietly changed addresses without leaving a forwarding note.

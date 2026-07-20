@@ -99,6 +99,7 @@ def init_db():
             skipped_tracks INTEGER DEFAULT 0,
             m3u_path TEXT,
             source TEXT DEFAULT 'youtube',
+            source_history TEXT,
             slskd_username TEXT,
             slskd_filename TEXT,
             slskd_size INTEGER,
@@ -122,6 +123,10 @@ def init_db():
             conn.execute("ALTER TABLE jobs ADD COLUMN source TEXT DEFAULT 'youtube'")
         except sqlite3.OperationalError:
             pass  # Column already exists
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN source_history TEXT")
+        except sqlite3.OperationalError:
+            pass
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN slskd_username TEXT")
         except sqlite3.OperationalError:
@@ -369,6 +374,18 @@ def init_db():
     """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_video ON blacklist(video_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_blacklist_uploader ON blacklist(uploader, source)")
+
+        # Last-known source health survives restarts, so a dead provider does not
+        # get a free pardon merely because the container had a cup of tea.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS source_health (
+            source_id TEXT PRIMARY KEY,
+            healthy INTEGER NOT NULL,
+            checked_at REAL NOT NULL,
+            reason TEXT,
+            disabled_until REAL NOT NULL DEFAULT 0
+        )
+        """)
 
         # Track upgrades  -  the Phase 1 scan caches one row per eligible (our-tagged)
         # file. The filesystem stays the source of truth; this is just a cache keyed by

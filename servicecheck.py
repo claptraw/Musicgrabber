@@ -15,8 +15,9 @@ Design notes:
   worthless if it can't stream. The direct-MP3 sites just need a live root. The
   big platforms need host reachability. Soulseek needs to be configured and
   slskd reachable.
-- State is in-memory and ephemeral. A restart re-checks everything, which is
-  fine: checks are cheap and services bounce constantly anyway.
+- Last-known state is persisted in SQLite. Startup honours a still-live cooldown
+  and only re-checks entries that are stale or due, so restarts do not pardon a
+  provider in the middle of an outage.
 - No source here imports the search registry at module load (search.py imports
   us), so any cross-reference is a lazy import inside a function.
 """
@@ -132,6 +133,66 @@ _CHECKS = {
     "freemp3cloud": _check_freemp3cloud,
     "soulseek": _check_soulseek,
 }
+_PERSISTENT_SOURCE_IDS = frozenset(_CHECKS)
+
+
+def _read_persisted_health() -> dict[str, dict]:
+    """Read persisted built-in source verdicts, failing open during early startup."""
+    try:
+        from db import db_conn
+        with db_conn() as conn:
+            rows = conn.execute(
+                "SELECT source_id, healthy, checked_at, reason, disabled_until FROM source_health"
+            ).fetchall()
+        return {
+            row[0]: {
+                "healthy": bool(row[1]),
+                "checked_at": float(row[2] or 0),
+                "reason": row[3] or "",
+                "disabled_until": float(row[4] or 0),
+            }
+            for row in rows if row[0] in _PERSISTENT_SOURCE_IDS
+        }
+    except Exception as exc:
+        print(f"servicecheck: could not restore persisted health: {exc}")
+        return {}
+
+
+def _persist_health_entry(source_id: str, entry: dict) -> None:
+    """Best-effort persistence; health checks must still work if SQLite is busy."""
+    if source_id not in _PERSISTENT_SOURCE_IDS:
+        return
+    try:
+        from db import db_conn
+        with db_conn() as conn:
+            conn.execute(
+                """INSERT INTO source_health
+                   (source_id, healthy, checked_at, reason, disabled_until)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(source_id) DO UPDATE SET
+                       healthy = excluded.healthy,
+                       checked_at = excluded.checked_at,
+                       reason = excluded.reason,
+                       disabled_until = excluded.disabled_until""",
+                (
+                    source_id,
+                    int(bool(entry.get("healthy"))),
+                    float(entry.get("checked_at", 0)),
+                    entry.get("reason", ""),
+                    float(entry.get("disabled_until", 0)),
+                ),
+            )
+            conn.commit()
+    except Exception as exc:
+        print(f"servicecheck: could not persist {source_id} health: {exc}")
+
+
+def load_persisted_health() -> dict[str, dict]:
+    """Restore last-known verdicts into memory and return what was loaded."""
+    restored = _read_persisted_health()
+    with _LOCK:
+        _HEALTH.update(restored)
+    return restored
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +292,7 @@ def check_source(source_id: str, force: bool = False) -> dict:
 
     if not healthy:
         print(f"servicecheck: {source_id} unavailable: {reason} (parked ~{int(_cooldown() // 60)}m)")
+    _persist_health_entry(source_id, entry)
     return entry
 
 
@@ -313,6 +375,7 @@ def mark_unhealthy(source_id: str, reason: str) -> None:
     }
     with _LOCK:
         _HEALTH[source_id] = entry
+    _persist_health_entry(source_id, entry)
     print(f"servicecheck: {source_id} marked unhealthy from download failure: {reason}")
 
 
@@ -375,8 +438,13 @@ def health_snapshot() -> list[dict]:
     try:
         from search import SOURCE_REGISTRY
         labels = {sid: cfg.get("label", sid) for sid, cfg in SOURCE_REGISTRY.items()}
+        enabled = {
+            sid: get_setting_bool(f"source_{sid}_enabled", cfg.get("default_enabled", True))
+            for sid, cfg in SOURCE_REGISTRY.items()
+        }
     except Exception:
         labels = {}
+        enabled = {}
     with _LOCK:
         snap = []
         for sid in _CHECKS:
@@ -389,16 +457,18 @@ def health_snapshot() -> list[dict]:
                 "checked_at": (entry or {}).get("checked_at", 0),
                 "retry_at": (entry or {}).get("disabled_until", 0),
                 "available": is_source_available(sid),
+                "enabled": enabled.get(sid, True),
             })
     return snap
 
 
 def start_health_checks() -> None:
-    """Kick off an initial check of all sources in the background at startup."""
+    """Restore saved verdicts, then refresh only sources that are actually due."""
     if not _checks_enabled():
         return
+    load_persisted_health()
     threading.Thread(
-        target=lambda: check_all_sources(force=True),
+        target=lambda: check_all_sources(force=False),
         daemon=True,
         name="source-health-startup",
     ).start()

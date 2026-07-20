@@ -113,6 +113,21 @@ def test_remember_qobuz_proxy_clears_failure(monkeypatch):
     assert monochrome._qobuz_proxy_url_cache == "https://qobuz.kennyy.com.br"
 
 
+def test_prune_qobuz_proxy_failures_removes_expired_entries(monkeypatch):
+    import monochrome
+    failures = {
+        "https://old.example.test": 100.0,
+        "https://recent.example.test": 950.0,
+    }
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
+    monkeypatch.setattr(monochrome, "_QOBUZ_FAILURE_TTL", 600)
+
+    removed = monochrome._prune_qobuz_proxy_failures(now=1000.0)
+
+    assert removed == 1
+    assert failures == {"https://recent.example.test": 950.0}
+
+
 # ---------------------------------------------------------------------------
 # _get_qobuz_stream_url fallback chain
 # ---------------------------------------------------------------------------
@@ -307,7 +322,7 @@ def test_monochrome_preview_uses_qbdlx_when_proxies_fail(monkeypatch):
     assert calls == [("GBAYE9200070", 7)]
 
 
-def test_monochrome_preview_tries_qbdlx_format_6_after_7_fails(monkeypatch):
+def test_monochrome_preview_never_falls_back_to_lossy_qbdlx_format(monkeypatch):
     import monochrome
 
     def fake_proxy(isrc, quality_fmt):
@@ -317,17 +332,91 @@ def test_monochrome_preview_tries_qbdlx_format_6_after_7_fails(monkeypatch):
 
     def fake_qbdlx(isrc, quality_fmt):
         calls.append((isrc, quality_fmt))
-        if quality_fmt == 7:
-            return None
-        return "https://streaming-qobuz-std.akamaized.net/qbdlx-format-6.flac"
+        return None
 
     monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
     monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", fake_qbdlx)
 
-    url = monochrome.get_monochrome_preview_url("GBAYE9200070")
+    with pytest.raises(RuntimeError, match="no stream available"):
+        monochrome.get_monochrome_preview_url("GBAYE9200070")
 
-    assert url == "https://streaming-qobuz-std.akamaized.net/qbdlx-format-6.flac"
-    assert calls == [("GBAYE9200070", 7), ("GBAYE9200070", 6)]
+    assert calls == [("GBAYE9200070", 7)]
+
+
+def test_monochrome_preview_rescues_isrc_with_artist_and_title(monkeypatch):
+    import monochrome
+    proxy_calls = []
+
+    def fake_proxy(isrc, quality_fmt):
+        proxy_calls.append((isrc, quality_fmt))
+        if isrc == "GBNEW2500001":
+            return "https://cdn.test/rescued.flac"
+        raise monochrome.QobuzProxyError("not found", transport_failure=False)
+
+    rescue_calls = []
+    def fake_rescue(artist, title, old_isrc):
+        rescue_calls.append((artist, title, old_isrc))
+        return "GBNEW2500001"
+
+    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", fake_rescue)
+
+    url = monochrome.get_monochrome_preview_url(
+        "monochrome://123?isrc=GBOLD2500001&quality=LOSSLESS&src=deezer",
+        artist_hint="Artist",
+        title_hint="Track",
+    )
+
+    assert url == "https://cdn.test/rescued.flac"
+    assert rescue_calls == [("Artist", "Track", "GBOLD2500001")]
+    assert proxy_calls == [("GBOLD2500001", 7), ("GBNEW2500001", 7)]
+
+
+def test_monochrome_preview_uses_tidal_lossless_as_final_leg(monkeypatch):
+    import monochrome
+
+    monkeypatch.setattr(
+        monochrome,
+        "_get_qobuz_stream_url",
+        lambda isrc, quality_fmt: (_ for _ in ()).throw(
+            monochrome.QobuzProxyError("not found", transport_failure=False)
+        ),
+    )
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda artist, title, isrc: "")
+    tidal_calls = []
+
+    def fake_tidal(tidal_id, quality):
+        tidal_calls.append((tidal_id, quality))
+        return "https://tidal-cdn.test/lossless.flac"
+
+    monkeypatch.setattr(monochrome, "_tidal_stream_url", fake_tidal)
+
+    url = monochrome.get_monochrome_preview_url(
+        "monochrome://18420572?isrc=GBZZZ9900001&quality=HI_RES_LOSSLESS&src=tidal"
+    )
+
+    assert url == "https://tidal-cdn.test/lossless.flac"
+    assert tidal_calls == [("18420572", "LOSSLESS")]
+
+
+def test_monochrome_preview_only_sweeps_proxies_once(monkeypatch):
+    import monochrome
+    calls = []
+
+    def dead_proxy(isrc, quality_fmt):
+        calls.append((isrc, quality_fmt))
+        raise monochrome.QobuzProxyError("down", transport_failure=True)
+
+    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 5)
+    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", dead_proxy)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
+
+    with pytest.raises(RuntimeError, match="no stream available"):
+        monochrome.get_monochrome_preview_url("GBAYE9200070")
+
+    assert calls == [("GBAYE9200070", 7)]
 
 
 def test_monochrome_preview_raises_when_proxy_and_qbdlx_fail(monkeypatch):
@@ -621,6 +710,27 @@ def test_monochrome_playlist_fetch_handles_top_level_playlist_payload(monkeypatc
         ("Kylie Cantrall", "Carrie Bradshaw"),
         ("Morgan St. Jean", "Somebody New"),
     ]
+
+
+def test_hifi_search_leg_stops_at_its_wall_clock_budget(monkeypatch):
+    import monochrome
+    clock = {"now": 100.0}
+    calls = []
+
+    monkeypatch.setattr(monochrome, "MONOCHROME_HIFI_SEARCH_BUDGET", 5.0)
+    monkeypatch.setattr(monochrome, "_hifi_api_urls", lambda: ["https://one.test", "https://two.test"])
+    monkeypatch.setattr(monochrome, "_monochrome_search_queries", lambda query: [query, f"{query} alt"])
+    monkeypatch.setattr(monochrome.time, "monotonic", lambda: clock["now"])
+
+    def slow_failure(url, params, headers, timeout, follow_redirects):
+        calls.append((url, timeout))
+        clock["now"] += timeout
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(monochrome.httpx, "get", slow_failure)
+
+    assert monochrome._hifi_search_leg("Artist - Track", 5) == []
+    assert calls == [("https://one.test/search", 5.0)]
 
 
 # ---------------------------------------------------------------------------

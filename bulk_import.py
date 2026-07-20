@@ -16,7 +16,7 @@ from constants import BULK_IMPORT_SEARCH_DELAY, PRIORITY_SOURCE_BOOST
 from db import db_conn, upsert_album_track_lock
 from downloads import process_download, process_slskd_download, create_bulk_playlist
 from notifications import send_notification
-from search import search_all, log_ranked_results
+from search import search_all_cached, log_ranked_results
 from settings import get_setting_int
 from utils import hash_track, spawn_daemon_thread
 
@@ -328,7 +328,12 @@ def process_bulk_import_worker(import_id: str):
                     search_results = [best_match]
                     log_ranked_results(f"Bulk import {import_id}", search_query, search_results)
                 else:
-                    search_results, _ = search_all(search_query, limit=10, sources=preferred_sources_list, include_soulseek=True)
+                    search_results, _ = search_all_cached(
+                        search_query,
+                        limit=10,
+                        sources=preferred_sources_list,
+                        include_soulseek=True,
+                    )
 
                     # Apply the priority-source boost before logging so the ranked log
                     # reflects what the worker will actually pick.

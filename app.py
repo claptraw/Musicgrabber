@@ -64,7 +64,10 @@ from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, parse_duration,
     get_cookies_expiry, _parse_query_artist_title,
 )
-from search import search_source, search_all, _search_all_events, get_available_sources, SOURCE_REGISTRY
+from search import (
+    search_source, search_all, _search_all_events, get_available_sources,
+    clear_automated_search_cache, SOURCE_REGISTRY,
+)
 import servicecheck
 from slskd import slskd_enabled, search_slskd
 from downloads import (
@@ -1611,7 +1614,8 @@ def get_score_rationale(job_id: str, http_request: Request):
 # =============================================================================
 
 @app.get("/api/preview/{video_id}")
-def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
+def get_preview_url(video_id: str, source: str = "youtube", url: str = None,
+                    artist: str = "", title: str = ""):
     """Get a streamable audio URL for preview playback."""
     try:
         # Direct MP3 sources: the source_url is already streamable  -  hand it
@@ -1627,12 +1631,15 @@ def get_preview_url(video_id: str, source: str = "youtube", url: str = None):
             from monochrome import get_monochrome_preview_url
             from urllib.parse import urlparse as _urlparse, parse_qs as _parse_qs
             _parsed = _urlparse(url)
-            if not _parsed.netloc:
+            if _parsed.scheme != "monochrome" or not _parsed.netloc:
                 raise HTTPException(status_code=400, detail="Invalid Monochrome source URL")
-            _isrc = (_parse_qs(_parsed.query).get("isrc") or [""])[0]
-            if not _isrc:
+            if not (_parse_qs(_parsed.query).get("isrc") or [""])[0]:
                 raise HTTPException(status_code=400, detail="Monochrome source URL missing ISRC")
-            cdn_url = get_monochrome_preview_url(_isrc)
+            cdn_url = get_monochrome_preview_url(
+                url,
+                artist_hint=artist,
+                title_hint=title,
+            )
             return {"url": cdn_url, "video_id": video_id}
 
         if source == "youtube":
@@ -1697,6 +1704,15 @@ def list_sources():
 def sources_health():
     """Per-source health snapshot; parked sources carry their cooldown reason."""
     return {"sources": servicecheck.health_snapshot()}
+
+
+@app.post("/api/sources/health/recheck")
+def recheck_sources_health(http_request: Request):
+    """Ask every source for a fresh verdict without holding the HTTP request open."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    spawn_daemon_thread(servicecheck.check_all_sources, True)
+    return {"status": "checking"}
 
 
 @app.post("/api/search")
@@ -2159,6 +2175,12 @@ def get_jobs(limit: int = 20, http_request: Request = None):
             job = dict(row)
             job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
             job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
+            try:
+                job['source_history'] = json.loads(job.get('source_history') or '[]')
+            except (TypeError, ValueError):
+                job['source_history'] = []
+            if not job['source_history'] and job.get('source'):
+                job['source_history'] = [job['source']]
 
             # Keep the queue API cheap. Full library reconciliation can walk a
             # large/remote music tree and is handled by the background monitor;
@@ -2235,6 +2257,12 @@ def get_job(job_id: str, http_request: Request):
     job = dict(row)
     job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
     job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
+    try:
+        job['source_history'] = json.loads(job.get('source_history') or '[]')
+    except (TypeError, ValueError):
+        job['source_history'] = []
+    if not job['source_history'] and job.get('source'):
+        job['source_history'] = [job['source']]
     return job
 
 
@@ -3011,6 +3039,7 @@ def add_blacklist_entry(request: BlacklistRequest, http_request: Request):
 
         conn.commit()
 
+    clear_automated_search_cache()
     return {"entries": entries_created}
 
 
@@ -3044,6 +3073,7 @@ def remove_blacklist_entry(entry_id: int, http_request: Request):
             raise HTTPException(status_code=404, detail="Blacklist entry not found")
         conn.commit()
 
+    clear_automated_search_cache()
     return {"deleted": entry_id}
 
 

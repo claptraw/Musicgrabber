@@ -53,5 +53,11 @@ def test_sources_health_shape(api, base_url):
     assert isinstance(d["sources"], list)
     if d["sources"]:
         item = d["sources"][0]
-        for key in ("id", "label", "healthy", "reason", "checked_at", "retry_at", "available"):
+        for key in ("id", "label", "healthy", "reason", "checked_at", "retry_at", "available", "enabled"):
             assert key in item, f"source health missing key: {key}"
+
+
+def test_sources_health_recheck(api, base_url):
+    r = api.post(f"{base_url}/api/sources/health/recheck", timeout=10)
+    assert r.status_code == 200
+    assert r.json().get("status") == "checking"

@@ -67,6 +67,8 @@ TIMEOUT_ZVU4NO_DOWNLOAD = int(os.getenv("TIMEOUT_ZVU4NO_DOWNLOAD", "120"))  # zv
 TIMEOUT_FREEMP3CLOUD_SEARCH = 20    # FreeMp3Cloud landing + form POST (two round-trips)
 TIMEOUT_FREEMP3CLOUD_DOWNLOAD = int(os.getenv("TIMEOUT_FREEMP3CLOUD_DOWNLOAD", "120"))  # FreeMp3Cloud direct MP3 stream
 TIMEOUT_MONOCHROME_SEARCH = 15   # Monochrome/Qobuz search and proxy lookups
+# Whole Tidal metadata leg, across every endpoint and query variant
+MONOCHROME_HIFI_SEARCH_BUDGET = float(os.getenv("MONOCHROME_HIFI_SEARCH_BUDGET", "15"))
 TIMEOUT_MONOCHROME_DOWNLOAD = int(os.getenv("TIMEOUT_MONOCHROME_DOWNLOAD", "300"))  # Qobuz FLAC CDN download (FLACs are big)
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
@@ -86,13 +88,15 @@ YOUTUBE_SEARCH_MIN_FETCH = 30    # Minimum results to fetch for scoring
 SOUNDCLOUD_SEARCH_MULTIPLIER = 2 # Less noise on SoundCloud, so fewer extras needed
 SOUNDCLOUD_SEARCH_MIN_FETCH = 15 # Minimum results to fetch for scoring
 SLSKD_MAX_RESULTS = 20           # Max Soulseek results to return
-SEARCH_MAX_PER_SOURCE = 4        # Max results any single source can contribute to an "All" search
+SEARCH_MAX_PER_SOURCE = 4        # Baseline contribution cap for an "All" search; sparse source sets can expand to fill the requested page
 SEARCH_MAX_PER_SOURCE_YOUTUBE = 6
 SEARCH_MAX_PER_SOURCE_SOUNDCLOUD = 4
 SEARCH_MAX_PER_SOURCE_ZVU4NO = 4
 SEARCH_MAX_PER_SOURCE_FREEMP3CLOUD = 4
 SEARCH_MAX_PER_SOURCE_SOULSEEK = 6
 SEARCH_MAX_PER_SOURCE_MONOCHROME = 6
+AUTOMATED_SEARCH_CACHE_TTL_SECONDS = 900  # Reuse identical bulk/watch searches briefly without keeping direct links stale for long
+AUTOMATED_SEARCH_CACHE_MAX_ENTRIES = 500 # Bound the in-memory cache on large libraries
 SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 SLSKD_MATCH_CONFIDENCE_FLOOR = float(os.getenv("SLSKD_MATCH_CONFIDENCE_FLOOR", "0.55"))  # 0.0-1.0; reject worse than this
 # Cross-source fallback (source_offline_fallback): a swapped-in candidate must clear

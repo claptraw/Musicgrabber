@@ -37,6 +37,7 @@ import httpx
 
 from constants import (
     TIMEOUT_MONOCHROME_SEARCH,
+    MONOCHROME_HIFI_SEARCH_BUDGET,
     TIMEOUT_MONOCHROME_DOWNLOAD,
     MONOCHROME_HIFI_API_URL,
     MONOCHROME_QOBUZ_PROXY_URL,
@@ -101,6 +102,7 @@ _qobuz_proxy_url_cache: str | None = None
 # download leg honours these marks too, a proxy that hiccuped once shouldn't
 # spend half an hour on the naughty step.
 _qobuz_proxy_failures: dict[str, float] = {}
+_qobuz_proxy_failures_lock = threading.Lock()
 _QOBUZ_FAILURE_TTL = 600  # 10 minutes
 
 # Background health-probe state.
@@ -178,6 +180,7 @@ def _hifi_api_get(path: str, params: dict, timeout: int | float = TIMEOUT_MONOCH
 
 
 def _qobuz_proxy_urls() -> list[str]:
+    _prune_qobuz_proxy_failures()
     _maybe_probe_qobuz_proxies_bg()
 
     from settings import get_setting
@@ -217,19 +220,33 @@ def _qobuz_proxy_urls() -> list[str]:
 def _remember_qobuz_proxy_url(base: str) -> None:
     global _qobuz_proxy_url_cache
     _qobuz_proxy_url_cache = base
-    _qobuz_proxy_failures.pop(base, None)  # clear any stale failure mark
+    with _qobuz_proxy_failures_lock:
+        _qobuz_proxy_failures.pop(base, None)  # clear any stale failure mark
 
 
 def _mark_qobuz_proxy_failed(url: str) -> None:
     global _qobuz_proxy_url_cache
-    _qobuz_proxy_failures[url] = time.time()
+    _prune_qobuz_proxy_failures()
+    with _qobuz_proxy_failures_lock:
+        _qobuz_proxy_failures[url] = time.time()
     if _qobuz_proxy_url_cache == url:
         _qobuz_proxy_url_cache = None  # force re-selection next call
 
 
 def _qobuz_proxy_recently_failed(url: str) -> bool:
-    ts = _qobuz_proxy_failures.get(url)
+    with _qobuz_proxy_failures_lock:
+        ts = _qobuz_proxy_failures.get(url)
     return ts is not None and (time.time() - ts) < _QOBUZ_FAILURE_TTL
+
+
+def _prune_qobuz_proxy_failures(now: float | None = None) -> int:
+    """Discard expired failure marks, including URLs no longer configured."""
+    cutoff = (time.time() if now is None else now) - _QOBUZ_FAILURE_TTL
+    with _qobuz_proxy_failures_lock:
+        expired = [url for url, failed_at in _qobuz_proxy_failures.items() if failed_at <= cutoff]
+        for url in expired:
+            _qobuz_proxy_failures.pop(url, None)
+    return len(expired)
 
 
 def _probe_qobuz_proxies() -> bool:
@@ -280,7 +297,8 @@ def _probe_qobuz_proxies() -> bool:
 
     healthy_urls = [u for u in urls if verdicts.get(u)]
     for url in healthy_urls:
-        _qobuz_proxy_failures.pop(url, None)  # clean bill of health
+        with _qobuz_proxy_failures_lock:
+            _qobuz_proxy_failures.pop(url, None)  # clean bill of health
     if healthy_urls:
         # Deterministically prefer the first healthy one in configured order.
         _remember_qobuz_proxy_url(healthy_urls[0])
@@ -956,6 +974,7 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
 def _hifi_search_leg(query: str, limit: int) -> list[dict]:
     """Search Tidal via hifi-api and return normalised result dicts."""
     try:
+        deadline = time.monotonic() + MONOCHROME_HIFI_SEARCH_BUDGET
         items = []
         seen_raw_ids = set()
         search_errors = []
@@ -963,12 +982,15 @@ def _hifi_search_leg(query: str, limit: int) -> list[dict]:
         for base in _hifi_api_urls():
             endpoint_had_success = False
             for hifi_query in _monochrome_search_queries(query):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 try:
                     resp = httpx.get(
                         f"{base}/search",
                         params={"s": hifi_query, "limit": limit * 3},
                         headers=_HEADERS,
-                        timeout=TIMEOUT_MONOCHROME_SEARCH,
+                        timeout=min(TIMEOUT_MONOCHROME_SEARCH, max(0.1, remaining)),
                         follow_redirects=True,
                     )
                     resp.raise_for_status()
@@ -986,6 +1008,8 @@ def _hifi_search_leg(query: str, limit: int) -> list[dict]:
                     items.append(item)
 
             if items or endpoint_had_success:
+                break
+            if time.monotonic() >= deadline:
                 break
 
         if not items and search_errors:
@@ -1245,18 +1269,19 @@ def _tidal_stream_url(tidal_id: str, quality: str) -> str:
     raise RuntimeError(f"Tidal stream unavailable for id {tidal_id} at {quality}: {last_err}")
 
 
-def download_monochrome_track(source_url: str, output_path: Path,
-                              artist_hint: str = "", title_hint: str = "") -> None:
-    """Resolve a monochrome:// source URL and stream the FLAC to output_path.
+def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
+                                   title_hint: str = "", *,
+                                   lossless_only: bool = False,
+                                   proxy_retry_rounds: int | None = None) -> str:
+    """Resolve a Monochrome result through the shared stream fallback ladder.
 
-    The output_path will have whatever extension the caller gave it (typically .mp3
-    since we reuse _process_direct_mp3_download). That's fine; ffmpeg detects the
-    actual container format regardless of extension.
-
-    artist_hint/title_hint come from the job row and power the Deezer ISRC
-    rescue when the stored ISRC turns out to be junk or unknown to Qobuz.
+    Downloads may step down to HIGH and retry flaky proxies. Previews request a
+    single quick pass with ``lossless_only=True``, which fixes the route without
+    making a hover wait through the download retry schedule.
     """
     parsed = urlparse(source_url)
+    if parsed.scheme != "monochrome":
+        raise RuntimeError(f"Invalid Monochrome source URL {source_url!r}")
     tidal_id = parsed.netloc
     params = parse_qs(parsed.query)
     isrc    = (params.get("isrc") or [""])[0]
@@ -1278,11 +1303,13 @@ def download_monochrome_track(source_url: str, output_path: Path,
             isrc = rescue_isrc
             rescued = True
 
-    # Step down through quality tiers if the requested one is unavailable on Qobuz.
-    # We start at the requested tier and walk downward; HI_RES → LOSSLESS → HIGH.
-    # If every tier fails, the caller's fallback machinery picks another source.
+    # Previewing a few seconds should not pull hi-res audio or quietly fall back
+    # to the lossy HIGH tier. Format 7 is 16-bit FLAC, our strict preview floor.
     tier_order = ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH"]
-    if quality in tier_order:
+    if lossless_only:
+        candidates = ["LOSSLESS"]
+        quality = "LOSSLESS"
+    elif quality in tier_order:
         candidates = tier_order[tier_order.index(quality):]
     else:
         candidates = tier_order
@@ -1318,7 +1345,12 @@ def download_monochrome_track(source_url: str, output_path: Path,
     # a few times before giving up. A genuinely-missing track fails fast instead.
     cdn_url = ""
     last_error: Exception | None = None
-    rounds = max(1, MONOCHROME_PROXY_RETRY_ROUNDS)
+    rounds = max(
+        1,
+        proxy_retry_rounds
+        if proxy_retry_rounds is not None
+        else MONOCHROME_PROXY_RETRY_ROUNDS,
+    )
     for attempt in range(1, rounds + 1):
         cdn_url, last_error, transport_failure = _resolve_cdn_url()
         if cdn_url or not transport_failure:
@@ -1368,7 +1400,10 @@ def download_monochrome_track(source_url: str, output_path: Path,
     # netloc really is a Tidal ID; hi-res is DRM-locked there, so LOSSLESS is
     # the honest ceiling.
     if not cdn_url and src_leg == "tidal" and tidal_id.isdigit():
-        for tier in [t for t in candidates if t in ("LOSSLESS", "HIGH")]:
+        tidal_candidates = ["LOSSLESS"] if lossless_only else [
+            tier for tier in candidates if tier in ("LOSSLESS", "HIGH")
+        ]
+        for tier in tidal_candidates:
             try:
                 cdn_url = _tidal_stream_url(tidal_id, tier)
                 print(f"Monochrome: Qobuz exhausted, streaming tidal/{tidal_id} at {tier} via hifi-api")
@@ -1378,10 +1413,23 @@ def download_monochrome_track(source_url: str, output_path: Path,
 
     if not cdn_url:
         raise RuntimeError(
-            f"Monochrome: no stream available for ISRC {isrc} at any quality tier "
+            f"Monochrome: no stream available for ISRC {isrc} at an allowed quality "
             f"on any leg (Qobuz proxies, qbdlx, Deezer rescue, Tidal stream) "
             f"(last error: {last_error})"
         )
+    return cdn_url
+
+
+def download_monochrome_track(source_url: str, output_path: Path,
+                              artist_hint: str = "", title_hint: str = "") -> None:
+    """Resolve a monochrome:// source URL and stream the audio to output_path."""
+    parsed = urlparse(source_url)
+    tidal_id = parsed.netloc
+    cdn_url = _resolve_monochrome_stream_url(
+        source_url,
+        artist_hint=artist_hint,
+        title_hint=title_hint,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1410,47 +1458,20 @@ def download_monochrome_track(source_url: str, output_path: Path,
         )
 
 
-def get_monochrome_preview_url(isrc: str) -> str:
-    """Return a direct CDN URL suitable for browser audio preview.
-
-    The Tidal hifi-api /track endpoint has been returning "Upstream API error",
-    so we go via the Qobuz proxy instead. The Akamai-hosted FLAC plays back fine
-    in modern browsers, and we ask for LOSSLESS (16-bit) so we don't push
-    24-bit/192kHz at users who only wanted to hear a few seconds. If every
-    proxy is down but the qbdlx direct-Qobuz fallback is healthy, use that path
-    too; source health may keep Monochrome visible based on qbdlx availability.
-    """
-    if not isrc:
-        raise RuntimeError("Monochrome preview requires an ISRC")
-    try:
-        return _get_qobuz_stream_url(isrc, 7)
-    except Exception as proxy_exc:
-        try:
-            from qbdlx import resolve_qobuz_stream_url
-            fallback_errors = []
-            fallback_url = None
-            for fmt in (7, 6):
-                try:
-                    fallback_url = resolve_qobuz_stream_url(isrc, fmt)
-                except Exception as exc:
-                    fallback_errors.append(f"format {fmt}: {exc}")
-                    fallback_url = None
-                if fallback_url:
-                    break
-        except Exception as fallback_exc:
-            raise RuntimeError(
-                f"Monochrome preview unavailable via proxy ({proxy_exc}) "
-                f"or qbdlx fallback ({fallback_exc})"
-            ) from proxy_exc
-        if fallback_url:
-            print(f"Monochrome: preview served ISRC {isrc} via qbdlx direct Qobuz")
-            return fallback_url
-        if fallback_errors:
-            raise RuntimeError(
-                f"Monochrome preview unavailable via proxy ({proxy_exc}) "
-                f"or qbdlx fallback ({'; '.join(fallback_errors)})"
-            ) from proxy_exc
-        raise proxy_exc
+def get_monochrome_preview_url(source_url: str, artist_hint: str = "",
+                               title_hint: str = "") -> str:
+    """Return a lossless CDN URL through the same legs used by downloads."""
+    # Keep the old direct-ISRC call shape working for internal callers and
+    # upgrades created before previews started passing complete result URLs.
+    if "://" not in (source_url or ""):
+        source_url = f"monochrome://preview?{urlencode({'isrc': source_url, 'quality': 'LOSSLESS'})}"
+    return _resolve_monochrome_stream_url(
+        source_url,
+        artist_hint=(artist_hint or "").strip()[:300],
+        title_hint=(title_hint or "").strip()[:300],
+        lossless_only=True,
+        proxy_retry_rounds=1,
+    )
 
 
 def fetch_tidal_playlist_tracks(playlist_uuid: str) -> tuple[list[tuple[str, str]], str]:

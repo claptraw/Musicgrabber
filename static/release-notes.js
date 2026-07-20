@@ -9,7 +9,25 @@
 const RELEASE_NOTES = {
     "3.0.2": {
         title: "What's New in v3.0.2",
-        sections: []
+        sections: [
+            {
+                heading: "Search and source health",
+                items: [
+                    "A new source-health strip shows which enabled services are available before you search. It updates while the page is open, explains failures in a tooltip, remembers parked services across restarts, and lets admins start a fresh check without visiting the logs.",
+                    "If a source times out or errors during a search, its status row now offers Retry this source. Recovered matches are merged into the results already on screen, so the successful providers do not have to rummage through their catalogues again.",
+                    "One enabled source can now fill all 15 result slots, while two can contribute eight apiece. The usual per-source caps still protect larger searches from being monopolised by one enthusiastic provider.",
+                    "Bulk imports and watched refreshes now reuse identical recent searches for 15 minutes. Empty failures are never remembered, and blacklist changes clear the cache immediately.",
+                    "Slow providers can no longer leave a growing trail of abandoned searches. Each service admits one live call at a time, Soulseek avoids its second empty-result attempt when other sources are running, and Monochrome's hifi lookup now shares a 15-second budget across all of its endpoints.",
+                    "Monochrome hover previews now follow the same recovery route as downloads while staying strictly lossless. They can recover a bad ISRC through Deezer, use Tidal's lossless stream for Tidal-backed results, and forget stale CDN links instead of repeatedly replaying a dead URL.",
+                ]
+            },
+            {
+                heading: "Queue",
+                items: [
+                    "Expanded Queue details now retain the complete source journey when fallback hops between providers, so MONO to SLK to YT is visible instead of being overwritten by the final attempt.",
+                ]
+            }
+        ]
     },
     "3.0.1": {
         title: "What's New in v3.0.1",
