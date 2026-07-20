@@ -591,6 +591,11 @@ def _note_blacklist_entry(
                         (upl, src, reason, note, job_id),
                     )
             conn.commit()
+        try:
+            from search import clear_automated_search_cache
+            clear_automated_search_cache()
+        except Exception:
+            pass
     except Exception as e:
         print(f"Blacklist write skipped: {e}")
 
@@ -1270,8 +1275,28 @@ _ALLOWED_JOB_COLS = frozenset({
     "convert_to_flac", "source_url", "file_deleted", "metadata_source",
     "override_dir", "album_release_mbid", "album_name", "album_track_title",
     "album_track_number", "album_track_total", "completed_at", "uploader",
-    "audio_quality", "progress_stage",
+    "audio_quality", "progress_stage", "source_history",
 })
+
+
+def _next_source_history(existing: str | list | None, current_source: str | None,
+                         new_source: str | None) -> list[str]:
+    """Return source history with a genuine source transition appended once."""
+    if isinstance(existing, str):
+        try:
+            history = json.loads(existing)
+        except (TypeError, ValueError):
+            history = []
+    elif isinstance(existing, list):
+        history = list(existing)
+    else:
+        history = []
+    history = [str(source) for source in history if source]
+    if current_source and not history:
+        history.append(current_source)
+    if new_source and (not history or history[-1] != new_source):
+        history.append(new_source)
+    return history
 
 
 def _update_job(job_id: str, **fields) -> None:
@@ -1285,9 +1310,16 @@ def _update_job(job_id: str, **fields) -> None:
     unknown = set(fields) - _ALLOWED_JOB_COLS
     if unknown:
         raise ValueError(f"_update_job: unknown column(s): {unknown}")
-    columns = ", ".join(f"{key} = ?" for key in fields)
-    values = list(fields.values())
     with db_conn() as conn:
+        if "source" in fields and "source_history" not in fields:
+            row = conn.execute(
+                "SELECT source, source_history FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row:
+                history = _next_source_history(row[1], row[0], fields.get("source"))
+                fields["source_history"] = json.dumps(history)
+        columns = ", ".join(f"{key} = ?" for key in fields)
+        values = list(fields.values())
         conn.execute(
             f"UPDATE jobs SET {columns}, progress_at = datetime('now') WHERE id = ?",
             (*values, job_id),

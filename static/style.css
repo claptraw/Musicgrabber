@@ -465,6 +465,79 @@ h1 {
     color: var(--text-secondary);
 }
 
+.source-health-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin: -8px 2px 14px;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.source-health-label {
+    font-weight: 600;
+}
+
+.source-health-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+}
+
+.source-health-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-secondary);
+}
+
+.source-health-chip.healthy .source-health-dot { background: var(--success, #22c55e); }
+.source-health-chip.checking .source-health-dot { background: var(--warning, #f59e0b); }
+.source-health-chip.unavailable .source-health-dot { background: var(--error, #ef4444); }
+
+.source-health-recheck,
+.search-source-retry {
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg-tertiary);
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
+}
+
+.source-health-recheck {
+    padding: 3px 7px;
+    margin-left: 2px;
+}
+
+.search-source-retry {
+    padding: 2px 6px;
+    margin-left: 7px;
+}
+
+.source-health-recheck:disabled,
+.search-source-retry:disabled {
+    cursor: wait;
+    opacity: 0.6;
+}
+
+.job-journey {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.job-journey-arrow {
+    color: var(--text-secondary);
+}
+
 .search-history {
     position: absolute;
     top: calc(100% + 4px);

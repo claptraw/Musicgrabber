@@ -166,3 +166,37 @@ def test_in_flight_guard_prevents_duplicate_probes(monkeypatch):
     release.set()
     t.join(timeout=5)
     assert len(calls) == 1
+
+
+def test_persisted_health_is_restored(monkeypatch):
+    saved = {
+        "youtube": {
+            "healthy": False,
+            "checked_at": 1000.0,
+            "reason": "down",
+            "disabled_until": 1600.0,
+        }
+    }
+    monkeypatch.setattr(servicecheck, "_read_persisted_health", lambda: saved)
+
+    restored = servicecheck.load_persisted_health()
+
+    assert restored == saved
+    assert servicecheck._HEALTH["youtube"]["reason"] == "down"
+
+
+def test_builtin_health_check_is_persisted(monkeypatch):
+    written = []
+    monkeypatch.setattr(servicecheck, "_checks_enabled", lambda: True)
+    monkeypatch.setattr(servicecheck, "_cooldown", lambda: 600)
+    monkeypatch.setitem(servicecheck._CHECKS, "youtube", lambda: (False, "down"))
+    monkeypatch.setattr(
+        servicecheck,
+        "_persist_health_entry",
+        lambda source_id, entry: written.append((source_id, entry)),
+    )
+
+    servicecheck.check_source("youtube", force=True)
+
+    assert written[0][0] == "youtube"
+    assert written[0][1]["healthy"] is False

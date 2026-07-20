@@ -982,6 +982,7 @@
             // Single-user mode OR successful session — apply role-based UI
             applyUserRoleToUI();
             populateSourceChips();
+            startSourceHealthPolling();
         })();
 
         // Restore convert on/off from localStorage (namespaced per user)
@@ -1070,8 +1071,9 @@
         const previewAudio = document.getElementById('previewAudio');
         let hoverTimeout = null;
         let currentPreviewId = null;
-        let previewCache = new Map(); // Cache preview URLs
+        let previewCache = new Map(); // Short-lived cache of resolved preview URLs
         const MAX_PREVIEW_CACHE = 100;
+        const PREVIEW_CACHE_TTL = 2 * 60 * 1000;
         const HOVER_DELAY = 2000; // 2 seconds before preview starts
         let _previewFadeInterval = null;
         const PREVIEW_FADE_DURATION = 5000; // ms to ramp from 0 to target volume
@@ -1103,7 +1105,13 @@
             element.classList.add('loading-preview');
 
             try {
-                let audioUrl = previewCache.get(videoId);
+                const cachedPreview = previewCache.get(videoId);
+                let audioUrl = null;
+                if (cachedPreview && Date.now() - cachedPreview.cachedAt < PREVIEW_CACHE_TTL) {
+                    audioUrl = cachedPreview.url;
+                } else if (cachedPreview) {
+                    previewCache.delete(videoId);
+                }
 
                 if (!audioUrl) {
                     // Build preview URL with source params
@@ -1112,12 +1120,16 @@
                     if ((previewSource === 'soundcloud' || previewSource === 'zvu4no' || previewSource === 'freemp3cloud' || previewSource === 'monochrome') && result.source_url) {
                         params.set('url', result.source_url);
                     }
+                    if (previewSource === 'monochrome' && result) {
+                        params.set('artist', result.channel || result.artist || '');
+                        params.set('title', result.title || '');
+                    }
                     const response = await apiFetch(`/api/preview/${encodeURIComponent(videoId)}?${params}`);
                     if (!response.ok) throw new Error('Failed to get preview');
 
                     const data = await response.json();
                     audioUrl = data.url;
-                    previewCache.set(videoId, audioUrl);
+                    previewCache.set(videoId, { url: audioUrl, cachedAt: Date.now() });
                     if (previewCache.size > MAX_PREVIEW_CACHE) {
                         const oldestKey = previewCache.keys().next().value;
                         previewCache.delete(oldestKey);
@@ -1128,10 +1140,15 @@
                 element.classList.add('previewing');
                 currentPreviewId = videoId;
 
+                previewAudio.onerror = () => {
+                    previewCache.delete(videoId);
+                    if (currentPreviewId === videoId) stopPreview();
+                };
                 previewAudio.src = audioUrl;
                 previewAudio.volume = 0;
                 previewAudio.play().catch(() => {
                     // Autoplay blocked or other error
+                    previewCache.delete(videoId);
                     stopPreview();
                 });
 
@@ -1156,6 +1173,7 @@
         function stopPreview() {
             clearHoverTimer();
             if (_previewFadeInterval) { clearInterval(_previewFadeInterval); _previewFadeInterval = null; }
+            previewAudio.onerror = null;
             previewAudio.pause();
             previewAudio.src = '';
             currentPreviewId = null;
@@ -1290,6 +1308,8 @@
 
         // Search
         let lastSourceHealthToastAt = 0;
+        let sourceHealthState = new Map();
+        let sourceHealthPollTimer = null;
 
         function showUnavailableSourcesToast(sources) {
             if (!Array.isArray(sources) || sources.length === 0) return;
@@ -1301,6 +1321,93 @@
             const retryText = retryMs ? `, retrying in ~${Math.max(1, Math.ceil(retryMs / 60000))} min` : '';
             const moreText = sources.length > 1 ? ` (+${sources.length - 1} more)` : '';
             showToast(`${first.label || first.id} unavailable${moreText}${retryText}`);
+        }
+
+        function sourceHealthTitle(source) {
+            const checked = source.checked_at
+                ? new Date(source.checked_at * 1000).toLocaleString()
+                : 'not checked yet';
+            if (source.healthy === null) return `${source.label}: checking`;
+            if (source.available) return `${source.label}: available, checked ${checked}`;
+            const reason = source.reason ? `, ${source.reason}` : '';
+            const retry = source.retry_at
+                ? `, retry after ${new Date(source.retry_at * 1000).toLocaleTimeString()}`
+                : '';
+            return `${source.label}: unavailable${reason}${retry}`;
+        }
+
+        function renderSourceHealth(sources) {
+            const strip = document.getElementById('sourceHealthStrip');
+            if (!strip) return;
+            const enabled = (sources || []).filter(source => source.enabled !== false);
+            if (!enabled.length) {
+                strip.style.display = 'none';
+                strip.innerHTML = '';
+                return;
+            }
+            const chips = enabled.map(source => {
+                const stateClass = source.healthy === null
+                    ? 'checking'
+                    : (source.available ? 'healthy' : 'unavailable');
+                return `<span class="source-health-chip ${stateClass}" title="${escapeAttr(sourceHealthTitle(source))}">
+                    <span class="source-health-dot"></span>${escapeHtml(source.label || source.id)}
+                </span>`;
+            }).join('');
+            const recheck = isAdmin()
+                ? '<button type="button" class="source-health-recheck" id="sourceHealthRecheck">Re-check</button>'
+                : '';
+            strip.innerHTML = `<span class="source-health-label">Sources</span>${chips}${recheck}`;
+            strip.style.display = 'flex';
+            document.getElementById('sourceHealthRecheck')?.addEventListener('click', recheckSourceHealth);
+        }
+
+        async function loadSourceHealth(notifyTransitions = true) {
+            try {
+                const response = await apiFetch('/api/sources/health');
+                if (!response.ok) return;
+                const data = await response.json();
+                const sources = Array.isArray(data.sources) ? data.sources : [];
+                const newlyParked = notifyTransitions ? sources.filter(source => {
+                    const previous = sourceHealthState.get(source.id);
+                    return previous && previous.available !== false && source.available === false;
+                }) : [];
+                sourceHealthState = new Map(sources.map(source => [source.id, source]));
+                renderSourceHealth(sources);
+                showUnavailableSourcesToast(newlyParked);
+            } catch {
+                // Health is a useful hint, never a reason to break the search page.
+            }
+        }
+
+        function startSourceHealthPolling() {
+            if (sourceHealthPollTimer) clearInterval(sourceHealthPollTimer);
+            loadSourceHealth(false);
+            sourceHealthPollTimer = setInterval(() => loadSourceHealth(true), 30000);
+        }
+
+        async function recheckSourceHealth() {
+            const button = document.getElementById('sourceHealthRecheck');
+            if (button) {
+                button.disabled = true;
+                button.textContent = 'Checking…';
+            }
+            try {
+                const response = await apiFetch('/api/sources/health/recheck', { method: 'POST' });
+                if (!response.ok) throw new Error('Re-check failed');
+                showToast('Source re-check started');
+                setTimeout(() => loadSourceHealth(true), 1500);
+                setTimeout(() => loadSourceHealth(true), 5000);
+            } catch {
+                showToast('Could not re-check sources', true);
+            } finally {
+                setTimeout(() => {
+                    const current = document.getElementById('sourceHealthRecheck');
+                    if (current) {
+                        current.disabled = false;
+                        current.textContent = 'Re-check';
+                    }
+                }, 1500);
+            }
         }
 
         function clearDuplicateNotice() {
@@ -1578,15 +1685,56 @@
                 }
             } else if (status === 'timeout') {
                 icon.innerHTML = '<i class="fa-solid fa-hourglass-end"></i>';
-                text.textContent = _failureQuip('timeout', 'took too long, moved on');
+                text.innerHTML = `${escapeHtml(_failureQuip('timeout', 'took too long, moved on'))}<button type="button" class="search-source-retry">Retry this source</button>`;
+                text.querySelector('.search-source-retry')?.addEventListener('click', () => retrySearchSource(source, row));
             } else if (status === 'skipped') {
                 icon.innerHTML = '<i class="fa-solid fa-circle-minus"></i>';
                 text.textContent = _failureQuip('offline', 'offline, skipped');
             } else if (status === 'error') {
                 icon.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
-                text.textContent = _failureQuip('error', 'had a wobble');
+                text.innerHTML = `${escapeHtml(_failureQuip('error', 'had a wobble'))}<button type="button" class="search-source-retry">Retry this source</button>`;
+                text.querySelector('.search-source-retry')?.addEventListener('click', () => retrySearchSource(source, row));
             }
-            _fadeOutRow(row);
+            if (status !== 'timeout' && status !== 'error') _fadeOutRow(row);
+        }
+
+        async function retrySearchSource(source, row) {
+            const query = searchInput.value.trim();
+            if (!query || !row) return;
+            const searchToken = currentSearchToken;
+            row.classList.remove('search-progress-row-fading');
+            row.dataset.status = 'searching';
+            const icon = row.querySelector('.search-progress-icon');
+            const text = row.querySelector('.search-progress-status');
+            if (icon) icon.innerHTML = '<span class="watched-refresh-spinner"></span>';
+            if (text) text.textContent = `${_searchingQuip(source)}…`;
+            try {
+                const response = await apiFetch('/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, limit: 15, source })
+                });
+                if (!response.ok) throw new Error('retry failed');
+                const data = await response.json();
+                if (searchToken !== currentSearchToken) return;
+                const merged = [...lastResults];
+                const seen = new Set(merged.map(result => `${result.source}:${result.video_id}`));
+                for (const result of data.results || []) {
+                    const key = `${result.source}:${result.video_id}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        merged.push(result);
+                    }
+                }
+                merged.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+                renderResults(merged);
+                updateSourceStatus(source, 'done', (data.results || []).length);
+                if (currentArtworkUrl && currentArtworkArtist && currentArtworkTitle) {
+                    applyArtworkToResults(currentArtworkArtist, currentArtworkTitle, currentArtworkUrl);
+                }
+            } catch {
+                if (searchToken === currentSearchToken) updateSourceStatus(source, 'error');
+            }
         }
 
         function _fadeOutRow(row) {
@@ -2518,6 +2666,14 @@
                 const sourceUrl = job.source_url || '';
                 const isClickableUrl = sourceUrl.startsWith('https://');
                 const fileDeleted = Number(job.file_deleted || 0) === 1;
+                const sourceJourney = Array.isArray(job.source_history)
+                    ? job.source_history.filter(Boolean)
+                    : [];
+                const journeyHtml = sourceJourney.length > 1
+                    ? sourceJourney.map((source, index) =>
+                        `${index ? '<span class="job-journey-arrow">→</span>' : ''}<span class="source-badge ${escapeHtml(source)}">${getSourceBadge(source)}</span>`
+                    ).join('')
+                    : '';
                 return `
                 <div class="job-item ${hasDetails ? 'has-details' : ''} ${isExpanded ? 'expanded' : ''}" data-job-id="${escapeHtml(job.id || '')}" ${hasDetails ? 'onclick="toggleJobDetails(this)"' : ''}>
                     <div class="job-status ${job.status}"></div>
@@ -2530,6 +2686,7 @@
                             ${job.audio_quality ? `<div class="job-details-row"><span class="job-details-label">Quality:</span> ${escapeHtml(job.audio_quality)}</div>` : ''}
                             ${job.error && job.error.startsWith('Already exists') ? `<div class="job-details-row"><span class="job-details-label">Path:</span> <span class="job-details-url">${escapeHtml(job.error.replace(/^Already exists(?: in [^:]+)?:\s*/, '').replace(/ \(added to playlist\)$/, ''))}</span></div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Source:</span> ${escapeHtml(sourceLabel)}</div>
+                            ${journeyHtml ? `<div class="job-details-row job-journey"><span class="job-details-label">Journey:</span> ${journeyHtml}</div>` : ''}
                             ${job.metadata_source ? `<div class="job-details-row"><span class="job-details-label">Metadata:</span> ${escapeHtml(formatMetadataSource(job.metadata_source))}</div>` : ''}
                             ${sourceUrl ? `<div class="job-details-row"><span class="job-details-label">URL:</span> ${isClickableUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sourceUrl)}</a>` : `<span class="job-details-url">${escapeHtml(sourceUrl)}</span>`}</div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Queued:</span> ${formatTimeFull(job.created_at)}</div>

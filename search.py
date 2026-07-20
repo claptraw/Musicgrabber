@@ -9,7 +9,10 @@ import hashlib
 import json
 import re
 import subprocess
+import threading
 import time
+from collections import OrderedDict
+from copy import deepcopy
 from concurrent.futures import (
     ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError,
 )
@@ -25,6 +28,7 @@ from constants import (
     SEARCH_MAX_PER_SOURCE_SOUNDCLOUD, SEARCH_MAX_PER_SOURCE_ZVU4NO,
     SEARCH_MAX_PER_SOURCE_FREEMP3CLOUD,
     SEARCH_MAX_PER_SOURCE_SOULSEEK, SEARCH_MAX_PER_SOURCE_MONOCHROME,
+    AUTOMATED_SEARCH_CACHE_TTL_SECONDS, AUTOMATED_SEARCH_CACHE_MAX_ENTRIES,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration, search_artist_mbid, lookup_musicbrainz
@@ -56,13 +60,13 @@ def search_monochrome_source(query: str, limit: int = 10) -> list[dict]:
     return search_monochrome(query, limit)
 
 
-def search_soulseek(query: str, limit: int = 10) -> list[dict]:
+def search_soulseek(query: str, limit: int = 10, retry_empty: bool = True) -> list[dict]:
     """Search Soulseek via slskd and return normal search-result dictionaries."""
     if not slskd_enabled():
         return []
 
     raw = search_slskd(query, timeout_secs=TIMEOUT_SLSKD_SEARCH)
-    if not raw:
+    if not raw and retry_empty:
         # Soulseek's distributed search is moody: a term can come back empty even
         # when the files plainly exist, and a fresh search often reaches different
         # peers. Give it one more go before we declare the network soulless.
@@ -225,6 +229,51 @@ SEARCH_MAX_PER_SOURCE_BY_SOURCE = {
     "monochrome": SEARCH_MAX_PER_SOURCE_MONOCHROME,
 }
 
+_AUTOMATED_SEARCH_CACHE: OrderedDict[tuple, tuple[float, list[dict], dict | None]] = OrderedDict()
+_AUTOMATED_SEARCH_CACHE_LOCK = threading.Lock()
+_SOURCE_SEARCH_SLOTS: dict[str, threading.BoundedSemaphore] = {}
+_SOURCE_SEARCH_SLOTS_LOCK = threading.Lock()
+
+
+class SourceSearchBusy(RuntimeError):
+    """Raised when an earlier abandoned search is still using this provider."""
+
+
+def _source_search_slot(source_name: str) -> threading.BoundedSemaphore:
+    """Return the single admission slot shared by every search for a provider."""
+    with _SOURCE_SEARCH_SLOTS_LOCK:
+        return _SOURCE_SEARCH_SLOTS.setdefault(source_name, threading.BoundedSemaphore(1))
+
+
+def _run_source_search(source_name: str, cfg: dict, query: str, limit: int,
+                       retry_empty_soulseek: bool = True) -> list[dict]:
+    """Run one provider without allowing abandoned calls to pile up behind it."""
+    slot = _source_search_slot(source_name)
+    if not slot.acquire(blocking=False):
+        raise SourceSearchBusy(f"{source_name} still has a search in progress")
+    try:
+        search_fn = cfg["search_fn"]
+        if source_name == "soulseek" and search_fn is search_soulseek:
+            return search_fn(query, limit, retry_empty=retry_empty_soulseek)
+        return search_fn(query, limit)
+    finally:
+        slot.release()
+
+
+def _per_source_result_cap(source_name: str, result_limit: int, active_source_count: int) -> int:
+    """Return a balanced merge cap for the current number of sources.
+
+    The source-specific caps keep a prolific provider from flooding a normal
+    multi-source search. When only a few sources are enabled (or healthy), raise
+    that cap to an even share of the requested result count so they can still
+    fill the page between them.
+    """
+    configured_cap = SEARCH_MAX_PER_SOURCE_BY_SOURCE.get(source_name, SEARCH_MAX_PER_SOURCE)
+    if active_source_count <= 0:
+        return 0
+    fair_share = (result_limit + active_source_count - 1) // active_source_count
+    return min(result_limit, max(configured_cap, fair_share))
+
 
 def _mb_duration_lookup(query: str) -> float | None:
     """Return the MusicBrainz canonical duration for an artist/title query, or None.
@@ -372,7 +421,7 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
     # Fire MB duration lookup in parallel with the source search so it doesn't
     # add any latency  -  both finish before we sort and return.
     with ThreadPoolExecutor(max_workers=2) as pool:
-        search_future = pool.submit(cfg["search_fn"], query, limit)
+        search_future = pool.submit(_run_source_search, source, cfg, query, limit)
         mb_future = pool.submit(_mb_duration_lookup, query)
         results = search_future.result()
         expected_dur = mb_future.result()
@@ -450,8 +499,18 @@ def _search_all_events(
     expected_dur = None
     album_suggestion = None
     try:
+        retry_empty_soulseek = len(active) == 1
         for name, cfg in active.items():
-            futures[pool.submit(cfg["search_fn"], query, limit)] = name
+            futures[
+                pool.submit(
+                    _run_source_search,
+                    name,
+                    cfg,
+                    query,
+                    limit,
+                    retry_empty_soulseek,
+                )
+            ] = name
         # MB lookups run alongside the source searches at no extra cost
         mb_future = pool.submit(_mb_duration_lookup, query)
         mb_album_future = pool.submit(_mb_album_lookup, query)
@@ -473,9 +532,9 @@ def _search_all_events(
                     print(f"search_all: {source_name} failed: {e}")
                     yield {"type": "source", "source": source_name, "status": "error"}
                     continue
-                # Cap per-source contribution so one prolific source can't drown out
-                # the rest; scoring decides the final order.
-                per_source_cap = SEARCH_MAX_PER_SOURCE_BY_SOURCE.get(source_name, SEARCH_MAX_PER_SOURCE)
+                # Keep the normal per-source flood protection, but let a small
+                # enabled/healthy source set collectively fill the requested page.
+                per_source_cap = _per_source_result_cap(source_name, limit, len(active))
                 batch = _apply_blacklist_filter(source_results[:per_source_cap], source=source_name)
                 if expected_dur:
                     _apply_mb_duration_scores(batch, expected_dur)
@@ -539,6 +598,64 @@ def search_all(query: str, limit: int, sources: list[str] | None = None, include
             album_suggestion = {k: v for k, v in ev.items() if k != "type"}
     all_results.sort(key=lambda x: x["quality_score"], reverse=True)
     return all_results[:limit], album_suggestion
+
+
+def _automated_search_cache_key(query: str, limit: int, sources: list[str] | None,
+                                include_soulseek: bool) -> tuple:
+    """Build a key that changes when the usable source selection changes."""
+    active = _enabled_sources(include_soulseek=include_soulseek)
+    if sources:
+        filtered = {name: cfg for name, cfg in active.items() if name in sources}
+        active = filtered if filtered else active
+    usable = tuple(sorted(
+        name for name in active if servicecheck.is_source_available(name)
+    ))
+    requested = tuple(sorted(set(sources or [])))
+    return ((query or "").strip().casefold(), int(limit), requested, usable, bool(include_soulseek))
+
+
+def clear_automated_search_cache() -> None:
+    """Clear cached automated searches, mainly useful to tests and maintenance."""
+    with _AUTOMATED_SEARCH_CACHE_LOCK:
+        _AUTOMATED_SEARCH_CACHE.clear()
+
+
+def search_all_cached(query: str, limit: int, sources: list[str] | None = None,
+                      include_soulseek: bool = False) -> tuple[list[dict], dict | None]:
+    """Search for an automated flow, reusing a recent identical result safely.
+
+    Deep copies are returned and stored because bulk priority boosting mutates
+    result scores. The short TTL keeps direct-download links fresh enough to use,
+    while the bounded LRU prevents a large library becoming a second database.
+    """
+    key = _automated_search_cache_key(query, limit, sources, include_soulseek)
+    now = time.time()
+    with _AUTOMATED_SEARCH_CACHE_LOCK:
+        expired = [
+            cached_key for cached_key, (created_at, _results, _album) in _AUTOMATED_SEARCH_CACHE.items()
+            if now - created_at >= AUTOMATED_SEARCH_CACHE_TTL_SECONDS
+        ]
+        for cached_key in expired:
+            _AUTOMATED_SEARCH_CACHE.pop(cached_key, None)
+        cached = _AUTOMATED_SEARCH_CACHE.get(key)
+        if cached:
+            _AUTOMATED_SEARCH_CACHE.move_to_end(key)
+            return deepcopy(cached[1]), deepcopy(cached[2])
+
+    results, album_suggestion = search_all(
+        query, limit, sources=sources, include_soulseek=include_soulseek
+    )
+    # An empty search is often a provider having a brief wobble. Caching that
+    # would turn a momentary miss into fifteen minutes of determined failure.
+    if results:
+        with _AUTOMATED_SEARCH_CACHE_LOCK:
+            _AUTOMATED_SEARCH_CACHE[key] = (
+                now, deepcopy(results), deepcopy(album_suggestion)
+            )
+            _AUTOMATED_SEARCH_CACHE.move_to_end(key)
+            while len(_AUTOMATED_SEARCH_CACHE) > AUTOMATED_SEARCH_CACHE_MAX_ENTRIES:
+                _AUTOMATED_SEARCH_CACHE.popitem(last=False)
+    return results, album_suggestion
 
 
 def get_available_sources() -> list[dict]:

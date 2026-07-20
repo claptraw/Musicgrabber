@@ -337,7 +337,8 @@ Settings are stored in the database and persist across container restarts.
 | `LOGIN_ATTEMPT_WINDOW` | `900` | Window for counting failed logins |
 | `DOWNLOAD_TOKEN_TTL_SECONDS` | `60` | Single-use browser download token lifetime |
 | `MAX_CONCURRENT_DOWNLOADS` | `3` | Number of concurrent download workers |
-| `SEARCH_ALL_DEADLINE` | `30` | Maximum collection time for one multi-source search before slow sources are left behind |
+| `SEARCH_ALL_DEADLINE` | `30` | Maximum collection time for one multi-source search before slow sources are left behind. Only one live call per provider is admitted, so abandoned calls cannot stack up |
+| `MONOCHROME_HIFI_SEARCH_BUDGET` | `15` | Wall-clock budget shared by all hifi-api endpoints and query variants in one Monochrome search |
 | `TIMEOUT_YTDLP_DOWNLOAD` | `300` | Timeout in seconds for yt-dlp to download a single track. Increase for long mixes or slow connections |
 | `TIMEOUT_FFMPEG_CONVERT` | `120` | Timeout in seconds for ffmpeg format conversion. Increase if long tracks are producing broken files |
 | `TIMEOUT_ZVU4NO_DOWNLOAD` | `120` | Timeout in seconds for zvu4no direct MP3 downloads |
@@ -864,11 +865,12 @@ music.yourdomain.com {
 |--------|----------|-------------|
 | `GET` | `/api/sources` | List available search sources (for source selector UI) |
 | `GET` | `/api/sources/health` | Get current source and Monochrome proxy health state |
+| `POST` | `/api/sources/health/recheck` | Start an admin-only background re-check of every source |
 | `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "all/youtube/soundcloud/zvu4no/freemp3cloud/monochrome/soulseek"}`) |
 | `POST` | `/api/search/stream` | Stream per-source status and ranked results as NDJSON |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
 | `GET` | `/api/search/artwork` | Find display artwork for a search result (`?artist=...&title=...`) |
-| `GET` | `/api/preview/{video_id}` | Get streamable audio URL for preview (`source` + `url` supported for URL-based sources like SoundCloud/zvu4no) |
+| `GET` | `/api/preview/{video_id}` | Get a streamable audio URL. Monochrome accepts its complete `url` plus optional `artist` and `title` hints for lossless fallback resolution |
 | `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
 
 ### Downloads
@@ -876,9 +878,9 @@ music.yourdomain.com {
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/zvu4no/freemp3cloud/monochrome/soulseek", "download_type": "single/playlist"}`) |
-| `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` for provenance) |
+| `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` and `source_history` provenance) |
 | `GET` | `/api/jobs/downloadable` | Paginated list of completed jobs available to save to device (`?page=1&per_page=50`) |
-| `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source`) |
+| `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source` and `source_history`) |
 | `GET` | `/api/jobs/{id}/download` | Download the audio file to browser (completed jobs only; use bearer auth, a short-lived `download_token`, or `X-API-Key`) |
 | `GET` | `/api/jobs/{id}/stream` | Stream audio file for in-browser playback (completed jobs only) |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
