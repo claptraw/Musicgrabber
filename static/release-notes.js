@@ -9,7 +9,43 @@
 const RELEASE_NOTES = {
     "3.0.3": {
         title: "What's New in v3.0.3",
-        sections: []
+        sections: [
+            {
+                heading: "Upgrades show their workings",
+                items: [
+                    "Watched Upgrades now separates the file stored on disk from the audio it came from. Instead of showing only “FLAC 622kbps”, a known transcode can say “FLAC 622kbps stored · source MP3 128kbps · effective 128 tier”, making it clear why a genuine lossless result is an upgrade.",
+                    "Quality decisions now use MusicGrabber's structured source codec and bitrate tags before falling back to older human-readable labels. A genuinely lossless source is not offered another lossless wrapper, while a lossy source converted to FLAC remains honestly eligible.",
+                    "Lossy-to-lossy conversion no longer inflates the effective tier either: quality is capped by both the original and stored encodings, because neither side can restore information the other discarded.",
+                ]
+            },
+            {
+                heading: "Watched playlists repair their history",
+                items: [
+                    "Append-mode playlists now check their full retained history when they refresh, not only the tracks still present in today's source playlist. If an older chart song has since appeared in MusicGrabber's library, Navidrome, or Lidarr, its watched status and real file path are repaired automatically and it joins the rebuilt M3U.",
+                    "Search and watched playlists now agree about Lidarr-managed music. The awkward case where Search said “already in your library” while the watched playlist insisted the same song was missing has been fixed.",
+                    "Songs that have left the upstream playlist are never re-downloaded during this repair. Genuine historical misses are remembered and checked periodically—daily by default—so pressing Refresh does not repeatedly send the same expensive queries to Navidrome and Lidarr.",
+                    "The database migration is automatic. The first refresh after upgrading performs the historical repair pass; later refreshes retain the healed paths and use them directly.",
+                ]
+            },
+            {
+                heading: "A livelier Queue",
+                items: [
+                    "The Queue now has a live workbench summary showing how many tracks are downloading and how many are waiting. Active jobs show their current stage and a second-by-second elapsed time, while a live-check indicator confirms the page is still keeping watch. Tiny hammers may be involved.",
+                    "Queue updates arrive faster while downloads are moving, then ease off once everything is finished. Elapsed timers keep ticking locally, so the display stays lively without asking the server for an update every second.",
+                    "Loading the Queue now says it is taking attendance, an empty Queue is suspiciously quiet, and Search changes its button and loading message while the search party warms up. Waiting should at least have decent patter.",
+                ]
+            },
+            {
+                heading: "Small but useful",
+                items: [
+                    "Long notifications now stay visible long enough to read, and a new notification cannot be accidentally dismissed by the timer left behind by the previous one.",
+                    "Search progress, Queue updates and notifications are announced more clearly by screen readers, while reduced-motion mode now quietens spinners, pulsing status dots and toast movement.",
+                    "Queue progress timestamps are now handled consistently as UTC, avoiding misleading times when the browser and server live in different time zones.",
+                    "The source-health chips now keep a comfortable gap beneath the search box instead of clinging to its bottom edge.",
+                    "Opening Albums after a successful track search now carries the artist across and immediately looks up the artist choices again. Related-search chips and other Results-only controls also stay on Results instead of following you into the Albums page.",
+                ]
+            }
+        ]
     },
     "3.0.2": {
         title: "What's New in v3.0.2",

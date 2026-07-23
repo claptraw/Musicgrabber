@@ -10,6 +10,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -877,12 +878,21 @@ def check_navidrome_duplicate(artist: str, title: str, user_id: str | None = Non
         return None  # Never let a dupe check failure block a download
 
 
-def check_lidarr_duplicate(artist: str, title: str, user_id: str | None = None) -> Optional[Path]:
+def check_lidarr_duplicate(
+    artist: str,
+    title: str,
+    user_id: str | None = None,
+    cache: dict | None = None,
+) -> Optional[Path]:
     """Check if a track already exists in Lidarr via its REST API.
 
     Fetches the artist list, fuzzy-matches the requested artist, then checks
     their tracks for a title match with hasFile=True. When found, resolves the
     real file path via the trackfile endpoint so M3U entries can use it.
+
+    ``cache`` is an optional caller-scoped dictionary. Batch reconciliation can
+    reuse the expensive artist catalogue and per-artist track payloads without
+    retaining credentials or stale Lidarr state globally.
 
     Returns the Path to the file if found, or None if not found / Lidarr is
     unconfigured / anything goes wrong.
@@ -913,10 +923,26 @@ def check_lidarr_duplicate(artist: str, title: str, user_id: str | None = None) 
 
     try:
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
-            artists_resp = client.get(f"{base}/api/v1/artist", headers=headers)
-            if artists_resp.status_code != 200:
-                return None
-            artists = artists_resp.json()
+            artists_cache_key = ("lidarr_artists", base, user_id)
+            if cache is not None:
+                cache_lock_key = ("lidarr_cache_lock", base, user_id)
+                cache_lock = cache.setdefault(cache_lock_key, threading.Lock())
+                with cache_lock:
+                    if artists_cache_key in cache:
+                        artists = cache[artists_cache_key]
+                    else:
+                        artists_resp = client.get(
+                            f"{base}/api/v1/artist", headers=headers
+                        )
+                        if artists_resp.status_code != 200:
+                            return None
+                        artists = artists_resp.json()
+                        cache[artists_cache_key] = artists
+            else:
+                artists_resp = client.get(f"{base}/api/v1/artist", headers=headers)
+                if artists_resp.status_code != 200:
+                    return None
+                artists = artists_resp.json()
 
             artist_norm = _norm(artist)
             matched_artist = None
@@ -929,21 +955,33 @@ def check_lidarr_duplicate(artist: str, title: str, user_id: str | None = None) 
                 return None
 
             artist_id = matched_artist["id"]
+            payload_cache_key = ("lidarr_artist_payload", base, user_id, artist_id)
+            if cache is not None and payload_cache_key in cache:
+                tracks, trackfile_map = cache[payload_cache_key]
+            else:
+                # Trackfiles have the real paths; tracks tell us which
+                # trackFileId matched.
+                tracks_resp = client.get(
+                    f"{base}/api/v1/track",
+                    headers=headers,
+                    params={"artistId": artist_id},
+                )
+                trackfiles_resp = client.get(
+                    f"{base}/api/v1/trackfile",
+                    headers=headers,
+                    params={"artistId": artist_id},
+                )
+                if tracks_resp.status_code != 200:
+                    return None
 
-            # Fetch tracks and trackfiles for this artist in parallel requests.
-            # Trackfiles have the real paths; tracks tell us which trackFileId matched.
-            tracks_resp = client.get(f"{base}/api/v1/track", headers=headers, params={"artistId": artist_id})
-            trackfiles_resp = client.get(f"{base}/api/v1/trackfile", headers=headers, params={"artistId": artist_id})
-
-        if tracks_resp.status_code != 200:
-            return None
-
-        tracks = tracks_resp.json()
-        trackfile_map: dict[int, str] = {}
-        if trackfiles_resp.status_code == 200:
-            for tf in trackfiles_resp.json():
-                if tf.get("path"):
-                    trackfile_map[tf["id"]] = tf["path"]
+                tracks = tracks_resp.json()
+                trackfile_map: dict[int, str] = {}
+                if trackfiles_resp.status_code == 200:
+                    for tf in trackfiles_resp.json():
+                        if tf.get("path"):
+                            trackfile_map[tf["id"]] = tf["path"]
+                if cache is not None:
+                    cache[payload_cache_key] = (tracks, trackfile_map)
 
         title_norm = _norm(title)
         title_base = _base_title(title)
@@ -1062,6 +1100,14 @@ def probe_audio_quality(
         else:
             kbps = f"{bitrate_kbps}kbps" if bitrate_kbps else ""
             label = " ".join(p for p in [codec, kbps] if p) or None
+            if source_info:
+                src_codec, src_bitrate = source_info
+                if src_codec and src_codec.upper() != codec:
+                    src_kbps = f" {src_bitrate}kbps" if src_bitrate else ""
+                    label = f"{label} (from {src_codec}{src_kbps})"
+                    lossless_codecs = {"FLAC", "ALAC", "WAV", "PCM_S16LE", "PCM_S24LE"}
+                    if src_codec.upper() not in lossless_codecs:
+                        return label, src_bitrate
             return label, bitrate_kbps
     except Exception:
         return None, 0
@@ -1105,8 +1151,8 @@ def _build_ytdlp_download_cmd(
     the right format rather than transcoding twice (lossy-to-lossy is a war crime).
     """
     if convert_to_flac:
-        fmt = get_setting("audio_format", "flac", user_id=user_id)
-        fmt = fmt if fmt in ("flac", "opus", "mp3", "alac") else "flac"
+        fmt = get_setting("audio_format", "opus", user_id=user_id)
+        fmt = fmt if fmt in ("flac", "opus", "mp3", "alac") else "opus"
         # ALAC with a non-lossless bitrate means "lossy AAC in an .m4a container".
         # yt-dlp has no first-class option for that, so we ask it for "m4a" and
         # let the AAC encoder do its thing at the chosen kbps.
@@ -1124,7 +1170,9 @@ def _build_ytdlp_download_cmd(
         q = get_setting("mp3_bitrate", "v2", user_id=user_id)
         audio_quality = q[1] if q.startswith("v") else q.rstrip("kK")
     elif fmt == "opus":
-        q = get_setting("opus_bitrate", "320k", user_id=user_id)
+        q = get_setting("opus_bitrate", "256k", user_id=user_id)
+        if q == "320k":
+            q = "256k"
         audio_quality = q.rstrip("kK")
     elif fmt == "alac":
         q = get_setting("alac_bitrate", "lossless", user_id=user_id)
@@ -1966,7 +2014,7 @@ def _recover_from_ytdlp_postprocess_failure(artist_dir: Path, sanitized_title: s
 _FORMAT_CODEC_MAP = {
     "flac": ("flac", [], ".flac"),
     "mp3": ("libmp3lame", ["-q:a", "2"], ".mp3"),   # default; overridden by _get_lossy_codec_args
-    "opus": ("libopus", ["-b:a", "320k"], ".opus"),  # default; overridden by _get_lossy_codec_args
+    "opus": ("libopus", ["-b:a", "256k"], ".opus"),  # default; overridden by _get_lossy_codec_args
     "alac": ("alac", [], ".m4a"),
 }
 
@@ -1985,7 +2033,9 @@ def _get_lossy_codec_args(fmt: str, user_id: str | None = None) -> tuple[str, li
             extra = ["-b:a", q]       # "320k" -> ["-b:a", "320k"] (CBR)
         return "libmp3lame", extra, ".mp3"
     if fmt == "opus":
-        q = get_setting("opus_bitrate", "320k", user_id=user_id)
+        q = get_setting("opus_bitrate", "256k", user_id=user_id)
+        if q == "320k":
+            q = "256k"
         return "libopus", ["-b:a", q], ".opus"
     if fmt == "alac":
         # Sneaky little dual-purpose: "alac" plus a kbps means lossy AAC in an .m4a
@@ -2008,9 +2058,9 @@ def _enforce_target_format(audio_file: Path, convert_to_flac: bool, user_id: str
     if not convert_to_flac:
         return audio_file
 
-    target_fmt = get_setting("audio_format", "flac", user_id=user_id)
+    target_fmt = get_setting("audio_format", "opus", user_id=user_id)
     if target_fmt not in _FORMAT_CODEC_MAP:
-        target_fmt = "flac"
+        target_fmt = "opus"
 
     codec, extra_args, target_ext = _get_lossy_codec_args(target_fmt, user_id=user_id)
     if audio_file.suffix.lower() == target_ext:
@@ -3378,7 +3428,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 source_format_info = (src_codec, src_bitrate)
 
         # Determine final filename
-        audio_fmt = get_setting("audio_format", "flac", user_id=user_id) if convert_to_flac else None
+        audio_fmt = get_setting("audio_format", "opus", user_id=user_id) if convert_to_flac else None
         if audio_fmt not in ("flac", "opus", "mp3", "alac"):
             audio_fmt = "flac"
 
@@ -3800,10 +3850,16 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                     return
             raise Exception(download_failed_reason)
 
+        # Capture the downloaded stream before conversion. Probing the output later
+        # cannot tell us that (for example) Opus 320 originated as MP3 128.
+        raw_quality, raw_bitrate = probe_audio_quality(source_path)
+        raw_codec = raw_quality.split()[0] if raw_quality else source_ext.lstrip(".").upper()
+        source_format_info = (raw_codec, raw_bitrate)
+
         # Convert to the user's chosen format if requested.
         _update_job(job_id, progress_stage="Converting audio")
         if convert_to_flac:
-            audio_fmt = get_setting("audio_format", "flac", user_id=user_id)
+            audio_fmt = get_setting("audio_format", "opus", user_id=user_id)
             if audio_fmt not in _FORMAT_CODEC_MAP:
                 audio_fmt = "flac"
             codec, extra_args, target_ext = _get_lossy_codec_args(audio_fmt, user_id=user_id)
@@ -3834,7 +3890,10 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
 
         # Probe quality for the job record
         _update_job(job_id, progress_stage="Probing quality")
-        audio_quality, bitrate_kbps = probe_audio_quality(output_path)
+        audio_quality, bitrate_kbps = probe_audio_quality(
+            output_path,
+            source_info=source_format_info if convert_to_flac else None,
+        )
         min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             output_path.unlink(missing_ok=True)

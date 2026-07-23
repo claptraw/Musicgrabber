@@ -42,6 +42,7 @@ Thumbs.db
 
 # Codex code reviews
 .codex
+AGENTS.md
 
 # Working docs (project notes, plans, code reviews)
 docs/
@@ -50,4 +51,3 @@ docs/
 tests/sp_dc.txt
 tests/.venv/
 tests/.test-credentials
-

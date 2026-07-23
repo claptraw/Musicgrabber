@@ -181,6 +181,92 @@ def test_locate_local_track_file_returns_path_for_tagging(tmp_path, monkeypatch)
 
     # Nothing anywhere
     monkeypatch.setattr(wp, "check_navidrome_duplicate", lambda a, t, user_id=None: None)
+    monkeypatch.setattr(wp, "check_lidarr_duplicate", lambda a, t, user_id=None: None)
     found, local = wp._locate_local_track_file("Chill", False, "Adele", "Hello")
     assert found is False
     assert local is None
+
+
+def test_locate_local_track_file_checks_lidarr_and_returns_m3u_path(tmp_path, monkeypatch):
+    """A Lidarr-only duplicate must heal watched state instead of re-queueing forever."""
+    lidarr_path = tmp_path / "Artists" / "Olivia Rodrigo" / "cigarette smoke.flac"
+    monkeypatch.setattr(wp, "check_duplicate", lambda a, t, user_id=None: None)
+    monkeypatch.setattr(wp, "check_navidrome_duplicate", lambda a, t, user_id=None: None)
+    monkeypatch.setattr(wp, "check_lidarr_duplicate", lambda a, t, user_id=None: lidarr_path)
+
+    found, local = wp._locate_local_track_file(
+        "Top Songs - United Kingdom", False, "Olivia Rodrigo", "cigarette smoke"
+    )
+
+    assert found is True
+    assert local == lidarr_path
+
+
+def test_locate_local_track_file_lidarr_sentinel_blocks_redownload(monkeypatch):
+    monkeypatch.setattr(wp, "check_duplicate", lambda a, t, user_id=None: None)
+    monkeypatch.setattr(wp, "check_navidrome_duplicate", lambda a, t, user_id=None: None)
+    monkeypatch.setattr(
+        wp, "check_lidarr_duplicate",
+        lambda a, t, user_id=None: Path("cigarette smoke"),
+    )
+
+    found, local = wp._locate_local_track_file(
+        "Top Songs - United Kingdom", False, "Olivia Rodrigo", "cigarette smoke"
+    )
+
+    assert found is True
+    assert local is None
+
+
+def test_reconcile_append_history_heals_only_inactive_historical_rows(monkeypatch):
+    rows = {
+        "historical-missing": {
+            "downloaded_at": None, "removed_at": None, "job_status": None,
+        },
+        "current-missing": {
+            "downloaded_at": None, "removed_at": None, "job_status": None,
+        },
+        "already-downloaded": {
+            "downloaded_at": "2026-01-01", "removed_at": None, "job_status": None,
+        },
+        "still-downloading": {
+            "downloaded_at": None, "removed_at": None, "job_status": "downloading",
+        },
+        "mirror-removed": {
+            "downloaded_at": None, "removed_at": "2026-01-01", "job_status": None,
+        },
+        "recently-checked": {
+            "downloaded_at": None, "removed_at": None, "job_status": None,
+            "library_checked_at": "9999-01-01 00:00:00",
+        },
+    }
+    resolved = []
+    monkeypatch.setattr(
+        wp,
+        "_resolve_unresolved_watched_track",
+        lambda playlist, row, fallback_artist="", fallback_title="",
+               lidarr_cache=None:
+            (resolved.append(row["marker"]) or (False, None, "", "")),
+    )
+
+    for track_hash, row in rows.items():
+        row["marker"] = track_hash
+
+    class RecordingConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params):
+            self.calls.append((sql, params))
+
+    conn = RecordingConn()
+    count = wp._reconcile_append_history(
+        conn,
+        {"id": "pl1", "name": "Chart"},
+        rows,
+        {"current-missing"},
+    )
+
+    assert count == 0
+    assert resolved == ["historical-missing"]
+    assert [params[1] for _, params in conn.calls] == ["historical-missing"]

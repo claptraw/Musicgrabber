@@ -103,7 +103,7 @@ def init_db():
             slskd_username TEXT,
             slskd_filename TEXT,
             slskd_size INTEGER,
-            convert_to_flac INTEGER DEFAULT 1,
+            convert_to_flac INTEGER DEFAULT 0,
             source_url TEXT,
             file_deleted INTEGER DEFAULT 0,
             metadata_source TEXT,
@@ -140,7 +140,7 @@ def init_db():
         except sqlite3.OperationalError:
             pass
         try:
-            conn.execute("ALTER TABLE jobs ADD COLUMN convert_to_flac INTEGER DEFAULT 1")
+            conn.execute("ALTER TABLE jobs ADD COLUMN convert_to_flac INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
         try:
@@ -213,7 +213,7 @@ def init_db():
             skipped INTEGER DEFAULT 0,
             create_playlist INTEGER DEFAULT 0,
             playlist_name TEXT,
-            convert_to_flac INTEGER DEFAULT 1,
+            convert_to_flac INTEGER DEFAULT 0,
             watch_playlist_id TEXT,
             use_playlists_dir INTEGER DEFAULT 0,
             watch_artist_id TEXT,
@@ -282,7 +282,7 @@ def init_db():
             last_checked TIMESTAMP,
             last_track_count INTEGER DEFAULT 0,
             enabled INTEGER DEFAULT 1,
-            convert_to_flac INTEGER DEFAULT 1,
+            convert_to_flac INTEGER DEFAULT 0,
             make_m3u INTEGER DEFAULT 0,
             use_playlists_dir INTEGER DEFAULT 0,
             sync_mode TEXT DEFAULT 'append',
@@ -314,6 +314,7 @@ def init_db():
             title TEXT,
             first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             downloaded_at TIMESTAMP,
+            library_checked_at TIMESTAMP,
             job_id TEXT,
             PRIMARY KEY (playlist_id, track_hash),
             FOREIGN KEY (playlist_id) REFERENCES watched_playlists(id) ON DELETE CASCADE
@@ -421,6 +422,11 @@ def init_db():
         # Watched Upgrades page; found_at gives the TTL so revisits don't re-hammer sources.
         # found_searched distinguishes "searched, nothing better" from "not searched yet".
         for _col, _decl in [
+            ("file_id", "TEXT"),
+            ("content_sha256", "TEXT"),
+            ("source_quality", "TEXT"),
+            ("source_codec", "TEXT"),
+            ("source_bitrate_kbps", "INTEGER"),
             ("found_at", "TIMESTAMP"),
             ("found_searched", "INTEGER DEFAULT 0"),
             ("found_source", "TEXT"),
@@ -438,6 +444,10 @@ def init_db():
                 conn.execute(f"ALTER TABLE upgrade_candidates ADD COLUMN {_col} {_decl}")
             except sqlite3.OperationalError:
                 pass
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_upgrade_file_id "
+            "ON upgrade_candidates(user_id, file_id)"
+        )
 
         # Migration: add uploader column to jobs (raw channel/uploader name)
         try:
@@ -520,7 +530,7 @@ def init_db():
             last_checked TIMESTAMP,
             last_track_count INTEGER DEFAULT 0,
             enabled INTEGER DEFAULT 1,
-            convert_to_flac INTEGER DEFAULT 1,
+            convert_to_flac INTEGER DEFAULT 0,
             refresh_state TEXT DEFAULT 'idle',
             refresh_stage TEXT,
             refresh_started_at TIMESTAMP,
@@ -561,6 +571,16 @@ def init_db():
         # Migration: track position within the source playlist for correct M3U ordering
         try:
             conn.execute("ALTER TABLE watched_playlist_tracks ADD COLUMN position INTEGER")
+        except sqlite3.OperationalError:
+            pass
+
+        # Last external-library reconciliation for append-only historical rows.
+        # Failed lookups are throttled so an unchanged chart history does not
+        # make every refresh repeat the same slow Navidrome/Lidarr requests.
+        try:
+            conn.execute(
+                "ALTER TABLE watched_playlist_tracks ADD COLUMN library_checked_at TIMESTAMP"
+            )
         except sqlite3.OperationalError:
             pass
 
@@ -782,7 +802,7 @@ def init_db():
                 last_checked TIMESTAMP,
                 last_track_count INTEGER DEFAULT 0,
                 enabled INTEGER DEFAULT 1,
-                convert_to_flac INTEGER DEFAULT 1,
+                convert_to_flac INTEGER DEFAULT 0,
                 make_m3u INTEGER DEFAULT 0,
                 use_playlists_dir INTEGER DEFAULT 0,
                 sync_mode TEXT DEFAULT 'append',
@@ -855,7 +875,7 @@ def init_db():
                 last_checked TIMESTAMP,
                 last_track_count INTEGER DEFAULT 0,
                 enabled INTEGER DEFAULT 1,
-                convert_to_flac INTEGER DEFAULT 1,
+                convert_to_flac INTEGER DEFAULT 0,
                 refresh_state TEXT DEFAULT 'idle',
                 refresh_stage TEXT,
                 refresh_started_at TIMESTAMP,

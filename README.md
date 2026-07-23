@@ -35,7 +35,10 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Apprise notifications:** one URL covers Gotify, ntfy, Discord, Pushover, Slack, and about 50 others. Also supports Telegram webhook and SMTP email
 - **Navidrome/Lidarr duplicate heads-up:** searches warn when a track is already known to either library; Navidrome can also prevent the duplicate download and reuse the existing path for playlist routing
 - **Best quality audio:** output format is configurable (FLAC, ALAC/AAC-in-M4A, Opus, or MP3), with quality settings for lossy formats
-- **Track upgrades:** opt-in library scanner flags files below your configured quality tier, lets you compare replacement candidates, and keeps upgrades manual unless you explicitly choose Upgrade All
+- **Track upgrades:** opt-in library scanner re-probes and hashes MusicGrabber files
+  on the configured interval, flags files below your quality tier, follows tagged
+  files moved inside the library, and revalidates the original immediately before
+  any safe, recoverable replacement
 - **Loudness normalisation:** optional two-pass EBU R128 normalisation brings lossy web sources to -14 LUFS without touching lossless masters
 - **Automatic Music import:** optionally copy each completed download into a mounted macOS Music "Automatically Add to Music" folder
 - **Enhanced metadata:** AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source tags. For "Artist - Title" queries, MusicBrainz expected duration is used as a scoring signal at search time, so a 1:41 DJ edit won't outrank the 3:31 original
@@ -313,6 +316,7 @@ Settings are stored in the database and persist across container restarts.
 | `SLSKD_MAX_RETRIES` | `5` | Max retry attempts for failed Soulseek downloads |
 | `SLSKD_MATCH_CONFIDENCE_FLOOR` | `0.55` | Minimum Soulseek filename/path match confidence from `0.0` to `1.0`; lower values allow looser matches |
 | `WATCHED_PLAYLIST_CHECK_HOURS` | `24` | How often to check watched playlists (in hours): 24=daily, 168=weekly, 720=monthly, 0=disabled |
+| `WATCHED_HISTORY_RECHECK_HOURS` | `24` | Minimum interval before retrying unresolved append-mode tracks that have left the upstream playlist |
 | `WATCHED_REFRESH_STALE_SECONDS` | `1800` | How long before a stuck `running` refresh is auto-failed (seconds) |
 | `LIBRARY_RECONCILE_INTERVAL` | `1800` | How often MusicGrabber reconciles deleted/renamed files against the job database (seconds) |
 | `SPOTIFY_BROWSER_TIMEOUT_SECONDS` | `180` | Maximum runtime for the headless Spotify playlist browser fallback |

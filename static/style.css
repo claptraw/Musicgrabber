@@ -470,7 +470,7 @@ h1 {
     align-items: center;
     flex-wrap: wrap;
     gap: 7px;
-    margin: -8px 2px 14px;
+    margin: 0 2px 14px;
     color: var(--text-secondary);
     font-size: 11px;
 }
@@ -525,6 +525,10 @@ h1 {
 .search-source-retry:disabled {
     cursor: wait;
     opacity: 0.6;
+}
+
+.results-context-hidden {
+    display: none !important;
 }
 
 .job-journey {
@@ -1323,11 +1327,37 @@ h1 {
     color: var(--text-secondary);
 }
 
+.job-status-label {
+    text-transform: capitalize;
+}
+
 .job-progress-stage {
     font-size: 12px;
     color: var(--accent);
     font-style: italic;
-    margin-left: 2px;
+    margin-left: 5px;
+}
+
+.job-progress-stage::before {
+    content: "·";
+    margin-right: 5px;
+    color: var(--text-secondary);
+    font-style: normal;
+}
+
+.job-elapsed-wrap {
+    margin-left: 5px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.job-elapsed {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+.job-date {
+    white-space: nowrap;
 }
 
 .job-error {
@@ -1393,10 +1423,25 @@ h1 {
     opacity: 0.5;
 }
 
+.empty-state small {
+    display: block;
+    margin-top: 5px;
+    font-size: 12px;
+    opacity: 0.8;
+}
+
 .loading {
     display: flex;
     justify-content: center;
     padding: 40px;
+}
+
+.loading-with-copy {
+    align-items: center;
+    flex-direction: column;
+    gap: 12px;
+    color: var(--text-secondary);
+    font-size: 13px;
 }
 
 .spinner {
@@ -1427,6 +1472,8 @@ h1 {
     transition: all 0.3s ease;
     z-index: 100;
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    max-width: min(560px, calc(100vw - 32px));
+    text-align: center;
 }
 
 .toast.show {
@@ -1445,6 +1492,73 @@ h1 {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 12px;
+}
+
+.queue-live-summary {
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    background: color-mix(in srgb, var(--accent) 7%, var(--bg-secondary));
+    border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+    border-radius: var(--radius-md);
+}
+
+.queue-live-dot {
+    width: 9px;
+    height: 9px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--text-secondary);
+    opacity: 0.65;
+}
+
+.queue-live-dot.active {
+    background: var(--accent);
+    opacity: 1;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+    animation: pulse 1.4s ease-in-out infinite;
+}
+
+.queue-live-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    line-height: 1.35;
+}
+
+.queue-live-copy strong {
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.queue-live-copy > span {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.queue-live-updated {
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
+@media (max-width: 520px) {
+    .queue-live-summary {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .queue-live-copy {
+        flex: 1;
+    }
+
+    .queue-live-updated {
+        width: 100%;
+        margin-left: 19px;
+    }
 }
 
 /* .clear-btn removed — all callers migrated to .btn .btn-ghost / .btn-danger.
@@ -2330,8 +2444,16 @@ h1 {
 @media (prefers-reduced-motion: reduce) {
     .donation-link,
     .donation-link::before,
-    .donation-link i {
+    .donation-link i,
+    .spinner,
+    .watched-refresh-spinner,
+    .job-status.downloading,
+    .queue-live-dot.active {
         animation: none !important;
+    }
+
+    .toast {
+        transition-duration: 0.01ms;
     }
 }
 

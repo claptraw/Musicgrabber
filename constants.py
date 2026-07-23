@@ -156,6 +156,7 @@ ROOT_PATH = _normalise_root_path(os.getenv("ROOT_PATH", ""))
 SLSKD_REQUIRE_FREE_SLOT = os.getenv("SLSKD_REQUIRE_FREE_SLOT", "true").lower() == "true"
 SLSKD_MAX_RETRIES = int(os.getenv("SLSKD_MAX_RETRIES", "5"))
 WATCHED_PLAYLIST_CHECK_HOURS = int(os.getenv("WATCHED_PLAYLIST_CHECK_HOURS", "24"))
+WATCHED_HISTORY_RECHECK_HOURS = int(os.getenv("WATCHED_HISTORY_RECHECK_HOURS", "24"))
 # How often the track-upgrades scan walks the library (hours). Cheap and network-free,
 # so daily is plenty; this is not time-sensitive.
 UPGRADE_SCAN_INTERVAL_HOURS = int(os.getenv("UPGRADE_SCAN_INTERVAL_HOURS", "24"))
@@ -201,7 +202,7 @@ ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
 DEEZER_SEARCH_URL = "https://api.deezer.com/search"
 
 # Default settings for fields that need startup values
-DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "true").lower() == "true"
+DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "false").lower() == "true"
 
 # Monochrome (Qobuz/Tidal) — configurable so you can point at a self-hosted hifi-api
 MONOCHROME_HIFI_API_URL = os.getenv(

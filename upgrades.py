@@ -19,6 +19,8 @@ Ground rules (see docs/upgrades-design.md):
 import sqlite3
 import threading
 import time
+import hashlib
+import re
 from pathlib import Path
 
 import mutagen
@@ -83,20 +85,48 @@ def _digits_to_int(s: str) -> int:
     return max(nums) if nums else 0
 
 
-def effective_tier(codec: str | None, bitrate_kbps: int, source_quality: str | None) -> int:
+def effective_tier(
+    codec: str | None,
+    bitrate_kbps: int,
+    source_quality: str | None,
+    source_codec: str | None = None,
+    source_bitrate_kbps: int = 0,
+) -> int:
     """True quality tier, seeing through a lossless container around a lossy source.
 
     A YouTube grab converted to FLAC is a FLAC *file* but 130kbps *audio*. We stamp the
-    honest origin into SOURCE_QUALITY at download time (e.g. "FLAC (from OPUS 130kbps)"),
-    so a "(from ...)" marker means tier by the lossy origin, not the container. This is
-    what lets the most common real upgrade (lossy-sourced -> proper lossless) be detected.
+    honest origin into structured SOURCE_CODEC / SOURCE_BITRATE tags and keep the older
+    SOURCE_QUALITY label for display and backwards compatibility. Structured provenance
+    wins when present; parsing a human-readable label is only a fallback for older files.
+
+    Quality can never exceed either side of a transcode. MP3 128 -> Opus 256 is still a
+    128-tier recording, while FLAC -> Opus 256 is a 256-tier recording. This is what lets
+    the most common real upgrade (lossy-sourced -> proper lossless) be detected without
+    mistaking one genuinely lossless wrapper for an upgrade over another.
     """
     sq = source_quality or ""
     is_lossless_container = bool(codec and codec.lower() in _LOSSLESS_CODECS)
 
-    if is_lossless_container and "from" in sq.lower():
-        origin_kbps = _digits_to_int(sq)
-        return _kbps_to_tier(origin_kbps) if origin_kbps else TIER_LOSSY_192
+    origin_codec = (source_codec or "").strip().lower()
+    origin_kbps = int(source_bitrate_kbps or 0)
+    has_structured_origin = bool(origin_codec)
+
+    if not has_structured_origin and "from" in sq.lower():
+        origin = re.search(r"\bfrom\s+([a-z0-9_]+)", sq, re.I)
+        origin_codec = origin.group(1).lower() if origin else ""
+        origin_part = re.split(r"\bfrom\b", sq, maxsplit=1, flags=re.I)[-1]
+        origin_kbps = _digits_to_int(origin_part)
+
+    if origin_codec and origin_codec not in _LOSSLESS_CODECS:
+        origin_tier = _kbps_to_tier(origin_kbps) if origin_kbps else TIER_LOSSY_192
+        if is_lossless_container:
+            return origin_tier
+
+        # A lossy-to-lossy conversion is capped by both the input and output.
+        stored_kbps = bitrate_kbps or _digits_to_int(
+            re.split(r"\bfrom\b", sq, maxsplit=1, flags=re.I)[0]
+        )
+        return min(origin_tier, _kbps_to_tier(stored_kbps)) if stored_kbps else origin_tier
 
     if is_lossless_container:
         return TIER_LOSSLESS
@@ -129,10 +159,7 @@ def target_tier(user_id: str | None = None) -> int:
     or a lossless format means lossless; otherwise the chosen codec's bitrate setting
     decides the lossy tier.
     """
-    if get_setting_bool("default_convert_to_flac", True, user_id=user_id):
-        return TIER_LOSSLESS
-
-    fmt = (get_setting("audio_format", "flac", user_id=user_id) or "flac").strip().lower()
+    fmt = (get_setting("audio_format", "opus", user_id=user_id) or "opus").strip().lower()
     if fmt in ("flac", "wav", "alac"):
         # alac is lossless; alac_bitrate is effectively always "lossless"
         if fmt != "alac":
@@ -143,7 +170,7 @@ def target_tier(user_id: str | None = None) -> int:
     if fmt == "mp3":
         kbps = _setting_to_kbps(get_setting("mp3_bitrate", "v2", user_id=user_id))
     elif fmt == "opus":
-        kbps = _setting_to_kbps(get_setting("opus_bitrate", "320k", user_id=user_id))
+        kbps = _setting_to_kbps(get_setting("opus_bitrate", "256k", user_id=user_id))
     else:
         # aac / m4a-lossy and anything else: assume a sensible high lossy target
         kbps = 256
@@ -204,12 +231,15 @@ def probe_file(path: Path) -> dict | None:
     bitrate_kbps = int((getattr(info, "bitrate", 0) or 0) / 1000)
     duration = float(getattr(info, "length", 0) or 0)
 
-    source = source_quality = title = artist = None
+    source = source_quality = title = artist = file_id = source_codec = source_bitrate = None
     if tags is not None:
         source = _read_tag(tags, "SOURCE", "----:com.musicgrabber:SOURCE")
         source_quality = _read_tag(tags, "SOURCE_QUALITY", "----:com.musicgrabber:SOURCE_QUALITY")
         title = _read_tag(tags, "TITLE", "\xa9nam", id3="TIT2")
         artist = _read_tag(tags, "ARTIST", "\xa9ART", id3="TPE1")
+        file_id = _read_tag(tags, "MUSICGRABBER_FILE_ID", "----:com.musicgrabber:FILE_ID")
+        source_codec = _read_tag(tags, "SOURCE_CODEC", "----:com.musicgrabber:SOURCE_CODEC")
+        source_bitrate = _read_tag(tags, "SOURCE_BITRATE", "----:com.musicgrabber:SOURCE_BITRATE")
 
     return {
         "codec": codec,
@@ -219,7 +249,19 @@ def probe_file(path: Path) -> dict | None:
         "source_quality": source_quality,
         "artist": artist,
         "title": title,
+        "file_id": file_id,
+        "source_codec": source_codec,
+        "source_bitrate_kbps": _digits_to_int(source_bitrate or ""),
     }
+
+
+def content_sha256(path: Path) -> str:
+    """Strong file identity used to detect replacements at an unchanged path."""
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _read_tag(tags, vorbis_key: str, mp4_key: str, id3: str | None = None):
@@ -277,17 +319,21 @@ def scan_user_library(user_id: str | None = None) -> dict:
     if pl:
         dirs.append(pl)
 
-    # Existing cache: path -> (mtime, dismissed, dismissed_mtime)
+    # The interval scan is deliberately deep: users may replace a file while
+    # preserving its path and timestamps, so stat data is never trusted as proof
+    # that the audio is unchanged.
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT path, mtime, dismissed, dismissed_mtime FROM upgrade_candidates WHERE user_id = ?",
+            "SELECT * FROM upgrade_candidates WHERE user_id = ?",
             (uid,),
         ).fetchall()
     cache = {r["path"]: r for r in rows}
+    cache_by_file_id = {r["file_id"]: r for r in rows if r["file_id"]}
 
     seen: set[str] = set()
-    scanned = eligible = below = skipped = 0
+    seen_ids: set[int] = set()
+    scanned = eligible = below = 0
 
     for d in dirs:
         for path in _iter_audio_files(d):
@@ -299,29 +345,6 @@ def scan_user_library(user_id: str | None = None) -> dict:
                 continue
             mtime = st.st_mtime
             cached = cache.get(spath)
-
-            if cached is not None and cached["mtime"] == mtime:
-                # Unchanged file: keep the probe result, but the target may have moved
-                # and dismissals lapse only on file change, so just refresh below_target.
-                seen.add(spath)
-                skipped += 1
-                eligible += 1
-                with db_conn() as conn:
-                    conn.row_factory = sqlite3.Row
-                    file_tier = conn.execute(
-                        "SELECT file_tier FROM upgrade_candidates WHERE user_id=? AND path=?",
-                        (uid, spath),
-                    ).fetchone()["file_tier"]
-                    is_below = 1 if (file_tier is not None and file_tier < tgt) else 0
-                    below += is_below
-                    conn.execute(
-                        "UPDATE upgrade_candidates SET target_tier=?, below_target=?, "
-                        "last_scanned=CURRENT_TIMESTAMP WHERE user_id=? AND path=?",
-                        (tgt, is_below, uid, spath),
-                    )
-                    conn.commit()
-                continue
-
             info = probe_file(path)
             if info is None or not info.get("source"):
                 # Not our file (or unreadable). Drop any stale row and move on.
@@ -334,53 +357,92 @@ def scan_user_library(user_id: str | None = None) -> dict:
                         conn.commit()
                 continue
 
+            if cached is None and info.get("file_id"):
+                cached = cache_by_file_id.get(info["file_id"])
+                if cached is not None:
+                    # Same tagged file, moved within a configured library root.
+                    with db_conn() as conn:
+                        conn.execute(
+                            "UPDATE upgrade_candidates SET path=? WHERE user_id=? AND id=?",
+                            (spath, uid, cached["id"]),
+                        )
+                        conn.commit()
+
             eligible += 1
             seen.add(spath)
-            file_tier = effective_tier(info["codec"], info["bitrate_kbps"], info.get("source_quality"))
+            if cached is not None:
+                seen_ids.add(cached["id"])
+            file_tier = effective_tier(
+                info["codec"],
+                info["bitrate_kbps"],
+                info.get("source_quality"),
+                info.get("source_codec"),
+                info.get("source_bitrate_kbps", 0),
+            )
             is_below = 1 if file_tier < tgt else 0
             below += is_below
+            try:
+                file_hash = content_sha256(path)
+            except OSError:
+                continue
 
-            # A changed file lapses any prior dismissal (filesystem-truth).
+            # Any byte change lapses dismissals and cached network search results.
             dismissed = 0
             dismissed_mtime = None
-            if cached is not None and cached["dismissed"] and cached["dismissed_mtime"] == mtime:
+            unchanged = bool(cached and cached["content_sha256"] == file_hash)
+            if unchanged and cached["dismissed"]:
                 dismissed = 1
-                dismissed_mtime = mtime
+                dismissed_mtime = cached["dismissed_mtime"]
 
             with db_conn() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO upgrade_candidates
-                        (user_id, path, mtime, file_size, codec, bitrate_kbps, duration,
-                         file_tier, target_tier, below_target, source, artist, title,
-                         dismissed, dismissed_mtime, last_scanned)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-                    ON CONFLICT(user_id, path) DO UPDATE SET
-                        mtime=excluded.mtime, file_size=excluded.file_size,
-                        codec=excluded.codec, bitrate_kbps=excluded.bitrate_kbps,
-                        duration=excluded.duration, file_tier=excluded.file_tier,
-                        target_tier=excluded.target_tier, below_target=excluded.below_target,
-                        source=excluded.source, artist=excluded.artist, title=excluded.title,
-                        dismissed=excluded.dismissed, dismissed_mtime=excluded.dismissed_mtime,
-                        last_scanned=CURRENT_TIMESTAMP
-                    """,
-                    (uid, spath, mtime, st.st_size, info["codec"], info["bitrate_kbps"],
-                     info["duration"], file_tier, tgt, is_below, info["source"],
-                     info["artist"], info["title"], dismissed, dismissed_mtime),
-                )
+                if cached is not None:
+                    conn.execute(
+                        """UPDATE upgrade_candidates SET path=?, mtime=?, file_size=?,
+                           codec=?, bitrate_kbps=?, duration=?, file_tier=?, target_tier=?,
+                           below_target=?, source=?, source_quality=?, source_codec=?,
+                           source_bitrate_kbps=?, file_id=?, content_sha256=?, artist=?,
+                           title=?, dismissed=?, dismissed_mtime=?,
+                           found_searched=CASE WHEN ? THEN found_searched ELSE 0 END,
+                           found_at=CASE WHEN ? THEN found_at ELSE NULL END,
+                           found_source=CASE WHEN ? THEN found_source ELSE NULL END,
+                           last_scanned=CURRENT_TIMESTAMP WHERE user_id=? AND id=?""",
+                        (spath, mtime, st.st_size, info["codec"], info["bitrate_kbps"],
+                         info["duration"], file_tier, tgt, is_below, info["source"],
+                         info.get("source_quality"), info.get("source_codec"),
+                         info.get("source_bitrate_kbps"), info.get("file_id"), file_hash,
+                         info["artist"], info["title"], dismissed, dismissed_mtime,
+                         unchanged, unchanged, unchanged, uid, cached["id"]),
+                    )
+                else:
+                    cur = conn.execute(
+                        """INSERT INTO upgrade_candidates
+                           (user_id,path,mtime,file_size,codec,bitrate_kbps,duration,
+                            file_tier,target_tier,below_target,source,source_quality,
+                            source_codec,source_bitrate_kbps,file_id,content_sha256,
+                            artist,title,dismissed,dismissed_mtime,last_scanned)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+                        (uid, spath, mtime, st.st_size, info["codec"], info["bitrate_kbps"],
+                         info["duration"], file_tier, tgt, is_below, info["source"],
+                         info.get("source_quality"), info.get("source_codec"),
+                         info.get("source_bitrate_kbps"), info.get("file_id"), file_hash,
+                         info["artist"], info["title"], dismissed, dismissed_mtime),
+                    )
+                    seen_ids.add(cur.lastrowid)
                 conn.commit()
 
-    # Prune rows for files that have vanished or lost eligibility since last scan.
-    stale = [p for p in cache if p not in seen]
-    if stale:
+    # Only prune after a scan that actually saw the roots. An offline/empty NAS
+    # must never look like the user deleted their entire library.
+    stale_ids = [r["id"] for r in rows if r["id"] not in seen_ids]
+    if stale_ids and (scanned > 0 or not rows):
         with db_conn() as conn:
             conn.executemany(
-                "DELETE FROM upgrade_candidates WHERE user_id=? AND path=?",
-                [(uid, p) for p in stale],
+                "DELETE FROM upgrade_candidates WHERE user_id=? AND id=?",
+                [(uid, candidate_id) for candidate_id in stale_ids],
             )
             conn.commit()
 
-    return {"scanned": scanned, "eligible": eligible, "below_target": below, "skipped_unchanged": skipped}
+    return {"scanned": scanned, "eligible": eligible, "below_target": below,
+            "skipped_unchanged": 0, "scrubbed": len(stale_ids) if scanned > 0 else 0}
 
 
 def get_candidates(user_id: str | None = None, below_only: bool = True,
@@ -661,7 +723,7 @@ def _download_candidate_to_staging(user_id: str | None, row, staging_dir: Path) 
     source_url = row["found_source_url"]
     artist = row["artist"] or ""
     title = row["title"] or Path(row["path"]).stem
-    convert = get_setting_bool("default_convert_to_flac", True, user_id=user_id)
+    convert = get_setting_bool("default_convert_to_flac", False, user_id=user_id)
     job_id = str(_uuid.uuid4())[:8]
     staging_dir.mkdir(parents=True, exist_ok=True)
 
@@ -760,6 +822,32 @@ def perform_upgrade(user_id: str | None, candidate_id: int, force: bool = False)
     current = Path(row["path"])
     if not current.exists():
         return {"status": "error", "reason": "Original file no longer exists"}
+    current_info = probe_file(current)
+    if current_info is None:
+        return {"status": "error", "reason": "Original file is no longer readable audio"}
+    if row["file_id"] and current_info.get("file_id") != row["file_id"]:
+        scan_user_library(user_id)
+        return {"status": "error",
+                "reason": "Original file was externally replaced; library state refreshed"}
+    try:
+        original_hash = content_sha256(current)
+    except OSError:
+        return {"status": "error", "reason": "Original file could not be revalidated"}
+    if row["content_sha256"] and original_hash != row["content_sha256"]:
+        scan_user_library(user_id)
+        return {"status": "error",
+                "reason": "Original file changed since the upgrade search; search again"}
+
+    # Never trust cached quality data at the point of action.
+    current_tier = effective_tier(
+        current_info["codec"], current_info["bitrate_kbps"],
+        current_info.get("source_quality"),
+        current_info.get("source_codec"),
+        current_info.get("source_bitrate_kbps", 0),
+    )
+    if not force and current_tier >= (row["target_tier"] or TIER_LOSSLESS):
+        scan_user_library(user_id)
+        return {"status": "rejected", "reason": "Original file is already at target quality"}
 
     import tempfile
     staging = Path(tempfile.mkdtemp(prefix=f"upg_{candidate_id}_", dir=str(_quarantine_dir().parent)))
@@ -774,15 +862,21 @@ def perform_upgrade(user_id: str | None, candidate_id: int, force: bool = False)
             return {"status": "rejected", "reason": "Downloaded file was not readable audio"}
 
         # 1) Genuinely better than what's on disk (compares the file as it landed).
-        staged_tier = effective_tier(info["codec"], info["bitrate_kbps"], info.get("source_quality"))
-        if not force and staged_tier <= (row["file_tier"] or 0):
+        staged_tier = effective_tier(
+            info["codec"],
+            info["bitrate_kbps"],
+            info.get("source_quality"),
+            info.get("source_codec"),
+            info.get("source_bitrate_kbps", 0),
+        )
+        if not force and staged_tier <= current_tier:
             return {"status": "rejected",
                     "reason": f"Not actually better ({info.get('source_quality') or info['codec']})"}
 
         # 2) Same recording: duration, then title/artist confidence, then fingerprint.
         # All of these are skipped on a forced upgrade (the user is overriding identity).
         if not force:
-            cur_dur = float(row["duration"] or 0)
+            cur_dur = float(current_info["duration"] or 0)
             new_dur = float(info["duration"] or 0)
             tol = max(UPGRADE_DURATION_TOLERANCE_S, cur_dur * 0.05)
             if cur_dur and new_dur and abs(cur_dur - new_dur) > tol:
@@ -809,6 +903,17 @@ def perform_upgrade(user_id: str | None, candidate_id: int, force: bool = False)
                     return {"status": "rejected",
                             "reason": f"Fingerprint says different recording ({sim:.0%})"}
             # If fpcalc is unavailable we don't hard-fail; duration + confidence already passed.
+
+        # The download may have taken minutes. Recheck the live file immediately
+        # before touching it to close the time-of-check/time-of-use window.
+        try:
+            if not current.exists() or content_sha256(current) != original_hash:
+                scan_user_library(user_id)
+                return {"status": "error",
+                        "reason": "Original file changed while the upgrade downloaded; swap aborted"}
+        except OSError:
+            return {"status": "error",
+                    "reason": "Original file could not be revalidated before swap"}
 
         # 3) All gates passed. Quarantine the old file, swap the new one into its place.
         new_path = current.with_suffix(staged.suffix)
@@ -840,13 +945,21 @@ def perform_upgrade(user_id: str | None, candidate_id: int, force: bool = False)
 
         # Refresh the candidate row to reflect the upgraded file (now at/above target).
         new_info = probe_file(new_path) or info
-        new_tier = effective_tier(new_info["codec"], new_info["bitrate_kbps"], new_info.get("source_quality"))
+        new_tier = effective_tier(
+            new_info["codec"],
+            new_info["bitrate_kbps"],
+            new_info.get("source_quality"),
+            new_info.get("source_codec"),
+            new_info.get("source_bitrate_kbps", 0),
+        )
         try:
             st = new_path.stat()
             with db_conn() as conn:
                 conn.execute(
                     """UPDATE upgrade_candidates SET path=?, mtime=?, file_size=?, codec=?,
                        bitrate_kbps=?, duration=?, file_tier=?, below_target=?, source=?,
+                       source_quality=?, source_codec=?, source_bitrate_kbps=?,
+                       file_id=?, content_sha256=?,
                        upgrade_state='upgraded', found_searched=0, found_source=NULL,
                        found_quality=NULL, found_tier=NULL, found_confidence=NULL,
                        found_verified=0, found_video_id=NULL, found_source_url=NULL,
@@ -855,7 +968,10 @@ def perform_upgrade(user_id: str | None, candidate_id: int, force: bool = False)
                     (str(new_path), st.st_mtime, st.st_size, new_info["codec"],
                      new_info["bitrate_kbps"], new_info["duration"], new_tier,
                      1 if new_tier < (row["target_tier"] or TIER_LOSSLESS) else 0,
-                     new_info.get("source") or row["source"], uid, candidate_id),
+                     new_info.get("source") or row["source"],
+                     new_info.get("source_quality"), new_info.get("source_codec"),
+                     new_info.get("source_bitrate_kbps"), new_info.get("file_id"),
+                     content_sha256(new_path), uid, candidate_id),
                 )
                 conn.commit()
         except Exception as e:

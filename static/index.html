@@ -58,7 +58,7 @@
                 <label class="header-format-label peon-hide" title="When on, converts downloads to the format selected in Settings. When off, keeps the source format.">
                     <span id="headerFormatLabel">FLAC</span>
                     <div class="toggle-switch" id="flacToggle">
-                        <input type="checkbox" id="convertToFlac" checked>
+                        <input type="checkbox" id="convertToFlac">
                         <span class="toggle-slider"></span>
                     </div>
                 </label>
@@ -146,7 +146,7 @@
 
         <div id="relatedSuggestions" style="display: none;"></div>
         <div id="exploreBar" style="display: none;"></div>
-        <div id="searchProgress" class="search-progress" style="display: none;"></div>
+        <div id="searchProgress" class="search-progress" style="display: none;" role="status" aria-live="polite" aria-label="Search progress"></div>
         <div id="resultsTab" class="tab-panel tab-visible"></div>
 
         <div id="bulkTabContainer" class="tab-panel">
@@ -341,7 +341,7 @@
                     <label class="watched-control-label peon-hide" title="Convert new tracks to the selected audio format">
                         <span id="watchedFormatLabel">Convert to FLAC</span>
                         <div class="toggle-switch" id="watchedFlacToggle">
-                            <input type="checkbox" id="watchedConvertToFlac" checked>
+                            <input type="checkbox" id="watchedConvertToFlac">
                             <span class="toggle-slider"></span>
                         </div>
                     </label>
@@ -437,7 +437,7 @@
                         <label class="watched-control-label" title="Convert new singles to the selected audio format">
                             <span id="artistFlacLabel">Convert to FLAC</span>
                             <div class="toggle-switch">
-                                <input type="checkbox" id="artistConvertToFlac" checked>
+                                <input type="checkbox" id="artistConvertToFlac">
                                 <span class="toggle-slider"></span>
                             </div>
                         </label>
@@ -481,6 +481,7 @@
                 <h2 class="queue-section-heading">Download Queue / <a href="#downloadableSection" title="Jump to Downloadable to Device">Downloadable to Device &#8595;</a></h2>
                 <button class="btn btn-danger peon-hide" id="clearQueueBtn">Clear Queue</button>
             </div>
+            <div id="queueLiveSummary" class="queue-live-summary" style="display:none;" role="status" aria-live="polite" aria-atomic="false"></div>
             <div id="queueTab" class="results"></div>
             <div id="queuePager" style="display:none;" class="downloadable-pager">
                 <button class="btn btn-ghost" id="queuePrevBtn" onclick="changeQueuePage(-1)" disabled>&#8592; Prev</button>
@@ -654,9 +655,9 @@
                     <label class="settings-label format-selector-wrap">
                         <span>Audio Format</span>
                         <div class="format-btn-group">
-                            <button type="button" id="formatBtnFlac" class="format-option active" onclick="setAudioFormat('flac'); saveSettings();">FLAC</button>
+                            <button type="button" id="formatBtnFlac" class="format-option" onclick="setAudioFormat('flac'); saveSettings();">FLAC</button>
                             <button type="button" id="formatBtnAlac" class="format-option" onclick="setAudioFormat('alac'); saveSettings();">ALAC</button>
-                            <button type="button" id="formatBtnOpus" class="format-option" onclick="setAudioFormat('opus'); saveSettings();">Opus</button>
+                            <button type="button" id="formatBtnOpus" class="format-option active" onclick="setAudioFormat('opus'); saveSettings();">Opus</button>
                             <button type="button" id="formatBtnMp3"  class="format-option" onclick="setAudioFormat('mp3');  saveSettings();">MP3</button>
                         </div>
                         <span class="settings-hint settings-hint-full">The format your downloads are converted to (each user gets their own choice). FLAC and ALAC are lossless. Opus is high-quality lossy (smaller files). MP3 for maximum compatibility.</span>
@@ -677,8 +678,7 @@
                         <div id="opusQualityRow" style="display:none;margin-top:6px;">
                             <span class="settings-label-sub">Opus Bitrate</span>
                             <div class="format-btn-group">
-                                <button type="button" id="opusQualityBtn320" class="format-option active" onclick="setOpusBitrate('320k'); saveSettings();">320k</button>
-                                <button type="button" id="opusQualityBtn256" class="format-option"        onclick="setOpusBitrate('256k'); saveSettings();">256k</button>
+                                <button type="button" id="opusQualityBtn256" class="format-option active" onclick="setOpusBitrate('256k'); saveSettings();">256k</button>
                                 <button type="button" id="opusQualityBtn192" class="format-option"        onclick="setOpusBitrate('192k'); saveSettings();">192k</button>
                                 <button type="button" id="opusQualityBtn128" class="format-option"        onclick="setOpusBitrate('128k'); saveSettings();">128k</button>
                                 <button type="button" id="opusQualityBtn96"  class="format-option"        onclick="setOpusBitrate('96k');  saveSettings();">96k</button>
@@ -695,8 +695,8 @@
                             </div>
                             <span class="settings-hint settings-hint-full">Lossless gives you proper Apple Lossless. The kbps options switch the encoder to AAC inside the same .m4a wrapper, so they are lossy but iPod-friendly.</span>
                         </div>
-                        <input type="checkbox" id="settingDefaultFlac" checked style="display:none;">
-                        <input type="text" id="settingAudioFormat" value="flac" style="display:none;">
+                        <input type="checkbox" id="settingDefaultFlac" style="display:none;">
+                        <input type="text" id="settingAudioFormat" value="opus" style="display:none;">
                         <input type="hidden" id="settingMp3Bitrate" value="v2">
                         <input type="hidden" id="settingOpusBitrate" value="320k">
                         <input type="hidden" id="settingAlacBitrate" value="lossless">
@@ -1374,7 +1374,7 @@
         </div>
     </div>
 
-    <div class="toast" id="toast"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
     <audio id="previewAudio" preload="none"></audio>
 
     <script>window.__MUSICGRABBER_ROOT_PATH__ = "__ROOT_PATH__";</script>
