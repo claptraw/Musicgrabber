@@ -1,8 +1,6 @@
 # Changelog
 
-## v3.0.3 (DEV)
-
-Development cycle opened after v3.0.2. The workbench is clear, which should last until someone presses Search.
+## v3.0.3 (2026-07-24)
 
 ### Added
 - **The Queue now says what it is actually doing**: a live workbench summary shows how many tracks are downloading and how many are waiting, each active job shows its current stage and a second-by-second elapsed time, and the last-refresh indicator makes it obvious the page is still listening. When everything is finished, the queue puts its feet up; while it is busy, tiny hammers are apparently involved.
