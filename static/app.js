@@ -436,6 +436,7 @@
         const spotifyError = document.getElementById('spotifyError');
         const queueTabContainer = document.getElementById('queueTabContainer');
         const queueTab = document.getElementById('queueTab');
+        const queueLiveSummary = document.getElementById('queueLiveSummary');
         const clearQueueBtn = document.getElementById('clearQueueBtn');
         const resetStatsBtn = document.getElementById('resetStatsBtn');
         const watchedTabContainer = document.getElementById('watchedTabContainer');
@@ -800,10 +801,58 @@
         }
 
         // audioFormat tracks which format to use when conversion is on ("flac", "alac", "opus", or "mp3")
-        let audioFormat = 'flac';
+        let audioFormat = 'opus';
+
+        function conversionChoiceLabel(enabled) {
+            if (!enabled) return 'Keep source';
+            const labels = { flac: 'FLAC', alac: 'ALAC', opus: 'Opus', mp3: 'MP3' };
+            return `Convert to ${labels[audioFormat] || 'Opus'}`;
+        }
+
+        function updateConversionLabels() {
+            const headerLabel = document.getElementById('headerFormatLabel');
+            if (headerLabel) headerLabel.textContent = conversionChoiceLabel(convertToFlacCheckbox.checked);
+
+            const watchedLabel = document.getElementById('watchedFormatLabel');
+            if (watchedLabel && watchedConvertToFlac) {
+                watchedLabel.textContent = conversionChoiceLabel(watchedConvertToFlac.checked);
+            }
+
+            const artistLabel = document.getElementById('artistFlacLabel');
+            const artistCheckbox = document.getElementById('artistConvertToFlac');
+            if (artistLabel && artistCheckbox) {
+                artistLabel.textContent = conversionChoiceLabel(artistCheckbox.checked);
+            }
+        }
+
+        function setDefaultConversionMode(enabled) {
+            const input = document.getElementById('settingDefaultFlac');
+            if (!input) return;
+            if (input.disabled && input.checked !== Boolean(enabled)) return;
+
+            input.checked = Boolean(enabled);
+
+            const keepBtn = document.getElementById('conversionModeKeep');
+            const convertBtn = document.getElementById('conversionModeConvert');
+            if (keepBtn) {
+                keepBtn.classList.toggle('active', !input.checked);
+                keepBtn.disabled = input.disabled;
+            }
+            if (convertBtn) {
+                convertBtn.classList.toggle('active', input.checked);
+                convertBtn.disabled = input.disabled;
+            }
+
+            const targets = document.getElementById('conversionTargetOptions');
+            if (targets) targets.style.display = input.checked ? 'flex' : 'none';
+
+            // Format-specific notes and quality rows should not remain visible
+            // while "Keep source" is selected.
+            setAudioFormat(audioFormat);
+        }
 
         function setAudioFormat(format) {
-            audioFormat = ['flac', 'alac', 'opus', 'mp3'].includes(format) ? format : 'flac';
+            audioFormat = ['flac', 'alac', 'opus', 'mp3'].includes(format) ? format : 'opus';
 
             const btnFlac = document.getElementById('formatBtnFlac');
             const btnAlac = document.getElementById('formatBtnAlac');
@@ -814,28 +863,21 @@
             if (btnOpus) btnOpus.classList.toggle('active', audioFormat === 'opus');
             if (btnMp3)  btnMp3.classList.toggle('active',  audioFormat === 'mp3');
 
-            const labels = { flac: 'FLAC', alac: 'ALAC', opus: 'Opus', mp3: 'MP3' };
-            const label = labels[audioFormat];
-            const headerLabel = document.getElementById('headerFormatLabel');
-            if (headerLabel) headerLabel.textContent = label;
+            updateConversionLabels();
 
-            const watchedLabel = document.getElementById('watchedFormatLabel');
-            if (watchedLabel) watchedLabel.textContent = `Convert to ${label}`;
-            const artistFlacLabel = document.getElementById('artistFlacLabel');
-            if (artistFlacLabel) artistFlacLabel.textContent = `Convert to ${label}`;
-
+            const conversionEnabled = document.getElementById('settingDefaultFlac')?.checked ?? false;
             const alacNote = document.getElementById('alacFormatNote');
-            if (alacNote) alacNote.style.display = audioFormat === 'alac' ? 'block' : 'none';
+            if (alacNote) alacNote.style.display = conversionEnabled && audioFormat === 'alac' ? 'block' : 'none';
             const mp3Note = document.getElementById('mp3FormatNote');
-            if (mp3Note) mp3Note.style.display = audioFormat === 'mp3' ? 'block' : 'none';
+            if (mp3Note) mp3Note.style.display = conversionEnabled && audioFormat === 'mp3' ? 'block' : 'none';
 
             // Show quality sub-rows only for the relevant format
             const mp3QualityRow = document.getElementById('mp3QualityRow');
-            if (mp3QualityRow) mp3QualityRow.style.display = audioFormat === 'mp3' ? '' : 'none';
+            if (mp3QualityRow) mp3QualityRow.style.display = conversionEnabled && audioFormat === 'mp3' ? '' : 'none';
             const opusQualityRow = document.getElementById('opusQualityRow');
-            if (opusQualityRow) opusQualityRow.style.display = audioFormat === 'opus' ? '' : 'none';
+            if (opusQualityRow) opusQualityRow.style.display = conversionEnabled && audioFormat === 'opus' ? '' : 'none';
             const alacQualityRow = document.getElementById('alacQualityRow');
-            if (alacQualityRow) alacQualityRow.style.display = audioFormat === 'alac' ? '' : 'none';
+            if (alacQualityRow) alacQualityRow.style.display = conversionEnabled && audioFormat === 'alac' ? '' : 'none';
 
             // Keep hidden input in sync so settings save picks it up
             const hiddenInput = document.getElementById('settingAudioFormat');
@@ -859,9 +901,9 @@
         }
 
         function setOpusBitrate(val) {
-            const valid = ['320k', '256k', '192k', '128k', '96k'];
-            if (!valid.includes(val)) val = '320k';
-            const ids = { '320k': 'opusQualityBtn320', '256k': 'opusQualityBtn256',
+            const valid = ['256k', '192k', '128k', '96k'];
+            if (!valid.includes(val)) val = '256k';
+            const ids = { '256k': 'opusQualityBtn256',
                           '192k': 'opusQualityBtn192', '128k': 'opusQualityBtn128', '96k': 'opusQualityBtn96' };
             for (const [k, id] of Object.entries(ids)) {
                 const btn = document.getElementById(id);
@@ -930,6 +972,7 @@
                     if (watchedConvertToFlac && !watchedFlacTouched) {
                         watchedConvertToFlac.checked = config.default_convert_to_flac;
                     }
+                    updateConversionLabels();
                 }
 
                 // Set audio format picker from server if not saved locally
@@ -996,11 +1039,17 @@
         if (savedAudioFormat) {
             setAudioFormat(savedAudioFormat);
         }
+        updateConversionLabels();
 
         if (watchedConvertToFlac) {
             watchedConvertToFlac.addEventListener('change', () => {
                 watchedFlacTouched = true;
+                updateConversionLabels();
             });
+        }
+        const artistConvertToFlac = document.getElementById('artistConvertToFlac');
+        if (artistConvertToFlac) {
+            artistConvertToFlac.addEventListener('change', updateConversionLabels);
         }
 
         // Save convert preference when header toggle is flipped
@@ -1009,11 +1058,13 @@
             if (watchedConvertToFlac && !watchedFlacTouched) {
                 watchedConvertToFlac.checked = convertToFlacCheckbox.checked;
             }
+            updateConversionLabels();
         });
 
         let currentTab = 'results';
         let downloadingIds = new Set();
         let lastResults = [];
+        let lastCompletedSearchQuery = '';
         let currentSearchToken = 0;
         let _searchProgressHideTimer = null;
         let _searchProgressRowTimers = [];
@@ -1050,6 +1101,10 @@
         let currentBulkImportId = null;
         let bulkImportPollInterval = null;
         let queuePollInterval = null;
+        let queueElapsedInterval = null;
+        let queueLoadInFlight = false;
+        let queueLastUpdatedAt = 0;
+        let queueSummarySignature = '';
         let watchedRefreshPollInterval = null;
         let watchedLoadInFlight = false;
         const tagEditorOverlay = document.getElementById('tagEditorOverlay');
@@ -1257,22 +1312,38 @@
                 const target = panelMap[currentTab];
                 if (target) target.classList.add('tab-visible');
 
+                // These controls sit above the tab panels in the DOM, so explicitly
+                // scope them to Results instead of letting related-search chips (and
+                // friends) wander into Albums, Queue, Settings, etc.
+                [
+                    relatedSuggestions,
+                    exploreBar,
+                    document.getElementById('searchProgress'),
+                    document.getElementById('destinationPickerRow')
+                ].forEach(element => {
+                    element?.classList.toggle('results-context-hidden', currentTab !== 'results');
+                });
+
                 // Stop preview when leaving results tab
                 if (currentTab !== 'results') {
                     stopPreview();
                 }
 
+                if (currentTab === 'albums') {
+                    // Defer one tick so direct album links can populate their richer
+                    // MBID-backed state first. A plain tab click remains pristine and
+                    // inherits the artist from the last successful singles search.
+                    setTimeout(primeAlbumSearchFromResults, 0);
+                }
+
                 if (currentTab === 'queue') {
-                    loadJobs();
+                    stopQueuePolling();
+                    loadJobs().finally(scheduleQueuePoll);
+                    queueElapsedInterval = setInterval(updateLiveQueueTimes, 1000);
                     loadDownloadable();
                     loadTrash();
-                    if (queuePollInterval) clearInterval(queuePollInterval);
-                    queuePollInterval = setInterval(() => loadJobs(false), 3000);
                 } else {
-                    if (queuePollInterval) {
-                        clearInterval(queuePollInterval);
-                        queuePollInterval = null;
-                    }
+                    stopQueuePolling();
                     stopLibraryPlayback();
                 }
 
@@ -1437,13 +1508,21 @@
             if (!query) return;
             const searchToken = ++currentSearchToken;
             currentSearchLogToken = null;
+            lastCompletedSearchQuery = '';
+            lastResults = [];
 
             // Save to history
             saveSearchHistory(query);
             hideSearchHistory();
 
             searchBtn.disabled = true;
-            resultsTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            searchBtn.textContent = 'Searching…';
+            resultsTab.innerHTML = `
+                <div class="loading loading-with-copy" role="status">
+                    <div class="spinner"></div>
+                    <span>Warming up the search party…</span>
+                </div>
+            `;
             clearDuplicateNotice();
             relatedSuggestions.style.display = 'none';
             exploreBar.style.display = 'none';
@@ -1458,6 +1537,7 @@
 
             try {
                 await runSearchStream(query, searchToken);
+                if (searchToken === currentSearchToken) lastCompletedSearchQuery = query;
             } catch (error) {
                 if (searchToken !== currentSearchToken) return;
                 // Streaming hiccup: fall back to the plain blocking search so the
@@ -1466,6 +1546,7 @@
                 hideSearchProgress();
                 try {
                     await runSearchBlocking(query, searchToken);
+                    if (searchToken === currentSearchToken) lastCompletedSearchQuery = query;
                 } catch (err2) {
                     if (searchToken !== currentSearchToken) return;
                     resultsTab.innerHTML = `
@@ -1477,7 +1558,10 @@
                     showToast('Search failed', true);
                 }
             } finally {
-                if (searchToken === currentSearchToken) searchBtn.disabled = false;
+                if (searchToken === currentSearchToken) {
+                    searchBtn.disabled = false;
+                    searchBtn.textContent = 'Search';
+                }
             }
         }
 
@@ -2589,9 +2673,40 @@
             return jobs.filter(j => j.status === 'queued' || j.status === 'downloading').length;
         }
 
+        function stopQueuePolling() {
+            if (queuePollInterval) {
+                clearTimeout(queuePollInterval);
+                queuePollInterval = null;
+            }
+            if (queueElapsedInterval) {
+                clearInterval(queueElapsedInterval);
+                queueElapsedInterval = null;
+            }
+        }
+
+        function scheduleQueuePoll() {
+            if (currentTab !== 'queue') return;
+            if (queuePollInterval) clearTimeout(queuePollInterval);
+            const hasActiveJobs = allQueueJobs.some(job => ['queued', 'downloading'].includes(job.status));
+            // Stay snappy while work is moving, then back off when the queue is idle.
+            const delay = hasActiveJobs ? 1500 : 5000;
+            queuePollInterval = setTimeout(async () => {
+                queuePollInterval = null;
+                await loadJobs(false);
+                scheduleQueuePoll();
+            }, delay);
+        }
+
         async function loadJobs(showLoading = true) {
+            if (queueLoadInFlight) return;
+            queueLoadInFlight = true;
             if (showLoading) {
-                queueTab.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+                queueTab.innerHTML = `
+                    <div class="loading loading-with-copy" role="status">
+                        <div class="spinner"></div>
+                        <span>Taking attendance…</span>
+                    </div>
+                `;
             }
 
             try {
@@ -2600,9 +2715,11 @@
 
                 const data = await response.json();
                 allQueueJobs = data.jobs;
+                queueLastUpdatedAt = Date.now();
                 // Clamp page in case jobs were cleared
                 const totalPages = Math.max(1, Math.ceil(allQueueJobs.length / QUEUE_PAGE_SIZE));
                 if (queuePage > totalPages) queuePage = totalPages;
+                renderQueueSummary();
                 renderQueuePage();
             } catch (error) {
                 if (showLoading) {
@@ -2613,6 +2730,75 @@
                         </div>
                     `;
                 }
+            } finally {
+                queueLoadInFlight = false;
+            }
+        }
+
+        function secondsSince(isoString) {
+            if (!isoString) return 0;
+            const time = new Date(isoString).getTime();
+            return Number.isFinite(time) ? Math.max(0, Math.floor((Date.now() - time) / 1000)) : 0;
+        }
+
+        function formatElapsedSeconds(seconds) {
+            const secs = Math.max(0, Math.floor(seconds || 0));
+            if (secs < 60) return `${secs}s`;
+            const mins = Math.floor(secs / 60);
+            if (mins < 60) return `${mins}m ${String(secs % 60).padStart(2, '0')}s`;
+            const hours = Math.floor(mins / 60);
+            return `${hours}h ${String(mins % 60).padStart(2, '0')}m`;
+        }
+
+        function renderQueueSummary() {
+            if (!queueLiveSummary) return;
+            if (!allQueueJobs.length) {
+                queueLiveSummary.style.display = 'none';
+                queueSummarySignature = '';
+                return;
+            }
+            const downloading = allQueueJobs.filter(job => job.status === 'downloading').length;
+            const queued = allQueueJobs.filter(job => job.status === 'queued').length;
+            const active = downloading + queued;
+            const signature = `${downloading}:${queued}`;
+            if (signature !== queueSummarySignature) {
+                let headline;
+                let aside;
+                if (downloading && queued) {
+                    headline = `${downloading} on the workbench · ${queued} waiting`;
+                    aside = 'The conveyor belt is earning its keep.';
+                } else if (downloading) {
+                    headline = `${downloading} track${downloading === 1 ? '' : 's'} on the workbench`;
+                    aside = 'Tiny hammers, serious business.';
+                } else if (queued) {
+                    headline = `${queued} track${queued === 1 ? '' : 's'} waiting its turn`;
+                    aside = 'Forming an orderly queue, naturally.';
+                } else {
+                    headline = 'All caught up';
+                    aside = 'The queue has put its feet up.';
+                }
+                queueLiveSummary.innerHTML = `
+                    <span class="queue-live-dot ${active ? 'active' : ''}" aria-hidden="true"></span>
+                    <span class="queue-live-copy">
+                        <strong>${headline}</strong>
+                        <span>${aside}</span>
+                    </span>
+                    <span class="queue-live-updated" aria-hidden="true">Live · checked just now</span>
+                `;
+                queueSummarySignature = signature;
+            }
+            queueLiveSummary.style.display = 'flex';
+            updateLiveQueueTimes();
+        }
+
+        function updateLiveQueueTimes() {
+            document.querySelectorAll('.job-elapsed[data-start]').forEach(element => {
+                element.textContent = formatElapsedSeconds(secondsSince(element.dataset.start));
+            });
+            const updated = queueLiveSummary?.querySelector('.queue-live-updated');
+            if (updated && queueLastUpdatedAt) {
+                const age = Math.floor((Date.now() - queueLastUpdatedAt) / 1000);
+                updated.textContent = age < 2 ? 'Live · checked just now' : `Live · checked ${age}s ago`;
             }
         }
 
@@ -2636,6 +2822,18 @@
             }
         }
 
+        function qualityDetailRows(quality) {
+            if (!quality) return '';
+            const match = String(quality).match(/^(.*?)\s+\(from\s+(.+)\)$/i);
+            if (!match) {
+                return `<div class="job-details-row"><span class="job-details-label">Stored:</span> ${escapeHtml(quality)}</div>`;
+            }
+            return `
+                <div class="job-details-row"><span class="job-details-label">Stored:</span> ${escapeHtml(match[1])}</div>
+                <div class="job-details-row"><span class="job-details-label">Original:</span> ${escapeHtml(match[2])}</div>
+                <div class="job-details-row"><span class="job-details-label">Class:</span> Lossy source, transcoded</div>`;
+        }
+
         function changeQueuePage(delta) {
             const totalPages = Math.max(1, Math.ceil(allQueueJobs.length / QUEUE_PAGE_SIZE));
             queuePage = Math.max(1, Math.min(totalPages, queuePage + delta));
@@ -2649,6 +2847,7 @@
                     <div class="empty-state">
                         <div class="empty-state-icon"><i class="fa-solid fa-inbox"></i></div>
                         <p>No downloads yet</p>
+                        <small>Quiet in here. Suspiciously quiet.</small>
                     </div>
                 `;
                 return;
@@ -2666,6 +2865,13 @@
                 const sourceUrl = job.source_url || '';
                 const isClickableUrl = sourceUrl.startsWith('https://');
                 const fileDeleted = Number(job.file_deleted || 0) === 1;
+                const isActive = job.status === 'queued' || job.status === 'downloading';
+                const activeStage = job.status === 'queued'
+                    ? 'Waiting its turn'
+                    : (job.progress_stage || 'Getting organised');
+                const elapsedHtml = isActive
+                    ? `<span class="job-elapsed-wrap">for <span class="job-elapsed" data-start="${escapeAttr(job.created_at || '')}">${formatElapsedSeconds(secondsSince(job.created_at))}</span></span>`
+                    : '';
                 const sourceJourney = Array.isArray(job.source_history)
                     ? job.source_history.filter(Boolean)
                     : [];
@@ -2679,11 +2885,15 @@
                     <div class="job-status ${job.status}"></div>
                     <div class="job-info">
                         <div class="job-title">${escapeHtml(job.artist ? `${job.artist} - ${job.title}` : job.title)}${job.status === 'completed_with_errors' ? '<span class="job-warning-badge">ISSUES</span>' : ''}</div>
-                        <div class="job-meta">${formatJobStatus(job.status)}${job.status === 'downloading' && job.progress_stage ? ` <span class="job-progress-stage">${escapeHtml(job.progress_stage)}</span>` : ''} • ${formatTime(job.created_at)}</div>
+                        <div class="job-meta">
+                            <span class="job-status-label">${escapeHtml(formatJobStatus(job.status))}</span>
+                            ${isActive ? `<span class="job-progress-stage">${escapeHtml(activeStage)}</span>${elapsedHtml}` : ''}
+                            <span class="job-date">· ${formatTime(job.created_at)}</span>
+                        </div>
                         ${job.error ? `<div class="job-error">${job.error.startsWith('Already exists') ? 'Already in library' : escapeHtml(job.error)}</div>` : ''}
                         ${hasDetails ? `
                         <div class="job-details" style="display:${isExpanded ? 'block' : 'none'};">
-                            ${job.audio_quality ? `<div class="job-details-row"><span class="job-details-label">Quality:</span> ${escapeHtml(job.audio_quality)}</div>` : ''}
+                            ${qualityDetailRows(job.audio_quality)}
                             ${job.error && job.error.startsWith('Already exists') ? `<div class="job-details-row"><span class="job-details-label">Path:</span> <span class="job-details-url">${escapeHtml(job.error.replace(/^Already exists(?: in [^:]+)?:\s*/, '').replace(/ \(added to playlist\)$/, ''))}</span></div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Source:</span> ${escapeHtml(sourceLabel)}</div>
                             ${journeyHtml ? `<div class="job-details-row job-journey"><span class="job-details-label">Journey:</span> ${journeyHtml}</div>` : ''}
@@ -2768,7 +2978,7 @@
                 });
             });
 
-            // Polling is now handled by queuePollInterval (setInterval) managed by tab switch.
+            updateLiveQueueTimes();
         }
 
         function formatJobStatus(status) {
@@ -3637,11 +3847,20 @@
             return `${hrs}h ${remainMins}m`;
         }
 
+        let toastHideTimer = null;
+
         function showToast(message, isError = false) {
+            if (toastHideTimer) clearTimeout(toastHideTimer);
             toast.textContent = message;
             toast.className = 'toast' + (isError ? ' error' : '');
+            toast.setAttribute('role', isError ? 'alert' : 'status');
+            toast.setAttribute('aria-live', isError ? 'assertive' : 'polite');
             toast.classList.add('show');
-            setTimeout(() => toast.classList.remove('show'), 2500);
+            const readingTime = Math.min(6000, Math.max(2800, String(message || '').length * 55));
+            toastHideTimer = setTimeout(() => {
+                toast.classList.remove('show');
+                toastHideTimer = null;
+            }, readingTime);
         }
 
         function showVolumeMountWarning() {
@@ -3910,6 +4129,39 @@
         let albumSelectedRelease = null; // {release_mbid, title, year}
         let albumPollInterval = null;
         let albumSelectedM3uName = null;
+
+        function albumHandoffArtist() {
+            const query = lastCompletedSearchQuery.trim();
+            if (!query || !lastResults.length) return '';
+
+            const parsed = parseArtistTitle(query);
+            if (parsed?.artist) return parsed.artist;
+
+            const resultWithArtist = lastResults.find(result => String(result.artist || '').trim());
+            if (resultWithArtist) return String(resultWithArtist.artist).trim();
+
+            // An artist-only search is already suitable input for MusicBrainz.
+            return query.includes(' - ') ? '' : query;
+        }
+
+        function primeAlbumSearchFromResults() {
+            const input = document.getElementById('albumArtistInput');
+            const resultsEl = document.getElementById('albumArtistResults');
+            if (!input || currentTab !== 'albums') return;
+
+            // Album work is deliberately sticky. Returning to a search or selected
+            // release must never be replaced just because Results still has context.
+            const alreadyInProgress = albumSelectedArtist
+                || albumSelectedRelease
+                || input.value.trim()
+                || resultsEl?.innerHTML.trim();
+            if (alreadyInProgress) return;
+
+            const artist = albumHandoffArtist();
+            if (!artist) return;
+            input.value = artist;
+            searchAlbumArtist();
+        }
 
         function setAlbumResetVisible(visible) {
             const resetBtn = document.getElementById('albumResetBtn');
@@ -4635,6 +4887,8 @@
             searchInput.focus();
             // Reset results back to the empty state
             stopPreview();
+            lastCompletedSearchQuery = '';
+            lastResults = [];
             relatedSuggestions.style.display = 'none';
             exploreBar.style.display = 'none';
             const _destRow3 = document.getElementById('destinationPickerRow');
@@ -5065,8 +5319,8 @@
                             <span>${escapeHtml(p.refresh_error)}</span>
                         </div>` : ''}
                         <div class="watched-card-settings">
-                            <label class="watched-card-toggle" title="Convert new tracks to the selected audio format">
-                                Convert
+                            <label class="watched-card-toggle" title="Choose whether new tracks keep their source format or are converted">
+                                ${conversionChoiceLabel(p.convert_to_flac)}
                                 <div class="toggle-switch">
                                     <input type="checkbox" ${p.convert_to_flac ? 'checked' : ''} onchange="updateWatchedPlaylistFlac('${p.id}', this.checked)">
                                     <span class="toggle-slider"></span>
@@ -6336,9 +6590,30 @@
         }
 
         function upgradeCurrentQuality(item) {
-            if (item.file_tier === 5) return 'Lossless (' + (item.codec || '?').toUpperCase() + ')';
-            const br = item.bitrate_kbps ? item.bitrate_kbps + 'kbps' : '';
-            return [(item.codec || '?').toUpperCase(), br].filter(Boolean).join(' ');
+            const codec = (item.codec || '?').toUpperCase();
+            const storedRate = item.bitrate_kbps ? `${item.bitrate_kbps}kbps` : '';
+            const stored = [codec, storedRate].filter(Boolean).join(' ');
+            const sourceCodec = (item.source_codec || '').toUpperCase();
+            const sourceRate = item.source_bitrate_kbps ? `${item.source_bitrate_kbps}kbps` : '';
+
+            if (item.file_tier === 5) {
+                return `${stored} stored · lossless source`;
+            }
+
+            // A lossless container can preserve a lossy input perfectly, but it cannot
+            // restore quality the input had already discarded. Show both sides so a
+            // FLAC-from-MP3 candidate does not look like FLAC is being compared by bitrate.
+            if (sourceCodec && sourceCodec !== codec) {
+                const source = [sourceCodec, sourceRate].filter(Boolean).join(' ');
+                return `${stored} stored · source ${source} · effective ${upgradeTierLabel(item.file_tier)} tier`;
+            }
+
+            const legacyOrigin = (item.source_quality || '').match(/\bfrom\s+([^)]*)/i);
+            if (legacyOrigin) {
+                return `${stored} stored · source ${legacyOrigin[1].trim()} · effective ${upgradeTierLabel(item.file_tier)} tier`;
+            }
+
+            return `${stored} · effective ${upgradeTierLabel(item.file_tier)} tier`;
         }
 
         async function loadWatchedUpgrades() {
@@ -6605,8 +6880,8 @@
                     </div>
                     ${isError ? `<div class="watched-card-refresh-error"><i class="fa-solid fa-circle-exclamation"></i><span>${escapeHtml(artist.refresh_error || 'Refresh failed')}</span></div>` : ''}
                     <div class="watched-card-settings">
-                        <label class="watched-card-toggle" title="Convert singles to the selected audio format">
-                            Convert
+                        <label class="watched-card-toggle" title="Choose whether new singles keep their source format or are converted">
+                            ${conversionChoiceLabel(artist.convert_to_flac)}
                             <div class="toggle-switch">
                                 <input type="checkbox" ${artist.convert_to_flac ? 'checked' : ''}
                                     onchange="updateArtistFlac('${artist.id}', this.checked)">
@@ -7331,6 +7606,10 @@
                     }
                 }
 
+                // The conversion-mode buttons are the visible control for the
+                // hidden persisted checkbox.
+                setDefaultConversionMode(document.getElementById('settingDefaultFlac').checked);
+
                 settingsLoaded = true;
 
                 // Sync notify_on checkboxes from the hidden field value
@@ -8045,6 +8324,8 @@
                             if (watchedConvertToFlac && !watchedFlacTouched) {
                                 watchedConvertToFlac.checked = value;
                             }
+                            setDefaultConversionMode(value);
+                            updateConversionLabels();
                         }
                         // Sync format picker when audio_format is saved
                         if (key === 'audio_format') {

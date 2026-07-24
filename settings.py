@@ -164,10 +164,10 @@ SETTINGS_SCHEMA = {
     "enable_musicbrainz": {"type": "bool", "default": True, "env": "ENABLE_MUSICBRAINZ"},
     "enable_deezer_metadata": {"type": "bool", "default": True, "env": "ENABLE_DEEZER_METADATA"},
     "enable_lyrics": {"type": "bool", "default": True, "env": "ENABLE_LYRICS"},
-    "default_convert_to_flac": {"type": "bool", "default": True, "env": "DEFAULT_CONVERT_TO_FLAC"},
-    "audio_format": {"type": "str", "default": "flac", "env": "AUDIO_FORMAT"},
+    "default_convert_to_flac": {"type": "bool", "default": False, "env": "DEFAULT_CONVERT_TO_FLAC"},
+    "audio_format": {"type": "str", "default": "opus", "env": "AUDIO_FORMAT"},
     "mp3_bitrate": {"type": "str", "default": "v2", "env": "MP3_BITRATE"},
-    "opus_bitrate": {"type": "str", "default": "320k", "env": "OPUS_BITRATE"},
+    "opus_bitrate": {"type": "str", "default": "256k", "env": "OPUS_BITRATE"},
     "alac_bitrate": {"type": "str", "default": "lossless", "env": "ALAC_BITRATE"},
     "min_audio_bitrate": {"type": "int", "default": 0, "env": "MIN_AUDIO_BITRATE"},
     # Reject live versions. Off by default; opt-in, and deliberately so since it's

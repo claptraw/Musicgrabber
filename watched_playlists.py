@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
@@ -20,7 +21,8 @@ from fastapi import HTTPException
 from constants import (
     TIMEOUT_YTDLP_PLAYLIST, TIMEOUT_HTTP_SPOTIFY,
     SPOTIFY_EMBED_MAX_ATTEMPTS, SPOTIFY_EMBED_RETRY_BACKOFF,
-    WATCHED_PLAYLIST_CHECK_HOURS, WATCHED_REFRESH_STALE_SECONDS,
+    WATCHED_PLAYLIST_CHECK_HOURS, WATCHED_HISTORY_RECHECK_HOURS,
+    WATCHED_REFRESH_STALE_SECONDS,
     WATCHED_GONE_STRIKES_BEFORE_PAUSE,
     LISTENBRAINZ_API_URL, TIMEOUT_LISTENBRAINZ, TIMEOUT_LISTENBRAINZ_PLAYLIST,
     AUDIO_EXTENSIONS,
@@ -38,7 +40,7 @@ from utils import (
     extract_artist_title, hash_track, spawn_daemon_thread, sanitize_filename,
     check_duplicate, sanitize_playlist_name,
 )
-from downloads import check_navidrome_duplicate, _tag_track_comment
+from downloads import check_navidrome_duplicate, check_lidarr_duplicate, _tag_track_comment
 from youtube import _ytdlp_base_args
 
 import httpx
@@ -91,7 +93,17 @@ def _find_playlist_file(playlist_name: str, artist: str, title: str, user_id: st
     return _find_track_in_dir(playlists_dir / sanitize_filename(playlist_name), artist, title)
 
 
-def _locate_local_track_file(playlist_name: str, use_playlists_dir: bool, artist: str, title: str, job_artist: str = "", job_title: str = "", user_id: str | None = None, resolved_path: str | None = None) -> tuple[bool, pathlib.Path | None]:
+def _locate_local_track_file(
+    playlist_name: str,
+    use_playlists_dir: bool,
+    artist: str,
+    title: str,
+    job_artist: str = "",
+    job_title: str = "",
+    user_id: str | None = None,
+    resolved_path: str | None = None,
+    lidarr_cache: dict | None = None,
+) -> tuple[bool, pathlib.Path | None]:
     """Resolve a local file for this watched track.
 
     Returns (found, local_path). found means "the track exists somewhere and should
@@ -101,8 +113,9 @@ def _locate_local_track_file(playlist_name: str, use_playlists_dir: bool, artist
 
     Checks the stored resolved_path first (covers tracks found in album folders or
     other non-Singles locations), then MusicGrabber's own library, then falls back
-    to Navidrome (real absolute paths only  -  synthetic paths mean real-path mode
-    is off, which is a config problem, not a reason to re-download).
+    to Navidrome and Lidarr. Synthetic relative paths still prove the track exists
+    and block a duplicate download; absolute paths are retained for M3U rebuilding
+    even when the media path is not mounted into this container.
     """
     # Fastest check: if we recorded exactly where the file landed, trust it
     if resolved_path:
@@ -126,19 +139,181 @@ def _locate_local_track_file(playlist_name: str, use_playlists_dir: bool, artist
             if pf:
                 return True, pf
 
-    # Last resort: check Navidrome. Any non-None return means Navidrome confirmed
-    # the track is in the library; absolute paths are real on-disk locations,
-    # while the relative sentinel (Path(title)) means "exists but no real-path
-    # mode". Both block re-downloads. Filtering by .is_absolute() here used to
-    # treat the sentinel as "missing", causing every track to re-download when a
-    # watched playlist was re-added.
+    # Search and download dedupe consult both services, so refresh must do the
+    # same or a Lidarr-only track loops forever as "missing". An absolute path is
+    # useful to an M3U even when MusicGrabber cannot stat it (different container
+    # path namespace); a relative sentinel proves existence but is not writable.
     for a, t in pairs:
-        nav_path = check_navidrome_duplicate(a, t, user_id=user_id)
-        if nav_path is not None:
-            local = nav_path if (nav_path.is_absolute() and nav_path.exists()) else None
-            return True, local
+        external_path = check_navidrome_duplicate(a, t, user_id=user_id)
+        if external_path is not None:
+            usable_path = external_path if external_path.is_absolute() else None
+            return True, usable_path
+
+    for a, t in pairs:
+        if lidarr_cache is None:
+            external_path = check_lidarr_duplicate(a, t, user_id=user_id)
+        else:
+            external_path = check_lidarr_duplicate(
+                a, t, user_id=user_id, cache=lidarr_cache
+            )
+        if external_path is not None:
+            usable_path = external_path if external_path.is_absolute() else None
+            return True, usable_path
 
     return False, None
+
+
+def _heal_unresolved_watched_track(
+    conn: sqlite3.Connection,
+    playlist: dict,
+    track_hash: str,
+    row,
+    fallback_artist: str = "",
+    fallback_title: str = "",
+    lidarr_cache: dict | None = None,
+) -> bool:
+    """Mark an unresolved watched row downloaded when its file already exists.
+
+    This is shared by the current-upstream diff and append-history reconciliation.
+    Append playlists retain tracks after they leave the upstream list, so limiting
+    this check to the current upstream snapshot leaves those historical rows stuck
+    as "missing" forever.
+    """
+    found, local_file, artist, title = _resolve_unresolved_watched_track(
+        playlist,
+        row,
+        fallback_artist=fallback_artist,
+        fallback_title=fallback_title,
+        lidarr_cache=lidarr_cache,
+    )
+    if not found:
+        return False
+
+    _persist_healed_watched_track(
+        conn, playlist, track_hash, artist, title, local_file
+    )
+    return True
+
+
+def _resolve_unresolved_watched_track(
+    playlist: dict,
+    row,
+    fallback_artist: str = "",
+    fallback_title: str = "",
+    lidarr_cache: dict | None = None,
+) -> tuple[bool, pathlib.Path | None, str, str]:
+    """Resolve one watched row without touching the caller's SQLite connection."""
+    artist = row["artist"] or fallback_artist
+    title = row["title"] or fallback_title
+    found, local_file = _locate_local_track_file(
+        playlist["name"],
+        bool(playlist.get("use_playlists_dir", False)),
+        artist,
+        title,
+        row["job_artist"] or "",
+        row["job_title"] or "",
+        user_id=playlist.get("user_id"),
+        resolved_path=row["resolved_path"],
+        lidarr_cache=lidarr_cache,
+    )
+    return found, local_file, artist, title
+
+
+def _persist_healed_watched_track(
+    conn: sqlite3.Connection,
+    playlist: dict,
+    track_hash: str,
+    artist: str,
+    title: str,
+    local_file: pathlib.Path | None,
+) -> None:
+    """Persist a successful resolution on the refresh thread."""
+    conn.execute(
+        """UPDATE watched_playlist_tracks
+           SET downloaded_at = datetime('now'),
+               resolved_path = COALESCE(?, resolved_path)
+           WHERE playlist_id = ? AND track_hash = ?""",
+        (
+            str(local_file) if local_file else None,
+            playlist["id"],
+            track_hash,
+        ),
+    )
+    if local_file:
+        _tag_track_comment(local_file, artist, title, conn=conn)
+
+
+def _reconcile_append_history(
+    conn: sqlite3.Connection,
+    playlist: dict,
+    tracked: dict,
+    current_hashes: set[str],
+    lidarr_cache: dict | None = None,
+) -> int:
+    """Heal unresolved append-only rows that are absent from today's snapshot.
+
+    Historical tracks are deliberately not queued again after leaving the source
+    playlist. They are still retained by append mode and shown in its track list,
+    though, so refresh must reconcile them against the local/Navidrome/Lidarr
+    libraries just like current tracks.
+    """
+    candidates = []
+    history_cutoff = datetime.fromtimestamp(
+        time.time() - (WATCHED_HISTORY_RECHECK_HOURS * 3600),
+        tz=timezone.utc,
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    for track_hash, row in tracked.items():
+        row_keys = row.keys()
+        library_checked_at = (
+            row["library_checked_at"] if "library_checked_at" in row_keys else None
+        )
+        if (
+            track_hash in current_hashes
+            or row["downloaded_at"]
+            or row["removed_at"]
+            or row["job_status"] in ("queued", "downloading")
+            or (
+                library_checked_at
+                and str(library_checked_at) >= history_cutoff
+            )
+        ):
+            continue
+        # sqlite3.Row is immutable but belongs to a connection used on this
+        # thread. Copy it before handing lookup-only work to a worker.
+        candidates.append((track_hash, dict(row)))
+
+    def resolve_candidate(candidate):
+        track_hash, row = candidate
+        found, local_file, artist, title = _resolve_unresolved_watched_track(
+            playlist, row, lidarr_cache=lidarr_cache
+        )
+        return track_hash, found, local_file, artist, title
+
+    if len(candidates) <= 1:
+        results = [resolve_candidate(item) for item in candidates]
+    else:
+        # External duplicate checks are independent HTTP calls. A small pool
+        # keeps a long append history from making manual refresh feel hung while
+        # avoiding a request burst against Navidrome or Lidarr.
+        workers = min(6, len(candidates))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(resolve_candidate, candidates))
+
+    healed = 0
+    for track_hash, found, local_file, artist, title in results:
+        conn.execute(
+            """UPDATE watched_playlist_tracks
+               SET library_checked_at = datetime('now')
+               WHERE playlist_id = ? AND track_hash = ?""",
+            (playlist["id"], track_hash),
+        )
+        if not found:
+            continue
+        _persist_healed_watched_track(
+            conn, playlist, track_hash, artist, title, local_file
+        )
+        healed += 1
+    return healed
 
 
 def _playlist_track_dir(playlist: dict) -> pathlib.Path | None:
@@ -1173,7 +1348,8 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             # Load existing track state (including job status and removal flag)
             set_refresh_stage("diffing")
             track_rows = conn.execute(
-                """SELECT wpt.track_hash, wpt.downloaded_at, wpt.job_id, wpt.removed_at,
+                """SELECT wpt.track_hash, wpt.downloaded_at,
+                          wpt.library_checked_at, wpt.job_id, wpt.removed_at,
                           wpt.artist, wpt.title, wpt.resolved_path, j.status as job_status,
                           j.artist as job_artist, j.title as job_title
                    FROM watched_playlist_tracks wpt
@@ -1186,6 +1362,8 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             new_tracks = []
             missing_tracks = []
             removed_count = 0
+            healed_history_count = 0
+            lidarr_refresh_cache = {}
 
             for position, (artist, title) in enumerate(tracks):
                 track_hash = hash_track(artist, title)
@@ -1230,7 +1408,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                         # Heal the record while we're here: remember where the file
                         # actually lives, and make sure its COMMENT tag carries the
                         # playlist names (duplicate-skipped tracks used to miss out).
-                        if not existing["resolved_path"]:
+                        if str(local_file) != (existing["resolved_path"] or ""):
                             conn.execute(
                                 "UPDATE watched_playlist_tracks SET resolved_path = ? WHERE playlist_id = ? AND track_hash = ?",
                                 (str(local_file), playlist_id, track_hash)
@@ -1251,29 +1429,30 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
 
                 # Job failed (or never ran), but check if the file landed on disk anyway
                 # (e.g. a manual download, or a previous sync via a different playlist).
-                found, local_file = _locate_local_track_file(
-                    playlist["name"],
-                    bool(playlist.get("use_playlists_dir", False)),
-                    existing["artist"] or artist,
-                    existing["title"] or title,
-                    existing["job_artist"] or "",
-                    existing["job_title"] or "",
-                    user_id=user_id,
-                    resolved_path=existing["resolved_path"],
-                )
-                if found:
-                    # Store the real location (when we have one) so M3U rebuilds don't
-                    # have to reconstruct it, and stamp the playlist COMMENT tag; this
-                    # was the path where duplicate-found tracks dodged tagging entirely.
-                    conn.execute(
-                        "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now'), resolved_path = COALESCE(?, resolved_path) WHERE playlist_id = ? AND track_hash = ?",
-                        (str(local_file) if local_file else None, playlist_id, track_hash)
-                    )
-                    if local_file:
-                        _tag_track_comment(local_file, existing["artist"] or artist, existing["title"] or title, conn=conn)
+                if _heal_unresolved_watched_track(
+                    conn, playlist, track_hash, existing,
+                    fallback_artist=artist, fallback_title=title,
+                    lidarr_cache=lidarr_refresh_cache,
+                ):
                     continue
 
                 missing_tracks.append((artist, title, track_hash))
+
+            # Append mode intentionally keeps tracks after they leave the upstream
+            # playlist. Reconcile unresolved historical rows too, otherwise a track
+            # discovered later by Navidrome/Lidarr remains permanently "missing" in
+            # the UI and never becomes eligible for the append-mode M3U.
+            if sync_mode == "append":
+                set_refresh_stage("reconciling_history")
+                healed_history_count = _reconcile_append_history(
+                    conn, playlist, tracked, current_hashes,
+                    lidarr_cache=lidarr_refresh_cache,
+                )
+                if healed_history_count:
+                    print(
+                        f"Watched playlist '{playlist['name']}': "
+                        f"healed {healed_history_count} historical track(s) from the local library"
+                    )
 
             # In mirror mode: mark any previously tracked tracks that are no longer in the upstream
             if sync_mode == "mirror":
@@ -1354,6 +1533,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                 "total_tracks": len(tracks),
                 "new_tracks": len(new_tracks),
                 "missing_tracks": len(missing_tracks),
+                "healed_history_tracks": healed_history_count,
                 "removed_tracks": removed_count,
                 "queued": queued_count,
                 "import_id": import_id,

@@ -55,10 +55,10 @@
             <img src="__ROOT_PATH__/static/favicon.png" class="logo" alt="Music Grabber">
             <h1>Music Grabber</h1>
             <div class="header-controls">
-                <label class="header-format-label peon-hide" title="When on, converts downloads to the format selected in Settings. When off, keeps the source format.">
-                    <span id="headerFormatLabel">FLAC</span>
+                <label class="header-format-label peon-hide" title="Choose whether downloads keep their source format or are converted to the format selected in Settings.">
+                    <span id="headerFormatLabel">Keep source</span>
                     <div class="toggle-switch" id="flacToggle">
-                        <input type="checkbox" id="convertToFlac" checked>
+                        <input type="checkbox" id="convertToFlac">
                         <span class="toggle-slider"></span>
                     </div>
                 </label>
@@ -146,7 +146,7 @@
 
         <div id="relatedSuggestions" style="display: none;"></div>
         <div id="exploreBar" style="display: none;"></div>
-        <div id="searchProgress" class="search-progress" style="display: none;"></div>
+        <div id="searchProgress" class="search-progress" style="display: none;" role="status" aria-live="polite" aria-label="Search progress"></div>
         <div id="resultsTab" class="tab-panel tab-visible"></div>
 
         <div id="bulkTabContainer" class="tab-panel">
@@ -339,9 +339,9 @@
                 </div>
                 <div class="watched-controls-row">
                     <label class="watched-control-label peon-hide" title="Convert new tracks to the selected audio format">
-                        <span id="watchedFormatLabel">Convert to FLAC</span>
+                        <span id="watchedFormatLabel">Keep source</span>
                         <div class="toggle-switch" id="watchedFlacToggle">
-                            <input type="checkbox" id="watchedConvertToFlac" checked>
+                            <input type="checkbox" id="watchedConvertToFlac">
                             <span class="toggle-slider"></span>
                         </div>
                     </label>
@@ -435,9 +435,9 @@
                             </select>
                         </label>
                         <label class="watched-control-label" title="Convert new singles to the selected audio format">
-                            <span id="artistFlacLabel">Convert to FLAC</span>
+                            <span id="artistFlacLabel">Keep source</span>
                             <div class="toggle-switch">
-                                <input type="checkbox" id="artistConvertToFlac" checked>
+                                <input type="checkbox" id="artistConvertToFlac">
                                 <span class="toggle-slider"></span>
                             </div>
                         </label>
@@ -481,6 +481,7 @@
                 <h2 class="queue-section-heading">Download Queue / <a href="#downloadableSection" title="Jump to Downloadable to Device">Downloadable to Device &#8595;</a></h2>
                 <button class="btn btn-danger peon-hide" id="clearQueueBtn">Clear Queue</button>
             </div>
+            <div id="queueLiveSummary" class="queue-live-summary" style="display:none;" role="status" aria-live="polite" aria-atomic="false"></div>
             <div id="queueTab" class="results"></div>
             <div id="queuePager" style="display:none;" class="downloadable-pager">
                 <button class="btn btn-ghost" id="queuePrevBtn" onclick="changeQueuePage(-1)" disabled>&#8592; Prev</button>
@@ -654,49 +655,56 @@
                     <label class="settings-label format-selector-wrap">
                         <span>Audio Format</span>
                         <div class="format-btn-group">
-                            <button type="button" id="formatBtnFlac" class="format-option active" onclick="setAudioFormat('flac'); saveSettings();">FLAC</button>
-                            <button type="button" id="formatBtnAlac" class="format-option" onclick="setAudioFormat('alac'); saveSettings();">ALAC</button>
-                            <button type="button" id="formatBtnOpus" class="format-option" onclick="setAudioFormat('opus'); saveSettings();">Opus</button>
-                            <button type="button" id="formatBtnMp3"  class="format-option" onclick="setAudioFormat('mp3');  saveSettings();">MP3</button>
+                            <button type="button" id="conversionModeKeep" class="format-option active" onclick="setDefaultConversionMode(false); saveSettings();">Keep source</button>
+                            <button type="button" id="conversionModeConvert" class="format-option" onclick="setDefaultConversionMode(true); saveSettings();">Convert to</button>
                         </div>
-                        <span class="settings-hint settings-hint-full">The format your downloads are converted to (each user gets their own choice). FLAC and ALAC are lossless. Opus is high-quality lossy (smaller files). MP3 for maximum compatibility.</span>
-                        <span id="alacFormatNote" style="display:none;" class="mp3-format-note">ALAC (.m4a) is lossless. Lower bitrates here actually fall back to AAC inside the same .m4a container, so anything below "Lossless" is lossy.</span>
-                        <span id="mp3FormatNote" style="display:none;" class="mp3-format-note">MP3 may cause quality loss if the source is already lossy (e.g. from YouTube).</span>
-                        <div id="mp3QualityRow" style="display:none;margin-top:6px;">
-                            <span class="settings-label-sub">MP3 Quality</span>
+                        <div id="conversionTargetOptions" class="conversion-target-options" style="display:none;">
+                            <span class="settings-label-sub">Convert to</span>
                             <div class="format-btn-group">
-                                <button type="button" id="mp3QualityBtnV2"  class="format-option active" onclick="setMp3Bitrate('v2');  saveSettings();">V2 ~192k</button>
-                                <button type="button" id="mp3QualityBtnV0"  class="format-option"        onclick="setMp3Bitrate('v0');  saveSettings();">V0 ~245k</button>
-                                <button type="button" id="mp3QualityBtn320" class="format-option"        onclick="setMp3Bitrate('320k'); saveSettings();">320k</button>
-                                <button type="button" id="mp3QualityBtn256" class="format-option"        onclick="setMp3Bitrate('256k'); saveSettings();">256k</button>
-                                <button type="button" id="mp3QualityBtn192" class="format-option"        onclick="setMp3Bitrate('192k'); saveSettings();">192k</button>
-                                <button type="button" id="mp3QualityBtn128" class="format-option"        onclick="setMp3Bitrate('128k'); saveSettings();">128k</button>
+                                <button type="button" id="formatBtnFlac" class="format-option" onclick="setAudioFormat('flac'); saveSettings();">FLAC</button>
+                                <button type="button" id="formatBtnAlac" class="format-option" onclick="setAudioFormat('alac'); saveSettings();">ALAC</button>
+                                <button type="button" id="formatBtnOpus" class="format-option active" onclick="setAudioFormat('opus'); saveSettings();">Opus</button>
+                                <button type="button" id="formatBtnMp3"  class="format-option" onclick="setAudioFormat('mp3');  saveSettings();">MP3</button>
                             </div>
-                            <span class="settings-hint settings-hint-full">V0 and V2 are variable bitrate (VBR); the rest are constant bitrate (CBR). VBR is generally better quality per byte.</span>
-                        </div>
-                        <div id="opusQualityRow" style="display:none;margin-top:6px;">
-                            <span class="settings-label-sub">Opus Bitrate</span>
-                            <div class="format-btn-group">
-                                <button type="button" id="opusQualityBtn320" class="format-option active" onclick="setOpusBitrate('320k'); saveSettings();">320k</button>
-                                <button type="button" id="opusQualityBtn256" class="format-option"        onclick="setOpusBitrate('256k'); saveSettings();">256k</button>
-                                <button type="button" id="opusQualityBtn192" class="format-option"        onclick="setOpusBitrate('192k'); saveSettings();">192k</button>
-                                <button type="button" id="opusQualityBtn128" class="format-option"        onclick="setOpusBitrate('128k'); saveSettings();">128k</button>
-                                <button type="button" id="opusQualityBtn96"  class="format-option"        onclick="setOpusBitrate('96k');  saveSettings();">96k</button>
+                            <span id="alacFormatNote" style="display:none;" class="mp3-format-note">ALAC (.m4a) is lossless. Lower bitrates here actually fall back to AAC inside the same .m4a container, so anything below "Lossless" is lossy.</span>
+                            <span id="mp3FormatNote" style="display:none;" class="mp3-format-note">MP3 may cause quality loss if the source is already lossy (e.g. from YouTube).</span>
+                            <div id="mp3QualityRow" style="display:none;margin-top:6px;">
+                                <span class="settings-label-sub">MP3 Quality</span>
+                                <div class="format-btn-group">
+                                    <button type="button" id="mp3QualityBtnV2"  class="format-option active" onclick="setMp3Bitrate('v2');  saveSettings();">V2 ~192k</button>
+                                    <button type="button" id="mp3QualityBtnV0"  class="format-option"        onclick="setMp3Bitrate('v0');  saveSettings();">V0 ~245k</button>
+                                    <button type="button" id="mp3QualityBtn320" class="format-option"        onclick="setMp3Bitrate('320k'); saveSettings();">320k</button>
+                                    <button type="button" id="mp3QualityBtn256" class="format-option"        onclick="setMp3Bitrate('256k'); saveSettings();">256k</button>
+                                    <button type="button" id="mp3QualityBtn192" class="format-option"        onclick="setMp3Bitrate('192k'); saveSettings();">192k</button>
+                                    <button type="button" id="mp3QualityBtn128" class="format-option"        onclick="setMp3Bitrate('128k'); saveSettings();">128k</button>
+                                </div>
+                                <span class="settings-hint settings-hint-full">V0 and V2 are variable bitrate (VBR); the rest are constant bitrate (CBR). VBR is generally better quality per byte.</span>
+                            </div>
+                            <div id="opusQualityRow" style="display:none;margin-top:6px;">
+                                <span class="settings-label-sub">Opus Bitrate</span>
+                                <div class="format-btn-group">
+                                    <button type="button" id="opusQualityBtn256" class="format-option active" onclick="setOpusBitrate('256k'); saveSettings();">256k</button>
+                                    <button type="button" id="opusQualityBtn192" class="format-option"        onclick="setOpusBitrate('192k'); saveSettings();">192k</button>
+                                    <button type="button" id="opusQualityBtn128" class="format-option"        onclick="setOpusBitrate('128k'); saveSettings();">128k</button>
+                                    <button type="button" id="opusQualityBtn96"  class="format-option"        onclick="setOpusBitrate('96k');  saveSettings();">96k</button>
+                                </div>
+                            </div>
+                            <div id="alacQualityRow" style="display:none;margin-top:6px;">
+                                <span class="settings-label-sub">ALAC Quality</span>
+                                <div class="format-btn-group">
+                                    <button type="button" id="alacQualityBtnLossless" class="format-option active" onclick="setAlacBitrate('lossless'); saveSettings();">Lossless</button>
+                                    <button type="button" id="alacQualityBtn320"      class="format-option"        onclick="setAlacBitrate('320k');     saveSettings();">320k</button>
+                                    <button type="button" id="alacQualityBtn256"      class="format-option"        onclick="setAlacBitrate('256k');     saveSettings();">256k</button>
+                                    <button type="button" id="alacQualityBtn192"      class="format-option"        onclick="setAlacBitrate('192k');     saveSettings();">192k</button>
+                                    <button type="button" id="alacQualityBtn128"      class="format-option"        onclick="setAlacBitrate('128k');     saveSettings();">128k</button>
+                                </div>
+                                <span class="settings-hint settings-hint-full">Lossless gives you proper Apple Lossless. The kbps options switch the encoder to AAC inside the same .m4a wrapper, so they are lossy but iPod-friendly.</span>
                             </div>
                         </div>
-                        <div id="alacQualityRow" style="display:none;margin-top:6px;">
-                            <span class="settings-label-sub">ALAC Quality</span>
-                            <div class="format-btn-group">
-                                <button type="button" id="alacQualityBtnLossless" class="format-option active" onclick="setAlacBitrate('lossless'); saveSettings();">Lossless</button>
-                                <button type="button" id="alacQualityBtn320"      class="format-option"        onclick="setAlacBitrate('320k');     saveSettings();">320k</button>
-                                <button type="button" id="alacQualityBtn256"      class="format-option"        onclick="setAlacBitrate('256k');     saveSettings();">256k</button>
-                                <button type="button" id="alacQualityBtn192"      class="format-option"        onclick="setAlacBitrate('192k');     saveSettings();">192k</button>
-                                <button type="button" id="alacQualityBtn128"      class="format-option"        onclick="setAlacBitrate('128k');     saveSettings();">128k</button>
-                            </div>
-                            <span class="settings-hint settings-hint-full">Lossless gives you proper Apple Lossless. The kbps options switch the encoder to AAC inside the same .m4a wrapper, so they are lossy but iPod-friendly.</span>
-                        </div>
-                        <input type="checkbox" id="settingDefaultFlac" checked style="display:none;">
-                        <input type="text" id="settingAudioFormat" value="flac" style="display:none;">
+                        <span class="settings-hint settings-hint-full"><strong>Keep source</strong> stores the audio in the format supplied by the provider and avoids an unnecessary re-encode. <strong>Convert to</strong> re-encodes each download to your selected format.</span>
+                        <span class="settings-hint settings-hint-full"><strong>Quality note:</strong> FLAC and ALAC can preserve a lossless source, but converting lossy MP3, AAC, Opus, YouTube, or SoundCloud audio to them cannot restore lost quality.</span>
+                        <input type="checkbox" id="settingDefaultFlac" style="display:none;">
+                        <input type="text" id="settingAudioFormat" value="opus" style="display:none;">
                         <input type="hidden" id="settingMp3Bitrate" value="v2">
                         <input type="hidden" id="settingOpusBitrate" value="320k">
                         <input type="hidden" id="settingAlacBitrate" value="lossless">
@@ -1374,7 +1382,7 @@
         </div>
     </div>
 
-    <div class="toast" id="toast"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
     <audio id="previewAudio" preload="none"></audio>
 
     <script>window.__MUSICGRABBER_ROOT_PATH__ = "__ROOT_PATH__";</script>

@@ -143,7 +143,7 @@ def _enforce_peon_format(request: Request, body) -> None:
     if not _is_peon(request):
         return
     if hasattr(body, "convert_to_flac"):
-        body.convert_to_flac = get_setting_bool("default_convert_to_flac", True)
+        body.convert_to_flac = get_setting_bool("default_convert_to_flac", False)
 
 
 # =============================================================================
@@ -264,8 +264,8 @@ def get_config(request: Request):
 
     return {
         "version": VERSION,
-        "default_convert_to_flac": get_setting_bool("default_convert_to_flac", True),
-        "audio_format": get_setting("audio_format", "flac"),
+        "default_convert_to_flac": get_setting_bool("default_convert_to_flac", False),
+        "audio_format": get_setting("audio_format", "opus"),
         "playlists_subdir": get_setting("playlists_subdir", ""),
         "organise_by_artist": organise_by_artist,
         "singles_path_example": singles_example,
@@ -1483,7 +1483,7 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
             job_id = str(uuid.uuid4())[:8]
             artist = mismatch["expected_artist"] or ""
             title = mismatch["expected_title"] or ""
-            convert_to_flac = get_setting_bool("default_convert_to_flac", True, user_id=user_id)
+            convert_to_flac = get_setting_bool("default_convert_to_flac", False, user_id=user_id)
             conn.execute(
                 """INSERT INTO jobs
                    (id, title, artist, status, download_type, source, convert_to_flac, skip_mismatch_check, user_id)
@@ -2175,6 +2175,7 @@ def get_jobs(limit: int = 20, http_request: Request = None):
             job = dict(row)
             job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
             job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
+            job['progress_at'] = _ensure_utc_suffix(job.get('progress_at'))
             try:
                 job['source_history'] = json.loads(job.get('source_history') or '[]')
             except (TypeError, ValueError):
@@ -2257,6 +2258,7 @@ def get_job(job_id: str, http_request: Request):
     job = dict(row)
     job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
     job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
+    job['progress_at'] = _ensure_utc_suffix(job.get('progress_at'))
     try:
         job['source_history'] = json.loads(job.get('source_history') or '[]')
     except (TypeError, ValueError):

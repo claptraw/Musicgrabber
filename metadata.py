@@ -8,6 +8,7 @@ import json
 import base64
 import re
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -1270,6 +1271,9 @@ def apply_metadata_to_file(
     album_artist: str | None = None,
     source: str | None = None,
     source_quality: str | None = None,
+    file_id: str | None = None,
+    source_codec: str | None = None,
+    source_bitrate_kbps: int | None = None,
     compilation: bool = False,
 ):
     """Apply metadata to audio file using mutagen (supports multiple formats).
@@ -1284,6 +1288,17 @@ def apply_metadata_to_file(
     spawning a separate album per track. Only written when True, never cleared.
     """
     try:
+        if source and not file_id:
+            file_id = str(uuid.uuid4())
+        if source_quality and not source_codec:
+            match = re.search(r"\bFROM\s+([A-Z0-9]+)", source_quality.upper())
+            if not match:
+                match = re.search(r"^([A-Z0-9]+)(?:\s+|$)", source_quality.upper())
+            source_codec = match.group(1) if match else None
+        if source_quality and source_bitrate_kbps is None:
+            origin_text = source_quality.split("from", 1)[-1] if "from" in source_quality.lower() else source_quality
+            match = re.search(r"(\d+)\s*kbps", origin_text, re.I)
+            source_bitrate_kbps = int(match.group(1)) if match else None
         suffix = file_path.suffix.lower()
         track_number = int(track_number) if track_number else None
         track_total = int(track_total) if track_total else None
@@ -1316,6 +1331,12 @@ def apply_metadata_to_file(
                 audio["SOURCE"] = source
             if source_quality:
                 audio["SOURCE_QUALITY"] = source_quality
+            if file_id and not audio.get("MUSICGRABBER_FILE_ID"):
+                audio["MUSICGRABBER_FILE_ID"] = file_id
+            if source_codec:
+                audio["SOURCE_CODEC"] = source_codec
+            if source_bitrate_kbps is not None:
+                audio["SOURCE_BITRATE"] = str(source_bitrate_kbps)
             if has_art:
                 pic = Picture()
                 pic.type = 3  # front cover
@@ -1362,10 +1383,19 @@ def apply_metadata_to_file(
                 # EasyID3 won't take arbitrary keys; register them as TXXX frames.
                 EasyID3.RegisterTXXXKey("source", "SOURCE")
                 EasyID3.RegisterTXXXKey("source_quality", "SOURCE_QUALITY")
+                EasyID3.RegisterTXXXKey("musicgrabber_file_id", "MUSICGRABBER_FILE_ID")
+                EasyID3.RegisterTXXXKey("source_codec", "SOURCE_CODEC")
+                EasyID3.RegisterTXXXKey("source_bitrate", "SOURCE_BITRATE")
                 if source:
                     audio["source"] = source
                 if source_quality:
                     audio["source_quality"] = source_quality
+                if file_id and not audio.get("musicgrabber_file_id"):
+                    audio["musicgrabber_file_id"] = file_id
+                if source_codec:
+                    audio["source_codec"] = source_codec
+                if source_bitrate_kbps is not None:
+                    audio["source_bitrate"] = str(source_bitrate_kbps)
             audio.save()
             if has_art:
                 mp3 = MP3(str(file_path), ID3=ID3)
@@ -1398,6 +1428,12 @@ def apply_metadata_to_file(
                 audio["----:com.musicgrabber:SOURCE"] = [source.encode("utf-8")]
             if source_quality:
                 audio["----:com.musicgrabber:SOURCE_QUALITY"] = [source_quality.encode("utf-8")]
+            if file_id and not audio.get("----:com.musicgrabber:FILE_ID"):
+                audio["----:com.musicgrabber:FILE_ID"] = [file_id.encode("utf-8")]
+            if source_codec:
+                audio["----:com.musicgrabber:SOURCE_CODEC"] = [source_codec.encode("utf-8")]
+            if source_bitrate_kbps is not None:
+                audio["----:com.musicgrabber:SOURCE_BITRATE"] = [str(source_bitrate_kbps).encode("utf-8")]
             if has_art:
                 fmt = MP4Cover.FORMAT_PNG if art_mime == "image/png" else MP4Cover.FORMAT_JPEG
                 audio["covr"] = [MP4Cover(album_art_bytes, imageformat=fmt)]
@@ -1434,6 +1470,12 @@ def apply_metadata_to_file(
                     audio["SOURCE"] = source
                 if source_quality:
                     audio["SOURCE_QUALITY"] = source_quality
+                if file_id and not audio.get("MUSICGRABBER_FILE_ID"):
+                    audio["MUSICGRABBER_FILE_ID"] = file_id
+                if source_codec:
+                    audio["SOURCE_CODEC"] = source_codec
+                if source_bitrate_kbps is not None:
+                    audio["SOURCE_BITRATE"] = str(source_bitrate_kbps)
                 if has_art:
                     pic = Picture()
                     pic.type = 3  # front cover

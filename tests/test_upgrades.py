@@ -25,6 +25,7 @@ from upgrades import (
     _setting_to_kbps,
     _estimate_result_tier,
     effective_tier,
+    content_sha256,
     TIER_LOSSLESS,
     TIER_LOSSY_320,
     TIER_LOSSY_256,
@@ -91,9 +92,10 @@ def _patch_settings(monkeypatch, values):
                         lambda k, d="", user_id=None: values.get(k, d))
 
 
-def test_target_tier_convert_to_flac_is_lossless(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": True})
-    assert target_tier() == TIER_LOSSLESS
+def test_target_tier_conversion_uses_selected_format(monkeypatch):
+    _patch_settings(monkeypatch, {"default_convert_to_flac": True,
+                                  "audio_format": "opus", "opus_bitrate": "256k"})
+    assert target_tier() == TIER_LOSSY_256
 
 
 def test_target_tier_flac_format_is_lossless(monkeypatch):
@@ -127,7 +129,7 @@ def test_target_tier_opus_320(monkeypatch):
 
 def test_below_target_flagging(monkeypatch):
     # Lossless target: a 128 MP3 is below, a FLAC is not.
-    _patch_settings(monkeypatch, {"default_convert_to_flac": True})
+    _patch_settings(monkeypatch, {"default_convert_to_flac": True, "audio_format": "flac"})
     tgt = target_tier()
     assert tier_of("mp3", 128) < tgt
     assert tier_of("flac", 0) >= tgt
@@ -145,6 +147,28 @@ def test_effective_tier_flac_from_lossy_is_tiered_by_origin():
     assert effective_tier("flac", 0, "FLAC (from OPUS 130kbps)") == TIER_LOSSY_128
     assert effective_tier("flac", 0, "FLAC (from MP3 320kbps)") == TIER_LOSSY_320
     assert effective_tier("alac", 0, "ALAC (from AAC 256kbps)") == TIER_LOSSY_256
+
+
+def test_effective_tier_prefers_structured_lossless_provenance():
+    # A stale/ambiguous display label must not demote a source explicitly recorded as FLAC.
+    assert effective_tier(
+        "flac", 622, "FLAC (from UNKNOWN 622kbps)", "FLAC", 622
+    ) == TIER_LOSSLESS
+
+
+def test_effective_tier_uses_structured_lossy_provenance():
+    assert effective_tier(
+        "flac", 622, "FLAC 44.1kHz 16bit", "MP3", 128
+    ) == TIER_LOSSY_128
+
+
+def test_effective_tier_lossy_transcode_is_capped_by_input_and_output():
+    assert effective_tier(
+        "opus", 256, "OPUS 256kbps (from MP3 128kbps)", "MP3", 128
+    ) == TIER_LOSSY_128
+    assert effective_tier(
+        "opus", 128, "OPUS 128kbps (from MP3 320kbps)", "MP3", 320
+    ) == TIER_LOSSY_128
 
 
 def test_effective_tier_flac_from_lossy_no_bitrate_defaults_mid():
@@ -223,6 +247,8 @@ def test_source_tag_roundtrip(tmp_path, ext, args, expected_codec):
     assert info["artist"] == "Artist X"
     assert info["title"] == "Title Y"
     assert info["codec"] == expected_codec
+    assert info["file_id"]
+    assert info["source_codec"] == "FLAC"
 
 
 @pytest.mark.skipif(_FFMPEG is None, reason="ffmpeg not available")
@@ -243,3 +269,32 @@ def test_source_quality_does_not_clobber_when_not_provided(tmp_path):
     apply_metadata_to_file(p, "A", "B", source="youtube")
     apply_metadata_to_file(p, "A", "B Renamed")  # no source passed
     assert probe_file(p)["source"] == "youtube"
+
+
+@pytest.mark.skipif(_FFMPEG is None, reason="ffmpeg not available")
+def test_transcode_origin_tags_roundtrip(tmp_path):
+    p = tmp_path / "track.opus"
+    _gen(p, ["-c:a", "libopus", "-b:a", "256k"])
+    apply_metadata_to_file(
+        p, "A", "B", source="freemp3cloud",
+        source_quality="OPUS 320kbps (from MP3 128kbps)",
+    )
+    info = probe_file(p)
+    assert info["source_codec"] == "MP3"
+    assert info["source_bitrate_kbps"] == 128
+    assert effective_tier(
+        info["codec"],
+        info["bitrate_kbps"],
+        info["source_quality"],
+        info["source_codec"],
+        info["source_bitrate_kbps"],
+    ) == TIER_LOSSY_128
+
+
+@pytest.mark.skipif(_FFMPEG is None, reason="ffmpeg not available")
+def test_content_hash_detects_same_path_replacement(tmp_path):
+    p = tmp_path / "track.flac"
+    _gen(p, ["-c:a", "flac"])
+    before = content_sha256(p)
+    _gen(p, ["-c:a", "flac", "-af", "volume=0.5"])
+    assert content_sha256(p) != before

@@ -1,5 +1,12 @@
 """Settings read/write tests. All writes are restore-after, leaving the service clean."""
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from settings import SETTINGS_SCHEMA
+
 
 EXPECTED_KEYS = [
     "music_dir",
@@ -37,6 +44,10 @@ def test_settings_all_expected_keys_present(api, base_url):
 def test_settings_audio_format_is_valid(api, base_url):
     settings = api.get(f"{base_url}/api/settings", timeout=10).json()["settings"]
     assert settings["audio_format"] in ("flac", "alac", "opus", "mp3")
+
+
+def test_fresh_install_keeps_source_format_by_default():
+    assert SETTINGS_SCHEMA["default_convert_to_flac"]["default"] is False
 
 
 def test_settings_monochrome_enabled_by_default(api, base_url):
