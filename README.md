@@ -25,7 +25,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Live search progress:** results stream in as each source answers, with live status for completed, slow, parked, or unavailable sources; repeated timeouts automatically bench an unhealthy source until a background probe clears it
 - **Monochrome/Qobuz source:** searches the Tidal catalogue via hifi-api metadata, then resolves matching Qobuz FLAC streams by ISRC. It can serve proper lossless when the proxy gods are smiling. Enabled by default and configurable in Search Sources
 - **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
-- **Watched Artists:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles only: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Tracks already on disk are recognised immediately. Per-artist check interval, convert-to-FLAC toggle, pause/resume, missing and track list panels
+- **Watched Artists:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles only: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Tracks already on disk are recognised immediately. Per-artist check interval, Keep source/Convert to control, pause/resume, missing and track list panels
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
 - **Playlist housekeeping:** find audio left behind by mirror-mode playlist removals and move it safely into Singles; optionally stamp watched-playlist names into audio Comment tags for macOS Music smart playlists
 - **Album mode:** browse MusicBrainz artists, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Search results can also jump straight to the matching album when MusicBrainz can identify it
@@ -34,7 +34,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Similar artist discovery:** hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
 - **Apprise notifications:** one URL covers Gotify, ntfy, Discord, Pushover, Slack, and about 50 others. Also supports Telegram webhook and SMTP email
 - **Navidrome/Lidarr duplicate heads-up:** searches warn when a track is already known to either library; Navidrome can also prevent the duplicate download and reuse the existing path for playlist routing
-- **Best quality audio:** output format is configurable (FLAC, ALAC/AAC-in-M4A, Opus, or MP3), with quality settings for lossy formats
+- **Best quality audio:** new installations keep the provider's source format by default. Optional conversion supports FLAC, ALAC/AAC-in-M4A, Opus, or MP3, with quality settings for lossy formats and clear warnings that a larger container cannot resurrect audio already lost in action
 - **Track upgrades:** opt-in library scanner re-probes and hashes MusicGrabber files
   on the configured interval, flags files below your quality tier, follows tagged
   files moved inside the library, and revalidates the original immediately before
@@ -64,9 +64,11 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Soulseek integration:** optional slskd support for P2P search and downloads
 - **Report/blacklist:** flag bad results from the queue; blacklisted videos and uploaders are suppressed from future searches
 
-## Why FLAC?
+## Source format and conversion
 
-For YouTube, SoundCloud, zvu4no, and FreeMp3Cloud, FLAC conversion is primarily for standardisation and consistent tagging. It does not improve audio quality beyond the source; it only preserves what is already there. Monochrome and Soulseek may already provide proper FLAC, in which case MusicGrabber keeps the good stuff and tags it properly. If you prefer to keep the original format where possible, disable conversion and files will be saved as-is.
+MusicGrabber keeps the provider's source format by default. This avoids unnecessary re-encoding and prevents a lossy web download from turning up in a FLAC overcoat pretending it has always summered in the south of France.
+
+If you prefer a uniform library, choose **Convert to** and select FLAC, ALAC, Opus, or MP3. FLAC and ALAC preserve genuinely lossless input, but converting YouTube, SoundCloud, MP3, AAC, or Opus audio to a lossless container cannot restore information that has already gone missing. Monochrome and Soulseek may provide native lossless files; MusicGrabber records the known source and stored formats separately so the distinction survives the trip into your library.
 
 ## Screenshots
 
@@ -106,7 +108,8 @@ For YouTube, SoundCloud, zvu4no, and FreeMp3Cloud, FLAC conversion is primarily 
          # Optional: serve behind a reverse-proxy subpath (proxy must strip the prefix)
          # - ROOT_PATH=/musicgrabber
          - ENABLE_MUSICBRAINZ=true
-         - DEFAULT_CONVERT_TO_FLAC=true
+         # Optional: convert downloads instead of keeping the provider's source format
+         # - DEFAULT_CONVERT_TO_FLAC=true
          # Optional: Run as specific user (like *arr stack) for correct file permissions
          # - PUID=1000
          # - PGID=1000
@@ -260,10 +263,10 @@ Settings are stored in the database and persist across container restarts.
 | `ENABLE_DEEZER_METADATA` | `true` | Fill album details from Deezer when MusicBrainz has no suitable release metadata |
 | `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
 | `ACOUSTID_API_KEY` | *(shared built-in)* | AcoustID API key for audio fingerprinting. A shared key is built in but **may hit rate limits**. Register a free key at [acoustid.org](https://acoustid.org/login) and set it here (or via Settings tab) to avoid sharing quota |
-| `DEFAULT_CONVERT_TO_FLAC` | `true` | Convert downloads to FLAC by default (can be toggled per-download in UI) |
-| `AUDIO_FORMAT` | `flac` | Output format when conversion is enabled: `flac`, `alac`, `opus`, or `mp3` |
+| `DEFAULT_CONVERT_TO_FLAC` | `false` | Keep the provider's source format by default. Set to `true` to enable conversion |
+| `AUDIO_FORMAT` | `opus` | Output format when conversion is enabled: `flac`, `alac`, `opus`, or `mp3` |
 | `MP3_BITRATE` | `v2` | MP3 quality preset: `v2`, `v0`, `320k`, `256k`, `192k`, or `128k` |
-| `OPUS_BITRATE` | `320k` | Opus bitrate: `320k`, `256k`, `192k`, `128k`, or `96k` |
+| `OPUS_BITRATE` | `256k` | Opus bitrate: `256k`, `192k`, `128k`, or `96k` |
 | `ALAC_BITRATE` | `lossless` | ALAC/M4A quality: `lossless` for true ALAC, or `320k`, `256k`, `192k`, `128k` for AAC-in-M4A |
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
 | `REJECT_LIVE_VERSIONS` | `false` | Reject a confidently identified live recording when the query did not request one |

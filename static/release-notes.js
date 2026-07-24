@@ -38,6 +38,7 @@ const RELEASE_NOTES = {
             {
                 heading: "Small but useful",
                 items: [
+                    "Audio controls now say either “Keep source” or “Convert to [format]” instead of expecting a small unlabeled switch to explain the metaphysics of transcoding. Fresh installations keep the provider's format, existing preferences stay put, and Settings makes clear that wrapping lossy audio in FLAC or ALAC cannot bring the missing bits back from the dead.",
                     "Long notifications now stay visible long enough to read, and a new notification cannot be accidentally dismissed by the timer left behind by the previous one.",
                     "Search progress, Queue updates and notifications are announced more clearly by screen readers, while reduced-motion mode now quietens spinners, pulsing status dots and toast movement.",
                     "Queue progress timestamps are now handled consistently as UTC, avoiding misleading times when the browser and server live in different time zones.",

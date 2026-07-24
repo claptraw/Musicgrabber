@@ -803,6 +803,54 @@
         // audioFormat tracks which format to use when conversion is on ("flac", "alac", "opus", or "mp3")
         let audioFormat = 'opus';
 
+        function conversionChoiceLabel(enabled) {
+            if (!enabled) return 'Keep source';
+            const labels = { flac: 'FLAC', alac: 'ALAC', opus: 'Opus', mp3: 'MP3' };
+            return `Convert to ${labels[audioFormat] || 'Opus'}`;
+        }
+
+        function updateConversionLabels() {
+            const headerLabel = document.getElementById('headerFormatLabel');
+            if (headerLabel) headerLabel.textContent = conversionChoiceLabel(convertToFlacCheckbox.checked);
+
+            const watchedLabel = document.getElementById('watchedFormatLabel');
+            if (watchedLabel && watchedConvertToFlac) {
+                watchedLabel.textContent = conversionChoiceLabel(watchedConvertToFlac.checked);
+            }
+
+            const artistLabel = document.getElementById('artistFlacLabel');
+            const artistCheckbox = document.getElementById('artistConvertToFlac');
+            if (artistLabel && artistCheckbox) {
+                artistLabel.textContent = conversionChoiceLabel(artistCheckbox.checked);
+            }
+        }
+
+        function setDefaultConversionMode(enabled) {
+            const input = document.getElementById('settingDefaultFlac');
+            if (!input) return;
+            if (input.disabled && input.checked !== Boolean(enabled)) return;
+
+            input.checked = Boolean(enabled);
+
+            const keepBtn = document.getElementById('conversionModeKeep');
+            const convertBtn = document.getElementById('conversionModeConvert');
+            if (keepBtn) {
+                keepBtn.classList.toggle('active', !input.checked);
+                keepBtn.disabled = input.disabled;
+            }
+            if (convertBtn) {
+                convertBtn.classList.toggle('active', input.checked);
+                convertBtn.disabled = input.disabled;
+            }
+
+            const targets = document.getElementById('conversionTargetOptions');
+            if (targets) targets.style.display = input.checked ? 'flex' : 'none';
+
+            // Format-specific notes and quality rows should not remain visible
+            // while "Keep source" is selected.
+            setAudioFormat(audioFormat);
+        }
+
         function setAudioFormat(format) {
             audioFormat = ['flac', 'alac', 'opus', 'mp3'].includes(format) ? format : 'opus';
 
@@ -815,28 +863,21 @@
             if (btnOpus) btnOpus.classList.toggle('active', audioFormat === 'opus');
             if (btnMp3)  btnMp3.classList.toggle('active',  audioFormat === 'mp3');
 
-            const labels = { flac: 'FLAC', alac: 'ALAC', opus: 'Opus', mp3: 'MP3' };
-            const label = labels[audioFormat];
-            const headerLabel = document.getElementById('headerFormatLabel');
-            if (headerLabel) headerLabel.textContent = label;
+            updateConversionLabels();
 
-            const watchedLabel = document.getElementById('watchedFormatLabel');
-            if (watchedLabel) watchedLabel.textContent = `Convert to ${label}`;
-            const artistFlacLabel = document.getElementById('artistFlacLabel');
-            if (artistFlacLabel) artistFlacLabel.textContent = `Convert to ${label}`;
-
+            const conversionEnabled = document.getElementById('settingDefaultFlac')?.checked ?? false;
             const alacNote = document.getElementById('alacFormatNote');
-            if (alacNote) alacNote.style.display = audioFormat === 'alac' ? 'block' : 'none';
+            if (alacNote) alacNote.style.display = conversionEnabled && audioFormat === 'alac' ? 'block' : 'none';
             const mp3Note = document.getElementById('mp3FormatNote');
-            if (mp3Note) mp3Note.style.display = audioFormat === 'mp3' ? 'block' : 'none';
+            if (mp3Note) mp3Note.style.display = conversionEnabled && audioFormat === 'mp3' ? 'block' : 'none';
 
             // Show quality sub-rows only for the relevant format
             const mp3QualityRow = document.getElementById('mp3QualityRow');
-            if (mp3QualityRow) mp3QualityRow.style.display = audioFormat === 'mp3' ? '' : 'none';
+            if (mp3QualityRow) mp3QualityRow.style.display = conversionEnabled && audioFormat === 'mp3' ? '' : 'none';
             const opusQualityRow = document.getElementById('opusQualityRow');
-            if (opusQualityRow) opusQualityRow.style.display = audioFormat === 'opus' ? '' : 'none';
+            if (opusQualityRow) opusQualityRow.style.display = conversionEnabled && audioFormat === 'opus' ? '' : 'none';
             const alacQualityRow = document.getElementById('alacQualityRow');
-            if (alacQualityRow) alacQualityRow.style.display = audioFormat === 'alac' ? '' : 'none';
+            if (alacQualityRow) alacQualityRow.style.display = conversionEnabled && audioFormat === 'alac' ? '' : 'none';
 
             // Keep hidden input in sync so settings save picks it up
             const hiddenInput = document.getElementById('settingAudioFormat');
@@ -931,6 +972,7 @@
                     if (watchedConvertToFlac && !watchedFlacTouched) {
                         watchedConvertToFlac.checked = config.default_convert_to_flac;
                     }
+                    updateConversionLabels();
                 }
 
                 // Set audio format picker from server if not saved locally
@@ -997,11 +1039,17 @@
         if (savedAudioFormat) {
             setAudioFormat(savedAudioFormat);
         }
+        updateConversionLabels();
 
         if (watchedConvertToFlac) {
             watchedConvertToFlac.addEventListener('change', () => {
                 watchedFlacTouched = true;
+                updateConversionLabels();
             });
+        }
+        const artistConvertToFlac = document.getElementById('artistConvertToFlac');
+        if (artistConvertToFlac) {
+            artistConvertToFlac.addEventListener('change', updateConversionLabels);
         }
 
         // Save convert preference when header toggle is flipped
@@ -1010,6 +1058,7 @@
             if (watchedConvertToFlac && !watchedFlacTouched) {
                 watchedConvertToFlac.checked = convertToFlacCheckbox.checked;
             }
+            updateConversionLabels();
         });
 
         let currentTab = 'results';
@@ -5270,8 +5319,8 @@
                             <span>${escapeHtml(p.refresh_error)}</span>
                         </div>` : ''}
                         <div class="watched-card-settings">
-                            <label class="watched-card-toggle" title="Convert new tracks to the selected audio format">
-                                Convert
+                            <label class="watched-card-toggle" title="Choose whether new tracks keep their source format or are converted">
+                                ${conversionChoiceLabel(p.convert_to_flac)}
                                 <div class="toggle-switch">
                                     <input type="checkbox" ${p.convert_to_flac ? 'checked' : ''} onchange="updateWatchedPlaylistFlac('${p.id}', this.checked)">
                                     <span class="toggle-slider"></span>
@@ -6831,8 +6880,8 @@
                     </div>
                     ${isError ? `<div class="watched-card-refresh-error"><i class="fa-solid fa-circle-exclamation"></i><span>${escapeHtml(artist.refresh_error || 'Refresh failed')}</span></div>` : ''}
                     <div class="watched-card-settings">
-                        <label class="watched-card-toggle" title="Convert singles to the selected audio format">
-                            Convert
+                        <label class="watched-card-toggle" title="Choose whether new singles keep their source format or are converted">
+                            ${conversionChoiceLabel(artist.convert_to_flac)}
                             <div class="toggle-switch">
                                 <input type="checkbox" ${artist.convert_to_flac ? 'checked' : ''}
                                     onchange="updateArtistFlac('${artist.id}', this.checked)">
@@ -7557,6 +7606,10 @@
                     }
                 }
 
+                // The conversion-mode buttons are the visible control for the
+                // hidden persisted checkbox.
+                setDefaultConversionMode(document.getElementById('settingDefaultFlac').checked);
+
                 settingsLoaded = true;
 
                 // Sync notify_on checkboxes from the hidden field value
@@ -8271,6 +8324,8 @@
                             if (watchedConvertToFlac && !watchedFlacTouched) {
                                 watchedConvertToFlac.checked = value;
                             }
+                            setDefaultConversionMode(value);
+                            updateConversionLabels();
                         }
                         // Sync format picker when audio_format is saved
                         if (key === 'audio_format') {

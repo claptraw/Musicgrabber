@@ -3485,6 +3485,19 @@ h1 {
     border-radius: 8px;
 }
 
+.conversion-target-options {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding-top: 4px;
+}
+
+.conversion-target-options > .settings-label-sub {
+    margin-bottom: 0;
+}
+
 /* Sub-label for quality rows within the format selector */
 .settings-label-sub {
     display: block;
