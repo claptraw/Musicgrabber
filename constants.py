@@ -7,7 +7,7 @@ All shared constants in one place for easy tuning.
 import os
 from pathlib import Path
 
-VERSION = "3.0.3"
+VERSION = "3.1.0"
 
 
 def _normalise_root_path(value: str) -> str:
@@ -39,6 +39,37 @@ LOUDNORM_TARGET_TP = float(os.getenv("LOUDNORM_TARGET_TP", "-1.0"))    # True-pe
 LOUDNORM_TARGET_LRA = float(os.getenv("LOUDNORM_TARGET_LRA", "11.0"))  # Loudness range target (LU)
 LOUDNORM_SKIP_DELTA_LU = float(os.getenv("LOUDNORM_SKIP_DELTA_LU", "1.0"))  # Already this close to target? Skip the re-encode
 TIMEOUT_LOUDNORM = int(os.getenv("TIMEOUT_LOUDNORM", "180"))  # Per loudnorm ffmpeg pass
+
+# ReplayGain 2.0. Tags only: we measure the file and write the numbers, then the
+# player decides what to do about it. The audio itself is never re-encoded, which
+# is the entire point of preferring this to baked-in normalisation.
+# The spec's reference is -18 LUFS; -14 would make everything quieter than the
+# rest of the world expects, so resist the temptation to match LOUDNORM_TARGET_I.
+REPLAYGAIN_REFERENCE_LUFS = float(os.getenv("REPLAYGAIN_REFERENCE_LUFS", "-18.0"))
+REPLAYGAIN_MAX_ALBUM_TRACKS = int(os.getenv("REPLAYGAIN_MAX_ALBUM_TRACKS", "60"))  # Sanity cap on the album pass
+
+# Shared quality tiers, higher == better. Used by the upgrades scanner (which
+# tiers files on disk) and by the search results filter (which tiers what a
+# source claims it will give us). One scale, so "320 or better" means the same
+# thing in both places. Lossless is one flat tier on purpose: a FLAC is a FLAC,
+# and we never "upgrade" one lossless wrapper into another.
+TIER_UNKNOWN = 0     # Source declined to say; not the same as "bad"
+TIER_LOSSY_128 = 1
+TIER_LOSSY_192 = 2
+TIER_LOSSY_256 = 3
+TIER_LOSSY_320 = 4
+TIER_LOSSLESS = 5
+
+
+def kbps_to_tier(kbps: int) -> int:
+    """Bucket an effective average bitrate into a lossy tier."""
+    if kbps >= 300:
+        return TIER_LOSSY_320
+    if kbps >= 240:
+        return TIER_LOSSY_256
+    if kbps >= 170:
+        return TIER_LOSSY_192
+    return TIER_LOSSY_128
 TIMEOUT_HTTP_REQUEST = 10        # MusicBrainz, LRClib, Navidrome API calls
 TIMEOUT_HTTP_SPOTIFY = 30        # Spotify embed fetch
 SPOTIFY_EMBED_MAX_ATTEMPTS = 3   # Spotify's embed edge throws transient 502/503/504s; retry before giving up
@@ -119,6 +150,38 @@ FILENAME_STEM_RESERVE_BYTES = 40 # Headroom kept free below NAME_MAX for the ste
 COOKIES_FILE = Path("/data/cookies.txt")  # yt-dlp cookies file path
 AUDIO_EXTENSIONS = ['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']
 
+# Directory names that library scans must never walk into. NAS and desktop
+# operating systems love to drop a hidden bin inside the very share you asked
+# them to look after, so a deleted album can sit in @Recycle for weeks looking
+# for all the world like it is still in the library. Matched case-insensitively
+# on the directory name alone, at any depth.
+#
+# Also covers macOS/Windows metadata dumps, and the fseventsd/Spotlight caches
+# that make a Time Machine volume take a fortnight to scan.
+EXCLUDED_SCAN_DIR_NAMES = frozenset({
+    '.trash',                # MusicGrabber's own bin, plus generic *nix
+    '.trash-1000',           # Linux/Synology per-UID trash (see also prefix match below)
+    '.trashes',              # macOS on removable/network volumes
+    '@recycle',              # QNAP Network Recycle Bin
+    '@recycle.bin',          # QNAP, older firmware
+    '#recycle',              # Synology Recycle Bin
+    '$recycle.bin',          # Windows/SMB shares
+    'recycler',              # Windows, pre-Vista
+    '.upgrade_quarantine',   # MusicGrabber's upgrade holding pen
+    '@eadir',                # Synology thumbnail/index sidecar folders
+    '.ds_store',             # macOS, a directory in some sync-tool wreckage
+    '.spotlight-v100',       # macOS Spotlight index
+    '.fseventsd',            # macOS filesystem event log
+    '.documentrevisions-v100',
+    '.temporaryitems',
+    'system volume information',  # Windows/SMB
+    'lost+found',            # fsck salvage, never music
+})
+
+# Per-UID Linux trash folders are `.Trash-1000`, `.Trash-1001`, and so on, so an
+# exact-name set can never catch the lot. Prefix-matched, case-insensitively.
+EXCLUDED_SCAN_DIR_PREFIXES = ('.trash-',)
+
 # YouTube 403 retry
 YTDLP_403_MAX_RETRIES = 2       # Retry attempts on 403/Forbidden errors
 YTDLP_403_RETRY_DELAY = 3       # Seconds between retries
@@ -184,11 +247,39 @@ MB_DURATION_TOLERANCE = 0.10     # 10% either side of MusicBrainz expected durat
 SILENCE_DETECT_DURATION = 8.0    # Seconds of continuous silence that flags a sabotaged track
 SILENCE_DETECT_NOISE = -50.0     # dB threshold below which audio counts as silence
 SILENCE_DETECT_MIN_START = 15.0  # Ignore silence that starts before this point (legitimate intros)
-SILENCE_DETECT_MAX_END_FRAC = 0.60  # Only scan the first 60% of the track — leaves hidden/secret tracks alone
+SILENCE_DETECT_MAX_END_FRAC = 0.60  # Only scan the first 60% of the track, leaves hidden/secret tracks alone
 
 # Watched artists  -  MusicBrainz artist search and singles polling
 MB_ARTIST_SEARCH_LIMIT = 5       # Candidate results returned when searching by name
 TIMEOUT_MUSICBRAINZ_ARTIST = 10  # Artist search + singles listing HTTP timeout
+
+# Recording lookup  -  choosing which album a downloaded track belongs to.
+#
+# MusicBrainz scores text matches purely on string similarity, so every recording
+# of a popular song ties on 100 and the ordering between them is arbitrary. It is
+# also not stable: the same query run twice returns different slices, which for
+# Radiohead managed 0% overlap across three attempts. Asking for one result and
+# hoping it is the studio album is therefore a raffle, and we kept losing.
+#
+# So we ask for a proper shortlist, ask a second time with a studio-album filter,
+# and pick the recording before picking the release. Tuned against the corpus in
+# tests/fixtures/mb_corpus.json; see tests/tools/eval_mb_strategies.py.
+MB_RECORDING_SEARCH_LIMIT = 25   # Shortlist size per query; 100 measured no better
+MB_TEXT_SCORE_FLOOR = 85         # Below this the text match is too shaky to trust
+MB_RECORDING_SPREAD_WEIGHT = 3.0  # Weight on log1p(release count) when ranking recordings
+MB_ALT_TAKE_PENALTY = 12.0       # Penalty for live/remix/demo markers in a recording title
+# Penalty when the recording title is what we asked for plus extra qualifiers,
+# e.g. "(Boombox Rehearsals)" or "(Masters at Work RAW dub)". Deliberately heavy:
+# when every candidate is a variant the penalty cancels out, so it can only help.
+MB_TITLE_MISMATCH_PENALTY = 25.0
+
+# Lucene fragment restricting a recording search to official studio albums. Used
+# as a second opinion, never on its own: it is lethal to tracks whose only home is
+# a single or an EP, which is most of dance music.
+MB_STUDIO_ALBUM_FILTER = (
+    " AND primarytype:album AND status:official"
+    " AND NOT secondarytype:live AND NOT secondarytype:compilation"
+)
 
 # ListenBrainz API  -  used for similar artist exploration and "Created for You" playlists
 # (public API, no auth required for either)
@@ -204,14 +295,20 @@ DEEZER_SEARCH_URL = "https://api.deezer.com/search"
 # Default settings for fields that need startup values
 DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "false").lower() == "true"
 
-# Monochrome (Qobuz/Tidal) — configurable so you can point at a self-hosted hifi-api
+# Monochrome (Qobuz/Tidal), configurable so you can point at a self-hosted hifi-api
 MONOCHROME_HIFI_API_URL = os.getenv(
     "MONOCHROME_HIFI_API_URL",
     "https://us-west.monochrome.tf,https://monochrome-api.samidy.com",
 )
+# Monochrome themselves have retired the Qobuz proxy API (their frontend no longer
+# calls it at all), so this list is down to the one host that still answers, and
+# even that one's Qobuz credentials have expired. Kept because it fails in half a
+# second and might yet be revived; kennyy.com.br (Cloudflare 522 after a 20s
+# timeout) and qdl-api.monochrome.tf (no DNS) were shown the door on 2026-08-03.
+# In practice the qbdlx direct-Qobuz leg is what actually delivers these days.
 MONOCHROME_QOBUZ_PROXY_URL = os.getenv(
     "MONOCHROME_QOBUZ_PROXY_URL",
-    "https://qobuz.kennyy.com.br,https://mono.scavengerfurs.net,https://qdl-api.monochrome.tf",
+    "https://mono.scavengerfurs.net",
 )
 # The Qobuz proxies are gloriously flaky (502 one second, 200 the next), so we
 # sweep the whole list, have a little lie down, then sweep again a few times

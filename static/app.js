@@ -181,7 +181,7 @@
             return !!(user && user.role === 'peon');
         }
 
-        // Namespaced localStorage key — keeps per-user preferences separate on shared browsers.
+        // Namespaced localStorage key, keeps per-user preferences separate on shared browsers.
         // Session-global keys (theme, seen_version, sessionToken, etc.) are NOT namespaced.
         function userStorageKey(key) {
             const user = getCurrentUser();
@@ -232,7 +232,7 @@
             const response = await fetch(withRootPath(url), { ...options, headers });
 
             if (response.status === 401) {
-                // Session expired or invalid — clear local state and show login screen
+                // Session expired or invalid; clear local state and show login screen
                 if (serverConfig && serverConfig.users_exist) {
                     setSessionToken(null);
                     setCurrentUser(null);
@@ -536,7 +536,7 @@
             };
 
             if (!_albumInfo || !_albumInfo.release_mbid) {
-                // Folder routing only — no MBID so no track metadata enrichment
+                // Folder routing only, no MBID so no track metadata enrichment
                 return { ...base, mode: 'no_mbid' };
             }
 
@@ -1022,7 +1022,7 @@
                 }
             }
 
-            // Single-user mode OR successful session — apply role-based UI
+            // Single-user mode OR successful session, apply role-based UI
             applyUserRoleToUI();
             populateSourceChips();
             startSourceHealthPolling();
@@ -1351,10 +1351,15 @@
                     loadWatchedPlaylists();
                     loadWatchedArtists();
                     loadWatchedUpgrades();
+                    loadAudioAudit();
                     populateSourceChips();
                 } else if (watchedRefreshPollInterval) {
                     clearInterval(watchedRefreshPollInterval);
                     watchedRefreshPollInterval = null;
+                }
+                if (currentTab !== 'watched' && audioAuditPollTimer) {
+                    clearTimeout(audioAuditPollTimer);
+                    audioAuditPollTimer = null;
                 }
 
                 if (currentTab === 'bulk') {
@@ -1526,6 +1531,8 @@
             clearDuplicateNotice();
             relatedSuggestions.style.display = 'none';
             exploreBar.style.display = 'none';
+            const _qualityRow = document.getElementById('qualityFilterRow');
+            if (_qualityRow) _qualityRow.style.display = 'none';
             const _destRow1 = document.getElementById('destinationPickerRow');
             if (_destRow1) _destRow1.style.display = 'none';
             _exploreOriginalResults = null;
@@ -2071,6 +2078,7 @@
             // Update lastResults so individual downloads work, and stash for Download All
             lastResults = exploreResults;
             _exploreResolvedResults = exploreResults;
+            applyQualityFilter();
 
             // All batches done - enable the Download All button now it has real data
             const dlBtn = document.getElementById('exploreDownloadAllBtn');
@@ -2164,6 +2172,57 @@
             }
         }
 
+        // ---------------------------------------------------------------
+        // Minimum-quality filter
+        //
+        // Only Soulseek, Monochrome and FreeMp3Cloud declare a quality before
+        // download; YouTube and SoundCloud say nothing at all, so they arrive as
+        // tier 0 ("undeclared"). Asking for "Lossless only" and still being handed
+        // a YouTube rip is not what anybody meant, so undeclared results are hidden
+        // once a minimum is set. "Keep undeclared" brings them back for anyone who
+        // wants the safety net. With the filter on "Any quality" nothing is hidden.
+        //
+        // Worth knowing: the list is ordered by quality_score, which is a relevance
+        // score (title/artist match, views, duration), not an audio one. YouTube
+        // tends to top it because it has the exact title, which is precisely why an
+        // undeclared result could otherwise sit above real lossless ones.
+        //
+        // Filtering hides cards rather than removing them, because every download
+        // and preview handler is bound to the result's index in lastResults.
+        // Re-indexing a filtered list is exactly the kind of clever that ends up
+        // downloading the wrong song.
+        // ---------------------------------------------------------------
+        function applyQualityFilter() {
+            const row = document.getElementById('qualityFilterRow');
+            const select = document.getElementById('qualityFilterSelect');
+            const keepUnknownEl = document.getElementById('qualityFilterKeepUnknown');
+            const countEl = document.getElementById('qualityFilterCount');
+            if (!row || !select) return;
+
+            const items = resultsTab.querySelectorAll('.result-item');
+            row.style.display = items.length ? '' : 'none';
+            if (!items.length) return;
+
+            const minTier = parseInt(select.value, 10) || 0;
+            const keepUnknown = !!(keepUnknownEl && keepUnknownEl.checked);
+            let hidden = 0;
+
+            items.forEach(item => {
+                const tier = parseInt(item.dataset.qualityTier, 10) || 0;
+                const passes = minTier === 0
+                    ? true
+                    : (tier === 0 ? keepUnknown : tier >= minTier);
+                item.style.display = passes ? '' : 'none';
+                if (!passes) hidden++;
+            });
+
+            if (countEl) {
+                countEl.textContent = hidden
+                    ? `${items.length - hidden} of ${items.length} shown`
+                    : '';
+            }
+        }
+
         // Render a single result card as an HTML string (mirrors the main renderResults template)
         function _renderOneResult(r, index) {
             const safeSource = escapeHtml(r.source || '');
@@ -2171,6 +2230,7 @@
             return `
                 <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''} ${r.source === 'soulseek' ? 'soulseek' : ''}"
                      data-video-id="${safeVideoId}"
+                     data-quality-tier="${Number(r.quality_tier) || 0}"
                      data-index="${index}"
                      data-title="${escapeHtml(r.title)}"
                      data-tooltip="${r.source !== 'soulseek' ? 'Hover to preview, click to download' : 'Click to download'}">
@@ -2344,6 +2404,7 @@
                 return `
                 <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''} ${r.source === 'soulseek' ? 'soulseek' : ''}"
                      data-video-id="${safeVideoId}"
+                     data-quality-tier="${Number(r.quality_tier) || 0}"
                      data-index="${index}"
                      data-title="${escapeHtml(r.title)}"
                      data-tooltip="${r.source !== 'soulseek' ? 'Hover to preview, click to download' : 'Click to download'}">
@@ -2365,6 +2426,8 @@
                 </div>
                 `;
             }).join('');
+
+            applyQualityFilter();
 
             // Add click and hover handlers
             resultsTab.querySelectorAll('.result-item').forEach(item => {
@@ -2450,7 +2513,7 @@
                 missingTrackVersionsState.results = results;
 
                 if (!results.length) {
-                    body.innerHTML = '<div class="missing-track-modal-empty">No alternatives found. Retry will still run the automatic watched-playlist search, or Search will open the full Results tab.</div>';
+                    body.innerHTML = '<div class="missing-track-modal-empty">No alternatives found. Retry will still run the automatic watched-playlist search, or Search will open the full Tracks tab.</div>';
                     return;
                 }
 
@@ -2586,7 +2649,7 @@
                 }
                 if (albumRoute) {
                     if (albumRoute.mode === 'no_mbid') {
-                        // Folder routing only — no .albuminfo found so no track metadata enrichment
+                        // Folder routing only, no .albuminfo found so no track metadata enrichment
                         payload.album_artist = albumRoute.album_artist;
                         payload.album_name = albumRoute.album_name;
                     } else {
@@ -5054,6 +5117,83 @@
         document.getElementById('emptyTrashBtn').addEventListener('click', emptyTrash);
         resetStatsBtn.addEventListener('click', resetStats);
 
+        // Minimum-quality filter: remembered between searches, since somebody who
+        // only wants lossless generally still only wants lossless five minutes later.
+        const qualityFilterSelect = document.getElementById('qualityFilterSelect');
+        const qualityFilterKeepUnknown = document.getElementById('qualityFilterKeepUnknown');
+        if (qualityFilterSelect) {
+            const savedTier = localStorage.getItem('mg_min_quality_tier');
+            if (savedTier !== null) qualityFilterSelect.value = savedTier;
+            qualityFilterSelect.addEventListener('change', () => {
+                localStorage.setItem('mg_min_quality_tier', qualityFilterSelect.value);
+                applyQualityFilter();
+            });
+        }
+        if (qualityFilterKeepUnknown) {
+            const savedKeep = localStorage.getItem('mg_quality_keep_unknown');
+            if (savedKeep !== null) qualityFilterKeepUnknown.checked = savedKeep === '1';
+            qualityFilterKeepUnknown.addEventListener('change', () => {
+                localStorage.setItem('mg_quality_keep_unknown', qualityFilterKeepUnknown.checked ? '1' : '0');
+                applyQualityFilter();
+            });
+        }
+
+        // MusicBrainz release URL -> straight into the album download pipeline.
+        // No scraping, no fuzzy matching: the MBID is in the URL, so we resolve it
+        // to artist/title and queue the album properly rather than flattening it
+        // into a list of "Artist - Title" lines that lands in Singles.
+        async function fetchMusicBrainzRelease(url) {
+            spotifyError.style.display = 'none';
+            fetchSpotifyBtn.disabled = true;
+            fetchSpotifyBtn.textContent = 'Looking up release…';
+            try {
+                const resolveResp = await apiFetch('/api/albums/resolve-url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url }),
+                });
+                const album = await resolveResp.json().catch(() => ({}));
+                if (!resolveResp.ok) {
+                    throw new Error(album.detail || 'Could not resolve that MusicBrainz URL');
+                }
+
+                fetchSpotifyBtn.textContent = 'Queuing album…';
+                const makeM3u = createPlaylistCheckbox.checked;
+                const dlResp = await apiFetch('/api/albums/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        artist: album.artist,
+                        album_title: album.album_title,
+                        release_mbid: album.release_mbid,
+                        make_m3u: makeM3u,
+                        m3u_name: makeM3u ? (playlistNameInput.value.trim() || null) : null,
+                        convert_to_flac: convertToFlacCheckbox.checked,
+                    }),
+                });
+                const data = await dlResp.json().catch(() => ({}));
+                if (!dlResp.ok) {
+                    throw new Error(data.detail || 'Failed to queue album');
+                }
+
+                const label = `${album.artist} - ${album.album_title}`;
+                if (!data.import_id) {
+                    showToast(`"${label}" is already complete, nothing to fetch`);
+                } else {
+                    const queued = data.queued_count ?? album.track_count ?? 0;
+                    showToast(`Queued ${queued} track${queued === 1 ? '' : 's'} from "${label}"`);
+                }
+                spotifyUrlInput.value = '';
+            } catch (error) {
+                spotifyError.textContent = error.message;
+                spotifyError.style.color = '';
+                spotifyError.style.display = 'block';
+            } finally {
+                fetchSpotifyBtn.disabled = false;
+                fetchSpotifyBtn.textContent = 'Fetch Playlist';
+            }
+        }
+
         // Spotify playlist/album fetch handler
         async function fetchSpotifyPlaylist() {
             const url = spotifyUrlInput.value.trim();
@@ -5073,8 +5213,16 @@
             const isTidal = url.match(/^https?:\/\/tidal\.com\/(?:browse\/)?playlist\//i);
             const isMonochrome = url.match(/^https?:\/\/(?:www\.)?(?:monochrome\.tf|monochrome\.samidy\.com)\/playlist\//i);
             const isBeatport = url.match(/^https?:\/\/(?:www\.)?beatport\.com\/(top-100|genre\/[^/]+\/\d+\/top-100|chart\/[^/]+\/\d+)/i);
+            // MusicBrainz release/release-group URLs carry the MBID already, so they
+            // skip the track-list textarea entirely and go straight to the proper
+            // album pipeline: Albums/Artist/Album/, cover art, the works.
+            const isMusicBrainz = url.match(/^https?:\/\/(?:beta\.)?musicbrainz\.org\/(release|release-group)\/[0-9a-f-]{36}/i);
+            if (isMusicBrainz) {
+                await fetchMusicBrainzRelease(url);
+                return;
+            }
             if (!isSpotify && !isAmazon && !isApple && !isYouTube && !isSoundCloud && !isListenBrainz && !isTidal && !isMonochrome && !isBeatport) {
-                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, SoundCloud sets/likes, ListenBrainz, Tidal, Monochrome, or Beatport link.';
+                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, SoundCloud sets/likes, ListenBrainz, Tidal, Monochrome, MusicBrainz release, or Beatport link.';
                 spotifyError.style.display = 'block';
                 return;
             }
@@ -5902,7 +6050,7 @@
                 _updatePlaylistSelectorWarning();
             }
 
-            // Switch to Results tab and fire the search
+            // Switch to the Tracks tab (data-tab is still "results") and fire the search
             const resultsTabBtn = document.querySelector('.tab[data-tab="results"]');
             if (resultsTabBtn) resultsTabBtn.click();
 
@@ -6809,6 +6957,295 @@
             } catch (e) { showToast('Could not dismiss', true); }
         }
 
+        // =====================================================================
+        // Read-only Audio Provenance Audit
+        // =====================================================================
+        const AUDIO_AUDIT_PER_PAGE = 25;
+        const AUDIO_AUDIT_CLASSIFICATIONS = {
+            known_lossy_transcode: 'Known lossy transcode',
+            native_lossy: 'Native lossy acquisition',
+            lossy_derivative: 'Lossy derivative of recorded lossless',
+            recorded_lossless: 'Recorded lossless acquisition',
+            historical_unknown: 'Historical or unknown provenance',
+            unreadable: 'Unreadable audio file',
+        };
+        const AUDIO_AUDIT_QUALITY_LABELS = {
+            recorded_lossless: 'Recorded lossless',
+            lossy_320: 'Lossy, up to 320 tier',
+            lossy_256: 'Lossy, up to 256 tier',
+            lossy_192: 'Lossy, up to 192 tier',
+            lossy_128: 'Lossy, up to 128 tier',
+            lossy_unknown: 'Lossy, bitrate unknown',
+            unknown: 'Unknown',
+        };
+        let audioAuditPage = 1;
+        let audioAuditPollTimer = null;
+        let audioAuditLastStatus = null;
+
+        function audioAuditFilters() {
+            return {
+                classification: document.getElementById('audioAuditClassification')?.value || '',
+                container: document.getElementById('audioAuditContainer')?.value || '',
+                codec: document.getElementById('audioAuditCodec')?.value || '',
+                source: document.getElementById('audioAuditSource')?.value || '',
+                effective_quality: document.getElementById('audioAuditEffective')?.value || '',
+                lossless_only: document.getElementById('audioAuditLossless')?.value || '',
+            };
+        }
+
+        function audioAuditQuery(includeFormat = null) {
+            const params = new URLSearchParams();
+            Object.entries(audioAuditFilters()).forEach(([key, value]) => {
+                if (value) params.set(key, value);
+            });
+            if (includeFormat) params.set('format', includeFormat);
+            return params.toString();
+        }
+
+        function fillAudioAuditSelect(id, values, labelForValue = value => value) {
+            const select = document.getElementById(id);
+            if (!select) return;
+            const selected = select.value;
+            const first = select.options[0];
+            const placeholder = first ? first.textContent : 'All';
+            select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>` +
+                (values || []).map(value =>
+                    `<option value="${escapeHtml(String(value))}">${escapeHtml(String(labelForValue(value)))}</option>`
+                ).join('');
+            if ([...select.options].some(option => option.value === selected)) {
+                select.value = selected;
+            }
+        }
+
+        function populateAudioAuditFilters(status) {
+            fillAudioAuditSelect(
+                'audioAuditClassification',
+                Object.keys(AUDIO_AUDIT_CLASSIFICATIONS),
+                value => AUDIO_AUDIT_CLASSIFICATIONS[value]
+            );
+            const options = status.options || {};
+            fillAudioAuditSelect('audioAuditContainer', options.container || [], value => String(value).toUpperCase());
+            fillAudioAuditSelect('audioAuditCodec', options.codec || [], value => String(value).toUpperCase());
+            fillAudioAuditSelect('audioAuditSource', options.source || []);
+            fillAudioAuditSelect(
+                'audioAuditEffective',
+                options.effective_quality || [],
+                value => AUDIO_AUDIT_QUALITY_LABELS[value] || value
+            );
+        }
+
+        function renderAudioAuditSummary(summary) {
+            const element = document.getElementById('audioAuditSummary');
+            if (!element) return;
+            if (!summary) {
+                element.innerHTML = '';
+                return;
+            }
+            const counts = summary.counts || {};
+            const ordered = [
+                'known_lossy_transcode',
+                'native_lossy',
+                'lossy_derivative',
+                'recorded_lossless',
+                'historical_unknown',
+                'unreadable',
+            ];
+            element.innerHTML = ordered.map(key => `
+                <div class="audio-audit-summary-card audit-${key}">
+                    <span class="audio-audit-summary-count">${Number(counts[key] || 0).toLocaleString()}</span>
+                    <span>${escapeHtml(AUDIO_AUDIT_CLASSIFICATIONS[key])}</span>
+                </div>
+            `).join('');
+        }
+
+        function renderAudioAuditStatus(status) {
+            const element = document.getElementById('audioAuditStatus');
+            const runButton = document.getElementById('runAudioAuditBtn');
+            if (!element) return;
+            const running = status.running;
+            const current = status.current;
+            if (runButton) {
+                runButton.disabled = !!running;
+                runButton.textContent = running ? 'Auditing...' : 'Run Audit';
+            }
+            if (running) {
+                const scanned = Number(running.scanned_files || 0).toLocaleString();
+                const total = Number(running.total_files || 0).toLocaleString();
+                if (!running.total_files) {
+                    element.innerHTML = '<strong>Discovering:</strong> walking the configured music directory for supported audio files. Nothing is being changed.';
+                    return;
+                }
+                const progress = running.total_files ? ` (${running.progress_percent || 0}%)` : '';
+                const oldReport = current ? ' The previous complete report remains below until this finishes.' : '';
+                element.innerHTML = `<strong>Scanning:</strong> ${scanned} / ${total} files${progress}.${escapeHtml(oldReport)}`;
+                return;
+            }
+            if (current) {
+                const when = current.completed_at ? new Date(`${current.completed_at}Z`).toLocaleString() : 'unknown time';
+                element.innerHTML = `<strong>Complete:</strong> ${Number(current.total_files || 0).toLocaleString()} supported audio files inspected at ${escapeHtml(when)}. ${escapeHtml(status.read_only_notice || '')}`;
+                return;
+            }
+            if (status.last_failed) {
+                element.innerHTML = `<strong>Last audit failed:</strong> ${escapeHtml(status.last_failed.error || 'Unknown error')}. No previous report was replaced.`;
+                return;
+            }
+            element.textContent = 'No audit report yet. Run one when you fancy learning what the tags actually remember.';
+        }
+
+        function renderAudioAuditRow(item) {
+            const classification = AUDIO_AUDIT_CLASSIFICATIONS[item.classification] || item.classification;
+            const effective = AUDIO_AUDIT_QUALITY_LABELS[item.effective_quality] || item.effective_quality;
+            const storedParts = [
+                item.container ? String(item.container).toUpperCase() + ' container' : '',
+                item.codec ? String(item.codec).toUpperCase() + ' codec' : '',
+                item.bitrate_kbps ? `${item.bitrate_kbps} kbps observed` : '',
+            ].filter(Boolean);
+            const identity = [item.artist, item.title].filter(Boolean).join(' – ');
+            const evidence = (item.evidence || []).map(entry => `
+                <li>
+                    <strong>${escapeHtml(String(entry.label || entry.field || 'Evidence'))}:</strong>
+                    ${escapeHtml(String(entry.value || ''))}
+                    <span>${escapeHtml(String(entry.meaning || ''))}</span>
+                </li>
+            `).join('');
+            const caveats = (item.caveats || []).map(caveat =>
+                `<li>${escapeHtml(String(caveat))}</li>`
+            ).join('');
+            return `
+                <div class="result-item audio-audit-row">
+                    <div class="audio-audit-main">
+                        <div class="audio-audit-path">${escapeHtml(String(item.path || item.filename || 'Unknown file'))}</div>
+                        ${identity ? `<div class="audio-audit-identity">${escapeHtml(identity)}</div>` : ''}
+                        <div class="audio-audit-meta">${escapeHtml(storedParts.join(' · ') || 'Stored format unknown')}</div>
+                        <div class="audio-audit-meta">
+                            Effective: <strong>${escapeHtml(String(effective || 'Unknown'))}</strong>
+                            ${item.source ? ` · Acquisition source: ${escapeHtml(String(item.source))}` : ''}
+                        </div>
+                    </div>
+                    <div class="audio-audit-result">
+                        <span class="audio-audit-badge audit-${escapeHtml(String(item.classification))}">${escapeHtml(String(classification))}</span>
+                        <details class="audio-audit-evidence">
+                            <summary>Why this classification?</summary>
+                            <h4>Evidence used</h4>
+                            <ul>${evidence}</ul>
+                            <h4>Caveats</h4>
+                            <ul class="audio-audit-caveats">${caveats}</ul>
+                        </details>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadAudioAudit(refreshFilters = true) {
+            const list = document.getElementById('audioAuditList');
+            const pager = document.getElementById('audioAuditPager');
+            if (!list || isPeon()) return;
+            if (audioAuditPollTimer) {
+                clearTimeout(audioAuditPollTimer);
+                audioAuditPollTimer = null;
+            }
+            try {
+                const statusResponse = await apiFetch('/api/audio-audit');
+                if (!statusResponse.ok) throw new Error('Could not load audit status');
+                const status = await statusResponse.json();
+                audioAuditLastStatus = status;
+                renderAudioAuditStatus(status);
+                renderAudioAuditSummary(status.summary);
+                if (refreshFilters) populateAudioAuditFilters(status);
+
+                if (!status.current) {
+                    list.innerHTML = status.running
+                        ? '<p class="watched-empty-text">Building the first report. Audio files are being read, not touched.</p>'
+                        : '<p class="watched-empty-text">No completed audit report yet.</p>';
+                    if (pager) pager.style.display = 'none';
+                } else {
+                    const query = audioAuditQuery();
+                    const separator = query ? '&' : '';
+                    const filesResponse = await apiFetch(
+                        `/api/audio-audit/files?page=${audioAuditPage}&per_page=${AUDIO_AUDIT_PER_PAGE}${separator}${query}`
+                    );
+                    if (!filesResponse.ok) throw new Error('Could not load audit files');
+                    const data = await filesResponse.json();
+                    if (!data.items.length) {
+                        list.innerHTML = '<p class="watched-empty-text">No files match these filters.</p>';
+                    } else {
+                        list.innerHTML = data.items.map(renderAudioAuditRow).join('');
+                    }
+                    if (pager) {
+                        const info = document.getElementById('audioAuditPageInfo');
+                        if (info) info.textContent = `Page ${data.page} of ${data.pages} (${Number(data.total || 0).toLocaleString()} files)`;
+                        document.getElementById('audioAuditPrevBtn').disabled = data.page <= 1;
+                        document.getElementById('audioAuditNextBtn').disabled = data.page >= data.pages;
+                        pager.style.display = data.pages > 1 ? 'flex' : 'none';
+                    }
+                }
+
+                if (status.running && currentTab === 'watched') {
+                    audioAuditPollTimer = setTimeout(() => loadAudioAudit(false), 2000);
+                }
+            } catch (error) {
+                list.innerHTML = `<p class="watched-empty-text">Could not load the audit: ${escapeHtml(error.message || 'unknown error')}</p>`;
+            }
+        }
+
+        async function runAudioAudit() {
+            const button = document.getElementById('runAudioAuditBtn');
+            if (button) {
+                button.disabled = true;
+                button.textContent = 'Starting...';
+            }
+            try {
+                const response = await apiFetch('/api/audio-audit/scans', { method: 'POST' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Could not start audit');
+                audioAuditPage = 1;
+                showToast(data.status === 'already_running' ? 'An audio audit is already running' : 'Audio audit started');
+                loadAudioAudit();
+            } catch (error) {
+                showToast(`Could not start audio audit: ${error.message}`, true);
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = 'Run Audit';
+                }
+            }
+        }
+
+        function audioAuditFiltersChanged() {
+            audioAuditPage = 1;
+            loadAudioAudit(false);
+        }
+
+        function changeAudioAuditPage(delta) {
+            audioAuditPage = Math.max(1, audioAuditPage + delta);
+            loadAudioAudit(false);
+            document.getElementById('audioAudit')?.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        async function exportAudioAudit(format) {
+            if (!audioAuditLastStatus?.current) {
+                showToast('Run an audio audit before exporting it', true);
+                return;
+            }
+            try {
+                const response = await apiFetch(`/api/audio-audit/export?${audioAuditQuery(format)}`);
+                if (!response.ok) throw new Error('Export failed');
+                const blob = await response.blob();
+                const disposition = response.headers.get('Content-Disposition') || '';
+                const match = disposition.match(/filename="([^"]+)"/);
+                const filename = match ? match[1] : `musicgrabber-audio-audit.${format}`;
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                showToast('Could not export the audio audit', true);
+            }
+        }
+
         async function loadWatchedArtists(showLoading = true) {
             const listEl = document.getElementById('watchedArtistList');
             if (showLoading) listEl.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
@@ -7479,6 +7916,8 @@
             'opus_bitrate': 'settingOpusBitrate',
             'alac_bitrate': 'settingAlacBitrate',
             'normalise_lossy_audio': 'settingNormaliseLossyAudio',
+            'enable_replaygain': 'settingEnableReplaygain',
+            'replaygain_replace_existing': 'settingReplaygainReplaceExisting',
             'min_audio_bitrate': 'settingMinBitrate',
             'reject_live_versions': 'settingRejectLiveVersions',
             'playlist_comment_tagging': 'settingPlaylistCommentTagging',
@@ -8242,7 +8681,7 @@
                             } else {
                                 value = _normaliseSubdirPath(value) || 'Albums';
                             }
-                            // Always include subdir fields — change detection fails when the
+                            // Always include subdir fields; change detection fails when the
                             // saved value is itself a custom path (originalValues holds the
                             // resolved string, resolved value matches, gets skipped as "no change")
                             updates[key] = value;
@@ -8431,7 +8870,7 @@
                         const rpDiv = document.getElementById('navidromeRealPathStatus');
                         if (rpDiv) {
                             if (data.real_path === true) {
-                                rpDiv.textContent = 'Real file paths enabled — M3U playlist entries will use accurate paths';
+                                rpDiv.textContent = 'Real file paths enabled; M3U playlist entries will use accurate paths';
                                 rpDiv.className = 'test-result success';
                             } else {
                                 rpDiv.textContent = data.real_path_hint || '';
@@ -8575,7 +9014,7 @@
             const admin = isAdmin();
             const peon = isPeon();
 
-            // Toggle visibility of admin-only sections (set inline — no CSS class needed)
+            // Toggle visibility of admin-only sections (set inline, no CSS class needed)
             document.querySelectorAll('.admin-only').forEach(el => {
                 el.style.display = admin ? '' : 'none';
             });
@@ -8668,7 +9107,7 @@
                 const noUsers = !data.users || data.users.length === 0;
 
                 // Show the "point of no return" warning and lock role to Admin when
-                // no users exist yet — the first account must always be admin.
+                // no users exist yet; the first account must always be admin.
                 if (warningEl) warningEl.style.display = noUsers ? 'block' : 'none';
                 if (roleEl) {
                     if (noUsers) roleEl.value = 'admin';
@@ -8719,7 +9158,7 @@
                 document.getElementById('newUserPassword').value = '';
                 // Going from 0 to 1 users (first_user) or 1 to 2 (requires_login)
                 // both flip into session-required mode. The current admin has no
-                // session, so further requests will 401 — clear state and bounce
+                // session, so further requests will 401; clear state and bounce
                 // to login rather than leaving the UI stuck on a stale view.
                 if (data.first_user || data.requires_login) {
                     localStorage.clear();

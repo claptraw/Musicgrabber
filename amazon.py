@@ -46,7 +46,7 @@ def fetch_amazon_playlist(url: str) -> dict:
     except subprocess.TimeoutExpired:
         raise HTTPException(
             status_code=504,
-            detail="Timeout fetching Amazon Music playlist — the page took too long to load"
+            detail="Timeout fetching Amazon Music playlist; the page took too long to load"
         )
 
     if result.returncode != 0:

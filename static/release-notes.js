@@ -7,6 +7,100 @@
 // changelog dump.
 
 const RELEASE_NOTES = {
+    "3.1.0": {
+        title: "What's New in v3.1.0",
+        sections: [
+            {
+                heading: "ReplayGain, without touching the audio",
+                items: [
+                    "New downloads can now be measured and tagged with ReplayGain 2.0 track gain and peak, referenced to the standard -18 LUFS. Settings → Write ReplayGain Tags turns it on; it is off by default.",
+                    "Nothing is re-encoded. This is the polite cousin of Normalise Loudness: it writes down how loud the track is and leaves your player to act on it, which means it is safe on lossless files and can be undone by deleting four tags.",
+                    "Album gain and album peak are added once every track on a record has arrived, worked out across the whole album so the quiet track five stays quieter than the singles instead of being levelled flat.",
+                    "Files that already carry ReplayGain tags are left exactly as they are, unless you turn on Replace Existing ReplayGain Tags. FLAC, MP3, M4A, Ogg and Opus are supported.",
+                ]
+            },
+            {
+                heading: "Paste a MusicBrainz album link, get an album",
+                items: [
+                    "Bulk Import now accepts musicbrainz.org release and release-group URLs, and sends them down the proper album pipeline: Albums/Artist/Album/, cover art, an .albuminfo sidecar and dependable track numbers.",
+                    "Because the MBID is already in the URL there is nothing to scrape and nothing to guess. Release-group links (the ones MusicBrainz search hands you) resolve to the earliest official pressing.",
+                ]
+            },
+            {
+                heading: "A minimum-quality filter, with its cards on the table",
+                items: [
+                    "The Tracks tab can now hide anything below 192, 256, 320 kbps or lossless.",
+                    "It is upfront about what it cannot know: only Soulseek, Monochrome and FreeMp3Cloud state a quality before you download. YouTube and SoundCloud say nothing, so they count as undeclared and are hidden as soon as you set a minimum. Tick “Keep undeclared” if you would rather keep them.",
+                    "Worth knowing: results are ordered by how well they match your search, not by audio quality, so without the filter a YouTube result with the exact title will happily outrank three genuine FLACs.",
+                ]
+            },
+            {
+                heading: "The right album, not just a plausible one",
+                items: [
+                    "MusicBrainz scores search matches on string similarity alone, so every recording of a popular song ties on 100 and the order between them is arbitrary. Asking it for one result was drawing a raffle ticket, which is how “Around the World” kept arriving on the live album Alive 2006.",
+                    "MusicGrabber now asks for a shortlist, asks again with a studio-album filter, and works out which recording is the canonical take before picking a release from it. Compilations, DJ mixes, live bootlegs and “(Boombox Rehearsals)” takes now lose on purpose.",
+                    "Measured against a 31-track test corpus spanning bootleg-heavy artists, dance compilations and non-English releases: the old behaviour got 3.7 of 31 right, the new one gets 26.",
+                ]
+            },
+            {
+                heading: "Non-English tracks, searched the way you actually type them",
+                items: [
+                    "Searching “Yoru ni Kakeru” used to return nothing whatsoever, because MusicBrainz files that track under 夜に駆ける. Same story for “Gruppa krovi” and Группа крови.",
+                    "When a search comes back empty we now try again against aliases, which is where transliterations are kept, and the track comes back properly tagged in its native script.",
+                ]
+            },
+            {
+                heading: "Track numbers on singles, at last",
+                items: [
+                    "Downloaded singles were arriving without a track number even when MusicBrainz knew perfectly well which track it was. Two separate causes, both fixed: the MusicBrainz search API nests the matched track under a differently-named key than the lookup API, and the fingerprint path was requesting releases without their track listings.",
+                    "Vinyl pressings that print “A1” rather than “3” now fall back to the position on the disc. Reported by RxBrad.",
+                ]
+            },
+            {
+                heading: "One space too many in collaboration credits",
+                items: [
+                    "MusicBrainz returns each credited artist with its separator already attached (“ & ”, “ feat. ”), and we were adding a space on top, so “Underworld & Iggy Pop” went into the tag as “Underworld &  Iggy Pop”. Five places in the metadata code were guilty. Solo tracks were never affected, which is exactly why nobody spotted it.",
+                ]
+            },
+            {
+                heading: "Library scans stay inside the library",
+                items: [
+                    "Synology, QNAP and Windows SMB shares hide deleted files in a bin inside the share itself, so the upgrades scanner, provenance audit and Stats storage figure were all counting things you deleted weeks ago, and occasionally offering to upgrade them.",
+                    "All three now share one walker that skips @Recycle, #recycle, .Trash-1000, @eaDir, System Volume Information, lost+found and the macOS metadata caches, and will not follow a symlink out of your music folder. Albums actually named “Trash” remain untouched.",
+                ]
+            },
+            {
+                heading: "Monochrome downloads stopped dawdling",
+                items: [
+                    "A Monochrome track took 37 seconds to resolve before it even started downloading. It now takes about 0.2 seconds once the first one has gone through.",
+                    "The shared Qobuz token pool has 28 tokens in it, of which exactly 3 still work, and naturally they are the last three in the list. Every download was politely working its way through 25 dead ones first. MusicGrabber now remembers which token actually delivered and starts there next time.",
+                    "Two of the three default Qobuz proxies have also been retired: one answered only after burning a 20-second timeout, and the other no longer exists in DNS. Your own self-hosted proxy URLs are left exactly as you set them.",
+                ]
+            },
+            {
+                heading: "Results is now Tracks",
+                items: [
+                    "Same tab, same job, clearer name. Requested on reddit, and difficult to argue with.",
+                ]
+            },
+            {
+                heading: "Audio provenance, with receipts",
+                items: [
+                    "Watched now includes a read-only Audio Provenance Audit for the complete configured music directory: Singles, Playlists, Albums, and historical files. Every row shows the observed stored format, the acquisition history MusicGrabber actually recorded, the resulting conservative classification, and the evidence used to get there.",
+                    "The report distinguishes known lossy transcodes, native lossy acquisitions, lossy derivatives of recorded lossless files, recorded lossless acquisitions, unknown history, and unreadable files. “Recorded lossless” is not presented as forensic proof; a large bitrate and a FLAC overcoat cannot testify about the file's entire childhood.",
+                    "Filters cover classification, container, codec, acquisition source, and effective quality. The two lossless views are deliberately separate: stored in a lossless codec versus recorded as a lossless acquisition.",
+                    "Filtered CSV and JSON dry-run reports include the scan criteria, evidence, caveats, and an explicit notice that no audio was changed. The audit has no rename, retag, move, delete, replace, or upgrade buttons.",
+                    "Large audits publish atomically, recover interrupted runs honestly, and pause for interactive library views instead of turning your NAS and the rest of the UI into treacle.",
+                ]
+            },
+            {
+                heading: "Featured artists reach the same verdict",
+                items: [
+                    "Local files, Navidrome, Lidarr, and watched playlists now agree when one service credits a guest artist and another files the track under the primary artist. A track such as “The Chemical Brothers, Q-Tip – Go” can match “The Chemical Brothers – Go”, and a later duplicate download result repairs the watched Missing row instead of leaving it there for decorative purposes.",
+                ]
+            }
+        ]
+    },
     "3.0.3": {
         title: "What's New in v3.0.3",
         sections: [
@@ -23,7 +117,7 @@ const RELEASE_NOTES = {
                 items: [
                     "Append-mode playlists now check their full retained history when they refresh, not only the tracks still present in today's source playlist. If an older chart song has since appeared in MusicGrabber's library, Navidrome, or Lidarr, its watched status and real file path are repaired automatically and it joins the rebuilt M3U.",
                     "Search and watched playlists now agree about Lidarr-managed music. The awkward case where Search said “already in your library” while the watched playlist insisted the same song was missing has been fixed.",
-                    "Songs that have left the upstream playlist are never re-downloaded during this repair. Genuine historical misses are remembered and checked periodically—daily by default—so pressing Refresh does not repeatedly send the same expensive queries to Navidrome and Lidarr.",
+                    "Songs that have left the upstream playlist are never re-downloaded during this repair. Genuine historical misses are remembered and checked periodically, daily by default, so pressing Refresh does not repeatedly send the same expensive queries to Navidrome and Lidarr.",
                     "The database migration is automatic. The first refresh after upgrading performs the historical repair pass; later refreshes retain the healed paths and use them directly.",
                 ]
             },
@@ -220,7 +314,7 @@ const RELEASE_NOTES = {
                     "MusicGrabber now parks sources that are down instead of showing results that cannot preview or download. It checks source health at startup and during multi-source searches, hides parked sources for a configurable cooldown, and shows a toast when results were skipped.",
                     "If a source goes offline mid-download (Monochrome's proxies love doing this), MusicGrabber now automatically retries the track on another source instead of failing. The dead source is skipped so it can't keep handing you its own broken results. There's a new 'Fall back across sources' toggle in Settings (on by default) if you'd rather a job fail loudly than quietly grab a lower-quality copy from elsewhere.",
                     "Monochrome has a new direct qbdlx fallback for the days when every public Qobuz proxy is down. It uses the shared qbdlx free-account token pool to ask Qobuz for the stream directly, so Monochrome can still deliver real lossless FLACs even when the proxy layer is having a bad day. The fallback can be turned off in Settings.",
-                    "Watched playlists that vanish upstream now get paused with an explanation, instead of quietly failing forever. If a playlist is deleted or made private, its refresh keeps returning 'not found' — after three of those in a row, MusicGrabber pauses (not deletes) the playlist and adds a note to the card so you know to check the source.",
+                    "Watched playlists that vanish upstream now get paused with an explanation, instead of quietly failing forever. If a playlist is deleted or made private, its refresh keeps returning 'not found'; after three of those in a row, MusicGrabber pauses (not deletes) the playlist and adds a note to the card so you know to check the source.",
                     "We deliberately wait for a few strikes before pausing, because a private playlist with an expired login token can also return 'not found' and we'd rather not pause a healthy playlist over a one-off blip. Hit Resume once you've sorted the source out, and the slate is wiped clean.",
                     "Watched artists with huge back-catalogues are now paginated. The tracks view shows 50 at a time with Prev/Next, so following someone like Radiohead no longer paints a giant wall of singles.",
                 ]
@@ -250,10 +344,10 @@ const RELEASE_NOTES = {
                 heading: "Fixed",
                 items: [
                     "Watched artists no longer re-download old tracks on every refresh: tracks released before an artist's start date were being mistaken for failed downloads and re-queued endlessly. They now stay in the past where they belong.",
-                    "Monochrome broken on fresh installs: two separate bugs conspired — the source was silently disabled by default (wrong fallback in the code), and the Qobuz proxy (qdl-api.monochrome.tf) had its credentials expire so every download failed with a 400. Both fixed.",
+                    "Monochrome broken on fresh installs: two separate bugs conspired: the source was silently disabled by default (wrong fallback in the code), and the Qobuz proxy (qdl-api.monochrome.tf) had its credentials expire so every download failed with a 400. Both fixed.",
                     "Monochrome Qobuz proxy is now a fallback list, just like the hifi-api endpoints. Two working community proxies (qobuz.kennyy.com.br, mono.scavengerfurs.net) are tried first. Existing installs are migrated automatically (DB migration v7).",
                     "Proxy health checking: a background thread probes all Qobuz proxies once per hour. A 4xx/5xx marks a proxy as deprioritised for 30 minutes; it recovers automatically if it starts working again. Connection errors don't blacklist.",
-                    "Monochrome was missing from the Stats tab Sources breakdown — it was never wired up to the bar or legend. It now appears in teal.",
+                    "Monochrome was missing from the Stats tab Sources breakdown; it was never wired up to the bar or legend. It now appears in teal.",
                 ]
             }
         ]
@@ -345,7 +439,7 @@ const RELEASE_NOTES = {
             {
                 heading: "Added",
                 items: [
-                    "Beatport playlists are here. Top 100, genre charts, editorial charts — paste a Beatport URL into Watched Playlists and it pulls the track list straight from the page. Shiny vinyl icon included.",
+                    "Beatport playlists are here. Top 100, genre charts, editorial charts; paste a Beatport URL into Watched Playlists and it pulls the track list straight from the page. Shiny vinyl icon included.",
                 ]
             },
             {
@@ -591,7 +685,7 @@ const RELEASE_NOTES = {
         title: "What's New in v2.8.0",
         sections: [
             {
-                heading: "Monochrome is back — and it brought Qobuz",
+                heading: "Monochrome is back, and it brought Qobuz",
                 items: [
                     "Monochrome.tf was ripped out in v2.6.6 when Tidal started banning the proxy accounts and every stream degraded to a 30-second teaser. They've come back with Qobuz as the audio backend: Tidal's catalogue for search and metadata, a Qobuz proxy for the actual bytes. The result is direct, no-nonsense FLAC from Qobuz's CDN.",
                     "Hi-res (24-bit/192 kHz) and standard FLAC (16-bit/44.1 kHz) both supported, depending on what Qobuz has for the track. Score bonuses match Soulseek's lossless weighting, so a proper master will beat a YouTube rip in the results.",
@@ -601,7 +695,7 @@ const RELEASE_NOTES = {
             {
                 heading: "Hover preview",
                 items: [
-                    "Monochrome results support the hover-to-preview feature like YouTube and SoundCloud. The server resolves the Qobuz CDN URL and hands it to the browser — audition before you commit.",
+                    "Monochrome results support the hover-to-preview feature like YouTube and SoundCloud. The server resolves the Qobuz CDN URL and hands it to the browser; audition before you commit.",
                 ]
             },
             {
@@ -936,7 +1030,7 @@ const RELEASE_NOTES = {
                 heading: "Fixed: Watched Playlists Getting Too Into Live Versions",
                 items: [
                     "Watched playlists are now much less likely to wander off with a live/session recording when what you actually wanted was the normal studio track. Performance-style results get hit with much heavier score penalties unless the query explicitly asks for one.",
-                    "The live detector also learned some new vocabulary. It's no longer just looking for the word 'live' — it now catches the usual suspects like Tiny Desk, KEXP, Mahogany, COLORS, Radio 1, From The Basement, sessions, and other \"this definitely happened in front of people\" uploads across YouTube, Monochrome, MP3Phoenix, SoundCloud, and Soulseek.",
+                    "The live detector also learned some new vocabulary. It's no longer just looking for the word 'live'; it now catches the usual suspects like Tiny Desk, KEXP, Mahogany, COLORS, Radio 1, From The Basement, sessions, and other \"this definitely happened in front of people\" uploads across YouTube, Monochrome, MP3Phoenix, SoundCloud, and Soulseek.",
                     "On top of that, the watched-track matcher stops shrugging and treating 'live' as harmless title fluff, so a concert version no longer gets waved through as if it were the plain studio release.",
                 ]
             },
@@ -1037,7 +1131,7 @@ const RELEASE_NOTES = {
             {
                 heading: "New: configurable file permissions",
                 items: [
-                    "Downloaded files have always been set to 666 (rw for everyone) for NAS and SMB compatibility. If your media server or NAS refuses to write to files owned by root, you can now switch to 777 in Settings (admin only). Two options, no free-text field — we're not animals.",
+                    "Downloaded files have always been set to 666 (rw for everyone) for NAS and SMB compatibility. If your media server or NAS refuses to write to files owned by root, you can now switch to 777 in Settings (admin only). Two options, no free-text field; we're not animals.",
                 ]
             },
             {
@@ -1049,7 +1143,7 @@ const RELEASE_NOTES = {
             {
                 heading: "Bug fixes",
                 items: [
-                    "The 'Skip duplicates' toggle was gaslighting you — it looked saved, then quietly forgot every time you refreshed. The setting is now actually written to the database like it promised.",
+                    "The 'Skip duplicates' toggle was gaslighting you; it looked saved, then quietly forgot every time you refreshed. The setting is now actually written to the database like it promised.",
                     "The playlist routing selector was showing a 'will be overwritten on sync' warning for Append playlists, which don't get overwritten on sync at all. The warning now only appears for Mirror playlists, where it actually means something.",
                     "Tracks stuck in Missing because their download job failed, despite the file already being on disk from another route (manual download, different playlist), will now be spotted and cleared on the next refresh.",
                 ]
@@ -1087,7 +1181,7 @@ const RELEASE_NOTES = {
             {
                 heading: "Auto-album routing for singles",
                 items: [
-                    "New opt-in setting: when enabled, singles with a MusicBrainz album match are automatically moved into Artist/Album/ after download, complete with track number tags. Falls back silently to Singles/Artist/ for new or unrecognised tracks — no errors, no fuss.",
+                    "New opt-in setting: when enabled, singles with a MusicBrainz album match are automatically moved into Artist/Album/ after download, complete with track number tags. Falls back silently to Singles/Artist/ for new or unrecognised tracks; no errors, no fuss.",
                     "A second toggle, 'Route to Albums folder', sends matched tracks to Albums/Artist/Album/ instead of Singles/Artist/Album/. Handy if you want a clean Artist/Album/Track layout without touching your Singles folder.",
                     "Find both settings in Settings under Library. Both are off by default.",
                 ]
@@ -1096,9 +1190,9 @@ const RELEASE_NOTES = {
                 heading: "Bug fixes",
                 items: [
                     "Monochrome downloads weren't triggering album routing at all. Tidal gives us the album title directly, so the routing now uses that instead of waiting for MusicBrainz. Fixed.",
-                    "MusicBrainz was routinely picking radio compilations and promo discs as the canonical album — 'Promo Only Modern Rock Radio, December 2001' instead of the actual studio album. The release picker now scores options and strongly prefers studio albums by the actual artist, penalising Various Artists credits, compilations, and anything with 'Promo Only', 'Greatest Hits', or 'Best Of' in the title.",
+                    "MusicBrainz was routinely picking radio compilations and promo discs as the canonical album: 'Promo Only Modern Rock Radio, December 2001' instead of the actual studio album. The release picker now scores options and strongly prefers studio albums by the actual artist, penalising Various Artists credits, compilations, and anything with 'Promo Only', 'Greatest Hits', or 'Best Of' in the title.",
                     "Re-download was picking the same bad result every time. It now excludes the failed video ID and searches for a fresh candidate.",
-                    "MusicBrainz album and track number data was being skipped for most tracks — the lookup was only triggered when a year was missing, which is almost never. Fixed.",
+                    "MusicBrainz album and track number data was being skipped for most tracks; the lookup was only triggered when a year was missing, which is almost never. Fixed.",
                     "MP3Phoenix downloads were storing the artist as Unknown in the queue. The artist from the search result is now passed through correctly.",
                     "The auto-album routing toggle wasn't saving due to a missing field in the settings model. Fixed.",
                 ]
@@ -1111,11 +1205,11 @@ const RELEASE_NOTES = {
             {
                 heading: "Bug fixes",
                 items: [
-                    "Fresh installs were broken — the database schema was missing columns added in recent releases, causing immediate errors on first run. Upgraders were fine as their databases were patched automatically, but anyone starting fresh from v2.4.0 or v2.4.1 would hit a crash. Fixed.",
+                    "Fresh installs were broken; the database schema was missing columns added in recent releases, causing immediate errors on first run. Upgraders were fine as their databases were patched automatically, but anyone starting fresh from v2.4.0 or v2.4.1 would hit a crash. Fixed.",
                     "Mid-track silence detection: ffmpeg now scans the first 60% of every downloaded track for suspicious gaps of 8+ seconds. This catches Content ID fraud uploads where someone pads a track with silence in the middle to avoid fingerprinting while still matching the expected duration. The first 15 seconds and the final 40% are ignored, so legitimate long intros and hidden tracks on album closers are left alone.",
                     "WebM remux safety: album-routed files that need remuxing are now verified before the original is deleted. A corrupt output no longer silently destroys the source.",
                     "MBID validation: invalid MusicBrainz IDs now fail fast with a clear error rather than quietly failing deep in a lookup.",
-                    "MP3Phoenix downloads: size is checked after download — truncated files are deleted immediately rather than left as stubs.",
+                    "MP3Phoenix downloads: size is checked after download; truncated files are deleted immediately rather than left as stubs.",
                 ]
             }
         ]
@@ -1143,7 +1237,7 @@ const RELEASE_NOTES = {
                     "Optionally generate an M3U playlist alongside the download.",
                     "Artist and album data comes from MusicBrainz, so you get proper metadata rather than YouTube's creative guesswork.",
                     "The Albums folder path is configurable in Settings, right next to the Singles and Playlists folders.",
-                    "Only missing tracks are queued — if half the album is already there, only the gaps are downloaded. The precheck tells you upfront how many tracks exist and how many will be fetched.",
+                    "Only missing tracks are queued; if half the album is already there, only the gaps are downloaded. The precheck tells you upfront how many tracks exist and how many will be fetched.",
                 ]
             },
             {
@@ -1152,7 +1246,7 @@ const RELEASE_NOTES = {
                     "The separate \"Add to playlist\" and \"Add to album\" chips in search results have been replaced by a single \"Add to...\" button.",
                     "Choosing Album opens a two-level browser: pick an artist folder, then an album folder. MusicGrabber reads the .albuminfo sidecar written at download time to get the MusicBrainz context automatically.",
                     "If auto-matching can't place the track, a manual track picker appears so you can select the right slot yourself.",
-                    "Folders without an .albuminfo sidecar still work — the track lands in the right folder, just without MusicBrainz metadata enrichment.",
+                    "Folders without an .albuminfo sidecar still work; the track lands in the right folder, just without MusicBrainz metadata enrichment.",
                 ]
             },
             {
@@ -1167,7 +1261,7 @@ const RELEASE_NOTES = {
                 heading: "Watched Artists",
                 items: [
                     "Follow an artist by MusicBrainz ID and new singles are downloaded automatically as they appear. Same controls as watched playlists: check interval, convert-to-FLAC, missing panel, track list.",
-                    "Singles only — remixes, live versions, soundtracks, DJ mixes, and compilations are filtered out at the MusicBrainz level.",
+                    "Singles only; remixes, live versions, soundtracks, DJ mixes, and compilations are filtered out at the MusicBrainz level.",
                     "Tracks already on disk are recognised on first refresh, so you won't re-download things you already have.",
                 ]
             },
@@ -1207,7 +1301,7 @@ const RELEASE_NOTES = {
                 heading: "Apple Music import",
                 items: [
                     "Public Apple Music playlists and albums can now be imported and watched. Paste the URL in the Watch or bulk import box.",
-                    "No browser or API key needed — Apple server-renders the full track list, so a plain HTTP fetch is all it takes.",
+                    "No browser or API key needed; Apple server-renders the full track list, so a plain HTTP fetch is all it takes.",
                     "Supports all regional storefronts. Private playlists and personal libraries aren't accessible (Apple won't let us in without a sign-in).",
                 ]
             },
@@ -1233,7 +1327,7 @@ const RELEASE_NOTES = {
             {
                 heading: "Per-playlist source selection",
                 items: [
-                    "Each watched playlist now has a Sources row with toggleable chips — one per search source (YouTube, SoundCloud, MP3Phoenix, Monochrome).",
+                    "Each watched playlist now has a Sources row with toggleable chips, one per search source (YouTube, SoundCloud, MP3Phoenix, Monochrome).",
                     "By default all sources are active. Deselect any you don't want used for that playlist.",
                     "The Watch form also has the selector so you can set preferences on the way in.",
                     "If you pick a source that's globally disabled in Settings, MusicGrabber quietly falls back to all enabled sources instead of finding nothing.",

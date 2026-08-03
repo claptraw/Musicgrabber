@@ -21,6 +21,12 @@ Important: the free shared tokens resolve to 16-bit/44.1kHz lossless FLAC
 (format_id 6), NOT 24-bit hi-res, no matter which format you ask for. That's
 fine for a fallback. A genuine FLAC beats a download that face-plants.
 
+Some tokens in the pool get quietly downgraded by Qobuz to 30-second preview
+MP3s (the response carries "sample": true and format_id 5, whatever format_id
+was actually requested). We walk straight past those and keep trying tokens
+until one hands back the real thing, because nobody asked for the chorus on
+a loop.
+
 No proxy dependency here, which is the whole point.
 """
 
@@ -48,6 +54,15 @@ _HEADERS = {
 _token_cache: list[dict] = []
 _token_cache_at: float = 0.0
 _token_lock = threading.Lock()
+
+# The token that last handed back a genuine stream, so the next download starts
+# with the one we know works instead of trudging through the pool from the top.
+# Measured 2026-08-03: 3 of 28 tokens could actually deliver, and they were the
+# last three in the pool, so a cold walk cost ~100 seconds to reach a 0.24s
+# answer. Tokens rot without warning, so this is a hint, never a guarantee: if
+# the remembered one has since been downgraded we simply carry on down the list.
+_good_token: str | None = None
+_good_token_lock = threading.Lock()
 
 
 def qbdlx_enabled() -> bool:
@@ -182,12 +197,36 @@ def search_qobuz_catalog(query: str, limit: int = 10) -> list[dict]:
     return []
 
 
+def _remember_good_token(token: dict) -> None:
+    """Note the token that just delivered, so the next call tries it first."""
+    global _good_token
+    with _good_token_lock:
+        _good_token = token.get("token")
+
+
+def _tokens_best_first(tokens: list[dict]) -> list[dict]:
+    """Return the pool with the last known-good token promoted to the front.
+
+    Everything else keeps its original order, so a stale favourite costs us one
+    wasted attempt rather than a reshuffled pool we can no longer reason about.
+    """
+    with _good_token_lock:
+        favourite = _good_token
+    if not favourite:
+        return tokens
+    promoted = [t for t in tokens if t.get("token") == favourite]
+    if not promoted:
+        return tokens  # pool has rotated since; no harm done
+    return promoted + [t for t in tokens if t.get("token") != favourite]
+
+
 def resolve_qobuz_stream_url(isrc: str, quality_fmt: int) -> str | None:
     """Resolve an ISRC to a direct Qobuz CDN FLAC URL via the shared tokens.
 
-    Tries each token in the pool until one yields a stream URL. Returns None when
-    the fallback is disabled, the pool is empty/unreachable, or no token can
-    resolve the track (in which case the caller keeps whatever error it had).
+    Tries each token in the pool until one yields a stream URL, starting with
+    whichever token worked last time. Returns None when the fallback is
+    disabled, the pool is empty/unreachable, or no token can resolve the track
+    (in which case the caller keeps whatever error it had).
     """
     if not qbdlx_enabled():
         return None
@@ -199,7 +238,7 @@ def resolve_qobuz_stream_url(isrc: str, quality_fmt: int) -> str | None:
         print("qbdlx: no shared tokens available, cannot fall back")
         return None
 
-    for token in tokens:
+    for token in _tokens_best_first(tokens):
         track_id = _resolve_track_id(token, isrc)
         if not track_id:
             continue
@@ -212,9 +251,19 @@ def resolve_qobuz_stream_url(isrc: str, quality_fmt: int) -> str | None:
         )
         if not body:
             continue
+        if body.get("sample"):
+            # This token's entitlement has been downgraded server-side: Qobuz
+            # hands back a 30-second preview instead of the track, no matter
+            # which format_id we asked for. Not a stream, move on.
+            print(
+                f"qbdlx: token ({token.get('country', '?')}) only offered a "
+                f"sample for ISRC {isrc}, trying next token"
+            )
+            continue
         url = body.get("url") or ""
         if url:
             served_fmt = body.get("format_id")
+            _remember_good_token(token)
             print(
                 f"qbdlx: resolved ISRC {isrc} via direct Qobuz "
                 f"({token.get('country', '?')} token, format_id {served_fmt})"

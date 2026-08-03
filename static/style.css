@@ -1148,6 +1148,214 @@ h1 {
 .upgrade-go { white-space: nowrap; }
 .watched-empty-text { color: var(--text-secondary); padding: 12px 0; }
 
+/* Read-only Audio Provenance Audit */
+.audio-audit-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.audio-audit-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+    margin: 12px 0;
+}
+
+.audio-audit-summary-card {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 66px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--text-secondary);
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.audio-audit-summary-count {
+    color: var(--text-primary);
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.1;
+}
+
+.audio-audit-filters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.audio-audit-filters label {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.audio-audit-filters .watched-select {
+    width: 100%;
+    min-width: 0;
+}
+
+.audio-audit-row {
+    align-items: flex-start;
+    cursor: default;
+    gap: 18px;
+}
+
+.audio-audit-row:hover {
+    border-color: var(--border);
+    background: var(--bg-secondary);
+}
+
+.audio-audit-main {
+    flex: 1 1 420px;
+    min-width: 0;
+}
+
+.audio-audit-path {
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.audio-audit-identity,
+.audio-audit-meta {
+    margin-top: 3px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.audio-audit-result {
+    display: flex;
+    flex: 1 1 380px;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    min-width: 280px;
+}
+
+.audio-audit-badge {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.audit-known_lossy_transcode {
+    border-left-color: #dc2626;
+}
+.audio-audit-badge.audit-known_lossy_transcode {
+    border-color: #dc2626;
+    color: #ef4444;
+}
+
+.audit-native_lossy {
+    border-left-color: #f59e0b;
+}
+.audio-audit-badge.audit-native_lossy {
+    border-color: #f59e0b;
+    color: #f59e0b;
+}
+
+.audit-lossy_derivative {
+    border-left-color: #d97706;
+}
+.audio-audit-badge.audit-lossy_derivative {
+    border-color: #d97706;
+    color: #f59e0b;
+}
+
+.audit-recorded_lossless {
+    border-left-color: #0f766e;
+}
+.audio-audit-badge.audit-recorded_lossless {
+    border-color: #0f766e;
+    color: #14b8a6;
+}
+
+.audit-historical_unknown,
+.audit-unreadable {
+    border-left-color: #64748b;
+}
+
+.audio-audit-evidence {
+    width: 100%;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.audio-audit-evidence summary {
+    cursor: pointer;
+    text-align: right;
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.audio-audit-evidence h4 {
+    margin: 10px 0 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.audio-audit-evidence ul {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.audio-audit-evidence li {
+    margin: 5px 0;
+}
+
+.audio-audit-evidence li span {
+    display: block;
+    margin-top: 1px;
+    opacity: 0.85;
+}
+
+.audio-audit-caveats {
+    color: var(--warning);
+}
+
+@media (max-width: 720px) {
+    .audio-audit-header-actions {
+        justify-content: flex-end;
+    }
+
+    .audio-audit-row {
+        flex-direction: column;
+    }
+
+    .audio-audit-main,
+    .audio-audit-result {
+        flex-basis: auto;
+        width: 100%;
+        min-width: 0;
+    }
+
+    .audio-audit-result {
+        align-items: flex-start;
+    }
+
+    .audio-audit-evidence summary {
+        text-align: left;
+    }
+}
+
 .job-source-badge {
     position: absolute;
     bottom: 2px;
@@ -1561,7 +1769,7 @@ h1 {
     }
 }
 
-/* .clear-btn removed — all callers migrated to .btn .btn-ghost / .btn-danger.
+/* .clear-btn removed; all callers migrated to .btn .btn-ghost / .btn-danger.
    .accent-btn and .warning-btn modifiers below still compose on .btn. */
 
 .bulk-textarea {
@@ -4483,7 +4691,7 @@ h1 {
 /* =============================================================================
    37.  Shared primitives (commonisation pass, 2026-05-24)
    These are the canonical, reusable classes. Migrate bespoke selectors over
-   to these gradually — old classes still work, but new markup should prefer
+   to these gradually; old classes still work, but new markup should prefer
    these. Goal: one button, one card, one form-row, used everywhere.
    ============================================================================= */
 
@@ -4692,4 +4900,52 @@ h1 {
     background: var(--accent-dim);
     color: var(--accent);
     border-color: var(--accent);
+}
+
+/* Minimum-quality filter above the Tracks results.
+   Kept deliberately low-key: it is a refinement, not the main event. */
+.quality-filter-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 0 0 12px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-secondary, transparent);
+}
+
+.quality-filter-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.quality-filter-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.quality-filter-check input {
+    margin: 0;
+    cursor: pointer;
+}
+
+.quality-filter-count {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-left: auto;
+}
+
+@media (max-width: 600px) {
+    .quality-filter-count {
+        margin-left: 0;
+        width: 100%;
+    }
 }

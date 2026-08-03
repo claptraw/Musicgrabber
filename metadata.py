@@ -6,6 +6,7 @@ AcoustID fingerprinting, MusicBrainz lookups, LRClib lyrics, and audio file tagg
 
 import json
 import base64
+import math
 import re
 import subprocess
 import uuid
@@ -19,6 +20,8 @@ from constants import (
     VERSION, TIMEOUT_HTTP_REQUEST, TIMEOUT_FPCALC,
     ACOUSTID_MIN_SCORE, MIN_SONG_DURATION_SECS,
     MB_ARTIST_SEARCH_LIMIT, TIMEOUT_MUSICBRAINZ_ARTIST,
+    MB_RECORDING_SEARCH_LIMIT, MB_TEXT_SCORE_FLOOR, MB_RECORDING_SPREAD_WEIGHT,
+    MB_ALT_TAKE_PENALTY, MB_TITLE_MISMATCH_PENALTY, MB_STUDIO_ALBUM_FILTER,
     DEEZER_SEARCH_URL, DEEZER_API_URL, TIMEOUT_DEEZER,
     DEEZER_METADATA_MATCH_FLOOR, DEEZER_METADATA_SEARCH_LIMIT,
 )
@@ -69,41 +72,204 @@ def _mb_get_with_retry(url: str, *, params: dict, headers: dict, timeout: float,
     )
 
 
+def _extract_track_position(release: dict) -> tuple[int | None, int | None]:
+    """Pull (track number, track total) out of a release's media block.
+
+    MusicBrainz cannot quite decide what to call things. The search API returns
+    the one matched track under `track` (singular); the lookup API returns the
+    same thing under `tracks` (plural). We read both, because arguing with a web
+    service about its own schema is a fight nobody wins.
+
+    Falls back to `track-offset + 1` when the printed number is not a plain
+    integer, which is how vinyl ends up as "A1" instead of "3".
+    """
+    for medium in release.get("media") or []:
+        entries = medium.get("track") or medium.get("tracks") or []
+        if not entries:
+            continue
+        track = entries[0] or {}
+        number = track.get("number") or track.get("position")
+        if not str(number or "").strip().isdigit():
+            offset = medium.get("track-offset")
+            number = offset + 1 if isinstance(offset, int) else None
+        if not number:
+            continue
+        try:
+            number = int(str(number).strip())
+        except (TypeError, ValueError):
+            continue
+        total = medium.get("track-count")
+        try:
+            total = int(total) if total else None
+        except (TypeError, ValueError):
+            total = None
+        return number, total
+    return None, None
+
+
+# Markers that say "this is not the canonical studio take". A recording called
+# "Karma Police (Live at Glastonbury)" is a fine recording; it is just not the one
+# anybody means when they ask for Karma Police.
+_MB_ALT_TAKE_RE = re.compile(
+    r"\b(live|remix|mix|demo|instrumental|acoustic|karaoke|edit|reprise|"
+    r"radio version|alternate|rehearsal|session)\b", re.I)
+
+
+def _mb_search_recordings(query: str, headers: dict) -> list[dict]:
+    """One recording search. Returns [] on any unhappiness, because a failed
+    second opinion should not sink the whole lookup."""
+    try:
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
+            response = client.get(
+                "https://musicbrainz.org/ws/2/recording/",
+                params={
+                    "query": query,
+                    "fmt": "json",
+                    "limit": MB_RECORDING_SEARCH_LIMIT,
+                    "inc": "releases release-groups artist-credits",
+                },
+                headers=headers,
+            )
+        if response.status_code != 200:
+            return []
+        return response.json().get("recordings") or []
+    except Exception:
+        return []
+
+
+def _mb_merge_recordings(*batches: list[dict]) -> list[dict]:
+    """Merge recording batches by id, unioning their release lists.
+
+    The same recording arrives from different queries carrying different releases,
+    because each query only returns the releases that matched it. Keeping the
+    first copy and binning the rest throws away the studio album, which is a
+    remarkably effective way to never find the studio album.
+    """
+    by_id: dict[str, dict] = {}
+    order: list[str] = []
+    for batch in batches:
+        for rec in batch:
+            if int(rec.get("score", 0)) < MB_TEXT_SCORE_FLOOR:
+                continue
+            rid = rec.get("id")
+            existing = by_id.get(rid)
+            if existing is None:
+                merged = dict(rec)
+                merged["releases"] = list(rec.get("releases") or [])
+                by_id[rid] = merged
+                order.append(rid)
+                continue
+            known = {r.get("id") for r in existing["releases"]}
+            for rel in rec.get("releases") or []:
+                if rel.get("id") not in known:
+                    existing["releases"].append(rel)
+                    known.add(rel.get("id"))
+    return [by_id[rid] for rid in order]
+
+
+def _normalise_track_title(value: str) -> str:
+    """Lowercase, strip punctuation and squash spaces, for comparing titles."""
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def _score_recording_canonicity(rec: dict, expected_artist: str,
+                                expected_title: str = "") -> float:
+    """How likely is this the canonical studio recording of the song?
+
+    The strongest signal turns out to be sheer release count. The studio take ends
+    up on the album, the single, the greatest hits and 200 compilations, while a
+    given live version appears on exactly one bootleg. Counting where a recording
+    turned up is a decent proxy for "this is the one people actually mean".
+
+    The title is the other half of it. MusicBrainz is scrupulous about naming the
+    odd ones out, so "Smells Like Teen Spirit (Boombox Rehearsals)" tells us
+    exactly what it is, provided we bother to read it.
+    """
+    releases = rec.get("releases") or []
+    if not releases:
+        return -9999.0
+
+    best_release = max(_release_score_for(rel, expected_artist) for rel in releases)
+    # Diminishing returns, so a recording on 200 compilations doesn't automatically
+    # trounce one on 30.
+    spread = math.log1p(len(releases)) * MB_RECORDING_SPREAD_WEIGHT
+
+    penalty = 0.0
+    rec_title = rec.get("title") or ""
+    if _MB_ALT_TAKE_RE.search(rec_title):
+        penalty += MB_ALT_TAKE_PENALTY
+    # Qualifiers bolted onto what we asked for ("(Boombox Rehearsals)",
+    # "(unplugged)") mark a variant rather than the thing itself. A title that is
+    # different all the way through is a different matter entirely: that is how a
+    # romanised query legitimately lands on 夜に駆ける, and punishing it would undo
+    # the alias fallback we just went to the trouble of adding.
+    if expected_title:
+        want = _normalise_track_title(expected_title)
+        got = _normalise_track_title(rec_title)
+        if want and got != want and want in got:
+            penalty += MB_TITLE_MISMATCH_PENALTY
+
+    return best_release + spread - penalty
+
+
+def _release_score_for(rel: dict, expected_artist: str) -> int:
+    """Score a release using the existing release-group scorer.
+
+    Release-group data is sometimes thin in search results, so we top it up from
+    the release itself before handing it over.
+    """
+    rg = dict(rel.get("release-group") or {})
+    if not rg.get("artist-credit"):
+        rg["artist-credit"] = rel.get("artist-credit") or []
+    if rel.get("date") and not rg.get("first-release-date"):
+        rg["_date"] = rel["date"]
+    return _score_release_group(rg, expected_artist)
+
+
 def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
-    """Look up track metadata from MusicBrainz"""
+    """Look up track metadata from MusicBrainz.
+
+    Two searches: the plain one, plus a studio-album-filtered second opinion. Their
+    recordings are merged, the most canonical-looking recording is chosen, and only
+    then do we pick a release from it. If both come back empty we try once more
+    against aliases, which is the only way romanised non-English titles ever match.
+    """
     if not get_setting_bool("enable_musicbrainz", True):
         return None
 
+    import time as _time
+
     try:
         headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+        base = f'artist:"{artist}" AND recording:"{title}"'
 
-        search_url = "https://musicbrainz.org/ws/2/recording/"
-        params = {
-            "query": f'artist:"{artist}" AND recording:"{title}"',
-            "fmt": "json",
-            "limit": 1,
-            "inc": "releases release-groups artist-credits",
-        }
+        plain = _mb_search_recordings(base, headers)
+        _time.sleep(1)  # MusicBrainz rate limit: 1 req/sec
+        studio = _mb_search_recordings(base + MB_STUDIO_ALBUM_FILTER, headers)
+        recordings = _mb_merge_recordings(plain, studio)
 
-        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
-            response = client.get(search_url, params=params, headers=headers)
+        if not recordings:
+            # Nothing matched a recording title. Aliases carry transliterations, so
+            # "Yoru ni Kakeru" can still find 夜に駆ける. Only worth a request when
+            # we have nothing at all, since alias matching is looser.
+            _time.sleep(1)
+            alias_query = f'artist:"{artist}" AND (recording:"{title}" OR alias:"{title}")'
+            alias_hits = _mb_search_recordings(alias_query, headers)
+            recordings = _mb_merge_recordings(alias_hits)
+            plain = plain or alias_hits
 
-        if response.status_code != 200:
+        if not recordings:
+            # Distinguish "MusicBrainz has never heard of this" from "it has, but
+            # only at a confidence we refuse to act on". The second one is worth
+            # saying out loud, since it means we kept the source metadata on purpose.
+            if plain:
+                best = max(int(r.get("score", 0)) for r in plain)
+                print(f"MusicBrainz text search score too low ({best}) for "
+                      f"{artist} - {title}, skipping")
             return None
 
-        data = response.json()
-
-        if not data.get("recordings"):
-            return None
-
-        recording = data["recordings"][0]
-
-        # MusicBrainz scores text matches 0-100. Below 85 is too shaky to trust  -
-        # at that point we'd be replacing decent source metadata with a guess.
-        mb_score = int(recording.get("score", 0))
-        if mb_score < 85:
-            print(f"MusicBrainz text search score too low ({mb_score}) for {artist} - {title}, skipping")
-            return None
+        recording = max(recordings,
+                        key=lambda rec: _score_recording_canonicity(rec, artist, title))
 
         # Extract metadata
         metadata = {
@@ -120,17 +286,8 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
         # Get release information for album, date, and track position.
         # Score releases to avoid landing on 'Promo Only Radio Vol. 47' type junk.
         if recording.get("releases"):
-            def _release_score_text(rel: dict) -> int:
-                rg = rel.get("release-group") or {}
-                rg_for_score = dict(rg)
-                if not rg_for_score.get("artist-credit"):
-                    rg_for_score["artist-credit"] = rel.get("artist-credit") or []
-                # Stash release date so the scorer can prefer earlier pressings
-                if rel.get("date") and not rg_for_score.get("first-release-date"):
-                    rg_for_score["_date"] = rel["date"]
-                return _score_release_group(rg_for_score, artist)
-
-            release = max(recording["releases"], key=_release_score_text)
+            release = max(recording["releases"],
+                          key=lambda rel: _release_score_for(rel, artist))
             metadata["release_mbid"] = release.get("id")
             metadata["album"] = release.get("title")
             metadata["date"] = release.get("date")
@@ -141,15 +298,13 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
                 if year_match:
                     metadata["year"] = year_match.group(1)
 
-            # Track position within the release  -  inc=releases includes media/tracks
-            for medium in release.get("media", []):
-                for track in medium.get("tracks", []):
-                    metadata["track_number"] = track.get("number")
-                    metadata["track_total"] = medium.get("track-count")
-                    break
-                else:
-                    continue
-                break
+            # Track position within the release. The search API nests the matched
+            # track under `track` (singular), not `tracks`, which is why singles
+            # spent a long while arriving with no track number at all.
+            track_num, track_total = _extract_track_position(release)
+            if track_num:
+                metadata["track_number"] = track_num
+                metadata["track_total"] = track_total
 
         return metadata
 
@@ -165,7 +320,9 @@ def _build_musicbrainz_guess_for_release(
     title: str,
     headers: dict,
 ) -> dict:
-    credited_artist = " ".join(
+    # Join with "" not " ": each credit's joinphrase already brings its own
+    # separator (" & ", " feat. "), so adding ours gives "Underworld &  Iggy Pop".
+    credited_artist = "".join(
         (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
         for ac in (recording.get("artist-credit") or [])
         if isinstance(ac, dict)
@@ -190,7 +347,7 @@ def _build_musicbrainz_guess_for_release(
     release_id = release.get("id")
     metadata["release_mbid"] = release_id
     metadata["album"] = release.get("title") or ""
-    release_artist = " ".join(
+    release_artist = "".join(
         (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
         for ac in (release.get("artist-credit") or [])
         if isinstance(ac, dict)
@@ -217,7 +374,7 @@ def _build_musicbrainz_guess_for_release(
 
     release_data = release_resp.json()
     release_artist_credit = release_data.get("artist-credit") or []
-    release_artist_name = " ".join(
+    release_artist_name = "".join(
         (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
         for ac in release_artist_credit
         if isinstance(ac, dict)
@@ -579,7 +736,7 @@ def _lookup_acoustid(duration: int, fingerprint: str,
 
         # Require a meaningful positive signal. Score breakdown: artist match=+10,
         # exact title=+8, partial title=+5, release groups=+1. A score of 0-9 means
-        # the title matched but the artist didn't — that's not enough to trust, since
+        # the title matched but the artist didn't; that's not enough to trust, since
         # "Killing in the Name" will match any cover version. Require at least artist
         # OR (title + release group), i.e. a minimum of 10 to accept.
         if match_score < 10:
@@ -606,7 +763,10 @@ def _lookup_musicbrainz_by_id(recording_id: str, expected_artist: str = "") -> O
         headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
 
         url = f"https://musicbrainz.org/ws/2/recording/{recording_id}"
-        params = {"inc": "releases release-groups artist-credits", "fmt": "json"}
+        # `media` is what makes the release carry its track listing; without it
+        # MusicBrainz cheerfully returns releases with no media block at all,
+        # and the track-number hunt below finds precisely nothing.
+        params = {"inc": "releases release-groups artist-credits media", "fmt": "json"}
 
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             response = client.get(url, params=params, headers=headers)
@@ -646,14 +806,10 @@ def _lookup_musicbrainz_by_id(recording_id: str, expected_artist: str = "") -> O
             result["album"] = release["title"]
 
         # Track position within the release
-        for medium in release.get("media", []):
-            for track in medium.get("tracks", []):
-                result["track_number"] = track.get("number")
-                result["track_total"] = medium.get("track-count")
-                break
-            else:
-                continue
-            break
+        track_num, track_total = _extract_track_position(release)
+        if track_num:
+            result["track_number"] = track_num
+            result["track_total"] = track_total
 
         # Recording-level length (ms) is on the top-level recording object
         length_ms = data.get("length")
@@ -889,7 +1045,7 @@ def lookup_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional
         recording = recordings[0]
         recording_id = recording.get("id")
         artist_credit = recording.get("artist-credit") or []
-        artist_name = " ".join(
+        artist_name = "".join(
             (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
             for ac in artist_credit
             if isinstance(ac, dict)
@@ -1256,6 +1412,182 @@ def read_existing_track_number(file_path: Path) -> tuple[int | None, int | None]
                 tt_int if tt_int and tt_int > 0 else None)
     except Exception:
         return None, None
+
+
+# ---------------------------------------------------------------------------
+# ReplayGain 2.0
+#
+# Four numbers per file, and every container has its own opinion about where to
+# put them. Vorbis comments (FLAC/Ogg/Opus) take plain uppercase keys, ID3 wants
+# lowercase TXXX frames, and MP4 wants freeform iTunes atoms. Nobody sat down and
+# agreed this; it simply accreted.
+# ---------------------------------------------------------------------------
+
+_REPLAYGAIN_KEYS = (
+    "replaygain_track_gain",
+    "replaygain_track_peak",
+    "replaygain_album_gain",
+    "replaygain_album_peak",
+    "replaygain_reference_loudness",
+)
+
+
+def _format_gain(gain_db: float) -> str:
+    """ReplayGain gains are written as an explicitly signed number, ' dB' suffix.
+
+    The plus sign on positive gains is not decoration; plenty of parsers in the
+    wild expect it, and it costs one character to keep them happy.
+    """
+    return f"{gain_db:+.2f} dB"
+
+
+def _format_peak(peak: float) -> str:
+    """Peaks are linear sample values, conventionally to six decimal places."""
+    return f"{max(peak, 0.0):.6f}"
+
+
+def read_replaygain_tags(file_path: Path) -> dict:
+    """Return whatever ReplayGain tags a file already carries, keys lowercased.
+
+    Empty dict means either "no tags" or "we could not read it"; the caller
+    treats both the same way, so we do not bother distinguishing.
+    """
+    try:
+        suffix = file_path.suffix.lower()
+        found: dict[str, str] = {}
+
+        if suffix in (".flac", ".ogg", ".oga", ".opus"):
+            audio = _open_vorbis_comment_file(file_path)
+            if audio is None:
+                return {}
+            for key, values in audio.items():
+                lowered = key.lower()
+                if lowered in _REPLAYGAIN_KEYS and values:
+                    found[lowered] = str(values[0])
+
+        elif suffix == ".mp3":
+            from mutagen.id3 import ID3, ID3NoHeaderError
+            try:
+                audio = ID3(str(file_path))
+            except ID3NoHeaderError:
+                return {}
+            for frame in audio.getall("TXXX"):
+                lowered = (frame.desc or "").lower()
+                if lowered in _REPLAYGAIN_KEYS and frame.text:
+                    found[lowered] = str(frame.text[0])
+
+        elif suffix in (".m4a", ".mp4"):
+            from mutagen.mp4 import MP4
+            audio = MP4(str(file_path))
+            for key, values in audio.items():
+                lowered = key.split(":")[-1].lower()
+                if lowered in _REPLAYGAIN_KEYS and values:
+                    value = values[0]
+                    found[lowered] = value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
+
+        return found
+    except Exception:
+        return {}
+
+
+def _open_vorbis_comment_file(file_path: Path):
+    """Open a FLAC/Ogg/Opus file for Vorbis-comment editing, or None."""
+    suffix = file_path.suffix.lower()
+    if suffix == ".flac":
+        return FLAC(str(file_path))
+    if suffix == ".opus":
+        from mutagen.oggopus import OggOpus
+        return OggOpus(str(file_path))
+    if suffix in (".ogg", ".oga"):
+        from mutagen.oggvorbis import OggVorbis
+        return OggVorbis(str(file_path))
+    return None
+
+
+def apply_replaygain_tags(
+    file_path: Path,
+    track_gain_db: float | None = None,
+    track_peak: float | None = None,
+    album_gain_db: float | None = None,
+    album_peak: float | None = None,
+    reference_lufs: float | None = None,
+    replace_existing: bool = False,
+) -> bool:
+    """Write ReplayGain 2.0 tags. Never touches a single audio sample.
+
+    Returns True if anything was written. When `replace_existing` is False and
+    the file already has the tags we were about to write, we leave them alone;
+    somebody went to the trouble of calculating those, and it was probably not
+    an accident.
+
+    Album values are optional, so a single track can be tagged now and given
+    album values later once the rest of its album has turned up.
+    """
+    try:
+        values: dict[str, str] = {}
+        if track_gain_db is not None:
+            values["replaygain_track_gain"] = _format_gain(track_gain_db)
+        if track_peak is not None:
+            values["replaygain_track_peak"] = _format_peak(track_peak)
+        if album_gain_db is not None:
+            values["replaygain_album_gain"] = _format_gain(album_gain_db)
+        if album_peak is not None:
+            values["replaygain_album_peak"] = _format_peak(album_peak)
+        if reference_lufs is not None:
+            values["replaygain_reference_loudness"] = f"{reference_lufs:.2f} LUFS"
+        if not values:
+            return False
+
+        if not replace_existing:
+            existing = read_replaygain_tags(file_path)
+            values = {k: v for k, v in values.items() if k not in existing}
+            if not values:
+                return False
+
+        suffix = file_path.suffix.lower()
+
+        if suffix in (".flac", ".ogg", ".oga", ".opus"):
+            audio = _open_vorbis_comment_file(file_path)
+            if audio is None:
+                return False
+            # Vorbis comment keys are case-insensitive but duplicable, so drop any
+            # existing spelling before writing ours or players see two answers.
+            for key in list(audio.keys()):
+                if key.lower() in values:
+                    del audio[key]
+            for key, value in values.items():
+                audio[key.upper()] = value
+            audio.save()
+
+        elif suffix == ".mp3":
+            from mutagen.id3 import ID3, TXXX, ID3NoHeaderError
+            try:
+                audio = ID3(str(file_path))
+            except ID3NoHeaderError:
+                audio = ID3()
+            for key, value in values.items():
+                audio.delall(f"TXXX:{key}")
+                audio.add(TXXX(encoding=3, desc=key, text=[value]))
+            audio.save(str(file_path))
+
+        elif suffix in (".m4a", ".mp4"):
+            from mutagen.mp4 import MP4, MP4FreeForm
+            audio = MP4(str(file_path))
+            for key, value in values.items():
+                atom = f"----:com.apple.iTunes:{key}"
+                audio[atom] = [MP4FreeForm(value.encode("utf-8"))]
+            audio.save()
+
+        else:
+            # .webm and friends have nowhere sensible to put these.
+            return False
+
+        set_file_permissions(file_path)
+        return True
+
+    except Exception as e:
+        print(f"ReplayGain tagging failed for {file_path.name}: {e}")
+        return False
 
 
 def apply_metadata_to_file(
@@ -1667,7 +1999,7 @@ def fetch_artist_singles(mbid: str) -> list[dict]:
                             or release.get("artist-credit")
                             or []
                         )
-                        artist_name = " ".join(
+                        artist_name = "".join(
                             (ac.get("name") or ac.get("artist", {}).get("name", ""))
                             + (ac.get("joinphrase") or "")
                             for ac in artist_credits
@@ -1755,7 +2087,7 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
             secondary_types = rg.get("secondary-types") or []
             if any(t in _EXCLUDED_SECONDARY_TYPES for t in secondary_types):
                 continue
-            # One entry per release group — earliest release wins
+            # One entry per release group; earliest release wins
             if rg_id and rg_id in seen_release_groups:
                 continue
             if rg_id:
@@ -1822,3 +2154,126 @@ def fetch_album_tracks(release_mbid: str) -> list[dict]:
                     "recording_mbid": recording.get("id") or None,
                 })
     return tracks
+
+
+# ---------------------------------------------------------------------------
+# MusicBrainz release URLs
+#
+# The cheapest possible album input: the URL already contains the MBID, so there
+# is no scraping, no fuzzy matching and no guessing which "Greatest Hits" was
+# meant. Paste a link, get that exact release.
+# ---------------------------------------------------------------------------
+
+_MB_URL_RE = re.compile(
+    r"""^https?://
+        (?:beta\.)?
+        (?:musicbrainz\.org|mbrainz\.org)
+        /(release-group|release)
+        /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def parse_musicbrainz_release_url(url: str) -> tuple[str, str] | None:
+    """Return ("release"|"release-group", mbid) for a MusicBrainz album URL.
+
+    None for anything else, including recording and artist URLs, which are not
+    albums however much they might wish to be.
+    """
+    match = _MB_URL_RE.match((url or "").strip())
+    if not match:
+        return None
+    return match.group(1).lower(), match.group(2).lower()
+
+
+def _pick_release_from_group(releases: list[dict]) -> dict | None:
+    """Choose one release to represent a release group.
+
+    A popular album can have two dozen pressings. We want the one most likely to
+    match what people actually mean: official, earliest, and with a real track
+    count. Country is deliberately ignored; picking a favourite nation is a good
+    way to start an argument and a bad way to choose a tracklist.
+    """
+    def _score(release: dict) -> tuple:
+        official = (release.get("status") or "").lower() == "official"
+        # A bare "1998" sorts before "1998-10-12" as a string, which would hand
+        # the prize to the vaguest entry in the group. Pad imprecise dates to the
+        # end of their year so a properly dated early pressing wins instead.
+        date = (release.get("date") or "").strip()
+        if len(date) == 4:
+            date += "-12-31"
+        elif len(date) == 7:
+            date += "-31"
+        elif not date:
+            date = "9999-12-31"
+        return (0 if official else 1, date)
+
+    candidates = [r for r in releases if r.get("id")]
+    return min(candidates, key=_score) if candidates else None
+
+
+def fetch_release_summary(kind: str, mbid: str) -> dict | None:
+    """Resolve a MusicBrainz release or release-group MBID to album basics.
+
+    Returns {artist, album_title, release_mbid, year, track_count} ready to hand
+    to the album download endpoint, or None if MusicBrainz has never heard of it.
+    Raises MusicBrainzUnavailable when MusicBrainz is unreachable after retries.
+    """
+    if not get_setting_bool("enable_musicbrainz", True):
+        return None
+    headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+
+    if kind == "release-group":
+        response = _mb_get_with_retry(
+            f"https://musicbrainz.org/ws/2/release-group/{mbid}",
+            params={"inc": "releases artist-credits", "fmt": "json"},
+            headers=headers, timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
+        )
+        if response.status_code != 200:
+            return None
+        group = response.json()
+        release = _pick_release_from_group(group.get("releases") or [])
+        if not release:
+            return None
+        mbid = release["id"]
+        # Fall through and look the chosen release up properly, so the title and
+        # credit come from the pressing we are actually going to download.
+
+    # `media` is what carries the per-disc track counts; without it the caller
+    # gets a confident "0 tracks", which is not the sort of confidence anyone needs.
+    response = _mb_get_with_retry(
+        f"https://musicbrainz.org/ws/2/release/{mbid}",
+        params={"inc": "artist-credits release-groups media", "fmt": "json"},
+        headers=headers, timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
+    )
+    if response.status_code != 200:
+        return None
+    data = response.json()
+
+    # Join with "" not " ": MusicBrainz puts the separator in each credit's
+    # joinphrase (" & ", " feat. "), so adding our own gives "Underworld &  Iggy Pop".
+    artist = "".join(
+        (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
+        for ac in (data.get("artist-credit") or [])
+        if isinstance(ac, dict)
+    ).strip()
+    album_title = (data.get("title") or "").strip()
+    if not artist or not album_title:
+        return None
+
+    year = ""
+    year_match = re.match(r"(\d{4})", data.get("date") or "")
+    if year_match:
+        year = year_match.group(1)
+
+    # Multi-disc releases report a count per medium; the album has the lot.
+    track_count = sum(int(m.get("track-count") or 0) for m in (data.get("media") or []))
+
+    return {
+        "artist": artist,
+        "album_title": album_title,
+        "release_mbid": data.get("id") or mbid,
+        "year": year,
+        "track_count": track_count,
+    }

@@ -114,6 +114,119 @@ def _import_downloads_or_skip():
     return downloads
 
 
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+def test_navidrome_duplicate_retries_with_primary_credited_artist(monkeypatch):
+    downloads = _import_downloads_or_skip()
+    queries = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, params=None, **kwargs):
+            query = params["query"]
+            queries.append(query)
+            songs = []
+            if query == "The Chemical Brothers Go":
+                songs = [{
+                    "title": "Go",
+                    "artist": "The Chemical Brothers",
+                    "albumArtist": "The Chemical Brothers",
+                    "album": "Born in the Echoes",
+                    "path": "/music/The Chemical Brothers/Go.flac",
+                }]
+            return _FakeResponse({
+                "subsonic-response": {
+                    "status": "ok",
+                    "searchResult2": {"song": songs},
+                }
+            })
+
+    monkeypatch.setattr(downloads, "get_setting_bool", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        downloads,
+        "get_setting",
+        lambda key, user_id=None: {
+            "navidrome_url": "http://navidrome",
+            "navidrome_user": "user",
+            "navidrome_pass": "pass",
+        }.get(key, ""),
+    )
+    monkeypatch.setattr(downloads.httpx, "Client", FakeClient)
+
+    found = downloads.check_navidrome_duplicate(
+        "The Chemical Brothers, Q-Tip", "Go"
+    )
+
+    assert found == pathlib.Path("/music/The Chemical Brothers/Go.flac")
+    assert queries == [
+        "The Chemical Brothers, Q-Tip Go",
+        "The Chemical Brothers Go",
+    ]
+
+
+def test_lidarr_duplicate_matches_primary_credited_artist(monkeypatch):
+    downloads = _import_downloads_or_skip()
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, **kwargs):
+            if url.endswith("/api/v1/artist"):
+                return _FakeResponse([
+                    {"id": 42, "artistName": "The Chemical Brothers"},
+                ])
+            if url.endswith("/api/v1/track"):
+                return _FakeResponse([{
+                    "title": "Go",
+                    "hasFile": True,
+                    "trackFileId": 7,
+                }])
+            if url.endswith("/api/v1/trackfile"):
+                return _FakeResponse([{
+                    "id": 7,
+                    "path": "/music/The Chemical Brothers/Go.flac",
+                }])
+            raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(
+        downloads,
+        "get_setting",
+        lambda key, user_id=None: {
+            "lidarr_url": "http://lidarr",
+            "lidarr_api_key": "secret",
+        }.get(key, ""),
+    )
+    monkeypatch.setattr(downloads.httpx, "Client", FakeClient)
+
+    found = downloads.check_lidarr_duplicate(
+        "The Chemical Brothers, Q-Tip", "Go"
+    )
+
+    assert found == pathlib.Path("/music/The Chemical Brothers/Go.flac")
+
+
 @pytest.mark.parametrize("stderr, expected", [
     # The exact shape that flaked a release build: YouTube's thumbnail CDN
     # didn't serve the .webp, so the convert/embed step died even though the
@@ -328,7 +441,8 @@ def _setup_watched_playlist_db(monkeypatch, downloads):
             title TEXT,
             status TEXT,
             error TEXT,
-            skip_mismatch_check INTEGER DEFAULT 0
+            skip_mismatch_check INTEGER DEFAULT 0,
+            user_id TEXT
         );
         CREATE TABLE watched_playlists (
             id TEXT PRIMARY KEY,
@@ -411,6 +525,65 @@ def test_mark_watched_track_downloaded_rebuilds_m3u_via_missing_tracks_retry(mon
     args, kwargs = calls[0]
     assert args[0] == "pl-1"
     assert args[1] == "Rock Mix"
+
+
+def test_manual_download_heals_unlinked_featured_artist_watched_row(
+    tmp_path, monkeypatch
+):
+    """A Search-button download has no watched job link, but ownership is ownership."""
+    downloads = _import_downloads_or_skip()
+    conn = _setup_watched_playlist_db(monkeypatch, downloads)
+    existing = tmp_path / "The Chemical Brothers" / "Go.flac"
+    existing.parent.mkdir()
+    existing.write_bytes(b"already owned")
+
+    conn.execute(
+        """INSERT INTO jobs
+           (id, artist, title, status, skip_mismatch_check, user_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("manual-1", "The Chemical Brothers", "Go", "downloading", 0, "user-1"),
+    )
+    conn.execute(
+        """INSERT INTO watched_playlists
+           (id, name, make_m3u, use_playlists_dir, sync_mode, user_id)
+           VALUES (?, ?, 1, 1, 'append', ?)""",
+        ("pl-featured", "Top Songs - United Kingdom", "user-1"),
+    )
+    conn.execute(
+        """INSERT INTO watched_playlist_tracks
+           (playlist_id, track_hash, artist, title, job_id)
+           VALUES (?, ?, ?, ?, NULL)""",
+        (
+            "pl-featured",
+            "chemical-go",
+            "The Chemical Brothers, Q-Tip",
+            "Go",
+        ),
+    )
+    conn.commit()
+
+    rebuilds = []
+    monkeypatch.setattr(
+        downloads,
+        "rebuild_watched_playlist_m3u",
+        lambda *args, **kwargs: rebuilds.append((args, kwargs)) or None,
+    )
+    monkeypatch.setattr(downloads, "_tag_track_comment", lambda *args, **kwargs: None)
+
+    result = downloads._mark_watched_track_downloaded(
+        "manual-1", resolved_path=existing, skip_mismatch=True
+    )
+
+    healed = conn.execute(
+        """SELECT downloaded_at, resolved_path
+           FROM watched_playlist_tracks
+           WHERE playlist_id = ? AND track_hash = ?""",
+        ("pl-featured", "chemical-go"),
+    ).fetchone()
+    assert result is True
+    assert healed["downloaded_at"] is not None
+    assert healed["resolved_path"] == str(existing)
+    assert [call[0][0] for call in rebuilds] == ["pl-featured"]
 
 
 def test_mark_watched_track_downloaded_rebuilds_m3u_via_bulk_import(monkeypatch):

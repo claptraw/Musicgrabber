@@ -6,6 +6,7 @@ Library scan triggers and M3U playlist generation.
 """
 
 import json
+import math
 import re
 import shutil
 import sqlite3
@@ -28,6 +29,7 @@ from constants import (
     TIMEOUT_FFMPEG_CONVERT, TIMEOUT_HTTP_REQUEST,
     LOUDNORM_TARGET_I, LOUDNORM_TARGET_TP, LOUDNORM_TARGET_LRA,
     LOUDNORM_SKIP_DELTA_LU, TIMEOUT_LOUDNORM,
+    REPLAYGAIN_REFERENCE_LUFS, REPLAYGAIN_MAX_ALBUM_TRACKS,
     YTDLP_403_MAX_RETRIES, YTDLP_403_RETRY_DELAY,
     SLSKD_MAX_RETRIES, TIMEOUT_SLSKD_SEARCH,
     FALLBACK_MATCH_CONFIDENCE_FLOOR,
@@ -40,7 +42,11 @@ from constants import (
 )
 from coverart import fetch_cover_art, get_album_art_context, ensure_album_cover_files, cache_cover_art, _fetch_caa_cover
 from db import db_conn, log_match_mismatch, get_album_track_lock, complete_album_track_lock
-from metadata import lookup_metadata, lookup_musicbrainz_by_isrc, fetch_lyrics, save_lyrics_file, apply_metadata_to_file, read_existing_track_number, verify_recording
+from metadata import (
+    lookup_metadata, lookup_musicbrainz_by_isrc, fetch_lyrics, save_lyrics_file,
+    apply_metadata_to_file, read_existing_track_number, verify_recording,
+    apply_replaygain_tags, read_replaygain_tags,
+)
 from notifications import send_notification
 from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir, get_albums_dir, resolve_custom_subdir
 from slskd import (
@@ -57,6 +63,9 @@ from utils import (
     is_valid_youtube_id,
     set_file_permissions,
     subsonic_auth_params,
+    artist_credit_lookup_variants,
+    artist_credit_match_score,
+    artist_credits_match,
 )
 from monochrome import download_monochrome_track
 from zvu4no import download_zvu4no_track
@@ -501,11 +510,11 @@ def _check_mid_track_silence(file_path: Path, duration: float) -> str | None:
                 return (
                     f"Suspicious silence detected at {silence_start:.1f}s "
                     f"(>{SILENCE_DETECT_DURATION:.0f}s of silence in the first "
-                    f"{SILENCE_DETECT_MAX_END_FRAC*100:.0f}% of the track) — "
+                    f"{SILENCE_DETECT_MAX_END_FRAC*100:.0f}% of the track), "
                     f"possible Content ID fraud upload"
                 )
     except Exception as e:
-        # If ffmpeg fails for any reason, don't block the download — just warn
+        # If ffmpeg fails for any reason, don't block the download, just warn
         print(f"Silence detection skipped for {file_path.name}: {e}")
     return None
 
@@ -519,7 +528,7 @@ def _check_duration_against_mb(actual_secs: float, mb_metadata: Optional[dict], 
     This is a no-op when MusicBrainz is disabled, since lookup_metadata returns None.
 
     Manual downloads (those with a search_token, i.e. the user deliberately picked this
-    specific result) bypass the check — they made their choice, we respect it.
+    specific result) bypass the check; they made their choice, we respect it.
     """
     if not mb_metadata:
         return True, ""
@@ -530,13 +539,13 @@ def _check_duration_against_mb(actual_secs: float, mb_metadata: Optional[dict], 
     high = expected * (1 + MB_DURATION_TOLERANCE)
     if low <= actual_secs <= high:
         return True, ""
-    # User manually selected this track from search results — trust their judgement.
+    # User manually selected this track from search results; trust their judgement.
     if job_id:
         with db_conn() as conn:
             row = conn.execute("SELECT search_token FROM jobs WHERE id = ?", (job_id,)).fetchone()
             if row and row[0]:
-                print(f"Duration mismatch for {artist} - {title} ({actual_secs:.0f}s vs {expected:.0f}s expected) "
-                      f"— manual download, keeping anyway")
+                print(f"Duration mismatch for {artist} - {title} ({actual_secs:.0f}s vs {expected:.0f}s expected)"
+                      f"; manual download, keeping anyway")
                 return True, ""
     return (
         False,
@@ -770,27 +779,32 @@ def check_navidrome_duplicate(artist: str, title: str, user_id: str | None = Non
         return None
 
     try:
-        params = subsonic_auth_params(navidrome_user, navidrome_pass)
-        query = f"{artist} {title}".strip() if artist else title
-        params.update({
-            "query": query,
-            "artistCount": 0,
-            "albumCount": 0,
-            # Common titles (Numb, Back In Black, etc.) need a wider net.
-            "songCount": 100,
-        })
-
+        artist_variants = artist_credit_lookup_variants(artist) or [artist or ""]
+        songs = []
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
-            response = client.get(f"{navidrome_url.rstrip('/')}/rest/search2", params=params)
-
-        if response.status_code != 200:
-            return None
-
-        data = response.json().get("subsonic-response", {})
-        if data.get("status") != "ok":
-            return None
-
-        songs = data.get("searchResult2", {}).get("song", [])
+            for artist_variant in artist_variants:
+                params = subsonic_auth_params(navidrome_user, navidrome_pass)
+                query = (
+                    f"{artist_variant} {title}".strip()
+                    if artist_variant else title
+                )
+                params.update({
+                    "query": query,
+                    "artistCount": 0,
+                    "albumCount": 0,
+                    # Common titles (Numb, Back In Black, etc.) need a wider net.
+                    "songCount": 100,
+                })
+                response = client.get(
+                    f"{navidrome_url.rstrip('/')}/rest/search2", params=params
+                )
+                if response.status_code != 200:
+                    continue
+                data = response.json().get("subsonic-response", {})
+                if data.get("status") == "ok":
+                    songs.extend(
+                        data.get("searchResult2", {}).get("song", [])
+                    )
 
         # Normalise punctuation so "Guns N' Roses" == "Guns N' Roses", etc.
         # Collapse all apostrophe/quote variants and strip non-alphanumeric noise.
@@ -800,8 +814,6 @@ def check_navidrome_duplicate(artist: str, title: str, user_id: str | None = Non
             return _punct_re.sub("'", (s or "").strip()).casefold()
 
         title_norm = _norm(title)
-        artist_norm = _norm(artist or "")
-
         # Strip trailing version qualifiers (Remaster, Live, Radio Edit, etc.) from a title
         # so "Everytime (Remastered)" and "Everytime" are treated as the same song,
         # but "Everytime [Remix]" is kept distinct  -  remixes are different recordings.
@@ -840,10 +852,6 @@ def check_navidrome_duplicate(artist: str, title: str, user_id: str | None = Non
             song_raw_title = (song.get("title") or "").strip()
             song_title_norm = _norm(song_raw_title)
             song_title_base = _base_title(song_raw_title)
-            song_artist_norm = _norm(song.get("artist") or "")
-            # albumArtist is the reliable "who actually recorded this" field  -
-            # track artist on covers albums is often the original artist.
-            song_album_artist_norm = _norm(song.get("albumArtist") or song.get("artist") or "")
             song_album = (song.get("album") or "")
 
             # Reject covers/tribute/karaoke albums outright
@@ -852,8 +860,12 @@ def check_navidrome_duplicate(artist: str, title: str, user_id: str | None = Non
 
             # Track artist OR album artist matching is enough  -  requiring both breaks
             # tracks on compilations where albumArtist is "Various Artists".
-            artist_match = not artist_norm or (
-                song_artist_norm == artist_norm or song_album_artist_norm == artist_norm
+            artist_match = not (artist or "").strip() or (
+                artist_credits_match(artist, song.get("artist") or "")
+                or artist_credits_match(
+                    artist,
+                    song.get("albumArtist") or song.get("artist") or "",
+                )
             )
 
             # Exact title match always wins; also match if both titles share the same base
@@ -945,11 +957,35 @@ def check_lidarr_duplicate(
                 artists = artists_resp.json()
 
             artist_norm = _norm(artist)
-            matched_artist = None
-            for a in artists:
-                if _norm(a.get("artistName", "")) == artist_norm:
-                    matched_artist = a
-                    break
+            matched_artist = next(
+                (
+                    entry for entry in artists
+                    if _norm(entry.get("artistName", "")) == artist_norm
+                ),
+                None,
+            )
+            if not matched_artist:
+                compatible = [
+                    (
+                        artist_credit_match_score(
+                            artist, entry.get("artistName", "")
+                        ),
+                        entry,
+                    )
+                    for entry in artists
+                ]
+                matched_artist = max(
+                    compatible,
+                    key=lambda item: item[0],
+                    default=(0.0, None),
+                )[1]
+                if (
+                    matched_artist is not None
+                    and artist_credit_match_score(
+                        artist, matched_artist.get("artistName", "")
+                    ) <= 0
+                ):
+                    matched_artist = None
 
             if not matched_artist:
                 return None
@@ -1394,7 +1430,7 @@ def _normalise_watched_match_text(text: str) -> str:
     # NFKD decomposes precomposed chars (Ÿ → Y + combining diaeresis), then we drop
     # the combining marks, leaving bare ASCII equivalents.
     # Chars that NFKD won't decompose (distinct letters in their scripts) need an
-    # explicit mapping first — otherwise "BYØRN" stays "byørn" after NFKD.
+    # explicit mapping first; otherwise "BYØRN" stays "byørn" after NFKD.
     t = (t.replace("ø", "o").replace("ł", "l").replace("ð", "d")
           .replace("þ", "th").replace("æ", "ae").replace("œ", "oe")
           .replace("ß", "ss").replace("ŋ", "n"))
@@ -1505,7 +1541,7 @@ def _watched_track_matches_expected(expected_artist: str, expected_title: str, a
     if not exp_title or not got_title:
         return False
 
-    # Detect swapped artist/title fields — yt-dlp occasionally reads the video title
+    # Detect swapped artist/title fields; yt-dlp occasionally reads the video title
     # as the artist and the channel/uploader as the title. If the got fields match the
     # expected fields in the opposite order, accept it rather than failing the whole track.
     if (
@@ -1557,24 +1593,31 @@ def _all_playlist_names_for_track(conn, artist: str, title: str) -> list[str]:
     """Every watched-playlist name a downloaded track appears on.
 
     Used so the COMMENT tag can carry the full set when a track sits on more than
-    one playlist. Matches case-insensitively on artist/title since that is how the
-    watched_playlist_tracks rows are keyed. Uses the caller's connection.
+    one playlist. Artist credits are compared with the same collaborator-tolerant
+    rules used by watched downloads, so ``Primary, Guest`` can find a file tagged
+    as simply ``Primary``. Uses the caller's connection.
     """
     if not (artist and title):
         return []
     try:
         rows = conn.execute(
-            """SELECT DISTINCT wp.name
+            """SELECT DISTINCT wp.name, wpt.artist, wpt.title
                FROM watched_playlist_tracks wpt
                JOIN watched_playlists wp ON wp.id = wpt.playlist_id
                WHERE wpt.downloaded_at IS NOT NULL
-                 AND LOWER(wpt.artist) = LOWER(?)
                  AND LOWER(wpt.title) = LOWER(?)""",
-            (artist, title),
+            (title,),
         ).fetchall()
     except Exception:
         return []
-    return sorted({r[0] for r in rows if r[0]})
+    return sorted({
+        row[0]
+        for row in rows
+        if row[0]
+        and _watched_track_matches_expected(
+            row[1] or "", row[2] or "", artist, title
+        )
+    })
 
 
 def _tag_track_comment(file_path, artist: str, title: str, conn=None) -> None:
@@ -1620,87 +1663,143 @@ def _mark_watched_track_downloaded(job_id: str, resolved_path: Optional[Path] = 
     Returns False when the final downloaded metadata does not match the expected
     watched track for this job.
     """
+    rebuild_playlist_ids: set[str] = set()
+    rebuild_rows = []
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
+        job = conn.execute(
+            """SELECT artist, title, user_id, skip_mismatch_check
+               FROM jobs WHERE id = ?""",
+            (job_id,),
+        ).fetchone()
+        if not job:
+            return True
+
         link = conn.execute(
-            """SELECT wpt.playlist_id, wpt.artist AS expected_artist, wpt.title AS expected_title,
-                      j.artist AS actual_artist, j.title AS actual_title,
-                      j.skip_mismatch_check
+            """SELECT wpt.playlist_id, wpt.artist AS expected_artist,
+                      wpt.title AS expected_title
                FROM watched_playlist_tracks wpt
-               LEFT JOIN jobs j ON j.id = wpt.job_id
                WHERE wpt.job_id = ?
                LIMIT 1""",
             (job_id,),
         ).fetchone()
-        if not link:
-            return True
 
-        # User said "I know better, just download it", or the track was found
-        # via duplicate check (already on disk, no fresh file to verify)
-        skip_check = skip_mismatch or bool(link["skip_mismatch_check"])
-        if skip_check:
-            reason = "duplicate-skip" if skip_mismatch else "force-accepted"
-            print(f"Mismatch check skipped for job {job_id} ({reason})")
+        got_artist_raw = job["artist"] or ""
+        got_title_raw = job["title"] or ""
+        if link:
+            # User said "I know better, just download it", or the track was found
+            # via duplicate check (already on disk, no fresh file to verify).
+            skip_check = skip_mismatch or bool(job["skip_mismatch_check"])
+            if skip_check:
+                reason = "duplicate-skip" if skip_mismatch else "force-accepted"
+                print(f"Mismatch check skipped for job {job_id} ({reason})")
 
-        exp_artist_raw = link["expected_artist"] or ""
-        exp_title_raw = link["expected_title"] or ""
-        got_artist_raw = link["actual_artist"] or ""
-        got_title_raw = link["actual_title"] or ""
+            exp_artist_raw = link["expected_artist"] or ""
+            exp_title_raw = link["expected_title"] or ""
+            if not skip_check and not _watched_track_matches_expected(
+                exp_artist_raw, exp_title_raw, got_artist_raw, got_title_raw
+            ):
+                msg = (
+                    f"Watched track mismatch: expected '{exp_artist_raw} - {exp_title_raw}', "
+                    f"got '{got_artist_raw or 'Unknown'} - {got_title_raw or 'Unknown'}'"
+                )
+                print(msg)
+                log_match_mismatch(
+                    job_id=job_id,
+                    playlist_id=link["playlist_id"],
+                    expected_artist=exp_artist_raw,
+                    expected_title=exp_title_raw,
+                    actual_artist=got_artist_raw,
+                    actual_title=got_title_raw,
+                    exp_normalised=f"{_normalise_watched_match_text(exp_artist_raw)} - {_normalise_watched_match_text(exp_title_raw)}",
+                    got_normalised=f"{_normalise_watched_match_text(got_artist_raw)} - {_normalise_watched_match_text(got_title_raw)}",
+                )
+                old = conn.execute(
+                    "SELECT error FROM jobs WHERE id = ?", (job_id,)
+                ).fetchone()
+                old_error = (old[0] or "").strip() if old else ""
+                merged_error = f"{old_error} | {msg}" if old_error else msg
+                conn.execute(
+                    "UPDATE jobs SET status = 'completed_with_errors', error = ? WHERE id = ?",
+                    (merged_error, job_id),
+                )
+                conn.commit()
+                return False
 
-        if not skip_check and not _watched_track_matches_expected(exp_artist_raw, exp_title_raw, got_artist_raw, got_title_raw):
-            msg = (
-                f"Watched track mismatch: expected '{exp_artist_raw} - {exp_title_raw}', "
-                f"got '{got_artist_raw or 'Unknown'} - {got_title_raw or 'Unknown'}'"
-            )
-            print(msg)
-            log_match_mismatch(
-                job_id=job_id,
-                playlist_id=link["playlist_id"],
-                expected_artist=exp_artist_raw,
-                expected_title=exp_title_raw,
-                actual_artist=got_artist_raw,
-                actual_title=got_title_raw,
-                exp_normalised=f"{_normalise_watched_match_text(exp_artist_raw)} - {_normalise_watched_match_text(exp_title_raw)}",
-                got_normalised=f"{_normalise_watched_match_text(got_artist_raw)} - {_normalise_watched_match_text(got_title_raw)}",
-            )
-            old = conn.execute("SELECT error FROM jobs WHERE id = ?", (job_id,)).fetchone()
-            old_error = (old[0] or "").strip() if old else ""
-            merged_error = f"{old_error} | {msg}" if old_error else msg
+            linked_rows = conn.execute(
+                """SELECT DISTINCT playlist_id
+                   FROM watched_playlist_tracks
+                   WHERE job_id = ?""",
+                (job_id,),
+            ).fetchall()
+            rebuild_playlist_ids.update(row[0] for row in linked_rows)
             conn.execute(
-                "UPDATE jobs SET status = 'completed_with_errors', error = ? WHERE id = ?",
-                (merged_error, job_id),
+                """UPDATE watched_playlist_tracks
+                   SET downloaded_at = datetime('now'), resolved_path = ?
+                   WHERE job_id = ?""",
+                (str(resolved_path) if resolved_path else None, job_id),
             )
-            conn.commit()
-            return False
 
-        resolved_path_str = str(resolved_path) if resolved_path else None
-        conn.execute(
-            "UPDATE watched_playlist_tracks SET downloaded_at = datetime('now'), resolved_path = ? WHERE job_id = ?",
-            (resolved_path_str, job_id)
-        )
+        # The full Search button routes a download into the right physical
+        # playlist, but unlike Retry it does not link that job to the watched
+        # database row. Reconcile any equivalent unresolved rows for this user
+        # when a job succeeds (or is skipped as an existing duplicate). This
+        # also heals the same song across several watched playlists at once.
+        unresolved = conn.execute(
+            """SELECT wpt.playlist_id, wpt.track_hash, wpt.artist, wpt.title
+               FROM watched_playlist_tracks wpt
+               JOIN watched_playlists wp ON wp.id = wpt.playlist_id
+               LEFT JOIN jobs linked_job ON linked_job.id = wpt.job_id
+               WHERE wpt.downloaded_at IS NULL
+                 AND wp.user_id IS ?
+                 AND (
+                     linked_job.status IS NULL
+                     OR linked_job.status NOT IN ('queued', 'downloading')
+                 )""",
+            (job["user_id"],),
+        ).fetchall()
+        for row in unresolved:
+            if not _watched_track_matches_expected(
+                row["artist"] or "",
+                row["title"] or "",
+                got_artist_raw,
+                got_title_raw,
+            ):
+                continue
+            conn.execute(
+                """UPDATE watched_playlist_tracks
+                   SET downloaded_at = datetime('now'), resolved_path = ?
+                   WHERE playlist_id = ? AND track_hash = ?""",
+                (
+                    str(resolved_path) if resolved_path else None,
+                    row["playlist_id"],
+                    row["track_hash"],
+                ),
+            )
+            rebuild_playlist_ids.add(row["playlist_id"])
+
         conn.commit()
 
-        # macOS Music smart-playlist support: stamp the playlist name(s) into the
-        # file's COMMENT tag (opt-in). Covers playlists without an M3U too, since the
-        # rebuild path below only fires when make_m3u is on. Reuses this connection.
-        if resolved_path:
-            _tag_track_comment(resolved_path, exp_artist_raw, exp_title_raw, conn=conn)
+        # macOS Music smart-playlist support: stamp every now-matching watched
+        # playlist into COMMENT. The helper performs its own opt-in check.
+        if resolved_path and rebuild_playlist_ids:
+            _tag_track_comment(
+                resolved_path, got_artist_raw, got_title_raw, conn=conn
+            )
 
-        # Rebuild the M3U immediately if this job belongs to a watched playlist
-        # so the file grows track-by-track rather than waiting for the next full refresh.
-        # Join via watched_playlist_tracks so both the bulk-import refresh path and the
-        # missing-tracks retry path are covered (the latter never creates a bulk_import row).
-        row = conn.execute(
-            """SELECT wp.id, wp.name, wp.make_m3u, wp.use_playlists_dir, wp.sync_mode,
-                      wp.custom_subdir, wp.user_id
-               FROM watched_playlists wp
-               JOIN watched_playlist_tracks wpt ON wpt.playlist_id = wp.id AND wpt.job_id = ?
-               WHERE wp.make_m3u = 1
-               LIMIT 1""",
-            (job_id,)
-        ).fetchone()
+        if rebuild_playlist_ids:
+            placeholders = ",".join("?" for _ in rebuild_playlist_ids)
+            rebuild_rows = conn.execute(
+                f"""SELECT id, name, make_m3u, use_playlists_dir, sync_mode,
+                           custom_subdir, user_id
+                    FROM watched_playlists
+                    WHERE make_m3u = 1
+                      AND id IN ({placeholders})
+                    ORDER BY id""",
+                tuple(sorted(rebuild_playlist_ids)),
+            ).fetchall()
 
-    if row:
+    for row in rebuild_rows:
         rebuild_watched_playlist_m3u(
             row["id"], row["name"],
             use_playlists_dir=bool(row["use_playlists_dir"]),
@@ -1818,7 +1917,7 @@ def _auto_route_playlist_to_album(
     """If auto_album_singles is enabled and MB returned an album name, move the file
     from Playlists/Name/ into Playlists/Name/Artist/Album/.
 
-    Returns (new_path, routed) — routed is True if the file was actually moved.
+    Returns (new_path, routed); routed is True if the file was actually moved.
     """
     if not get_setting_bool("auto_album_singles", False, user_id=user_id):
         return audio_file, False
@@ -2257,6 +2356,178 @@ def _normalise_loudness(audio_file: Path, source: str, user_id: str | None = Non
     except Exception as e:
         tmp_path.unlink(missing_ok=True)
         print(f"Loudness normalisation error for {audio_file.name}: {e}")
+
+
+# ReplayGain writes tags into the container, so anything without a tag format
+# worth the name is simply skipped rather than failed.
+_REPLAYGAIN_EXTS = {".flac", ".mp3", ".m4a", ".mp4", ".ogg", ".oga", ".opus"}
+
+# One album folder at a time. Album tracks download in parallel, so without this
+# the last two to finish would both decide they were the one to turn the lights
+# off and measure the album twice.
+_replaygain_album_lock = threading.Lock()
+
+
+def _probe_duration_secs(audio_file: Path) -> float | None:
+    """Track length in seconds, via mutagen's header read. None if unreadable.
+
+    Deliberately not ffprobe: the album ReplayGain pass asks this of every track
+    on the record, and spawning a subprocess per track to read a number that is
+    sat right there in the header would be showing off.
+    """
+    try:
+        import mutagen
+        audio = mutagen.File(str(audio_file))
+        length = float(getattr(getattr(audio, "info", None), "length", 0) or 0)
+        return length if length > 0 else None
+    except Exception:
+        return None
+
+
+def _measure_replaygain(audio_file: Path) -> tuple[float, float, float] | None:
+    """Measure a file for ReplayGain. Returns (gain_db, peak_linear, lufs).
+
+    Reuses the same EBU R128 measurement pass as loudness normalisation, because
+    ReplayGain 2.0 is defined against R128 too; the only difference is that we
+    write the answer down instead of acting on it.
+
+    Gain is relative to REPLAYGAIN_REFERENCE_LUFS, peak is the linear true-peak
+    value converted from dBTP. None if ffmpeg had nothing useful to say.
+    """
+    stats = _measure_loudness(audio_file)
+    if not stats:
+        return None
+    try:
+        lufs = float(stats.get("input_i", "0"))
+        peak_dbtp = float(stats.get("input_tp", "0"))
+    except (TypeError, ValueError):
+        return None
+    if lufs < -70:
+        # Digital silence. Any "gain" we calculated would be a work of fiction.
+        return None
+    gain_db = REPLAYGAIN_REFERENCE_LUFS - lufs
+    peak_linear = 10 ** (peak_dbtp / 20.0)
+    return gain_db, peak_linear, lufs
+
+
+def _apply_replaygain(audio_file: Path, user_id: str | None = None, job_id: str | None = None) -> None:
+    """Write track-level ReplayGain tags on a finished download (opt-in).
+
+    Tags only. The file's audio is left exactly as it arrived, which is rather
+    the point: a player that understands ReplayGain turns it down on the way out,
+    and one that does not carries on in blissful ignorance.
+    """
+    if not get_setting_bool("enable_replaygain", False, user_id=user_id):
+        return
+    if audio_file.suffix.lower() not in _REPLAYGAIN_EXTS:
+        return
+
+    replace = get_setting_bool("replaygain_replace_existing", False, user_id=user_id)
+    if not replace and read_replaygain_tags(audio_file).get("replaygain_track_gain"):
+        return
+
+    if job_id:
+        _update_job(job_id, progress_stage="Calculating ReplayGain")
+    try:
+        measured = _measure_replaygain(audio_file)
+        if not measured:
+            print(f"ReplayGain measurement failed for {audio_file.name}; leaving untagged")
+            return
+        gain_db, peak, lufs = measured
+        if apply_replaygain_tags(
+            audio_file,
+            track_gain_db=gain_db,
+            track_peak=peak,
+            reference_lufs=REPLAYGAIN_REFERENCE_LUFS,
+            replace_existing=replace,
+        ):
+            print(f"ReplayGain {audio_file.name}: {lufs:.1f} LUFS -> {gain_db:+.2f} dB track gain")
+    except subprocess.TimeoutExpired:
+        print(f"ReplayGain measurement timed out for {audio_file.name}; leaving untagged")
+    except Exception as e:
+        print(f"ReplayGain error for {audio_file.name}: {e}")
+
+
+def _apply_album_replaygain(override_dir: str | None, user_id: str | None = None) -> None:
+    """Add album-level ReplayGain tags once an album folder looks complete.
+
+    Album gain is the gain that would bring the *album as a whole* to the
+    reference level, so quiet interludes stay quiet relative to the loud bits
+    instead of every track being levelled flat. We approximate the album's
+    integrated loudness with a duration-weighted energy mean of its tracks,
+    which is what you get from concatenating them without the bother of
+    actually doing so. Album peak is simply the loudest peak on the record.
+
+    Runs after each album track finishes and bails out as soon as it finds a
+    file with no track gain yet, so only the last track home does the sums.
+    Re-running as later tracks arrive keeps the numbers honest rather than
+    stale.
+
+    A permanently failed track therefore leaves the album with track gains but
+    no album gain, which is the correct answer: album gain computed over a
+    record with a hole in it would simply be wrong.
+    """
+    if not override_dir:
+        return
+    if not get_setting_bool("enable_replaygain", False, user_id=user_id):
+        return
+
+    album_dir = Path(override_dir)
+    if not album_dir.is_dir():
+        return
+
+    with _replaygain_album_lock:
+        try:
+            tracks = sorted(
+                p for p in album_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in _REPLAYGAIN_EXTS
+            )
+            if len(tracks) < 2 or len(tracks) > REPLAYGAIN_MAX_ALBUM_TRACKS:
+                # One track is not an album, and sixty is not a normal one either.
+                return
+
+            energies: list[tuple[float, float]] = []  # (linear energy, duration)
+            peak = 0.0
+            for track in tracks:
+                tags = read_replaygain_tags(track)
+                gain_raw = tags.get("replaygain_track_gain")
+                peak_raw = tags.get("replaygain_track_peak")
+                if not gain_raw:
+                    # A track we have not measured yet; the album is not done.
+                    return
+                try:
+                    track_gain = float(str(gain_raw).split()[0])
+                    peak = max(peak, float(peak_raw)) if peak_raw else peak
+                except (TypeError, ValueError):
+                    return
+                lufs = REPLAYGAIN_REFERENCE_LUFS - track_gain
+                duration = _probe_duration_secs(track) or 0.0
+                if duration <= 0:
+                    duration = 1.0  # Unknown length: count it as one unit, not zero.
+                energies.append((10 ** (lufs / 10.0), duration))
+
+            total_duration = sum(d for _, d in energies)
+            if not energies or total_duration <= 0:
+                return
+            mean_energy = sum(e * d for e, d in energies) / total_duration
+            if mean_energy <= 0:
+                return
+            album_lufs = 10 * math.log10(mean_energy)
+            album_gain = REPLAYGAIN_REFERENCE_LUFS - album_lufs
+
+            for track in tracks:
+                apply_replaygain_tags(
+                    track,
+                    album_gain_db=album_gain,
+                    album_peak=peak or None,
+                    replace_existing=True,  # Album values change as tracks arrive
+                )
+            print(
+                f"ReplayGain album {album_dir.name}: {len(tracks)} tracks, "
+                f"{album_lufs:.1f} LUFS -> {album_gain:+.2f} dB album gain"
+            )
+        except Exception as e:
+            print(f"ReplayGain album pass failed for {album_dir}: {e}")
 
 
 def _summarise_ytdlp_stderr(stderr: str) -> str:
@@ -3166,6 +3437,8 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 if lyrics:
                     save_lyrics_file(audio_file, lyrics)
 
+                _apply_replaygain(audio_file, user_id=user_id)
+
                 _copy_to_auto_import(audio_file, user_id=user_id)
 
                 if playlists_dir:
@@ -3594,6 +3867,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             _update_job(job_id, status="failed", error="Rejected live version (AcoustID)", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             return
 
+        _apply_replaygain(final_file, user_id=user_id, job_id=job_id)
+
         # Update job status
         _update_job(
             job_id,
@@ -3609,6 +3884,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         if marked:
             _append_to_physical_m3u(final_file, playlist_name, use_playlists_dir, user_id=user_id, custom_subdir=custom_subdir)
             _refresh_album_m3u_if_present(override_dir)
+            _apply_album_replaygain(override_dir, user_id=user_id)
             _copy_to_auto_import(final_file, user_id=user_id)
         else:
             # Metadata came back as someone else entirely. Trash it so the user can listen
@@ -3995,6 +4271,8 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         else:
             print(f"No lyrics found for {artist} - {title}")
 
+        _apply_replaygain(output_path, user_id=user_id, job_id=job_id)
+
         _update_job(job_id, progress_stage="Scanning library")
         trigger_navidrome_scan(user_id=user_id)
         trigger_jellyfin_scan(user_id=user_id)
@@ -4013,6 +4291,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         if marked:
             _append_to_physical_m3u(output_path, playlist_name, use_playlists_dir, user_id=user_id, custom_subdir=custom_subdir)
             _refresh_album_m3u_if_present(override_dir)
+            _apply_album_replaygain(override_dir, user_id=user_id)
             _copy_to_auto_import(output_path, user_id=user_id)
 
         print(f"{source_label}: Downloaded {artist} - {title}")
@@ -4532,7 +4811,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             title = tag_title
             # Auto-route to Artist/Album/ when the setting is on.
             # For singles: Singles/Artist/Album/ (or Albums/Artist/Album/).
-            # For playlists: Playlists/Name/Artist/Album/ — stays inside the playlist folder.
+            # For playlists: Playlists/Name/Artist/Album/, stays inside the playlist folder.
             # Compilation mode skips this: the whole playlist stays flat as one album.
             if not override_dir and not pl_compilation:
                 if playlists_dir:
@@ -4596,6 +4875,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             _update_job(job_id, status="failed", error="Rejected live version (AcoustID)", progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
             return
 
+        _apply_replaygain(audio_file, user_id=user_id, job_id=job_id)
+
         # Update job status
         _update_job(
             job_id,
@@ -4621,6 +4902,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         if marked:
             _append_to_physical_m3u(audio_file, playlist_name, use_playlists_dir, user_id=user_id, custom_subdir=custom_subdir)
             _refresh_album_m3u_if_present(override_dir)
+            _apply_album_replaygain(override_dir, user_id=user_id)
             _copy_to_auto_import(audio_file, user_id=user_id)
         else:
             # Wrong track downloaded (AcoustID/MusicBrainz identified it as something else).

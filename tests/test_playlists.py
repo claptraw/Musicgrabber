@@ -34,9 +34,27 @@ def test_list_watched_playlists_shape(api, base_url):
             assert key in pl, f"watched playlist missing key: {key}"
 
 
+def _forget_playlist(api, base_url, url):
+    """Delete any existing watch for this URL.
+
+    A run that dies between create and delete leaves the row behind, and then
+    every later run gets a 409 forever more. One sulky run should not poison the
+    suite until somebody goes in with a torch and a SQLite prompt.
+    """
+    r = api.get(f"{base_url}/api/watched-playlists", timeout=10)
+    if r.status_code != 200:
+        return
+    for pl in r.json().get("playlists", []):
+        if pl.get("url") == url:
+            api.delete(f"{base_url}/api/watched-playlists/{pl['id']}", timeout=10)
+
+
 def test_watched_playlist_crud(api, base_url):
     """Add, retrieve, update, and delete a watched playlist - full lifecycle."""
     url = _YT_PLAYLIST_URL
+
+    # Clear out any leftovers from a previous run before we start.
+    _forget_playlist(api, base_url, url)
 
     # Create - server fetches the playlist immediately; 502 means the platform was
     # unreachable at test time, not a server bug. Skip rather than fail.

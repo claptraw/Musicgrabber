@@ -510,7 +510,7 @@ def process_bulk_import_worker(import_id: str):
                     conn.commit()
 
                 _pname = playlist_name if (use_playlists_dir or custom_subdir) else None
-                # Album downloads (override_dir set) bypass dupe checks — you picked the album
+                # Album downloads (override_dir set) bypass dupe checks; you picked the album
                 # intentionally, and the track lives in Albums/ not Singles/ anyway.
                 _skip_dupes = bool(override_dir)
 

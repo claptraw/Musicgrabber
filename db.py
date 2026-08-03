@@ -40,7 +40,7 @@ def _get_pooled_conn() -> sqlite3.Connection:
         return _db_pool.get_nowait()
     except queue.Empty:
         pass
-    # Pool is exhausted — either wait for one to come back (up to 15s) or
+    # Pool is exhausted; either wait for one to come back (up to 15s) or
     # open a fresh connection as a safety valve. Under heavy concurrent load
     # (bulk import + multiple download threads) spawning unlimited connections
     # causes them to queue up and fight over the single WAL write lock, which
@@ -49,7 +49,7 @@ def _get_pooled_conn() -> sqlite3.Connection:
     try:
         return _db_pool.get(timeout=15)
     except queue.Empty:
-        # Genuinely exhausted after 15s — open a new one rather than hang forever.
+        # Genuinely exhausted after 15s; open a new one rather than hang forever.
         return get_db()
 
 
@@ -449,6 +449,83 @@ def init_db():
             "ON upgrade_candidates(user_id, file_id)"
         )
 
+        # Audio Provenance Audit. Runs are immutable snapshots while they are being
+        # built; is_current is flipped only after the last file has been inspected.
+        # This keeps a half-scanned library from masquerading as a finished report.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS audio_audit_runs (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT '',
+            music_root TEXT NOT NULL,
+            criteria_version TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            is_current INTEGER NOT NULL DEFAULT 0,
+            total_files INTEGER NOT NULL DEFAULT 0,
+            scanned_files INTEGER NOT NULL DEFAULT 0,
+            classified_files INTEGER NOT NULL DEFAULT 0,
+            unreadable_files INTEGER NOT NULL DEFAULT 0,
+            excluded_paths INTEGER NOT NULL DEFAULT 0,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            error TEXT
+        )
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS audio_audit_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT '',
+            path TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            file_size INTEGER,
+            mtime REAL,
+            container TEXT,
+            codec TEXT,
+            bitrate_kbps INTEGER,
+            duration REAL,
+            sample_rate_hz INTEGER,
+            bits_per_sample INTEGER,
+            channels INTEGER,
+            source TEXT,
+            source_quality TEXT,
+            source_codec TEXT,
+            source_bitrate_kbps INTEGER,
+            file_id TEXT,
+            artist TEXT,
+            title TEXT,
+            stored_quality TEXT NOT NULL,
+            effective_quality TEXT NOT NULL,
+            effective_tier INTEGER,
+            classification TEXT NOT NULL,
+            classification_label TEXT NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            caveats_json TEXT NOT NULL DEFAULT '[]',
+            read_error TEXT,
+            FOREIGN KEY(run_id) REFERENCES audio_audit_runs(id) ON DELETE CASCADE,
+            UNIQUE(run_id, path)
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audio_audit_current "
+            "ON audio_audit_runs(user_id, is_current, status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audio_audit_class "
+            "ON audio_audit_files(run_id, classification)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audio_audit_codec "
+            "ON audio_audit_files(run_id, container, codec)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audio_audit_source "
+            "ON audio_audit_files(run_id, source)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audio_audit_effective "
+            "ON audio_audit_files(run_id, effective_quality)"
+        )
+
         # Migration: add uploader column to jobs (raw channel/uploader name)
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN uploader TEXT")
@@ -513,7 +590,7 @@ def init_db():
         except sqlite3.OperationalError:
             pass
         try:
-            # ListenBrainz "Created for You" playlists rotate weekly — store the username so we can
+            # ListenBrainz "Created for You" playlists rotate weekly; store the username so we can
             # re-resolve the current week's UUID when the pinned one goes stale.
             conn.execute("ALTER TABLE watched_playlists ADD COLUMN lb_username TEXT")
         except sqlite3.OperationalError:
@@ -1096,6 +1173,49 @@ def init_db():
             )
             print("DB migrated to version 8: watched playlists gain gone-strike auto-pause tracking")
 
+        # v9: Monochrome retired its Qobuz proxy API altogether (their own frontend
+        # no longer calls /api/get-music at all), and two of our three defaults are
+        # beyond saving: qobuz.kennyy.com.br answers with a Cloudflare 522 after
+        # burning a full 20-second timeout, and qdl-api.monochrome.tf has no DNS
+        # record left. Sweeping those corpses cost ~27 seconds on every single
+        # download before the qbdlx fallback got a look in. mono.scavengerfurs.net
+        # stays: its Qobuz credentials are expired, but it fails in half a second
+        # and is the only one that could plausibly come back from the dead.
+        if db_version < 9:
+            import re as _re9
+            _DEAD_QOBUZ_URLS_V9 = {
+                "https://qobuz.kennyy.com.br",
+                "https://qdl-api.monochrome.tf",
+            }
+
+            row9 = conn.execute(
+                "SELECT value FROM settings WHERE key = 'monochrome_qobuz_proxy_url'"
+            ).fetchone()
+            current9 = (row9[0] if row9 else "") or ""
+
+            kept9 = []
+            seen9: set[str] = set()
+            for part in _re9.split(r"[\s,]+", current9):
+                url = part.strip().rstrip("/")
+                if not url or not _re9.match(r"https?://", url, _re9.I) or url in seen9:
+                    continue
+                if url in _DEAD_QOBUZ_URLS_V9:
+                    continue  # self-hosted overrides survive; these two do not
+                seen9.add(url)
+                kept9.append(url)
+
+            new_qobuz_value_v9 = ",".join(kept9)
+            conn.execute("""
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('monochrome_qobuz_proxy_url', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                               updated_at = excluded.updated_at
+            """, (new_qobuz_value_v9,))
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '9')"
+            )
+            print(f"DB migrated to version 9: dead Qobuz proxies retired → {new_qobuz_value_v9 or '(none left)'}")
+
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already
         # passed through that mangled migration. Harmless if the column is present.
@@ -1138,7 +1258,7 @@ def upsert_album_track_lock(
                 (release_mbid, album_name, album_artist, track_title, job_id),
             )
         else:
-            # No MBID — folder-only routing.  Check for an existing pending row first
+            # No MBID, folder-only routing.  Check for an existing pending row first
             # to avoid stacking up duplicates from rapid retries.
             existing = conn.execute(
                 "SELECT id FROM album_track_locks "

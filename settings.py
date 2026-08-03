@@ -45,7 +45,7 @@ def get_setting(key: str, default: str = "", user_id: str | None = None) -> str:
                 return row[0]
         except Exception:
             pass
-        # Private keys don't inherit from global settings — new users start blank.
+        # Private keys don't inherit from global settings; new users start blank.
         if key in USER_PRIVATE_KEYS:
             return default
 
@@ -134,6 +134,7 @@ SENSITIVE_SETTINGS = {
 USER_SETTINGS_KEYS = {
     "singles_subdir", "playlists_subdir", "albums_subdir", "organise_by_artist", "include_track_number_in_filename", "auto_album_singles", "auto_album_singles_use_albums_dir", "playlist_album_as_name",
     "audio_format", "mp3_bitrate", "opus_bitrate", "alac_bitrate", "normalise_lossy_audio", "auto_import_dir",
+    "enable_replaygain", "replaygain_replace_existing",
     "navidrome_url", "navidrome_user", "navidrome_pass", "navidrome_dupe_check",
     "jellyfin_url", "jellyfin_api_key",
     "lidarr_url", "lidarr_api_key",
@@ -145,7 +146,7 @@ USER_SETTINGS_KEYS = {
     "webhook_url",
 }
 
-# These user-scoped keys are personal credentials — a new user with no explicit value
+# These user-scoped keys are personal credentials; a new user with no explicit value
 # should get a blank default rather than inheriting whatever the global setting says.
 # (Navidrome/Jellyfin are NOT in this set: shared server, shared library.)
 USER_PRIVATE_KEYS = {
@@ -177,6 +178,13 @@ SETTINGS_SCHEMA = {
     # (YouTube et al are all over the shop volume-wise). Lossless sources are never
     # touched; their masters stay exactly as mastered. Off by default.
     "normalise_lossy_audio": {"type": "bool", "default": False, "env": "NORMALISE_LOSSY_AUDIO"},
+    # Write ReplayGain 2.0 tags on new downloads. Unlike the setting above this
+    # never touches a single audio sample; it measures the file and writes the
+    # numbers, leaving the player to do the actual turning-down. Off by default.
+    "enable_replaygain": {"type": "bool", "default": False, "env": "ENABLE_REPLAYGAIN"},
+    # By default existing ReplayGain tags are left well alone, on the grounds
+    # that whoever wrote them probably meant it. Turn this on to overwrite.
+    "replaygain_replace_existing": {"type": "bool", "default": False, "env": "REPLAYGAIN_REPLACE_EXISTING"},
     # Copy each finished download into this folder (e.g. a mounted macOS Music
     # "Automatically Add to Music" folder) so it imports itself. Empty = off.
     "auto_import_dir": {"type": "str", "default": "", "env": "AUTO_IMPORT_DIR"},

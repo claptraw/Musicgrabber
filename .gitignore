@@ -51,3 +51,7 @@ docs/
 tests/sp_dc.txt
 tests/.venv/
 tests/.test-credentials
+# Tuning cache for MusicBrainz release selection: ~5 MB of API responses, and
+# regenerable with tests/tools/refresh_mb_corpus.py. The small committed fixture
+# in tests/fixtures/mb_lookup_fixture.json is what the test suite actually reads.
+tests/fixtures/mb_corpus_cache.json

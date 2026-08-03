@@ -97,6 +97,8 @@ class SettingsUpdate(BaseModel):
     alac_bitrate: Optional[str] = None   # "lossless" (true ALAC) or AAC kbps "320k"/"256k"/"192k"/"128k"
     min_audio_bitrate: Optional[int] = None
     normalise_lossy_audio: Optional[bool] = None
+    enable_replaygain: Optional[bool] = None
+    replaygain_replace_existing: Optional[bool] = None
     auto_import_dir: Optional[str] = None
     reject_live_versions: Optional[bool] = None
     playlist_comment_tagging: Optional[bool] = None
@@ -190,6 +192,9 @@ class SearchResult(BaseModel):
     source_url: Optional[str] = None  # Full URL for non-YouTube sources
     quality: Optional[str] = None  # e.g., None for YouTube, format string for others
     quality_score: int = 40  # For sorting (higher = better)
+    # 0 = source declined to say (YouTube/SoundCloud), 1-5 = the shared tier
+    # scale in constants.py. Drives the UI's minimum-quality filter.
+    quality_tier: int = 0
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
     slskd_size: Optional[int] = None

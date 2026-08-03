@@ -29,6 +29,7 @@ from constants import (
     SEARCH_MAX_PER_SOURCE_FREEMP3CLOUD,
     SEARCH_MAX_PER_SOURCE_SOULSEEK, SEARCH_MAX_PER_SOURCE_MONOCHROME,
     AUTOMATED_SEARCH_CACHE_TTL_SECONDS, AUTOMATED_SEARCH_CACHE_MAX_ENTRIES,
+    TIER_UNKNOWN, TIER_LOSSY_320, TIER_LOSSLESS, kbps_to_tier,
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration, search_artist_mbid, lookup_musicbrainz
@@ -322,6 +323,58 @@ def _mb_album_lookup(query: str) -> dict | None:
     }
 
 
+# What each source is prepared to tell us about quality *before* we download it,
+# which is a shorter list than you might hope:
+#
+#   Soulseek     "FLAC", "FLAC 24bit/96kHz", "MP3 320", "AAC 256", "WAV", ...
+#   FreeMp3Cloud "320kbps" or "128kbps"
+#   Monochrome   "HI_RES_LOSSLESS", "LOSSLESS", "HIGH"  (tiers, not kbps)
+#   zvu4no       "MP3"                                  (format only, no bitrate)
+#   YouTube      nothing at all
+#   SoundCloud   nothing at all
+#
+# So a "minimum bitrate" filter cannot be honest about every source. We bucket
+# into the same 1-5 tier scale the upgrades scanner already uses, and anything
+# that declines to say gets tier 0, "unknown", which the UI treats separately
+# rather than silently guessing on the user's behalf.
+_LOSSLESS_QUALITY_WORDS = ("flac", "wav", "alac", "lossless", "aiff", "ape", "wavpack")
+
+
+def quality_tier_of_result(result: dict) -> int:
+    """Bucket a search result's declared quality into the shared 1-5 tier scale.
+
+    Returns TIER_UNKNOWN (0) when the source did not say, which is not the same
+    as "bad": a YouTube result is simply an unknown quantity until it lands.
+    """
+    label = (result.get("quality") or "").strip()
+    if not label:
+        return TIER_UNKNOWN
+
+    lowered = label.lower()
+    if any(word in lowered for word in _LOSSLESS_QUALITY_WORDS):
+        return TIER_LOSSLESS
+
+    # Monochrome's "HIGH" is Tidal's lossy tier: 320 kbps AAC in practice.
+    if lowered == "high":
+        return TIER_LOSSY_320
+
+    kbps_match = re.search(r"(\d{2,4})\s*(?:kbps)?", lowered)
+    if kbps_match:
+        try:
+            return kbps_to_tier(int(kbps_match.group(1)))
+        except ValueError:
+            return TIER_UNKNOWN
+
+    # A bare format name ("MP3") tells us the container and nothing else.
+    return TIER_UNKNOWN
+
+
+def _stamp_quality_tiers(results: list[dict]) -> None:
+    """Add quality_tier to each result in place, for the UI's quality filter."""
+    for result in results:
+        result["quality_tier"] = quality_tier_of_result(result)
+
+
 def _apply_mb_duration_scores(results: list[dict], expected_duration_secs: float) -> None:
     """Mutate quality_score on each result based on delta from MB expected duration.
 
@@ -536,6 +589,7 @@ def _search_all_events(
                 # enabled/healthy source set collectively fill the requested page.
                 per_source_cap = _per_source_result_cap(source_name, limit, len(active))
                 batch = _apply_blacklist_filter(source_results[:per_source_cap], source=source_name)
+                _stamp_quality_tiers(batch)
                 if expected_dur:
                     _apply_mb_duration_scores(batch, expected_dur)
                 batch.sort(key=lambda x: x["quality_score"], reverse=True)

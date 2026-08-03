@@ -67,3 +67,131 @@ def test_sanitize_filename_caps_multibyte_to_byte_budget():
     # 200 CJK chars is under the char cap but 600 bytes, well over NAME_MAX.
     out = sanitize_filename("あ" * 200)
     assert len(out.encode("utf-8")) <= MAX_FILENAME_BYTES
+
+
+def test_artist_credit_lookup_variants_include_primary_artist():
+    from utils import artist_credit_lookup_variants, artist_credits_match
+
+    assert artist_credit_lookup_variants("The Chemical Brothers, Q-Tip") == [
+        "The Chemical Brothers, Q-Tip",
+        "The Chemical Brothers",
+    ]
+    assert artist_credit_lookup_variants("Disclosure feat. Sam Smith") == [
+        "Disclosure feat. Sam Smith",
+        "Disclosure",
+    ]
+    assert artist_credits_match("山下達郎", "山下達郎") is True
+
+
+def test_check_duplicate_falls_back_to_primary_credited_artist(tmp_path, monkeypatch):
+    import utils
+
+    singles = tmp_path / "Singles"
+    existing = singles / "The Chemical Brothers" / "Go.flac"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"already here")
+
+    monkeypatch.setattr(
+        utils,
+        "get_download_dir",
+        lambda artist, user_id=None: singles / utils.sanitize_filename(artist),
+    )
+    monkeypatch.setattr(utils, "get_singles_dir", lambda user_id=None: singles)
+    monkeypatch.setattr(utils, "get_albums_dir", lambda user_id=None: tmp_path / "Albums")
+    monkeypatch.setattr(utils, "get_playlists_dir", lambda user_id=None: None)
+
+    assert (
+        utils.check_duplicate("The Chemical Brothers, Q-Tip", "Go")
+        == existing
+    )
+
+
+# ---------------------------------------------------------------------------
+# Library scans must stay inside the library.
+#
+# NAS shares keep their deleted files in a hidden bin *inside* the share, so a
+# naive rglob counts last month's deletions as part of the collection.
+# ---------------------------------------------------------------------------
+
+
+def test_is_excluded_scan_dir_catches_the_usual_nas_suspects():
+    import utils
+    for name in (".Trash", ".Trash-1000", ".Trash-1001", ".Trashes",
+                 "@Recycle", "@Recycle.bin", "#recycle", "$RECYCLE.BIN",
+                 "RECYCLER", "@eaDir", "System Volume Information",
+                 "lost+found", ".upgrade_quarantine"):
+        assert utils.is_excluded_scan_dir(name), f"{name} should be excluded"
+
+
+def test_is_excluded_scan_dir_leaves_real_band_names_alone():
+    """Suede and the New York Dolls both have an album called Trash."""
+    import utils
+    for name in ("Trash", "Trashcan Sinatras", "Recycle Culture",
+                 "The Recycler", "trashy", "", "Recycled J"):
+        assert not utils.is_excluded_scan_dir(name), f"{name} should be kept"
+
+
+def test_iter_library_audio_files_skips_nas_bins(tmp_path):
+    import utils
+    root = tmp_path / "Singles"
+    (root / "Fatboy Slim").mkdir(parents=True)
+    keeper = root / "Fatboy Slim" / "Praise You.flac"
+    keeper.write_bytes(b"audio")
+
+    # Deleted last month, still physically present, thanks QNAP.
+    (root / "@Recycle" / "Fatboy Slim").mkdir(parents=True)
+    (root / "@Recycle" / "Fatboy Slim" / "Praise You.flac").write_bytes(b"binned")
+    (root / ".Trash-1000").mkdir()
+    (root / ".Trash-1000" / "Rockafeller Skank.mp3").write_bytes(b"binned")
+    # Synology drops these next to everything; they are not music.
+    (root / "Fatboy Slim" / "@eaDir").mkdir()
+    (root / "Fatboy Slim" / "@eaDir" / "thumb.flac").write_bytes(b"nope")
+
+    found = sorted(utils.iter_library_audio_files(root))
+    assert found == [keeper]
+
+
+def test_iter_library_audio_files_ignores_non_audio_and_missing_roots(tmp_path):
+    import utils
+    root = tmp_path / "Singles"
+    root.mkdir()
+    (root / "cover.jpg").write_bytes(b"art")
+    (root / "Praise You.lrc").write_text("lyrics")
+    (root / "Praise You.flac").write_bytes(b"audio")
+
+    assert [p.name for p in utils.iter_library_audio_files(root)] == ["Praise You.flac"]
+    assert list(utils.iter_library_audio_files(tmp_path / "nope")) == []
+    assert list(utils.iter_library_audio_files(None)) == []
+
+
+def test_iter_library_audio_files_refuses_to_follow_symlinks_out(tmp_path):
+    """A helpful symlink must not turn a library scan into a whole-NAS scan."""
+    import utils
+    root = tmp_path / "Singles"
+    root.mkdir()
+    (root / "Real.flac").write_bytes(b"audio")
+
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "NotOurs.flac").write_bytes(b"audio")
+
+    try:
+        (root / "shortcut").symlink_to(outside, target_is_directory=True)
+        (root / "Linked.flac").symlink_to(outside / "NotOurs.flac")
+    except (OSError, NotImplementedError):
+        import pytest
+        pytest.skip("symlinks unavailable on this filesystem")
+
+    assert [p.name for p in utils.iter_library_audio_files(root)] == ["Real.flac"]
+
+
+def test_path_has_excluded_scan_dir_respects_root(tmp_path):
+    import utils
+    from pathlib import Path
+    assert utils.path_has_excluded_scan_dir(Path("/music/Singles/@Recycle/x.flac"))
+    assert not utils.path_has_excluded_scan_dir(Path("/music/Singles/Suede/Trash.flac"))
+    # A library that lives under an excluded-looking parent is still a library.
+    assert not utils.path_has_excluded_scan_dir(
+        Path("/volume1/#recycle/Music/Suede/Trash.flac"),
+        root=Path("/volume1/#recycle/Music"),
+    )

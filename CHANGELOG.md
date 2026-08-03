@@ -1,5 +1,26 @@
 # Changelog
 
+## v3.1.0 (DEV)
+
+### Added
+- **ReplayGain tags on new downloads, opt-in and completely non-destructive**: MusicGrabber measures each finished download and writes ReplayGain 2.0 track gain and peak tags against the standard -18 LUFS reference, then lets your player do the actual turning-down. Unlike loudness normalisation it never re-encodes a single sample, so it is safe on lossless files and entirely reversible. Album gain and peak are added once every track on a record has landed, calculated across the album so quiet interludes stay quiet instead of being bullied up to match the singles. Existing ReplayGain tags are left alone unless you explicitly ask for them to be replaced, because whoever wrote them probably meant it. FLAC, MP3, M4A, Ogg and Opus supported; WebM continues to have nowhere to put them.
+- **MusicBrainz release URLs now download as proper albums**: paste a `musicbrainz.org/release/…` or `/release-group/…` link into Bulk Import and it goes straight down the album pipeline, landing in `Albums/Artist/Album/` with cover art, an `.albuminfo` sidecar and reliable track numbers, rather than being flattened into a list of "Artist - Title" lines bound for Singles. The MBID is already in the URL, so there is no scraping and no guessing which "Greatest Hits" you meant. Release-group links resolve to the earliest official pressing.
+- **A minimum-quality filter on search results**: the Tracks tab can now hide anything below 192, 256, 320 kbps or lossless. It is honest about its limits, mind you: only Soulseek, Monochrome and FreeMp3Cloud declare a quality before you download. YouTube and SoundCloud say nothing at all, so they count as "undeclared" and are hidden the moment you set a minimum, because asking for lossless and being handed a YouTube rip is nobody's idea of a filter. Tick "Keep undeclared" if you want them back. Do bear in mind that results are still ordered by how well they match your search rather than by audio quality, which is why an undeclared result could otherwise sit cheerfully above three real FLACs. Your choice is remembered between searches.
+- **A full-library Audio Provenance Audit has arrived under Watched**: the manual, read-only scan covers supported files throughout the configured music directory, including Albums and historical files, while excluding symlinks and known staging/quarantine paths. It separates stored codec from recorded acquisition history, recognises known lossy transcodes, native lossy acquisitions, lossy derivatives, recorded lossless acquisitions, unknown history, and unreadable files, and shows the evidence and caveats behind every row. Container, codec, source, effective-quality, and two honestly different lossless filters are included, as are authenticated CSV/JSON dry-run exports. Completed reports publish atomically, interrupted runs recover honestly, and the scanner deliberately yields to ordinary library traffic rather than turning a large NAS into treacle. Nothing is renamed, retagged, moved, deleted, replaced, spectrally blessed, or sent into Watched Upgrades yet.
+
+### Changed
+- **The "Results" tab is now called "Tracks"**: same tab, same single job of searching for and downloading one track at a time, a name that finally says so. Requested on reddit, and it turns out "Results" was only ever a description of what happened rather than what the tab was for.
+
+### Fixed
+- **Monochrome downloads went from half a minute to a fifth of a second**: measured end to end, a Monochrome track took 37 seconds to resolve; it now takes 0.2 seconds once the first one has landed. Two things were to blame, and neither was Monochrome's fault. First, the shared qbdlx token pool holds 28 tokens of which precisely 3 still work, and they sit at the very bottom of the list, so every single download re-walked the same 25 duds from the top before finding one that could deliver. We now remember whichever token actually worked and try it first, falling back to the full walk when it inevitably rots. Second, two of the three default Qobuz proxies were beyond help: `qobuz.kennyy.com.br` answered with a Cloudflare 522 only after burning a 20-second read timeout, and `qdl-api.monochrome.tf` has no DNS record left at all. A v9 database migration retires both, keeping any self-hosted URLs you have configured. `mono.scavengerfurs.net` survives on the grounds that it fails in half a second and might yet be resurrected.
+- **Monochrome downloads landing as 30-second previews**: the qbdlx direct-Qobuz fallback (the leg that carries every Monochrome download whenever the third-party proxies are having a bad day, which lately is most days) picked the first token in its shared pool that returned any URL at all. It never checked whether Qobuz had quietly downgraded that token to sample-only. Several tokens in the pool now hand back a 30-second, ~1.2MB MP3 flagged `"sample": true` no matter which FLAC format was actually requested, and the code was cheerfully treating that as a finished lossless download. It now skips sample-only tokens and keeps walking the pool until one hands back the genuine article, matching the same "reject a preview, don't save it" principle from the old hifi-api days. Reported by Piranhaz on [GitLab #71](https://gitlab.com/g33kphr33k/musicgrabber/-/work_items/71).
+- **Singles finally get their track number**: downloaded tracks have been arriving with no track-number tag even when MusicBrainz knew full well which track it was. Two separate causes, both now sorted. The MusicBrainz *search* API nests the matched track under `track` while the *lookup* API uses `tracks`, and we were only ever reading the plural, so the text-search path came back empty-handed every time. Meanwhile the fingerprint path was asking for releases without asking for their media, so the track listing it then searched simply was not there. Vinyl pressings that print "A1" instead of "3" now fall back to the position within the disc. Reported by RxBrad.
+- **Library scans no longer count everything you have ever deleted**: Synology, QNAP and Windows SMB shares keep deleted files in a hidden bin *inside* the share, so the upgrades scanner, the provenance audit and the Stats storage figure were all cheerfully walking into `@Recycle`, `#recycle`, `.Trash-1000` and friends. Track upgrades were being offered for records binned weeks ago. All three scans now share one walker that skips those folders (plus `@eaDir`, `System Volume Information`, `lost+found` and the macOS metadata caches) and refuses to follow symlinks out of the library. Albums genuinely called *Trash* are quite safe; only the bins with a leading dot, hash, at-sign or dollar are excluded.
+- **Downloads now land on the album they actually came from**: MusicBrainz scores text matches on string similarity and nothing else, so all 25 recordings of "Praise You" tie on 100 and the order between them is arbitrary. Asking for a single result was therefore not asking for the most likely album, it was drawing a raffle ticket, and the raffle was not even repeatable: three identical searches for "Radiohead - Karma Police" returned 50 different recordings with none common to all three. Measured against a new 31-track corpus covering bootleg-heavy, compilation-heavy, mainstream and non-English tracks, the old behaviour scored 3.7 out of 31. MusicGrabber now asks for a proper shortlist, asks a second time with a studio-album filter, merges the two, and works out which recording is the canonical take before choosing a release from it. That scores 26 out of 31 against the live API and improves every category tested. "Around the World" now arrives on *Homework* instead of the live album *Alive 2006*, and "Smells Like Teen Spirit" on *Nevermind* rather than a Bristol bootleg. Compilations, DJ mixes and "(Boombox Rehearsals)" takes now lose on purpose.
+- **Romanised non-English titles find their metadata at last**: searching for `Yoru ni Kakeru` matched no recording title and quietly returned nothing at all, because MusicBrainz files that track under 夜に駆ける. Same for `Gruppa krovi` against Группа крови. When both searches come back empty we now try once more against aliases, which is where transliterations live, and the track comes back correctly tagged in its native script. Tracks whose title is a different rendering rather than a variant are no longer treated as suspicious, so this does not fight the album picking above.
+- **Featured-artist credits no longer leave owned tracks stuck in Watched → Missing**: playlist services may call a track `The Chemical Brothers, Q-Tip - Go` while the file, Navidrome, and Lidarr file it under `The Chemical Brothers - Go`. Local, Navidrome, and Lidarr duplicate checks now try the complete credit first and the primary artist as a fallback. When an ordinary Search download then succeeds, or politely reports that you already own it, equivalent unresolved watched rows are reconciled for that user, their real path is retained when available, and affected M3Us are rebuilt. Four databases may still disagree about the guest list, but they no longer get four votes on whether the song exists.
+- **Collaborations no longer get a stray double space in the artist tag**: MusicBrainz hands back each credited artist with its own separator attached (" & ", " feat. "), and we were helpfully adding a space on top, so "Underworld & Iggy Pop" was tagged as "Underworld &  Iggy Pop". Five places in the metadata code were doing it. Single-artist tracks were never affected, which is precisely why it survived this long.
+
 ## v3.0.3 (2026-07-24)
 
 ### Added
@@ -16,7 +37,7 @@
 
 ### Fixed
 - **Search and watched playlists now agree about tracks already managed by Lidarr**: the interactive duplicate check consulted Lidarr, but watched refresh only consulted local files and Navidrome. A track could therefore be reported as “already in your library” in Search while the playlist continued to call it missing. Watched refresh now uses the same local → Navidrome → Lidarr resolution chain, retains absolute Lidarr paths for M3U entries, and honours existence-only sentinels without writing unusable paths.
-- **Append-mode chart history no longer stays falsely “missing” after a song leaves the chart**: refresh previously iterated only the tracks returned by the latest upstream fetch. Historical rows were kept—as append mode promises—but were never visited again, so no later library acquisition could heal them. They now participate in the reconciliation pass described above and immediately disappear from Missing once a real match is found.
+- **Append-mode chart history no longer stays falsely “missing” after a song leaves the chart**: refresh previously iterated only the tracks returned by the latest upstream fetch. Historical rows were kept, as append mode promises, but were never visited again, so no later library acquisition could heal them. They now participate in the reconciliation pass described above and immediately disappear from Missing once a real match is found.
 - **Genuine lossless files are no longer demoted by an ambiguous legacy quality label**: upgrade classification now prefers the structured `SOURCE_CODEC` and `SOURCE_BITRATE` provenance tags, using the older display string only as a compatibility fallback. Lossy transcodes remain correctly eligible, and lossy-to-lossy conversions are capped by both the input and output quality rather than inheriting whichever bitrate happens to be larger.
 - **A newer toast can no longer be hidden by an older toast's timer**: showing another notification now cancels the previous dismissal timer, and its display time scales with the amount of text instead of every message vanishing after the same hurried 2.5 seconds.
 - **Queue progress timestamps are now unambiguously UTC**: `progress_at` receives the same timezone suffix as job creation and completion timestamps in both job APIs, so browsers outside UTC do not quietly interpret a fresh heartbeat as local server time.
@@ -295,7 +316,7 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 - **New "Peon" user role**: the most stripped-down account level yet. Peons get Search, Bulk Import, Queue, Albums and Watched, and that's it. Settings and Stats tabs vanish entirely, and they inherit the admin's Navidrome, Soulseek, conversion format and other global settings whether they like it or not. The header Convert toggle and the watched-playlist Convert toggle are hidden too; the server force-overrides any incoming `convert_to_flac` flag for peons onto the global default, so a peon waving dev tools around still cannot change formats. Settings writes are blocked at the API level on top of all that, in case a curious peon tries to poke around with curl. The Clear Queue button is hidden for peons as well, since they have no business nuking shared queue state.
 
 ### Changed
-- **Tidied admin-only Settings**: global, system-level rows in the Settings tab (skip duplicates, MusicBrainz/lyrics, search sources, audio format, AcoustID key, minimum bitrate, Monochrome URLs, the new singles-only toggle) are now hidden from non-admin users. Per-user bits — Navidrome/Jellyfin/Lidarr creds, Spotify cookies, notifications, your own subfolders, change password — are still right where you left them. Backend writes were already admin-gated; this just stops the cosmetic clutter for standard accounts.
+- **Tidied admin-only Settings**: global, system-level rows in the Settings tab (skip duplicates, MusicBrainz/lyrics, search sources, audio format, AcoustID key, minimum bitrate, Monochrome URLs, the new singles-only toggle) are now hidden from non-admin users. Per-user bits (Navidrome/Jellyfin/Lidarr creds, Spotify cookies, notifications, your own subfolders, change password) are still right where you left them. Backend writes were already admin-gated; this just stops the cosmetic clutter for standard accounts.
 - **Clear Queue is now role-aware**: standard users hitting Clear Queue only wipe their own completed/failed/stale jobs from the database, leaving everyone else's queue untouched. Admins still get the full nuke as before, which is handy when the shared queue has gone feral. Peons do not get the button at all, and the API rejects them outright for good measure.
 
 ### Fixed
@@ -319,7 +340,7 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 ## v2.8.0 (2026-05-01)
 
 ### Added
-- **Monochrome source is back**: Monochrome.tf returned from the dead with Qobuz under the hood. MusicGrabber now searches the Tidal catalogue via hifi-api for metadata and ISRC, then pulls a direct FLAC from the Qobuz CDN. No DASH segments, no 30-second previews, no nonsense — just proper lossless audio. Hi-res (24-bit/192 kHz) and standard FLAC supported. Enable via Search Sources toggle in Settings.
+- **Monochrome source is back**: Monochrome.tf returned from the dead with Qobuz under the hood. MusicGrabber now searches the Tidal catalogue via hifi-api for metadata and ISRC, then pulls a direct FLAC from the Qobuz CDN. No DASH segments, no 30-second previews, no nonsense; just proper lossless audio. Hi-res (24-bit/192 kHz) and standard FLAC supported. Enable via Search Sources toggle in Settings.
 - **Hover preview for Monochrome**: the CDN URL is resolved server-side and streamed to the browser, so you can audition a track before downloading it.
 - **Tidal playlist support restored**: `tidal.com/browse/playlist/UUID` URLs now work in the watched playlist importer.
 - **Monochrome settings section**: configurable hifi-api URL and Qobuz proxy URL for anyone running self-hosted instances.
@@ -511,7 +532,7 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 
 ### Fixed
 - **Skip duplicates toggle not saving**: `skip_dupes` (and `navidrome_dupe_check`) were missing from the `SettingsUpdate` Pydantic model, so every save silently discarded them. The toggle looked like it worked, then cheerfully forgot everything the moment you refreshed.
-- **Lidarr config not surviving restarts**: same root cause as above — `lidarr_url` and `lidarr_api_key` were also missing from `SettingsUpdate`, so Lidarr credentials were quietly dropped on every save and lost on restart.
+- **Lidarr config not surviving restarts**: same root cause as above, `lidarr_url` and `lidarr_api_key` were also missing from `SettingsUpdate`, so Lidarr credentials were quietly dropped on every save and lost on restart.
 - **"Will be overwritten" warning shown for Append playlists**: the playlist routing selector showed a sync-overwrite warning for every watched playlist, including ones on Append mode that don't get cleared on sync. The warning now only appears for Mirror playlists, where it actually applies. Text updated to reflect what Mirror mode actually does.
 - **Remaining watched card buttons using inline `onclick`**: Refresh, Missing, and Pause/Resume on both playlist and artist cards were still using inline handlers, which break on certain proxy setups and are generally fragile. All six migrated to the delegated `data-action` pattern used by the other buttons.
 
@@ -555,14 +576,14 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 
 ### Fixed
 - **Fresh install schema incomplete**: `watched_playlists` and `bulk_imports` base `CREATE TABLE` statements were missing columns added since v2.3.x (`preferred_sources`, `lb_username`, `make_m3u`, `use_playlists_dir`, `sync_mode`, `user_id`, and others). Fresh installs would immediately hit `OperationalError: table has no column` errors. Upgraders were unaffected as `ALTER TABLE` migrations ran correctly.
-- **WebM remux atomicity**: album-routed WebM files are now verified with ffprobe before the original is unlinked — a corrupt remux no longer silently destroys the source file
+- **WebM remux atomicity**: album-routed WebM files are now verified with ffprobe before the original is unlinked; a corrupt remux no longer silently destroys the source file
 - **MBID validation**: invalid UUID strings passed as MusicBrainz IDs now return a 422 immediately rather than silently failing downstream
 - **MP3Phoenix truncated downloads**: file size is checked against `Content-Length` after download; empty or truncated files are deleted and the job fails cleanly rather than leaving a stub on disk
 
 ## v2.4.1 (2026-03-12)
 
 ### Fixed
-- **ListenBrainz weekly playlist URL rotation**: "Created for You" playlists (Weekly Exploration, Weekly Jams, etc.) are regenerated every Monday with a new UUID. The watched entry stored the old URL and would 404 forever. MusicGrabber now stores the ListenBrainz username alongside the playlist entry; on a 404 during refresh it re-queries the `createdfor` API, matches by playlist name, updates the stored URL automatically, and continues as normal. **Existing users should delete their ListenBrainz watched playlist cards and re-add them via their username** — cards added before this update don't have the username stored and won't self-heal.
+- **ListenBrainz weekly playlist URL rotation**: "Created for You" playlists (Weekly Exploration, Weekly Jams, etc.) are regenerated every Monday with a new UUID. The watched entry stored the old URL and would 404 forever. MusicGrabber now stores the ListenBrainz username alongside the playlist entry; on a 404 during refresh it re-queries the `createdfor` API, matches by playlist name, updates the stored URL automatically, and continues as normal. **Existing users should delete their ListenBrainz watched playlist cards and re-add them via their username**; cards added before this update don't have the username stored and won't self-heal.
 
 ## v2.4.0 (2026-03-12)
 
@@ -616,7 +637,7 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 ## v2.3.4 (2026-03-09)
 
 ### Added
-- **Apple Music playlist import**: Public Apple Music playlists and albums can now be imported and watched. No browser required — Apple server-renders the full track list into the page, so it's a plain HTTP fetch. Supports all regional storefronts. Private playlists and personal libraries (anything requiring sign-in) are not supported.
+- **Apple Music playlist import**: Public Apple Music playlists and albums can now be imported and watched. No browser required; Apple server-renders the full track list into the page, so it's a plain HTTP fetch. Supports all regional storefronts. Private playlists and personal libraries (anything requiring sign-in) are not supported.
 - **ALAC output format**: ALAC is now a selectable audio format alongside FLAC, Opus, and MP3. Files are saved as .m4a (Apple Lossless Audio Codec). Good for modded iPods and Apple devices that want lossless without FLAC support.
 
 ### Fixed
@@ -635,7 +656,7 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 - **Per-playlist source selection**: Each watched playlist now has a Sources setting, toggle which search sources (YouTube, SoundCloud, MP3Phoenix, Monochrome) are used when downloading new tracks. All sources remain active by default. Chips appear on the playlist card and in the Watch form. Selecting a source that's globally disabled falls back to all enabled sources rather than finding nothing.
 
 ### Changed
-- **Live recording scoring**: Unambiguous live tags — `(Live)`, `[Live]`, `- Live`, `Live at ...`, `Live from ...`, `Live Version` — now score -80 instead of the previous flat -50 for any mention of "live". A bare occurrence of the word without a clear qualifier drops to -30, reducing false positives for artists actually named "Live" or titles that contain the word incidentally.
+- **Live recording scoring**: Unambiguous live tags (`(Live)`, `[Live]`, `- Live`, `Live at ...`, `Live from ...`, `Live Version`) now score -80 instead of the previous flat -50 for any mention of "live". A bare occurrence of the word without a clear qualifier drops to -30, reducing false positives for artists actually named "Live" or titles that contain the word incidentally.
 
 ### Fixed
 - **Multi-user scoping**: `update_watched_playlist` was fetching the updated record without the user scope, meaning an admin update could theoretically return another user's row. `delete_job_file` was using the global playlists directory instead of the requesting user's.
@@ -685,7 +706,7 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 - **Per-user YouTube cookies**: Cookie files are now stored per-user at `/data/cookies-{user_id}.txt` alongside the global `/data/cookies.txt`, so each user can authenticate YouTube independently
 - **User management UI**: Admin-only section in the Settings tab for creating, listing, and deleting users, resetting passwords, and flagging accounts to force a password change on next login. Regular users get a "Change my password" form. First login with a freshly-created account, or after an admin forces a reset, triggers a forced password-change screen before reaching the app
 - **Per-user data isolation**: Download jobs, bulk imports, watched playlists, watched artists, and blacklist entries are all scoped by user. Each user sees only their own data; admins see their own data too (not other users' queues)
-- **Spotify cookie authentication**: Paste your Netscape-format `cookies.txt` from `open.spotify.com` into Settings to unlock private playlists, saved albums, and personal library playlists — anything that requires a login. The `sp_dc` session cookie is extracted and injected into both the embed scraper and the Playwright browser path. Works per-user, same pattern as YouTube cookies. If cookies expire mid-use, the flag is set automatically, an amber warning banner appears in Settings, and a clear message is shown at the fetch site. Cookie validity is tested by fetching the Spotify embed page for a known public playlist — the same path the scraper uses for real fetches, so if the CDN hates your server IP, you'd know
+- **Spotify cookie authentication**: Paste your Netscape-format `cookies.txt` from `open.spotify.com` into Settings to unlock private playlists, saved albums, and personal library playlists; anything that requires a login. The `sp_dc` session cookie is extracted and injected into both the embed scraper and the Playwright browser path. Works per-user, same pattern as YouTube cookies. If cookies expire mid-use, the flag is set automatically, an amber warning banner appears in Settings, and a clear message is shown at the fetch site. Cookie validity is tested by fetching the Spotify embed page for a known public playlist, the same path the scraper uses for real fetches, so if the CDN hates your server IP, you'd know
 - **Admin password reset button**: Admins can now flag any user's account to force a password change on next login, directly from the user list in Settings. Their active sessions are terminated immediately, so the change can't be deferred
 - **Per-source enable/disable**: Each search source (YouTube, MP3Phoenix, SoundCloud, Monochrome) can now be independently toggled in Settings → General. Disabled sources are skipped in search results, watched playlist matching, and bulk imports. Overridable per-source via env vars (`SOURCE_YOUTUBE_ENABLED`, `SOURCE_MP3PHOENIX_ENABLED`, `SOURCE_SOUNDCLOUD_ENABLED`, `SOURCE_MONOCHROME_ENABLED`)
 
@@ -861,10 +882,10 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 ## v2.1.2 (2026-02-23)
 
 ### Added
-- **Watched playlist sync mode**: Each watched playlist now has a Sync setting — Append (default, existing behaviour: M3U grows as new tracks arrive) or Mirror (M3U stays in sync with the upstream playlist; tracks removed from the source drop out of the M3U on next refresh). Audio files are never deleted either way — only the M3U changes
+- **Watched playlist sync mode**: Each watched playlist now has a Sync setting: Append (default, existing behaviour: M3U grows as new tracks arrive) or Mirror (M3U stays in sync with the upstream playlist; tracks removed from the source drop out of the M3U on next refresh). Audio files are never deleted either way; only the M3U changes
 - **Missing tracks view**: Each watched playlist card now has a "Missing" button that shows tracks which failed to download (never got a `downloaded_at`, job failed or was never started). Click again to dismiss
 - **M3U updated per-track**: Watched playlist M3U files now update immediately each time a track finishes downloading, rather than waiting for the next full refresh cycle. It grows as downloads complete
-- **MP3 output format**: Settings now offers FLAC | Opus | MP3 as the audio format picker. MP3 uses LAME VBR ~192 kbps (`-q:a 2`) — roughly 4-5 MB per track, noticeably smaller than FLAC/Opus at equivalent duration. A warning note appears in the UI when MP3 is selected, because nobody should be surprised by lossy-to-lossy re-encoding
+- **MP3 output format**: Settings now offers FLAC | Opus | MP3 as the audio format picker. MP3 uses LAME VBR ~192 kbps (`-q:a 2`), roughly 4-5 MB per track, noticeably smaller than FLAC/Opus at equivalent duration. A warning note appears in the UI when MP3 is selected, because nobody should be surprised by lossy-to-lossy re-encoding
 
 ### Fixed
 - **YouTube Music playlist URLs rejected**: `music.youtube.com/playlist?list=...` URLs were blocked by the frontend validator despite the backend supporting them just fine. Now accepted alongside regular `youtube.com` playlist URLs
@@ -978,7 +999,7 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 ## v1.9.2 (2026-02-13)
 
 ### Added
-- **MusicBrainz artist normalisation**: When MusicBrainz returns a canonical artist name, it's now used everywhere — file tags, directory name, and the jobs database. Files are automatically relocated to the correct artist folder if the name differs from the original source. Prevents duplicate artist folders from inconsistent casing or spelling across YouTube/SoundCloud uploaders
+- **MusicBrainz artist normalisation**: When MusicBrainz returns a canonical artist name, it's now used everywhere: file tags, directory name, and the jobs database. Files are automatically relocated to the correct artist folder if the name differs from the original source. Prevents duplicate artist folders from inconsistent casing or spelling across YouTube/SoundCloud uploaders
 
 ### Fixed
 - **Top Artists case grouping**: Stats queries now group artists case-insensitively, displaying the most popular casing variant and summing counts across all variants. "BAD BUNNY" (2) and "Bad Bunny" (1) now merge into a single "BAD BUNNY" (3) entry
@@ -1006,11 +1027,11 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 ## v1.9.0 (2026-02-10)
 
 ### Added
-- **SoundCloud search**: Search SoundCloud via yt-dlp `scsearch` — returns results with correct artist (from `uploader` field), duration, thumbnails, and quality scoring. No auth required
+- **SoundCloud search**: Search SoundCloud via yt-dlp `scsearch`, returns results with correct artist (from `uploader` field), duration, thumbnails, and quality scoring. No auth required
 - **Source selector**: Segmented button group (YouTube / SoundCloud / All) on the search bar. Selection persisted to localStorage. "All" searches both sources in parallel and merges results by quality score
-- **Extensible source architecture**: New `search.py` module with `SOURCE_REGISTRY` dict — adding a new source is one search function and one registry entry. Includes `search_source()`, `search_all()`, and `get_available_sources()` API
+- **Extensible source architecture**: New `search.py` module with `SOURCE_REGISTRY` dict; adding a new source is one search function and one registry entry. Includes `search_source()`, `search_all()`, and `get_available_sources()` API
 - **`GET /api/sources` endpoint**: Returns available search sources with labels, badges, and colours for the frontend
-- **SoundCloud downloads**: Full download pipeline support — SoundCloud URLs route through yt-dlp without YouTube-specific cookie/backoff logic
+- **SoundCloud downloads**: Full download pipeline support; SoundCloud URLs route through yt-dlp without YouTube-specific cookie/backoff logic
 - **SoundCloud preview**: Hover-to-preview works for SoundCloud tracks (passes source URL to the preview endpoint)
 - **Source badges**: Search results and queue items show coloured source badges (YT red, SC orange, SLK teal) with consistent `getSourceBadge()` / `getSourceLabel()` helpers
 - **Donation link**: Added a subtle Ko-fi "Buy me a coffee" link with coffee icon in Settings (`https://ko-fi.com/geekphreek`)
@@ -1046,8 +1067,8 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 
 ### Added
 - **Dark/light theme toggle**: Moon/sun button in the header switches between dark and light themes. Preference saved to localStorage
-- **Webhook notifications**: New generic webhook URL setting — sends a JSON POST on download completion/failure with event type, title, artist, status, source, and track counts. Configure via Settings > Notifications or the `WEBHOOK_URL` env var
-- **Statistics dashboard**: New "Stats" tab with download overview — completed/failed counts, success rate, library storage usage, daily download chart (last 14 days), source breakdown (YouTube vs Soulseek), top 10 artists, and recent downloads
+- **Webhook notifications**: New generic webhook URL setting, sends a JSON POST on download completion/failure with event type, title, artist, status, source, and track counts. Configure via Settings > Notifications or the `WEBHOOK_URL` env var
+- **Statistics dashboard**: New "Stats" tab with download overview: completed/failed counts, success rate, library storage usage, daily download chart (last 14 days), source breakdown (YouTube vs Soulseek), top 10 artists, and recent downloads
 - **Search analytics in Stats**: Search queries are now logged and shown in the Stats tab with total searches, successful search rate, search-to-download conversion, and most searched artists
 - **Delete from library**: Completed jobs in the queue now have a "Delete File" button that removes the audio file and lyrics from disk, plus cleans up empty artist directories
 - **Re-download**: Completed and failed jobs now have a "Re-download" button in the queue details to re-queue the download (overwrites existing file)
@@ -1073,15 +1094,15 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 - **Scheduler crash on bad playlist URL**: `fetch_playlist_tracks` now guards the `list=` regex match, preventing an `AttributeError` crash if a stored YouTube URL has no `list=` parameter
 
 ### Changed
-- **Search scoring: duration awareness**: Results are now scored by duration — typical song length (1:30–7:00) gets a bonus, while clips (<30s), snippets (<90s), extended mixes (12–20min), and full albums (20min+) are penalised
-- **Search scoring: view count tiebreaker**: View count is now a modest scoring signal — suspiciously low views (<1K) get a small penalty, high views (100K+) get a small bonus. Deliberately conservative to avoid penalising niche artists
-- **Search scoring: Official Audio boost**: "Official Audio" bonus increased from +20 to +35, matching the Topic channel bonus — both signal official studio audio, which is the ideal source for a music grabber
+- **Search scoring: duration awareness**: Results are now scored by duration; typical song length (1:30–7:00) gets a bonus, while clips (<30s), snippets (<90s), extended mixes (12–20min), and full albums (20min+) are penalised
+- **Search scoring: view count tiebreaker**: View count is now a modest scoring signal; suspiciously low views (<1K) get a small penalty, high views (100K+) get a small bonus. Deliberately conservative to avoid penalising niche artists
+- **Search scoring: Official Audio boost**: "Official Audio" bonus increased from +20 to +35, matching the Topic channel bonus; both signal official studio audio, which is the ideal source for a music grabber
 - **Title cleaning: trailing suffixes**: `clean_title()` now strips unbracketed trailing suffixes like "- Official Audio", "- Official Music Video", and "- Official Lyric Video", plus any dangling separators left after cleanup
 - **Audio extensions centralised**: The repeated `['.flac', '.opus', '.m4a', '.webm', '.mp3', '.ogg']` list (5 occurrences) is now a single `AUDIO_EXTENSIONS` constant in `constants.py`
 - **Navidrome auth deduplicated**: Subsonic API auth logic (salt, MD5 token, params) extracted to `subsonic_auth_params()` in `utils.py`, fixing inconsistent API versions and client names between test and scan endpoints
 - **Bulk import thread pool**: Downloads spawned by bulk imports now use a `ThreadPoolExecutor(max_workers=3)` instead of unbounded daemon threads, preventing hundreds of concurrent yt-dlp subprocesses on large imports
 - **Bulk import DB connection**: The bulk import worker now acquires and releases DB connections per query instead of holding one for its entire lifetime (which could be hours)
-- **Spotify browser script extracted**: The 130-line Playwright f-string with double-brace escaping is now a standalone `spotify_browser.py` script that receives parameters via environment variables — proper syntax highlighting, linting, and no escaping bugs
+- **Spotify browser script extracted**: The 130-line Playwright f-string with double-brace escaping is now a standalone `spotify_browser.py` script that receives parameters via environment variables: proper syntax highlighting, linting, and no escaping bugs
 - **Dockerfile version pins**: Python packages now pinned with compatible release specifiers (`~=`) for reproducible builds
 - **Entrypoint banner**: Replaced hardcoded `http://localhost:38274` (Docker host port) with a message showing the actual container port (8080)
 
@@ -1121,7 +1142,7 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 ## v1.8.0 (2026-01-31)
 
 ### Changed
-- **Codebase split**: Monolithic `app.py` (~4778 lines) split into 15 focused modules — `app.py` is now a thin route layer, with main logic in `constants.py`, `models.py`, `db.py`, `settings.py`, `utils.py`, `middleware.py`, `youtube.py`, `slskd.py`, `spotify.py`, `metadata.py`, `notifications.py`, `downloads.py`, `bulk_import.py`, and `watched_playlists.py`
+- **Codebase split**: Monolithic `app.py` (~4778 lines) split into 15 focused modules; `app.py` is now a thin route layer, with main logic in `constants.py`, `models.py`, `db.py`, `settings.py`, `utils.py`, `middleware.py`, `youtube.py`, `slskd.py`, `spotify.py`, `metadata.py`, `notifications.py`, `downloads.py`, `bulk_import.py`, and `watched_playlists.py`
 - **Notification function renamed**: `send_telegram_notification` → `send_notification`
 - **Dockerfile**: Now copies all Python modules (`COPY *.py`) instead of just `app.py`
 - **YouTube backoff settings**: Warns when min/max are misconfigured and swapped
@@ -1174,7 +1195,7 @@ The big three-oh. What was brewing as v2.9.6 grew into a proper milestone: live 
 - **Watched playlist creation**: Now honours the FLAC setting selected at creation time
 - **Settings env lock badge**: Replaced "ENV" with a clearer "CONFIG LOCKED" pill
 - **Clear Queue**: Now also cleans up stale/stuck downloads, not just completed and failed jobs
-- **YouTube download client**: Default yt-dlp player client set to Android to reduce bot blocks (reverted in v1.8.5 — caused 64kbps audio)
+- **YouTube download client**: Default yt-dlp player client set to Android to reduce bot blocks (reverted in v1.8.5, caused 64kbps audio)
 - **Bot backoff**: Queue now applies a randomized delay after bot/403 signals to ease rate limits
 
 ### Fixed

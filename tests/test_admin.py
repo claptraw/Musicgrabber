@@ -61,3 +61,30 @@ def test_sources_health_recheck(api, base_url):
     r = api.post(f"{base_url}/api/sources/health/recheck", timeout=10)
     assert r.status_code == 200
     assert r.json().get("status") == "checking"
+
+
+def test_audio_audit_status_shape(api, base_url):
+    r = api.get(f"{base_url}/api/audio-audit", timeout=10)
+    assert r.status_code == 200
+    data = r.json()
+    for key in ("criteria_version", "read_only_notice", "running", "current", "summary", "options"):
+        assert key in data, f"audio audit status missing key: {key}"
+    assert "no audio files were renamed" in data["read_only_notice"].lower()
+
+
+def test_audio_audit_rejects_ambiguous_lossless_filter(api, base_url):
+    r = api.get(
+        f"{base_url}/api/audio-audit/files?lossless_only=yes-really",
+        timeout=10,
+    )
+    assert r.status_code == 400
+
+
+def test_audio_audit_dry_run_json_export(api, base_url):
+    r = api.get(f"{base_url}/api/audio-audit/export?format=json", timeout=30)
+    assert r.status_code == 200
+    assert "attachment" in r.headers.get("Content-Disposition", "")
+    report = r.json()
+    assert "metadata" in report
+    assert "files" in report
+    assert "no audio files were renamed" in report["metadata"]["read_only_notice"].lower()

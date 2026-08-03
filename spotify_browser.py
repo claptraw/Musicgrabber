@@ -143,7 +143,7 @@ try:
             except Exception:
                 expected_total = None
 
-        # Accept cookie consent if present — this can block page rendering
+        # Accept cookie consent if present; this can block page rendering
         cookie_selectors = [
             "button:has-text('Accept cookies')",
             "button:has-text('Accept Cookies')",
@@ -202,7 +202,7 @@ try:
             est_with_slack = (base_overhead + expected_total * seconds_per_track) * 1.5
             working_deadline = min(hard_deadline_seconds or est_with_slack, est_with_slack)
 
-        # Spotify uses virtualised scrolling — tracks get unloaded as you scroll.
+        # Spotify uses virtualised scrolling; tracks get unloaded as you scroll.
         # Extract tracks incrementally while scrolling.
         seen_tracks_by_index = {}
         last_seen_count = 0

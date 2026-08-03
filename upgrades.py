@@ -23,12 +23,13 @@ import hashlib
 import re
 from pathlib import Path
 
-import mutagen
-
+from audio_probe import probe_file
 from constants import (
     UPGRADE_SCAN_INTERVAL_HOURS,
     UPGRADE_SEARCH_TTL_SECONDS,
     UPGRADE_MATCH_FLOOR,
+    TIER_LOSSY_128, TIER_LOSSY_192, TIER_LOSSY_256, TIER_LOSSY_320, TIER_LOSSLESS,
+    kbps_to_tier as _kbps_to_tier,
 )
 from db import db_conn
 from settings import (
@@ -38,15 +39,7 @@ from settings import (
     get_singles_dir,
     get_playlists_dir,
 )
-from utils import spawn_daemon_thread
-
-# Quality tiers, higher == better. Lossless is one flat tier on purpose: a FLAC
-# is a FLAC, we never "upgrade" one lossless wrapper to another.
-TIER_LOSSY_128 = 1
-TIER_LOSSY_192 = 2
-TIER_LOSSY_256 = 3
-TIER_LOSSY_320 = 4
-TIER_LOSSLESS = 5
+from utils import spawn_daemon_thread, iter_library_audio_files
 
 _LOSSLESS_CODECS = {"flac", "alac", "wav", "wave", "pcm", "ape", "wavpack", "tak"}
 
@@ -57,17 +50,6 @@ _AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".mp4", ".opus", ".ogg", ".oga", ".wav",
 # Rough VBR-quality-preset -> effective average kbps. Only the common LAME
 # presets matter; anything exotic falls back to a conservative middle value.
 _VBR_KBPS = {"v0": 245, "v1": 225, "v2": 190, "v3": 175, "v4": 165, "v5": 150}
-
-
-def _kbps_to_tier(kbps: int) -> int:
-    """Bucket an effective average bitrate into a lossy tier."""
-    if kbps >= 300:
-        return TIER_LOSSY_320
-    if kbps >= 240:
-        return TIER_LOSSY_256
-    if kbps >= 170:
-        return TIER_LOSSY_192
-    return TIER_LOSSY_128
 
 
 def tier_of(codec: str | None, bitrate_kbps: int) -> int:
@@ -180,81 +162,6 @@ def target_tier(user_id: str | None = None) -> int:
     return _kbps_to_tier(kbps)
 
 
-def _decode_tag_value(value):
-    """Pull a plain string out of whatever shape a tag value arrives in."""
-    if value is None:
-        return None
-    if isinstance(value, list):
-        if not value:
-            return None
-        value = value[0]
-    if isinstance(value, (bytes, bytearray)):
-        return value.decode("utf-8", "ignore")
-    return str(value)
-
-
-def probe_file(path: Path) -> dict | None:
-    """Read codec, bitrate, duration, SOURCE tag and artist/title in one mutagen open.
-
-    Returns None when the file isn't readable audio. Pure-Python, no subprocess, so
-    it stays cheap across a library of thousands of files.
-    """
-    try:
-        audio = mutagen.File(str(path))
-    except Exception:
-        return None
-    if audio is None:
-        return None
-
-    info = getattr(audio, "info", None)
-    tags = audio.tags
-
-    # Codec: lean on the mutagen class, with MP4 needing a codec sniff for ALAC vs AAC.
-    cls = type(audio).__name__.lower()
-    codec = None
-    if "flac" in cls:
-        codec = "flac"
-    elif "mp3" in cls or "easymp3" in cls:
-        codec = "mp3"
-    elif "opus" in cls:
-        codec = "opus"
-    elif "vorbis" in cls or "oggvorbis" in cls:
-        codec = "vorbis"
-    elif "wave" in cls or cls == "wav":
-        codec = "wav"
-    elif "mp4" in cls or "m4a" in cls:
-        mp4_codec = (getattr(info, "codec", "") or "").lower()
-        codec = "alac" if "alac" in mp4_codec else "aac"
-    else:
-        codec = cls or None
-
-    bitrate_kbps = int((getattr(info, "bitrate", 0) or 0) / 1000)
-    duration = float(getattr(info, "length", 0) or 0)
-
-    source = source_quality = title = artist = file_id = source_codec = source_bitrate = None
-    if tags is not None:
-        source = _read_tag(tags, "SOURCE", "----:com.musicgrabber:SOURCE")
-        source_quality = _read_tag(tags, "SOURCE_QUALITY", "----:com.musicgrabber:SOURCE_QUALITY")
-        title = _read_tag(tags, "TITLE", "\xa9nam", id3="TIT2")
-        artist = _read_tag(tags, "ARTIST", "\xa9ART", id3="TPE1")
-        file_id = _read_tag(tags, "MUSICGRABBER_FILE_ID", "----:com.musicgrabber:FILE_ID")
-        source_codec = _read_tag(tags, "SOURCE_CODEC", "----:com.musicgrabber:SOURCE_CODEC")
-        source_bitrate = _read_tag(tags, "SOURCE_BITRATE", "----:com.musicgrabber:SOURCE_BITRATE")
-
-    return {
-        "codec": codec,
-        "bitrate_kbps": bitrate_kbps,
-        "duration": duration,
-        "source": source,
-        "source_quality": source_quality,
-        "artist": artist,
-        "title": title,
-        "file_id": file_id,
-        "source_codec": source_codec,
-        "source_bitrate_kbps": _digits_to_int(source_bitrate or ""),
-    }
-
-
 def content_sha256(path: Path) -> str:
     """Strong file identity used to detect replacements at an unchanged path."""
     digest = hashlib.sha256()
@@ -264,43 +171,20 @@ def content_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _read_tag(tags, vorbis_key: str, mp4_key: str, id3: str | None = None):
-    """Read a tag value across Vorbis / ID3-TXXX / MP4-freeform layouts."""
-    # Vorbis comments (FLAC, Ogg, Opus) and MP4 freeform both behave dict-like.
-    for key in (vorbis_key, vorbis_key.lower(), mp4_key):
-        try:
-            v = tags.get(key)
-        except Exception:
-            v = None
-        if v:
-            return _decode_tag_value(v)
-    # ID3 (MP3): standard frame or our custom TXXX
-    try:
-        if id3:
-            frame = tags.get(id3)
-            if frame is not None:
-                return _decode_tag_value(getattr(frame, "text", None))
-        frames = tags.getall(f"TXXX:{vorbis_key}")
-        if frames:
-            return _decode_tag_value(getattr(frames[0], "text", None))
-    except Exception:
-        pass
-    return None
-
-
 def _norm_user(user_id: str | None) -> str:
     return user_id or ""
 
 
 def _iter_audio_files(directory: Path):
-    if not directory or not directory.exists():
+    """Yield the user's real audio files, and nothing the NAS has binned.
+
+    Delegates to the shared library walker so trash/recycle folders and symlinks
+    are skipped here exactly as they are everywhere else; offering to "upgrade"
+    a file the user deleted three weeks ago is not the kind of helpful we want.
+    """
+    if not directory:
         return
-    for p in directory.rglob("*"):
-        try:
-            if p.is_file() and p.suffix.lower() in _AUDIO_EXTS:
-                yield p
-        except OSError:
-            continue
+    yield from iter_library_audio_files(directory, _AUDIO_EXTS)
 
 
 def scan_user_library(user_id: str | None = None) -> dict:

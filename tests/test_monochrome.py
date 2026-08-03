@@ -28,6 +28,24 @@ def _make_qobuz_download_response(url="https://streaming-qobuz-std.akamaized.net
     return {"success": True, "data": {"url": url}}
 
 
+# The failover tests need several proxies to fail over between, but the shipped
+# default list shrinks every time another community proxy gives up the ghost.
+# Pinning our own trio here keeps these tests about the ordering and blacklisting
+# logic, rather than about whichever hosts happened to be alive on release day.
+_PROXY_A = "https://proxy-a.example.test"
+_PROXY_B = "https://proxy-b.example.test"
+_PROXY_C = "https://proxy-c.example.test"
+_FAKE_PROXY_LIST = f"{_PROXY_A},{_PROXY_B},{_PROXY_C}"
+
+
+def _patch_proxy_list(monkeypatch, value=_FAKE_PROXY_LIST):
+    """Point the Qobuz proxy setting at our fake trio."""
+    monkeypatch.setattr(
+        "settings.get_setting",
+        lambda key, default="", **kw: value if key == "monochrome_qobuz_proxy_url" else default,
+    )
+
+
 class _FakeHTTPResponse:
     """Pretend httpx.Response for proxy tests."""
     def __init__(self, json_body, status_code=200):
@@ -61,10 +79,11 @@ def test_qobuz_proxy_urls_returns_all_defaults(monkeypatch):
     monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
     monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
 
+    from constants import MONOCHROME_QOBUZ_PROXY_URL
     urls = monochrome._qobuz_proxy_urls()
-    assert "https://qobuz.kennyy.com.br" in urls
-    assert "https://mono.scavengerfurs.net" in urls
-    assert "https://qdl-api.monochrome.tf" in urls
+    # Whatever we ship as the default should all come back; asserting against the
+    # constant means the next proxy funeral doesn't also break this test.
+    assert urls == monochrome._split_endpoint_urls(MONOCHROME_QOBUZ_PROXY_URL)
 
 
 def test_qobuz_proxy_urls_puts_cached_first(monkeypatch):
@@ -82,12 +101,11 @@ def test_qobuz_proxy_urls_deprioritises_recently_failed(monkeypatch):
     import monochrome
     monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
     monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures",
-                        {"https://qdl-api.monochrome.tf": time.time()})
-    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {_PROXY_A: time.time()})
+    _patch_proxy_list(monkeypatch)
 
     urls = monochrome._qobuz_proxy_urls()
-    assert urls[-1] == "https://qdl-api.monochrome.tf"
+    assert urls[-1] == _PROXY_A
 
 
 def test_mark_qobuz_proxy_failed_invalidates_cache(monkeypatch):
@@ -139,7 +157,7 @@ def test_get_qobuz_stream_url_uses_first_healthy_proxy(monkeypatch):
     monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
     monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
     monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+    _patch_proxy_list(monkeypatch)
 
     def fake_get(url, params, headers, timeout):
         calls.append(url)
@@ -152,8 +170,8 @@ def test_get_qobuz_stream_url_uses_first_healthy_proxy(monkeypatch):
     cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
 
     assert cdn_url == "https://streaming-qobuz-std.akamaized.net/test.flac"
-    # Should have used the first proxy (kennyy) and not tried others
-    assert all("kennyy" in u for u in calls)
+    # Should have stopped at the first proxy and left the others alone
+    assert all(u.startswith(_PROXY_A) for u in calls)
 
 
 def test_get_qobuz_stream_url_falls_back_on_http_error(monkeypatch):
@@ -163,13 +181,13 @@ def test_get_qobuz_stream_url_falls_back_on_http_error(monkeypatch):
     monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
     monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
     monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+    _patch_proxy_list(monkeypatch)
 
     calls = []
 
     def fake_get(url, params, headers, timeout):
         calls.append(url)
-        if "kennyy" in url:
+        if url.startswith(_PROXY_A):
             return _FakeHTTPResponse({}, status_code=400)
         if "api/get-music" in url:
             return _FakeHTTPResponse(_make_qobuz_search_response())
@@ -180,10 +198,10 @@ def test_get_qobuz_stream_url_falls_back_on_http_error(monkeypatch):
     cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
 
     assert cdn_url == "https://streaming-qobuz-std.akamaized.net/test.flac"
-    # kennyy got blacklisted
-    assert "https://qobuz.kennyy.com.br" in failures
-    # scavengerfurs (second) returned the URL
-    assert monochrome._qobuz_proxy_url_cache == "https://mono.scavengerfurs.net"
+    # The 400 got the first proxy blacklisted
+    assert _PROXY_A in failures
+    # The second one picked up the slack
+    assert monochrome._qobuz_proxy_url_cache == _PROXY_B
 
 
 def test_get_qobuz_stream_url_raises_when_all_fail(monkeypatch):
@@ -211,10 +229,10 @@ def test_get_qobuz_stream_url_timeout_blacklists_proxy(monkeypatch):
     monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
     monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
     monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
+    _patch_proxy_list(monkeypatch)
 
     def fake_get(url, params, headers, timeout):
-        if "kennyy" in url:
+        if url.startswith(_PROXY_A):
             raise httpx.ReadTimeout("glacial proxy")
         if "api/get-music" in url:
             return _FakeHTTPResponse(_make_qobuz_search_response())
@@ -224,8 +242,8 @@ def test_get_qobuz_stream_url_timeout_blacklists_proxy(monkeypatch):
 
     cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
 
-    assert cdn_url  # scavengerfurs served it
-    assert "https://qobuz.kennyy.com.br" in failures
+    assert cdn_url  # the next proxy along served it
+    assert _PROXY_A in failures
 
 
 def test_get_qobuz_stream_url_fails_fast_when_all_proxies_parked(monkeypatch):

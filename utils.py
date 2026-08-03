@@ -18,6 +18,7 @@ import shutil
 from constants import (
     AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH,
     MAX_FILENAME_BYTES, FILENAME_STEM_RESERVE_BYTES,
+    EXCLUDED_SCAN_DIR_NAMES, EXCLUDED_SCAN_DIR_PREFIXES,
 )
 from settings import get_singles_dir, get_albums_dir, get_download_dir, get_playlists_dir, get_trash_dir, get_setting
 
@@ -145,6 +146,96 @@ def _normalise_duplicate_stem(stem: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+_FEATURED_ARTIST_SUFFIX_RE = re.compile(
+    r"\s*(?:[\(\[]\s*)?\b(?:feat(?:uring)?|ft)\.?\s+.*$",
+    re.IGNORECASE,
+)
+_ARTIST_CREDIT_NOISE = frozenset({
+    "feat", "featuring", "ft", "with", "vs", "x", "and", "the",
+})
+
+
+def artist_credit_lookup_variants(artist: str) -> list[str]:
+    """Return useful lookup forms for a service-supplied artist credit.
+
+    Playlist services commonly join their artist array as ``Primary, Guest``,
+    while the file, Navidrome, and Lidarr retain only ``Primary``. Keep the full
+    credit first, then add an explicit feat.-free or comma-primary fallback.
+    Exact/full-credit paths therefore still win for genuine comma-bearing band
+    names; the shorter form is only tried when the literal lookup failed.
+    """
+    original = re.sub(r"\s+", " ", (artist or "").strip())
+    if not original:
+        return []
+
+    variants = [original]
+    without_feature = _FEATURED_ARTIST_SUFFIX_RE.sub("", original).strip(" ,;-")
+    if without_feature and without_feature.casefold() != original.casefold():
+        variants.append(without_feature)
+
+    # Spotify-style multi-artist credits are stored as comma-separated text.
+    # This is deliberately a fallback after the complete name because commas
+    # are also legal inside a real artist name.
+    primary = without_feature.split(",", 1)[0].strip()
+    if primary and all(primary.casefold() != value.casefold() for value in variants):
+        variants.append(primary)
+    return variants
+
+
+def _artist_credit_tokens(artist: str) -> set[str]:
+    text = (artist or "").casefold()
+    text = text.replace("’", "'").replace("‘", "'").replace("`", "'")
+    text = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE)
+    tokens = {token for token in text.split() if token not in _ARTIST_CREDIT_NOISE}
+    return tokens or set(text.split())
+
+
+def _artist_credit_identity(artist: str) -> str:
+    text = (artist or "").strip().casefold()
+    text = text.replace("’", "'").replace("‘", "'").replace("`", "'")
+    return re.sub(r"\s+", " ", text)
+
+
+def artist_credit_match_score(expected: str, candidate: str) -> float:
+    """Score compatible artist credits, including omitted featured artists."""
+    expected_identity = _artist_credit_identity(expected)
+    candidate_identity = _artist_credit_identity(candidate)
+    if not expected_identity or not candidate_identity:
+        return 0.0
+    if expected_identity == candidate_identity:
+        return 2.0
+
+    expected_variants = {
+        _artist_credit_identity(value)
+        for value in artist_credit_lookup_variants(expected)
+    }
+    candidate_variants = {
+        _artist_credit_identity(value)
+        for value in artist_credit_lookup_variants(candidate)
+    }
+    if expected_variants & candidate_variants:
+        return 1.5
+
+    expected_tokens = _artist_credit_tokens(expected)
+    candidate_tokens = _artist_credit_tokens(candidate)
+    if not expected_tokens or not candidate_tokens:
+        return 0.0
+    if expected_tokens == candidate_tokens:
+        return 1.0
+    if (
+        expected_tokens.issubset(candidate_tokens)
+        or candidate_tokens.issubset(expected_tokens)
+    ):
+        intersection = len(expected_tokens & candidate_tokens)
+        return intersection / max(len(expected_tokens), len(candidate_tokens))
+    return 0.0
+
+
+def artist_credits_match(expected: str, candidate: str) -> bool:
+    """True when two credits differ only by collaborator presentation."""
+    return artist_credit_match_score(expected, candidate) > 0
+
+
 def normalise_track_for_hash(artist: str, title: str) -> str:
     """Normalise artist/title for consistent hashing across playlist checks.
 
@@ -220,6 +311,78 @@ def extract_artist_title(full_title: str, channel: str) -> tuple[str, str]:
     return artist.strip() or "Unknown Artist", fallback_title
 
 
+def is_excluded_scan_dir(name: str) -> bool:
+    """True if a directory of this name should never be walked by a library scan.
+
+    Deleted files do not always leave the building. Synology, QNAP and Windows
+    SMB shares all park them in a hidden bin *inside* the share, so a naive
+    recursive walk happily counts last month's deletions as part of the library
+    and, worse, offers to upgrade them.
+
+    Matches on the bare directory name, case-insensitively, at any depth.
+    """
+    if not name:
+        return False
+    lowered = name.strip().lower()
+    if lowered in EXCLUDED_SCAN_DIR_NAMES:
+        return True
+    return lowered.startswith(EXCLUDED_SCAN_DIR_PREFIXES)
+
+
+def path_has_excluded_scan_dir(path: Path, root: Path | None = None) -> bool:
+    """True if any directory component of `path` is an excluded scan folder.
+
+    When `root` is given, only the part below it is inspected, so a library
+    that legitimately lives under, say, /volume1/#recycle-archive/Music is not
+    excluded on the strength of its parents. Nobody should do that. Somebody
+    will.
+    """
+    try:
+        relative = path.relative_to(root) if root else path
+    except ValueError:
+        relative = path
+    return any(is_excluded_scan_dir(part) for part in relative.parts)
+
+
+def iter_library_audio_files(root: Path, extensions=None):
+    """Walk `root` yielding audio files, skipping trash bins and symlinks.
+
+    The single walker every full-library scan should use. Symlinks are not
+    followed, and files that resolve outside `root` are dropped, so a helpful
+    symlink to /mnt/everything cannot quietly turn a library scan into a
+    whole-NAS scan.
+    """
+    if not root:
+        return
+    exts = tuple(ext.lower() for ext in (extensions or AUDIO_EXTENSIONS))
+    try:
+        if not root.exists():
+            return
+        root_resolved = root.resolve()
+    except OSError:
+        return
+
+    for current, dirnames, filenames in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        dirnames[:] = [
+            d for d in dirnames
+            if not is_excluded_scan_dir(d) and not (current_path / d).is_symlink()
+        ]
+        for filename in filenames:
+            path = current_path / filename
+            if path.suffix.lower() not in exts:
+                continue
+            try:
+                if path.is_symlink():
+                    continue
+                if not path.is_file():
+                    continue
+                path.resolve().relative_to(root_resolved)
+            except (OSError, ValueError):
+                continue
+            yield path
+
+
 def _find_audio_match_in_dir(directory: Path, stems: list[str]) -> Optional[Path]:
     """Return the first matching audio file inside one directory."""
     if not directory.exists():
@@ -257,16 +420,24 @@ def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Opti
     """
     try:
         sanitized_title = sanitize_filename(title)
-        sanitized_artist = sanitize_filename(artist or "")
-        # Match the capping the download path applies so long names still resolve.
-        artist_title_stem = cap_filename_stem(f"{sanitized_artist} - {sanitized_title}") if sanitized_artist else sanitized_title
-        stems = [s for s in (sanitized_title, artist_title_stem) if s]
+        artist_variants = artist_credit_lookup_variants(artist) or [artist or ""]
+        stems = [sanitized_title] if sanitized_title else []
+        for artist_variant in artist_variants:
+            sanitized_artist = sanitize_filename(artist_variant)
+            if sanitized_artist:
+                # Match the capping the download path applies so long names still resolve.
+                stems.append(
+                    cap_filename_stem(f"{sanitized_artist} - {sanitized_title}")
+                )
 
-        checks = [
-            get_download_dir(artist, user_id=user_id),
-            get_singles_dir(user_id=user_id) / sanitize_filename(artist),
-            get_singles_dir(user_id=user_id),
-        ]
+        checks = []
+        for artist_variant in artist_variants:
+            checks.extend([
+                get_download_dir(artist_variant, user_id=user_id),
+                get_singles_dir(user_id=user_id)
+                / sanitize_filename(artist_variant),
+            ])
+        checks.append(get_singles_dir(user_id=user_id))
         seen = set()
         for directory in checks:
             d_str = str(directory)
@@ -280,12 +451,14 @@ def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Opti
         # Auto-album routing moves singles into Artist/Album/ subfolders.
         # Scan one level deeper so re-downloads find the routed copy.
         artist_dirs_to_scan = []
-        singles_artist = get_singles_dir(user_id=user_id) / sanitize_filename(artist or "")
-        if singles_artist.exists():
-            artist_dirs_to_scan.append(singles_artist)
-        albums_artist = get_albums_dir(user_id=user_id) / sanitize_filename(artist or "")
-        if albums_artist.exists():
-            artist_dirs_to_scan.append(albums_artist)
+        for artist_variant in artist_variants:
+            safe_artist = sanitize_filename(artist_variant)
+            singles_artist = get_singles_dir(user_id=user_id) / safe_artist
+            if singles_artist.exists():
+                artist_dirs_to_scan.append(singles_artist)
+            albums_artist = get_albums_dir(user_id=user_id) / safe_artist
+            if albums_artist.exists():
+                artist_dirs_to_scan.append(albums_artist)
         for artist_dir in artist_dirs_to_scan:
             try:
                 for subdir in artist_dir.iterdir():

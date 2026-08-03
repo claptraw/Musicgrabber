@@ -1,5 +1,5 @@
 # Music Grabber
-**v3.0.3**
+**v3.1.0 (development)**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -33,12 +33,17 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches enabled sources in parallel and grabs the best result for each. It can also create a playlist and route files into the Playlists directory or a custom watched-playlist folder
 - **Similar artist discovery:** hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
 - **Apprise notifications:** one URL covers Gotify, ntfy, Discord, Pushover, Slack, and about 50 others. Also supports Telegram webhook and SMTP email
-- **Navidrome/Lidarr duplicate heads-up:** searches warn when a track is already known to either library; Navidrome can also prevent the duplicate download and reuse the existing path for playlist routing
+- **Navidrome/Lidarr duplicate heads-up:** searches warn when a track is already known to either library, including when a playlist says `Primary Artist, Guest` but the library quite reasonably files it under `Primary Artist`; Navidrome can also prevent the duplicate download and reuse the existing path for playlist routing
 - **Best quality audio:** new installations keep the provider's source format by default. Optional conversion supports FLAC, ALAC/AAC-in-M4A, Opus, or MP3, with quality settings for lossy formats and clear warnings that a larger container cannot resurrect audio already lost in action
 - **Track upgrades:** opt-in library scanner re-probes and hashes MusicGrabber files
   on the configured interval, flags files below your quality tier, follows tagged
   files moved inside the library, and revalidates the original immediately before
   any safe, recoverable replacement
+- **Audio Provenance Audit:** a separate read-only scan of the complete configured
+  music directory, including Albums and historical files. It distinguishes the
+  stored format from recorded acquisition history, explains every classification,
+  leaves uncertain lossless-looking files unknown, and exports filtered CSV/JSON
+  dry-run reports
 - **Loudness normalisation:** optional two-pass EBU R128 normalisation brings lossy web sources to -14 LUFS without touching lossless masters
 - **Automatic Music import:** optionally copy each completed download into a mounted macOS Music "Automatically Add to Music" folder
 - **Enhanced metadata:** AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source tags. For "Artist - Title" queries, MusicBrainz expected duration is used as a scoring signal at search time, so a 1:41 DJ edit won't outrank the 3:31 original
@@ -69,6 +74,64 @@ MusicGrabber is intentionally narrow. It is **not**:
 MusicGrabber keeps the provider's source format by default. This avoids unnecessary re-encoding and prevents a lossy web download from turning up in a FLAC overcoat pretending it has always summered in the south of France.
 
 If you prefer a uniform library, choose **Convert to** and select FLAC, ALAC, Opus, or MP3. FLAC and ALAC preserve genuinely lossless input, but converting YouTube, SoundCloud, MP3, AAC, or Opus audio to a lossless container cannot restore information that has already gone missing. Monochrome and Soulseek may provide native lossless files; MusicGrabber records the known source and stored formats separately so the distinction survives the trip into your library.
+
+## Audio Provenance Audit
+
+Open **Watched → Audio Provenance Audit** and choose **Run Audit**. The scan
+walks every supported audio file beneath the configured music directory,
+including Singles, Playlists, Albums, and older files MusicGrabber did not
+download. Symlinks and known trash, upgrade-quarantine, and acquisition-staging
+directories are excluded, as are NAS-generated bins (`@Recycle`, `#recycle`,
+`.Trash-1000`, `$RECYCLE.BIN`) and metadata folders (`@eaDir`,
+`System Volume Information`, `lost+found`, the macOS Spotlight caches). The
+same exclusion list is shared by the track-upgrades scan and the Stats storage
+figure, so none of them count files you deleted weeks ago that the NAS has
+quietly held on to. Album folders genuinely named *Trash* are unaffected; only
+the hidden bin names above are skipped. A new result only becomes current when the whole scan
+has completed, so a failed scan cannot replace the last complete report.
+Interactive library views take priority over the background reader, so a large
+NAS audit waits its turn rather than making the rest of the UI seize up.
+
+The report keeps three ideas separate:
+
+- **Stored format** is what the file is now: its container, codec, observed
+  bitrate, sample rate, and bit depth where available.
+- **Recorded provenance** comes from MusicGrabber's `SOURCE`,
+  `SOURCE_QUALITY`, `SOURCE_CODEC`, and `SOURCE_BITRATE` tags, including the
+  older human-readable tag format.
+- **Effective quality** is a conservative conclusion from those two sets of
+  evidence. A lossy input converted to FLAC remains lossy; a historical FLAC
+  with no decisive provenance remains unknown.
+
+Each file is placed in one of these classes:
+
+| Classification | Meaning |
+|---|---|
+| Known lossy transcode | A lossless codec now stores audio whose recorded acquisition codec was lossy |
+| Native lossy acquisition | Both the stored file and recorded acquisition are lossy |
+| Lossy derivative of recorded lossless | A lossy file was made from an acquisition recorded as lossless |
+| Recorded lossless acquisition | Both stored and acquisition codecs were recorded as lossless |
+| Historical or unknown provenance | The available history is missing or too ambiguous for a firmer conclusion |
+| Unreadable audio file | The extension is supported but Mutagen could not inspect the file |
+
+“Recorded lossless” is intentionally not called “genuine lossless.” Container,
+bitrate, metadata, and spectral analysis cannot prove that a file has never
+passed through a lossy encoder. The audit currently performs no spectral
+analysis at all; it would only ever be a labelled heuristic, not a promotion
+ticket for uncertain files. A 1,000 kbps FLAC can wear a very impressive
+waistcoat and still know nothing about its childhood.
+
+Filter by classification, container, codec, acquisition source, effective
+quality, or use the two deliberately separate lossless views:
+
+- **Stored in a lossless codec** includes unknown-history lossless-looking files.
+- **Recorded lossless acquisition** includes only files whose acquisition
+  metadata records a lossless codec.
+
+CSV and JSON exports include the scan version, filters, evidence, caveats, and
+an explicit dry-run notice. The audit never renames, retags, moves, deletes, or
+replaces audio. It also does not feed anything into Watched Upgrades yet; that
+bridge stays out until the report has earned trust with real libraries.
 
 ## Screenshots
 
@@ -271,6 +334,9 @@ Settings are stored in the database and persist across container restarts.
 | `MIN_AUDIO_BITRATE` | `0` | Minimum audio bitrate in kbps. Downloads below this are rejected. 0 = disabled. Lossless (FLAC) always passes |
 | `REJECT_LIVE_VERSIONS` | `false` | Reject a confidently identified live recording when the query did not request one |
 | `NORMALISE_LOSSY_AUDIO` | `false` | Apply two-pass EBU R128 loudness normalisation to lossy web sources; lossless sources are untouched |
+| `ENABLE_REPLAYGAIN` | `false` | Write ReplayGain 2.0 track gain/peak tags on new downloads. Tags only, the audio is never re-encoded. Album gain and peak are added once every track of an album has landed |
+| `REPLAYGAIN_REPLACE_EXISTING` | `false` | Overwrite ReplayGain tags a file already carries. Off by default; existing tags are assumed to be deliberate |
+| `REPLAYGAIN_REFERENCE_LUFS` | `-18.0` | ReplayGain reference loudness. The 2.0 spec's value; changing it makes your library disagree with everyone else's |
 | `AUTO_IMPORT_DIR` | *(empty)* | Copy completed downloads into this directory, such as macOS Music's Automatically Add folder |
 | `PLAYLIST_COMMENT_TAGGING` | `false` | Write watched-playlist names into each track's Comment tag |
 | `ENABLE_TRACK_UPGRADES` | `false` | Enable scanning for library files below the configured output quality tier |
@@ -483,26 +549,37 @@ environment:
 
 **Full integration** (search + download): This is where most people get tripped up, so here is the plain English version of what needs to happen.
 
-When slskd finishes downloading a track, it saves it to a folder on your server. MusicGrabber needs to be able to see that same folder so it can pick the file up, tag it, and move it into your music library. The two applications are separate Docker containers, so they cannot see each other's files by default. You have to give them both access to the same folder on your server.
+When slskd finishes downloading a track, it saves it to a folder on your server. MusicGrabber needs to be able to see that same folder so it can pick the file up, validate it, and copy the finished version into your music library. The two applications are separate Docker containers, so they cannot see each other's files by default. You have to give them both access to the same staging folder on your server.
 
 You do that by adding the same folder to the `volumes:` section of **both** containers in your `docker-compose.yml`. The path on the **left** of the `:` is the folder on your server. The path on the **right** is where that folder appears inside the container. The right-hand path must be the same in both containers.
 
-Here is a complete example. The server folder is `/mnt/music/downloads`, and both containers see it as `/downloads`:
+Keep the three jobs in separate host directories:
+
+- `/srv/music` is the finished library.
+- `/srv/slskd/downloads` is temporary, unverified acquisition staging.
+- `/srv/slskd/shares` contains only files you have deliberately chosen to share.
+
+Do **not** put the downloads directory inside the slskd shares directory or configure it as a share. A Soulseek filename or `.flac` extension is a claim from a stranger on the internet, not a sworn affidavit. MusicGrabber only validates the file after slskd has downloaded it.
+
+Here is a complete safe-layout example. Both containers see the staging directory as `/downloads`, but MusicGrabber receives read-only access to slskd's copy:
 
 ```yaml
 services:
   slskd:
     image: slskd/slskd
     volumes:
-      - /mnt/music/downloads:/downloads   # server folder : path inside slskd
+      - /srv/slskd/downloads:/downloads
+      - /srv/slskd/shares:/shares:ro
     environment:
       - SLSKD_DOWNLOADS_DIR=/downloads    # tell slskd to save completed files here
 
   musicgrabber:
     image: g33kphr33k/musicgrabber:latest
     volumes:
-      - /mnt/music/downloads:/downloads   # same server folder, same inside path
+      - /srv/music:/music
+      - /srv/slskd/downloads:/downloads:ro
     environment:
+      - MUSIC_DIR=/music
       - SOURCE_SOULSEEK_ENABLED=true
       - SLSKD_URL=http://slskd:5030
       - SLSKD_USER=your-slskd-username
@@ -510,15 +587,17 @@ services:
       - SLSKD_DOWNLOADS_PATH=/downloads   # must match the right-hand path above
 ```
 
-The right-hand paths (`:/downloads`) match, so both containers are looking at the same folder. `SLSKD_DOWNLOADS_PATH` tells MusicGrabber where to find it. You can set this in the MusicGrabber Settings tab instead of the env var if you prefer.
+The right-hand paths (`:/downloads`) match, so both containers are looking at the same staging folder. `SLSKD_DOWNLOADS_PATH` tells MusicGrabber where to find it. MusicGrabber copies the chosen file into `/music`, then performs its integrity, conversion, and metadata work there; the unverified staging copy is never part of the library or the deliberate share. You can set the downloads path in the MusicGrabber Settings tab instead of using the environment variable.
 
-**If slskd runs on a different machine**, you can still share the folder over the network using NFS or SMB and mount it the same way.
+**If slskd runs on a different machine**, expose only its downloads directory over NFS or SMB and mount that read-only in MusicGrabber. Keep the slskd share directories separate and unmounted.
 
 **Note:** Soulseek is a P2P network. Most users run slskd behind a VPN. This integration only talks to your slskd instance; it does not connect directly to the Soulseek network. New accounts may see rejected downloads until they build reputation by sharing files.
 
 ### Playlist Import
 
 MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, YouTube, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists. Paste a supported URL in the Bulk Import tab to fetch the track list, then import them via the enabled search sources.
+
+Bulk Import also accepts **MusicBrainz release URLs**, which are handled differently: rather than filling the track list, they queue the release straight down the album pipeline. See *MusicBrainz album URLs* below.
 
 **How it works by source:**
 
@@ -529,6 +608,12 @@ MusicGrabber can import tracks from Spotify, Apple Music, Amazon Music, YouTube,
 - **Tidal playlists**: Direct scrape of Tidal's embed player (`embed.tidal.com/playlists/UUID`), which server-renders the full track list. Downloads can use any enabled source
 - **Beatport playlists**: Top 100, genre charts, and editorial charts read straight from the page's server-rendered JSON. Folder names are derived from the URL (`/top-100` becomes "Beatport Top 100", `/genre/techno/6/top-100` becomes "Techno Top 100")
 - **Monochrome playlists**: Public `monochrome.tf/playlist/...` URLs are fetched via the same hifi-api fallback list as Monochrome search, so the playlist importer benefits from the endpoint rotation when one host wanders off
+
+**MusicBrainz album URLs:**
+
+Paste a `https://musicbrainz.org/release/<mbid>` or `https://musicbrainz.org/release-group/<mbid>` link into the Bulk Import URL box and MusicGrabber queues it as a proper album download rather than a flat track list. Files land in `Albums/Artist/Album/` with cover art, an `.albuminfo` sidecar, and track numbers from the release itself; tracks you already own are skipped.
+
+The MBID is already in the URL, so there is no scraping and no fuzzy matching to get wrong. Release-group URLs (what MusicBrainz search links to) are resolved to the earliest official pressing in the group. If "Create playlist" is ticked, the album M3U name comes from the playlist name field.
 
 **Spotify private playlists and personal library:**
 
@@ -591,6 +676,8 @@ Each watched playlist can also:
 - Limit preferred sources, useful when a SoundCloud set should stay on SoundCloud, or a playlist deserves Soulseek/Monochrome first
 - Route downloads into the standard Playlists directory or a custom subfolder under your music root
 - Show missing tracks, candidate search results, and manual retry controls when the automatic match is not good enough
+
+Artist guest lists are not required to agree word-for-word across Spotify, Navidrome, Lidarr, and the file on disk. MusicGrabber tries the complete credit first, then falls back to the primary artist when a service has written `Primary Artist, Guest` or `Primary Artist feat. Guest`. If a manual Search download discovers that the primary-artist copy already exists, the watched row is reconciled too: it leaves Missing, gains the reusable path where available, and joins the next M3U rebuild. The guest artist has not been erased from history; the databases have merely stopped arguing over the seating plan.
 
 **Configuration:**
 
@@ -655,10 +742,11 @@ Notes:
 
 ### Search and Download
 
-1. **Single tracks:** search for a song, tap/click the result to download. Searches all enabled sources in parallel
+1. **Single tracks:** search for a song on the **Tracks** tab, tap/click the result to download. Searches all enabled sources in parallel
 2. **Preview:** on desktop, hover over a result for 2 seconds to hear a preview (works for all sources)
-3. **Playlists:** paste a supported playlist URL in Bulk Import or Watched Playlists to fetch the track list, then queue downloads through your enabled sources
-4. **Processing feedback:** shows "Processing..." immediately when tapped, then "Added to queue"
+3. **Minimum quality:** filter results to 192/256/320 kbps or lossless. Only Soulseek, Monochrome and FreeMp3Cloud declare a quality before download; YouTube and SoundCloud declare nothing, so they count as *undeclared* and are hidden as soon as you set a minimum. Tick "Keep undeclared" to keep them. Note that results are ordered by search relevance, not audio quality, so an undeclared YouTube result with an exact title match will otherwise outrank genuine lossless ones. The choice is remembered between searches
+4. **Playlists:** paste a supported playlist URL in Bulk Import or Watched Playlists to fetch the track list, then queue downloads through your enabled sources
+5. **Processing feedback:** shows "Processing..." immediately when tapped, then "Added to queue"
 
 ### Bulk Import
 
@@ -734,6 +822,18 @@ With `ENABLE_MUSICBRAINZ=true`:
 4. Falls back to cleaned source metadata if neither lookup finds anything
 5. Sets album to "Singles" by default when no album is found
 6. Fetches proper cover art using Cover Art Archive, then iTunes/Deezer fallbacks, keeping source thumbnails as the last resort
+
+### ReplayGain
+
+Off by default. With `ENABLE_REPLAYGAIN=true` (or the Settings toggle), each finished download is measured and tagged with ReplayGain 2.0 values:
+
+- **Track gain and peak** are written against the spec's -18 LUFS reference. The measurement reuses the same EBU R128 pass as loudness normalisation
+- **Nothing is re-encoded.** Only tags are written, so this is safe on lossless files and undone by deleting four tags. It is the non-destructive alternative to `NORMALISE_LOSSY_AUDIO`, which does rewrite the audio
+- **Album gain and peak** are added once every track of an album has landed, calculated across the whole record so quiet tracks stay quiet relative to loud ones rather than being levelled individually
+- **Existing tags are preserved** unless `REPLAYGAIN_REPLACE_EXISTING=true`
+- **Supported containers:** FLAC, MP3, M4A/MP4, Ogg, Opus. WebM has nowhere to put the tags and is skipped
+
+If both `NORMALISE_LOSSY_AUDIO` and `ENABLE_REPLAYGAIN` are on, normalisation runs first and ReplayGain measures the result, so the tags describe the file as it actually sits on disk.
 
 ### Duplicate Detection
 
@@ -974,6 +1074,19 @@ music.yourdomain.com {
 | `POST` | `/api/upgrades/upgrade-all` | Queue all currently eligible upgrades |
 | `POST` | `/api/upgrades/rescan` | Start a fresh library quality scan |
 
+### Audio Provenance Audit
+
+These endpoints are unavailable to peon accounts. All filters are optional:
+`classification`, `container`, `codec`, `source`, `effective_quality`, and
+`lossless_only=stored|recorded`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/audio-audit` | Get the current complete snapshot, summary/filter options, and any running scan's progress |
+| `POST` | `/api/audio-audit/scans` | Start a full configured-library read-only audit |
+| `GET` | `/api/audio-audit/files` | List evidence rows (`?page=1&per_page=25` plus optional filters) |
+| `GET` | `/api/audio-audit/export` | Download the filtered dry-run report (`?format=csv|json`) |
+
 ### Album Downloads
 
 | Method | Endpoint | Description |
@@ -986,6 +1099,7 @@ music.yourdomain.com {
 | `GET` | `/api/albums/dirs` | List artist folders under the Albums directory |
 | `GET` | `/api/albums/dirs/{artist}` | List album folders within an artist directory |
 | `GET` | `/api/albums/dirs/{artist}/{album}/info` | Read `.albuminfo` sidecar and return MB tracklist |
+| `POST` | `/api/albums/resolve-url` | Resolve a MusicBrainz release or release-group URL to artist/title/MBID for the album pipeline |
 | `POST` | `/api/albums/download` | Queue a full album for download with MusicBrainz routing |
 
 ### Trash Bin

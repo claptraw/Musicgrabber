@@ -135,7 +135,7 @@
         </div>
 
         <div class="tabs">
-            <button class="tab active" data-tab="results">Results</button>
+            <button class="tab active" data-tab="results">Tracks</button>
             <button class="tab" data-tab="bulk">Bulk Import</button>
             <button class="tab peon-hide" data-tab="albums" id="albumsTabBtn">Albums</button>
             <button class="tab" data-tab="watched">Watched</button>
@@ -147,6 +147,26 @@
         <div id="relatedSuggestions" style="display: none;"></div>
         <div id="exploreBar" style="display: none;"></div>
         <div id="searchProgress" class="search-progress" style="display: none;" role="status" aria-live="polite" aria-label="Search progress"></div>
+        <div id="qualityFilterRow" class="quality-filter-row" style="display: none;">
+            <label for="qualityFilterSelect" class="quality-filter-label">Minimum quality</label>
+            <select id="qualityFilterSelect" class="playlist-selector-select">
+                <option value="0" selected>Any quality</option>
+                <option value="2">192 kbps or better</option>
+                <option value="3">256 kbps or better</option>
+                <option value="4">320 kbps or better</option>
+                <option value="5">Lossless only</option>
+            </select>
+            <label class="quality-filter-check">
+                <input type="checkbox" id="qualityFilterKeepUnknown">
+                <span>Keep undeclared</span>
+            </label>
+            <span id="qualityFilterCount" class="quality-filter-count" aria-live="polite"></span>
+            <span
+                id="qualityFilterTooltip"
+                title="Only Soulseek, Monochrome and FreeMp3Cloud state a quality before you download. YouTube and SoundCloud say nothing, so they count as undeclared and are hidden once you set a minimum. Tick this to keep them anyway. Note that results are ordered by how well they match your search, not by audio quality."
+                class="info-badge"
+            >i</span>
+        </div>
         <div id="resultsTab" class="tab-panel tab-visible"></div>
 
         <div id="bulkTabContainer" class="tab-panel">
@@ -166,7 +186,7 @@
                         <input
                             type="text"
                             id="spotifyUrlInput"
-                            placeholder="Playlist or album URL"
+                            placeholder="Playlist, album, or MusicBrainz release URL"
                             class="bulk-url-input"
                         >
                         <button
@@ -178,10 +198,10 @@
                     </div>
                     <div id="spotifyError" style="display: none;" class="form-error"></div>
                     <div class="bulk-services-row">
-                        <span id="playlistServicesHint" class="bulk-services-hint">Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz</span>
+                        <span id="playlistServicesHint" class="bulk-services-hint">Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz, MusicBrainz (release URLs download as proper albums)</span>
                         <span
                             id="playlistServicesTooltip"
-                            title="Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz"
+                            title="Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz, MusicBrainz (release URLs download as proper albums)"
                             class="info-badge"
                         >i</span>
                     </div>
@@ -276,7 +296,7 @@
 
         <div id="watchedTabContainer" class="tab-panel">
             <div class="queue-header">
-                <h2 class="queue-section-heading">Watched Playlists / <a href="#watchedArtists" title="Jump to Watched Artists">Watched Artists &#8595;</a> / <a href="#watchedUpgrades" title="Jump to Watched Upgrades">Watched Upgrades &#8595;</a></h2>
+                <h2 class="queue-section-heading">Watched Playlists / <a href="#watchedArtists" title="Jump to Watched Artists">Watched Artists &#8595;</a> / <a href="#watchedUpgrades" title="Jump to Watched Upgrades">Watched Upgrades &#8595;</a><span class="peon-hide"> / <a href="#audioAudit" title="Jump to Audio Provenance Audit">Audio Audit &#8595;</a></span></h2>
                 <button class="btn accent-btn" id="refreshAllWatchedBtn">Check All Now</button>
             </div>
             <div class="watched-add-panel">
@@ -473,6 +493,71 @@
                 <button class="btn btn-ghost" id="upgradesPrevBtn">&#8592; Prev</button>
                 <span id="upgradesPageInfo" class="upgrades-page-info"></span>
                 <button class="btn btn-ghost" id="upgradesNextBtn">Next &#8594;</button>
+            </div>
+
+            <!-- Read-only Audio Provenance Audit -->
+            <div id="audioAudit" class="queue-header section-with-top-margin peon-hide">
+                <h2 class="queue-section-heading">Audio Provenance Audit</h2>
+                <div class="audio-audit-header-actions">
+                    <button class="btn btn-ghost" id="audioAuditExportCsvBtn" onclick="exportAudioAudit('csv')">Export CSV</button>
+                    <button class="btn btn-ghost" id="audioAuditExportJsonBtn" onclick="exportAudioAudit('json')">Export JSON</button>
+                    <button class="btn accent-btn" id="runAudioAuditBtn" onclick="runAudioAudit()">Run Audit</button>
+                </div>
+            </div>
+            <div class="watched-add-panel peon-hide">
+                <p class="watched-panel-text">
+                    A read-only census of every supported audio file under your music directory, including Albums and historical files. It reports observed storage and recorded acquisition evidence; it does not pretend a large bitrate and a confident waistcoat can prove genuine lossless audio.
+                </p>
+                <p id="audioAuditStatus" class="watched-schedule-info">
+                    No audit loaded yet.
+                </p>
+                <div id="audioAuditSummary" class="audio-audit-summary"></div>
+                <div class="audio-audit-filters" aria-label="Audio audit filters">
+                    <label>
+                        Classification
+                        <select id="audioAuditClassification" class="watched-select" onchange="audioAuditFiltersChanged()">
+                            <option value="">All classifications</option>
+                        </select>
+                    </label>
+                    <label>
+                        Container
+                        <select id="audioAuditContainer" class="watched-select" onchange="audioAuditFiltersChanged()">
+                            <option value="">All containers</option>
+                        </select>
+                    </label>
+                    <label>
+                        Codec
+                        <select id="audioAuditCodec" class="watched-select" onchange="audioAuditFiltersChanged()">
+                            <option value="">All codecs</option>
+                        </select>
+                    </label>
+                    <label>
+                        Acquisition source
+                        <select id="audioAuditSource" class="watched-select" onchange="audioAuditFiltersChanged()">
+                            <option value="">All sources</option>
+                        </select>
+                    </label>
+                    <label>
+                        Effective quality
+                        <select id="audioAuditEffective" class="watched-select" onchange="audioAuditFiltersChanged()">
+                            <option value="">All effective qualities</option>
+                        </select>
+                    </label>
+                    <label>
+                        Lossless view
+                        <select id="audioAuditLossless" class="watched-select" onchange="audioAuditFiltersChanged()">
+                            <option value="">All files</option>
+                            <option value="stored">Stored in a lossless codec</option>
+                            <option value="recorded">Recorded lossless acquisition</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+            <div id="audioAuditList" class="results peon-hide"></div>
+            <div id="audioAuditPager" class="upgrades-pager peon-hide" style="display: none;">
+                <button class="btn btn-ghost" id="audioAuditPrevBtn" onclick="changeAudioAuditPage(-1)">&#8592; Prev</button>
+                <span id="audioAuditPageInfo" class="upgrades-page-info"></span>
+                <button class="btn btn-ghost" id="audioAuditNextBtn" onclick="changeAudioAuditPage(1)">Next &#8594;</button>
             </div>
         </div>
 
@@ -718,6 +803,22 @@
                         <span class="settings-hint settings-hint-full">Evens out the wild volume differences between YouTube (and other lossy web source) downloads by normalising them to a streaming-standard -14 LUFS as they arrive. Pure gain adjustment, no compression or pumping. Lossless sources (Monochrome, Soulseek) are never touched.</span>
                     </label>
                     <label class="settings-label settings-label-wrap">
+                        <span>Write ReplayGain Tags</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingEnableReplaygain">
+                            <span class="toggle-slider"></span>
+                        </div>
+                        <span class="settings-hint settings-hint-full">Measures each finished download and writes ReplayGain 2.0 track gain and peak tags (reference -18 LUFS). <strong>The audio itself is never re-encoded</strong>, so unlike Normalise Loudness above this is completely reversible and safe on lossless files; your player does the turning-down. Album gain and peak are added once all of an album's tracks have landed. Supported for FLAC, MP3, M4A, Ogg and Opus.</span>
+                    </label>
+                    <label class="settings-label settings-label-wrap">
+                        <span>Replace Existing ReplayGain Tags</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingReplaygainReplaceExisting">
+                            <span class="toggle-slider"></span>
+                        </div>
+                        <span class="settings-hint settings-hint-full">Off (recommended): files that already carry ReplayGain tags are left exactly as they are, on the assumption whoever wrote them meant it. On: MusicGrabber's own measurement wins every time.</span>
+                    </label>
+                    <label class="settings-label settings-label-wrap">
                         <span>Organise by Artist</span>
                         <div class="toggle-switch">
                             <input type="checkbox" id="settingOrganiseByArtist" checked>
@@ -838,8 +939,8 @@
                         <label for="settingFilePermissions">Downloaded File Permissions</label>
                         <div class="settings-subdir-flex">
                             <select id="settingFilePermissions" class="settings-input-path" onchange="saveSettings()">
-                                <option value="666">666 (rw-rw-rw-) — default</option>
-                                <option value="777">777 (rwxrwxrwx) — NAS/share write access</option>
+                                <option value="666">666 (rw-rw-rw-), default</option>
+                                <option value="777">777 (rwxrwxrwx), NAS/share write access</option>
                             </select>
                         </div>
                         <span class="settings-hint-sm">Permissions applied to each downloaded file. 666 is fine for most setups. Use 777 if your NAS or media server refuses to write to files owned by root.</span>
@@ -1181,7 +1282,7 @@
                             <span id="browserApiKeyStatus" class="browser-api-key-status"></span>
                             <button type="button" id="clearApiKeyBtn" class="btn btn-ghost clear-stored-key-btn" style="display:none;">Clear Stored Key</button>
                         </div>
-                        <span class="settings-hint-sm">In API key mode, MusicGrabber stores your key in this browser for future visits. "Clear Stored Key" removes it from this browser only — you'll be prompted to re-enter it next time.</span>
+                        <span class="settings-hint-sm">In API key mode, MusicGrabber stores your key in this browser for future visits. "Clear Stored Key" removes it from this browser only; you'll be prompted to re-enter it next time.</span>
                     </div>
                     <!-- Change My Password (shown in session mode only) -->
                     <div id="changePasswordSection" style="display:none;">

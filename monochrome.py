@@ -356,9 +356,9 @@ def _cover_url(cover_uuid: str) -> str:
 # canonical studio version. Tidal exposes two signals that make this far easier
 # than guessing from album titles:
 #
-#   item.version     — non-empty for live/remix/demo/rehearsal/karaoke/etc.;
+#   item.version     : non-empty for live/remix/demo/rehearsal/karaoke/etc.;
 #                      empty (or just a remaster note) on the canonical track.
-#   item.popularity  — Tidal's own popularity ranking. Canonical masters tend
+#   item.popularity  : Tidal's own popularity ranking. Canonical masters tend
 #                      to dominate. We use it as a small tiebreaker.
 #
 # Album titles are still a useful fallback (soundtracks, karaoke comps, tribute

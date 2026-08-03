@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp (latest version) — pick the right binary for the host arch
+# Install yt-dlp (latest version); pick the right binary for the host arch
 RUN ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "arm64" ]; then \
         YT_DLP_BIN="yt-dlp_linux_aarch64"; \

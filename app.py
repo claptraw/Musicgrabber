@@ -5,6 +5,8 @@ Searches music sources, downloads best quality audio with optional conversion to
 """
 
 import contextlib
+import csv
+import io
 import json
 import os
 import re
@@ -66,7 +68,7 @@ from youtube import (
 )
 from search import (
     search_source, search_all, _search_all_events, get_available_sources,
-    clear_automated_search_cache, SOURCE_REGISTRY,
+    clear_automated_search_cache, SOURCE_REGISTRY, quality_tier_of_result,
 )
 import servicecheck
 from slskd import slskd_enabled, search_slskd
@@ -87,8 +89,19 @@ from upgrades import (
     get_candidates_page, search_candidate, dismiss_candidate,
     perform_upgrade, perform_upgrade_all,
 )
-from metadata import search_artist_mbid, fetch_artist_albums, fetch_album_tracks, apply_metadata_to_file, guess_musicbrainz_tags, MusicBrainzUnavailable
-from utils import clean_title, hash_track, is_valid_youtube_id, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
+from audio_provenance import (
+    get_audit_export,
+    get_audit_files,
+    get_audit_status,
+    prioritise_over_audio_audit,
+    start_audit_scan,
+)
+from metadata import (
+    search_artist_mbid, fetch_artist_albums, fetch_album_tracks, apply_metadata_to_file,
+    guess_musicbrainz_tags, MusicBrainzUnavailable,
+    parse_musicbrainz_release_url, fetch_release_summary,
+)
+from utils import clean_title, hash_track, is_valid_youtube_id, iter_library_audio_files, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 from coverart import fetch_cover_art_url
 
 URL_BASED_SOURCES = {"soundcloud", "zvu4no", "freemp3cloud", "monochrome"}
@@ -118,7 +131,7 @@ def _user_scope(user_id: str | None, is_admin: bool) -> tuple[str, tuple]:
     """Return a SQL WHERE fragment and params for scoping rows to the current user.
 
     Admins see their own rows plus legacy rows (user_id IS NULL) left over from
-    single-user mode. Regular users see only their own rows — legacy rows are
+    single-user mode. Regular users see only their own rows; legacy rows are
     the admin's history, not theirs.
 
     Usage:
@@ -285,6 +298,7 @@ def get_config(request: Request):
 # =============================================================================
 
 @app.get("/api/music-dirs")
+@prioritise_over_audio_audit
 def list_music_dirs(path: str = "", recursive: bool = False, max_depth: int | None = None):
     """List subdirectories of MUSIC_DIR (or a subpath) for the subfolder picker.
 
@@ -357,6 +371,7 @@ def list_music_dirs(path: str = "", recursive: bool = False, max_depth: int | No
 # =============================================================================
 
 @app.get("/api/playlists")
+@prioritise_over_audio_audit
 def list_playlists(http_request: Request):
     """List available playlists for the playlist routing selector.
 
@@ -519,14 +534,14 @@ def create_new_user(request: Request, body: CreateUserRequest):
         raise HTTPException(status_code=400, detail="Username cannot be empty")
     if not body.password or len(body.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    # First user must be admin — they inherit the single-user instance
+    # First user must be admin; they inherit the single-user instance
     with db_conn() as conn:
         user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     if user_count == 0 and body.role != "admin":
         raise HTTPException(status_code=400, detail="The first account must be an admin")
     first_user = user_count == 0
     # Adding the 2nd account flips us from single-user to session-required mode.
-    # The current admin has no session, so subsequent requests will 401 — the
+    # The current admin has no session, so subsequent requests will 401; the
     # frontend uses this flag to bounce them to login instead of leaving the
     # user list stuck on the old single-user view.
     crosses_into_session_mode = user_count == 1
@@ -595,7 +610,7 @@ def flag_password_reset(request: Request, user_id: str):
         raise HTTPException(status_code=404, detail="User not found")
     with db_conn() as conn:
         conn.execute("UPDATE users SET force_password_change = 1 WHERE id = ?", (user_id,))
-        # Also kill all their active sessions — they'll need to log in fresh and change immediately
+        # Also kill all their active sessions; they'll need to log in fresh and change immediately
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         conn.commit()
     return {"ok": True}
@@ -660,10 +675,10 @@ def update_settings(updates: SettingsUpdate, request: Request):
     """Update settings. Only non-None values are updated. Returns updated settings.
 
     Per-user keys are written to user_settings (or global when in single-user mode).
-    Global keys can only be written by admins. Peons are read-only — they inherit
+    Global keys can only be written by admins. Peons are read-only; they inherit
     the admin's globals for everything and have no Settings UI to begin with.
     """
-    # Peons have no business writing settings — Settings tab is hidden, but the
+    # Peons have no business writing settings; Settings tab is hidden, but the
     # API endpoint stays open to other roles, so this is the belt to the UI's braces.
     user = getattr(request.state, "user", None) or {}
     if user.get("role") == "peon":
@@ -1105,9 +1120,9 @@ def test_spotify_cookies(http_request: Request, body: TestSpotifyCookiesRequest 
                 }
             )
         if resp.status_code in (401, 403):
-            return {"success": False, "message": "Cookies rejected by Spotify — they may have expired. Re-export from open.spotify.com."}
+            return {"success": False, "message": "Cookies rejected by Spotify; they may have expired. Re-export from open.spotify.com."}
         if resp.status_code != 200:
-            return {"success": False, "message": f"Spotify returned {resp.status_code} — cookies may be invalid"}
+            return {"success": False, "message": f"Spotify returned {resp.status_code}; cookies may be invalid"}
 
         # If the embed returned track data, the session is working
         import re as _re
@@ -1115,11 +1130,11 @@ def test_spotify_cookies(http_request: Request, body: TestSpotifyCookiesRequest 
         if len(titles) > 1:
             return {"success": True, "message": "Spotify cookies are valid and authenticated"}
 
-        return {"success": False, "message": "Cookies loaded but Spotify returned no track data — they may be expired"}
+        return {"success": False, "message": "Cookies loaded but Spotify returned no track data; they may be expired"}
 
     except Exception as e:
         print(f"Spotify cookie test error: {type(e).__name__}: {e}")
-        return {"success": False, "message": "Cookie test failed — check server logs for details"}
+        return {"success": False, "message": "Cookie test failed; check server logs for details"}
 
 
 @app.post("/api/settings/test/apprise")
@@ -1255,6 +1270,7 @@ def _search_duplicate_notice(query: str, user_id: str | None = None) -> dict | N
 
 
 @app.get("/api/stats")
+@prioritise_over_audio_audit
 def get_stats(http_request: Request):
     """Return download statistics for the dashboard."""
     if not http_request.state.is_admin:
@@ -1367,16 +1383,16 @@ def get_stats(http_request: Request):
         seen_inodes: set[tuple] = set()
         try:
             for base_dir in [d for d in (get_singles_dir(), get_playlists_dir()) if d is not None]:
-                if not base_dir.exists():
-                    continue
-                for f in base_dir.rglob("*"):
-                    if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS:
-                        st = f.stat()
-                        key = (st.st_dev, st.st_ino)
-                        if key not in seen_inodes:
-                            storage_bytes += st.st_size
-                            file_count += 1
-                            seen_inodes.add(key)
+                # Shared walker: skips NAS trash/recycle bins and symlinks, so the
+                # storage figure reflects the library rather than everything the
+                # user has ever deleted and the NAS has quietly kept hold of.
+                for f in iter_library_audio_files(base_dir, AUDIO_EXTENSIONS):
+                    st = f.stat()
+                    key = (st.st_dev, st.st_ino)
+                    if key not in seen_inodes:
+                        storage_bytes += st.st_size
+                        file_count += 1
+                        seen_inodes.add(key)
         except OSError:
             pass
 
@@ -1743,6 +1759,7 @@ def search(request: SearchRequest, http_request: Request):
                 source_url=item.get("source_url"),
                 quality=item["quality"],
                 quality_score=item["quality_score"],
+                quality_tier=item.get("quality_tier", quality_tier_of_result(item)),
                 slskd_username=item["slskd_username"],
                 slskd_filename=item["slskd_filename"],
                 slskd_size=item.get("slskd_size") or item.get("size"),
@@ -1801,6 +1818,7 @@ def _search_result_payload(item: dict) -> dict:
         "source_url": item.get("source_url"),
         "quality": item["quality"],
         "quality_score": item["quality_score"],
+        "quality_tier": item.get("quality_tier", quality_tier_of_result(item)),
         "slskd_username": item["slskd_username"],
         "slskd_filename": item["slskd_filename"],
         "slskd_size": item.get("slskd_size") or item.get("size"),
@@ -2643,7 +2661,7 @@ def patch_job_tags(job_id: str, body: PatchTagsRequest, http_request: Request):
     if not old_artist or not old_title:
         raise HTTPException(status_code=400, detail="Job has no artist/title metadata")
 
-    # Resolve the file on disk — same priority order as delete_job_file
+    # Resolve the file on disk, same priority order as delete_job_file
     from utils import check_duplicate
     file_path = None
     for rp_row in (rp_playlist, rp_artist):
@@ -3506,6 +3524,7 @@ def _scoped_playlist_dicts(http_request: Request) -> list[dict]:
 
 
 @app.get("/api/watched-playlists/orphans")
+@prioritise_over_audio_audit
 def list_playlist_orphans(http_request: Request):
     """Audio files sitting in playlist folders that no watched playlist claims.
 
@@ -4204,6 +4223,179 @@ def rescan_upgrades(http_request: Request):
     return {"status": "ok", "totals": run_scan_all()}
 
 
+def _audio_audit_filters(
+    classification: str = "",
+    container: str = "",
+    codec: str = "",
+    source: str = "",
+    effective_quality: str = "",
+    lossless_only: str = "",
+) -> dict:
+    if lossless_only not in ("", "stored", "recorded"):
+        raise HTTPException(
+            status_code=400,
+            detail="lossless_only must be 'stored' or 'recorded'",
+        )
+    return {
+        "classification": classification,
+        "container": container,
+        "codec": codec,
+        "source": source,
+        "effective_quality": effective_quality,
+        "lossless_only": lossless_only,
+    }
+
+
+@app.get("/api/audio-audit")
+def audio_audit_status(http_request: Request):
+    """Current trusted snapshot plus any in-progress read-only scan."""
+    if _is_peon(http_request):
+        raise HTTPException(status_code=403, detail="Not available for this account")
+    return get_audit_status(http_request.state.user_id)
+
+
+@app.post("/api/audio-audit/scans")
+def start_audio_audit(http_request: Request):
+    """Start a full-library provenance scan without changing any audio files."""
+    if _is_peon(http_request):
+        raise HTTPException(status_code=403, detail="Not available for this account")
+    return start_audit_scan(http_request.state.user_id)
+
+
+@app.get("/api/audio-audit/files")
+def audio_audit_files(
+    http_request: Request,
+    page: int = 1,
+    per_page: int = 25,
+    classification: str = "",
+    container: str = "",
+    codec: str = "",
+    source: str = "",
+    effective_quality: str = "",
+    lossless_only: str = "",
+):
+    """Paginated evidence rows from the last complete audit snapshot."""
+    if _is_peon(http_request):
+        raise HTTPException(status_code=403, detail="Not available for this account")
+    filters = _audio_audit_filters(
+        classification,
+        container,
+        codec,
+        source,
+        effective_quality,
+        lossless_only,
+    )
+    return get_audit_files(
+        http_request.state.user_id,
+        filters=filters,
+        page=page,
+        per_page=per_page,
+    )
+
+
+@app.get("/api/audio-audit/export")
+def export_audio_audit(
+    http_request: Request,
+    format: str = "csv",
+    classification: str = "",
+    container: str = "",
+    codec: str = "",
+    source: str = "",
+    effective_quality: str = "",
+    lossless_only: str = "",
+):
+    """Download the filtered snapshot as an explicitly dry-run CSV or JSON report."""
+    if _is_peon(http_request):
+        raise HTTPException(status_code=403, detail="Not available for this account")
+    export_format = format.strip().lower()
+    if export_format not in ("csv", "json"):
+        raise HTTPException(status_code=400, detail="format must be 'csv' or 'json'")
+    filters = _audio_audit_filters(
+        classification,
+        container,
+        codec,
+        source,
+        effective_quality,
+        lossless_only,
+    )
+    report = get_audit_export(http_request.state.user_id, filters)
+    scan = report["metadata"].get("scan") or {}
+    scan_id = scan.get("id") or "no-snapshot"
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="musicgrabber-audio-audit-{scan_id}.{export_format}"'
+        )
+    }
+
+    if export_format == "json":
+        body = json.dumps(report, ensure_ascii=False, indent=2, default=str)
+        return StreamingResponse(
+            iter([body]),
+            media_type="application/json; charset=utf-8",
+            headers=headers,
+        )
+
+    output = io.StringIO()
+    fieldnames = [
+        "criteria_version",
+        "read_only_notice",
+        "scan_id",
+        "scan_completed_at",
+        "path",
+        "artist",
+        "title",
+        "classification",
+        "classification_label",
+        "stored_quality",
+        "effective_quality",
+        "container",
+        "codec",
+        "bitrate_kbps",
+        "sample_rate_hz",
+        "bits_per_sample",
+        "source",
+        "source_quality",
+        "source_codec",
+        "source_bitrate_kbps",
+        "evidence",
+        "caveats",
+        "read_error",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for item in report["files"]:
+        writer.writerow({
+            "criteria_version": report["metadata"]["criteria_version"],
+            "read_only_notice": report["metadata"]["read_only_notice"],
+            "scan_id": scan_id,
+            "scan_completed_at": scan.get("completed_at"),
+            "path": item.get("path"),
+            "artist": item.get("artist"),
+            "title": item.get("title"),
+            "classification": item.get("classification"),
+            "classification_label": item.get("classification_label"),
+            "stored_quality": item.get("stored_quality"),
+            "effective_quality": item.get("effective_quality"),
+            "container": item.get("container"),
+            "codec": item.get("codec"),
+            "bitrate_kbps": item.get("bitrate_kbps"),
+            "sample_rate_hz": item.get("sample_rate_hz"),
+            "bits_per_sample": item.get("bits_per_sample"),
+            "source": item.get("source"),
+            "source_quality": item.get("source_quality"),
+            "source_codec": item.get("source_codec"),
+            "source_bitrate_kbps": item.get("source_bitrate_kbps"),
+            "evidence": json.dumps(item.get("evidence") or [], ensure_ascii=False),
+            "caveats": json.dumps(item.get("caveats") or [], ensure_ascii=False),
+            "read_error": item.get("read_error"),
+        })
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers=headers,
+    )
+
+
 @app.put("/api/watched-artists/{artist_id}")
 def update_watched_artist(artist_id: str, request: WatchedArtistUpdate, http_request: Request):
     """Update a watched artist's settings."""
@@ -4664,6 +4856,7 @@ def albums_missing_tracks(release_mbid: str, artist: str, album_title: str, requ
 
 
 @app.get("/api/albums/dirs")
+@prioritise_over_audio_audit
 def albums_list_artists(request: Request):
     """List artist folders found under the Albums directory on disk."""
     user_id = getattr(request.state, "user_id", None)
@@ -4678,6 +4871,7 @@ def albums_list_artists(request: Request):
 
 
 @app.get("/api/albums/dirs/{artist}")
+@prioritise_over_audio_audit
 def albums_list_albums(artist: str, request: Request):
     """List album folders within an artist directory."""
     if ".." in artist:
@@ -4695,6 +4889,7 @@ def albums_list_albums(artist: str, request: Request):
 
 
 @app.get("/api/albums/dirs/{artist}/{album}/info")
+@prioritise_over_audio_audit
 def albums_dir_info(artist: str, album: str, request: Request):
     """Read .albuminfo sidecar from an album directory and return MB tracklist."""
     if ".." in artist or ".." in album:
@@ -4718,6 +4913,32 @@ def albums_dir_info(artist: str, album: str, request: Request):
         }
     except Exception:
         return {"found": False}
+
+
+@app.post("/api/albums/resolve-url")
+def albums_resolve_url(body: PlaylistFetchRequest, http_request: Request):
+    """Turn a MusicBrainz release or release-group URL into album download fields.
+
+    The MBID is right there in the URL, so there is nothing to scrape and nothing
+    to guess: we resolve it to artist/title and hand back exactly what
+    /api/albums/download wants. Release-group URLs (the ones MusicBrainz shows
+    you when you search) are resolved to a representative official release.
+    """
+    url = (body.url or "").strip()
+    parsed = parse_musicbrainz_release_url(url)
+    if not parsed:
+        raise HTTPException(
+            status_code=400,
+            detail="Not a MusicBrainz release URL. Expected musicbrainz.org/release/<mbid> or /release-group/<mbid>.",
+        )
+    kind, mbid = parsed
+    try:
+        summary = fetch_release_summary(kind, mbid)
+    except MusicBrainzUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    if not summary:
+        raise HTTPException(status_code=404, detail="MusicBrainz has no release at that URL")
+    return summary
 
 
 @app.post("/api/albums/download")

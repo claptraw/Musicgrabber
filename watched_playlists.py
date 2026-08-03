@@ -681,7 +681,7 @@ def _fetch_spotify_playlist_embed(url: str, sp_dc: str | None = None, user_id: s
                 entity_type = track.get("entityType", "track")
                 if not raw_title:
                     continue
-                # Subtitle separator is sometimes a non-breaking space — normalise it
+                # Subtitle separator is sometimes a non-breaking space; normalise it
                 raw_artist = raw_artist.replace(" ", " ")
                 if raw_artist.lower() == "music video" or entity_type == "music_video":
                     from utils import extract_artist_title
@@ -866,7 +866,7 @@ def fetch_listenbrainz_createdfor(username: str) -> list[dict]:
         playlist_uuid = uuid_match.group(1)
         # Store the canonical per-playlist URL (without trailing slash for consistency)
         playlist_url = f"https://listenbrainz.org/playlist/{playlist_uuid}"
-        # The listing endpoint always returns track:[] — tracks only exist on the
+        # The listing endpoint always returns track:[]; tracks only exist on the
         # per-playlist JSPF endpoint, so we have to fetch each one individually.
         try:
             tracks, _ = _fetch_listenbrainz_playlist(playlist_uuid)
@@ -1259,7 +1259,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
         try:
             # Fetch current tracks
             set_refresh_stage("fetching")
-            # ListenBrainz "Created for You" playlists rotate every Monday — check the date stamp in
+            # ListenBrainz "Created for You" playlists rotate every Monday; check the date stamp in
             # the playlist name ("week of YYYY-MM-DD") and proactively re-resolve if it's ≥6 days old.
             # Also re-resolves reactively on 404 in case the name date wasn't parseable.
 
@@ -1302,7 +1302,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
 
                 def _lb_reresolution_fetch(prefer_latest: bool = False) -> list:
                     """Re-query createdfor API, update stored URL, return tracks."""
-                    print(f"ListenBrainz playlist '{playlist_name}' appears stale — re-resolving via createdfor API")
+                    print(f"ListenBrainz playlist '{playlist_name}' appears stale, re-resolving via createdfor API")
                     lb_playlists = fetch_listenbrainz_createdfor(playlist["lb_username"])
                     name_prefix = playlist_name.split(", week of")[0]
                     same_family = [p for p in lb_playlists if p["name"].startswith(name_prefix)]
