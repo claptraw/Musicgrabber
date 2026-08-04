@@ -1,5 +1,9 @@
 # Changelog
 
+## v4.0.0 (DEV)
+
+The artist-centred restructure. Nothing to report yet; the kettle is on.
+
 ## v3.1.0 (2026-08-04)
 
 ### Added
