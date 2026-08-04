@@ -5,6 +5,8 @@ Telegram webhook, SMTP email, generic webhook, and Apprise dispatch.
 """
 
 import smtplib
+import socket
+import ssl
 from email.mime.text import MIMEText
 
 import httpx
@@ -105,39 +107,117 @@ def _send_telegram(message: str, user_id: str | None = None):
         pass
 
 
+def _deliver_email(
+    subject: str,
+    message: str,
+    *,
+    smtp_host: str,
+    smtp_port: int,
+    smtp_user: str = "",
+    smtp_pass: str = "",
+    smtp_from: str = "",
+    smtp_to: str,
+    smtp_tls: bool = True,
+) -> None:
+    """Deliver one email, raising a useful exception when SMTP rejects it."""
+    host = (smtp_host or "").strip()
+    sender = (smtp_from or smtp_user or "").strip()
+    recipients = [address.strip() for address in (smtp_to or "").split(",") if address.strip()]
+    username = (smtp_user or "").strip()
+
+    if not host:
+        raise ValueError("SMTP host is required")
+    if not 1 <= smtp_port <= 65535:
+        raise ValueError("SMTP port must be between 1 and 65535")
+    if not sender:
+        raise ValueError("From address is required when no SMTP username is set")
+    if not recipients:
+        raise ValueError("At least one To address is required")
+    if bool(username) != bool(smtp_pass):
+        raise ValueError("SMTP username and password must both be set for authentication")
+
+    msg = MIMEText(message)
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+
+    with smtplib.SMTP(host, smtp_port, timeout=15) as server:
+        server.ehlo()
+        if smtp_tls:
+            server.starttls(context=ssl.create_default_context())
+            server.ehlo()
+        if username:
+            server.login(username, smtp_pass)
+        server.sendmail(sender, recipients, msg.as_string())
+
+
+def _describe_email_error(error: Exception) -> str:
+    """Turn SMTP/socket failures into safe, actionable UI copy."""
+    if isinstance(error, ValueError):
+        return str(error)
+    if isinstance(error, smtplib.SMTPAuthenticationError):
+        return "SMTP authentication failed; check the username, password, and provider app-password requirements"
+    if isinstance(error, smtplib.SMTPNotSupportedError):
+        return "The SMTP server does not support STARTTLS; check the port or turn off STARTTLS"
+    if isinstance(error, smtplib.SMTPRecipientsRefused):
+        return "The SMTP server refused the recipient address"
+    if isinstance(error, smtplib.SMTPSenderRefused):
+        return "The SMTP server refused the From address"
+    if isinstance(error, smtplib.SMTPDataError):
+        return f"The SMTP server rejected the message (SMTP {error.smtp_code})"
+    if isinstance(error, smtplib.SMTPConnectError):
+        return f"The SMTP server refused the connection (SMTP {error.smtp_code})"
+    if isinstance(error, ssl.SSLError):
+        return "STARTTLS failed while verifying the SMTP server certificate"
+    if isinstance(error, socket.gaierror):
+        return "SMTP host could not be found; check the hostname and DNS"
+    if isinstance(error, (socket.timeout, TimeoutError)):
+        return "SMTP connection timed out; check the hostname, port, and firewall"
+    if isinstance(error, ConnectionRefusedError):
+        return "SMTP connection was refused; check the hostname and port"
+    if isinstance(error, smtplib.SMTPException):
+        return f"SMTP error: {error}"
+    return "Email failed; check the SMTP settings and server logs"
+
+
+def send_test_email(**smtp_settings) -> tuple[bool, str]:
+    """Exercise the real SMTP path and return a user-facing result."""
+    try:
+        _deliver_email(
+            "MusicGrabber test email",
+            "Test email from MusicGrabber. If you can read this, SMTP notifications are working.",
+            **smtp_settings,
+        )
+        return True, "Test email sent successfully"
+    except Exception as error:
+        print(f"SMTP test error: {type(error).__name__}: {error}")
+        return False, _describe_email_error(error)
+
+
 def _send_email(subject: str, message: str, user_id: str | None = None):
-    """Send notification via SMTP email."""
+    """Send notification via SMTP email without interrupting download work."""
     smtp_host = get_setting("smtp_host", user_id=user_id)
     smtp_to = get_setting("smtp_to", user_id=user_id)
 
     if not smtp_host or not smtp_to:
         return
 
-    smtp_port = get_setting_int("smtp_port", 587, user_id=user_id)
-    smtp_user = get_setting("smtp_user", user_id=user_id)
-    smtp_pass = get_setting("smtp_pass", user_id=user_id)
-    smtp_from = get_setting("smtp_from", user_id=user_id)
-    smtp_tls = get_setting_bool("smtp_tls", True, user_id=user_id)
-
     try:
-        msg = MIMEText(message)
-        msg["Subject"] = subject
-        msg["From"] = smtp_from or smtp_user
-        msg["To"] = smtp_to
-
-        if smtp_tls:
-            server = smtplib.SMTP(smtp_host, smtp_port)
-            server.starttls()
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port)
-
-        if smtp_user and smtp_pass:
-            server.login(smtp_user, smtp_pass)
-
-        server.sendmail(msg["From"], smtp_to.split(","), msg.as_string())
-        server.quit()
-    except Exception:
-        pass
+        _deliver_email(
+            subject,
+            message,
+            smtp_host=smtp_host,
+            smtp_port=get_setting_int("smtp_port", 587, user_id=user_id),
+            smtp_user=get_setting("smtp_user", user_id=user_id),
+            smtp_pass=get_setting("smtp_pass", user_id=user_id),
+            smtp_from=get_setting("smtp_from", user_id=user_id),
+            smtp_to=smtp_to,
+            smtp_tls=get_setting_bool("smtp_tls", True, user_id=user_id),
+        )
+    except Exception as error:
+        # Notifications must never fail a completed download, but they should no
+        # longer vanish without leaving the administrator a clue.
+        print(f"SMTP notification error: {type(error).__name__}: {error}")
 
 
 def _send_webhook(
@@ -245,4 +325,3 @@ def send_notification(
         error, track_count, failed_count, skipped_count, playlist_name,
         user_id=user_id,
     )
-

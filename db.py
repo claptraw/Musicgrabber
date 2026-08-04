@@ -32,20 +32,34 @@ def get_db() -> sqlite3.Connection:
 
 _DB_POOL_SIZE = 8
 _db_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(maxsize=_DB_POOL_SIZE)
+_db_pool_created = 0
+_db_pool_lock = threading.Lock()
 
 
 def _get_pooled_conn() -> sqlite3.Connection:
+    global _db_pool_created
     try:
         # Try to grab an idle connection first.
         return _db_pool.get_nowait()
     except queue.Empty:
         pass
-    # Pool is exhausted; either wait for one to come back (up to 15s) or
-    # open a fresh connection as a safety valve. Under heavy concurrent load
-    # (bulk import + multiple download threads) spawning unlimited connections
-    # causes them to queue up and fight over the single WAL write lock, which
-    # is what produces "database is locked" crashes. Blocking here serialises
-    # checkout instead of flooding sqlite with competing writers.
+    # Nothing idle, but a cold pool is not an exhausted one. The pool only ever
+    # fills up as connections are handed back, so in a fresh process there is
+    # nothing to wait for and the timeout below simply had to elapse. That is
+    # what used to stall the very first query of every boot by a full 15
+    # seconds, with the port unopened and the user staring at nothing. Grow the
+    # pool on demand up to its ceiling instead.
+    with _db_pool_lock:
+        if _db_pool_created < _DB_POOL_SIZE:
+            _db_pool_created += 1
+            return get_db()
+    # Pool is at full stretch and every connection is out on loan; either wait
+    # for one to come back (up to 15s) or open a fresh connection as a safety
+    # valve. Under heavy concurrent load (bulk import + multiple download
+    # threads) spawning unlimited connections causes them to queue up and fight
+    # over the single WAL write lock, which is what produces "database is
+    # locked" crashes. Blocking here serialises checkout instead of flooding
+    # sqlite with competing writers.
     try:
         return _db_pool.get(timeout=15)
     except queue.Empty:
@@ -105,6 +119,7 @@ def init_db():
             slskd_size INTEGER,
             convert_to_flac INTEGER DEFAULT 0,
             source_url TEXT,
+            selected_duration_secs REAL,
             file_deleted INTEGER DEFAULT 0,
             metadata_source TEXT,
             override_dir TEXT,
@@ -161,6 +176,10 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN search_token TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN selected_duration_secs REAL")
         except sqlite3.OperationalError:
             pass
         try:
@@ -1480,9 +1499,29 @@ def reconcile_deleted_library_files(batch_size: int = 500) -> tuple[int, int]:
     return len(stale_ids), watched_rows
 
 
+def _boot_cleanup():
+    """Clear state left behind by a crash or restart. Runs once, off the boot path."""
+    cleanup_stale_jobs()
+    cleanup_stale_watched_refreshes()
+    reconcile_deleted_library_files()
+    from auth import cleanup_expired_download_tokens, cleanup_expired_sessions
+    cleanup_expired_sessions()
+    cleanup_expired_download_tokens()
+    # Downloads killed mid-flight leave their staging sandbox behind; nothing
+    # survives a restart, so anything still there is scrap.
+    from downloads import sweep_staging_dirs
+    sweep_staging_dirs()
+
+
 def _stale_job_monitor():
     """Background thread that periodically checks for stale jobs."""
-    last_reconcile = 0.0
+    try:
+        _boot_cleanup()
+    except Exception as e:
+        print(f"Startup cleanup error: {e}")
+    # The boot pass has just reconciled, so start the clock rather than doing
+    # the whole library walk again on the very next tick.
+    last_reconcile = time.time()
     while True:
         time.sleep(STALE_JOB_CHECK_INTERVAL)
         try:
@@ -1507,13 +1546,12 @@ def _stale_job_monitor():
 
 
 def start_stale_job_monitor():
-    """Run stale job cleanup at startup and start periodic monitor."""
-    cleanup_stale_jobs()
-    cleanup_stale_watched_refreshes()
-    reconcile_deleted_library_files()
-    from auth import cleanup_expired_download_tokens, cleanup_expired_sessions
-    cleanup_expired_sessions()
-    cleanup_expired_download_tokens()
+    """Start the monitor thread, which does the startup cleanup pass itself.
+
+    Nothing here blocks: the boot cleanup walks the library to reconcile deleted
+    files, which on a sleepy NAS is not the sort of thing that should stand
+    between the user and a web page.
+    """
     _stale_monitor_thread = threading.Thread(target=_stale_job_monitor, daemon=True)
     _stale_monitor_thread.start()
 

@@ -79,14 +79,14 @@ def search_zvu4no(query: str, limit: int) -> list[dict]:
 
             duration_secs = _duration_to_secs(dur)
             combined_title = f"{artist} - {title}" if artist else title
-            quality_score, score_breakdown = score_search_result_with_breakdown(
+            relevance_score, score_breakdown = score_search_result_with_breakdown(
                 combined_title, artist, query,
                 duration_seconds=duration_secs or None,
                 view_count=None,
             )
             # Direct MP3s are useful, but observed bitrate varies. Keep this modest
             # and let existing title/duration scoring do the real work.
-            quality_score += 10
+            relevance_score += 10
             score_breakdown.append("source_quality=+10")
 
             img_m = _RE_IMG.search(block)
@@ -104,14 +104,14 @@ def search_zvu4no(query: str, limit: int) -> list[dict]:
                 "source": "zvu4no",
                 "source_url": href,
                 "quality": "MP3",
-                "quality_score": quality_score,
+                "relevance_score": relevance_score,
                 "score_breakdown": score_breakdown,
                 "slskd_username": None,
                 "slskd_filename": None,
                 "slskd_size": None,
             })
 
-        results.sort(key=lambda x: x["quality_score"], reverse=True)
+        results.sort(key=lambda x: x["relevance_score"], reverse=True)
         return results
 
     except Exception as e:

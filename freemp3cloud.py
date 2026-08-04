@@ -120,7 +120,7 @@ def search_freemp3cloud(query: str, limit: int) -> list[dict]:
 
             duration_secs = _duration_to_secs(dur)
             combined_title = f"{artist} - {title}" if artist else title
-            quality_score, score_breakdown = score_search_result_with_breakdown(
+            relevance_score, score_breakdown = score_search_result_with_breakdown(
                 combined_title, artist, query,
                 duration_seconds=duration_secs or None,
                 view_count=None,
@@ -129,11 +129,11 @@ def search_freemp3cloud(query: str, limit: int) -> list[dict]:
             # bonus as other 320kbps sources. The un-tagged ones are 128 kbps;
             # give them a token +5 so they only surface when nothing better turned up.
             if is_hq:
-                quality_score += 30
+                relevance_score += 30
                 score_breakdown.append("source_quality=+30 (HQ)")
                 quality_label = "320kbps"
             else:
-                quality_score += 5
+                relevance_score += 5
                 score_breakdown.append("source_quality=+5 (non-HQ)")
                 quality_label = "128kbps"
 
@@ -150,14 +150,14 @@ def search_freemp3cloud(query: str, limit: int) -> list[dict]:
                 "source": "freemp3cloud",
                 "source_url": href,
                 "quality": quality_label,
-                "quality_score": quality_score,
+                "relevance_score": relevance_score,
                 "score_breakdown": score_breakdown,
                 "slskd_username": None,
                 "slskd_filename": None,
                 "slskd_size": None,
             })
 
-        results.sort(key=lambda x: x["quality_score"], reverse=True)
+        results.sort(key=lambda x: x["relevance_score"], reverse=True)
         return results
 
     except Exception as e:

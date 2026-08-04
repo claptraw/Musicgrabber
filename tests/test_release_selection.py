@@ -71,6 +71,12 @@ def lookup(monkeypatch, fixture_data):
         entry = fixture_data[f"{artist}␟{title}"]
         recorder = _Recorder(entry)
         monkeypatch.setattr(metadata, "_mb_search_recordings", recorder)
+        # The captured fixture predates the live release-group fallback. Keep
+        # these scorer regressions offline; the fallback has focused tests below.
+        monkeypatch.setattr(
+            metadata, "_mb_resolve_recording_via_release_group",
+            lambda *args, **kwargs: None,
+        )
         return metadata.lookup_musicbrainz(artist, title), recorder
 
     return run
@@ -191,3 +197,138 @@ def test_search_asks_for_a_shortlist_not_one_result():
     MusicBrainz felt like listing first, which for popular songs is a raffle."""
     from constants import MB_RECORDING_SEARCH_LIMIT
     assert MB_RECORDING_SEARCH_LIMIT >= 10
+
+
+def test_weak_recording_result_uses_release_group_fallback(monkeypatch):
+    metadata = _import_metadata_or_skip()
+    monkeypatch.setattr(metadata, "get_setting_bool", lambda *a, **k: True)
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+
+    weak = {
+        "id": "live-rec", "score": 100, "title": "Karma Police",
+        "artist-credit": [{"name": "Radiohead"}],
+        "releases": [{
+            "id": "bootleg", "title": "A Bootleg",
+            "release-group": {"primary-type": "Album", "secondary-types": ["Live"]},
+        }],
+    }
+    canonical = {
+        "id": "studio-rec", "title": "Karma Police", "length": 264000,
+        "artist-credit": [{"name": "Radiohead"}],
+        "releases": [{
+            "id": "ok-computer", "title": "OK Computer", "date": "1997-06-16",
+            "artist-credit": [{"name": "Radiohead"}],
+            "release-group": {"primary-type": "Album", "title": "OK Computer"},
+            "media": [{"track": [{"number": "6"}], "track-count": 12}],
+        }],
+    }
+    monkeypatch.setattr(metadata, "_mb_search_recordings", lambda *a, **k: [weak])
+    fallback_calls = []
+
+    def fallback(*args):
+        fallback_calls.append(args[:2])
+        return canonical
+
+    monkeypatch.setattr(metadata, "_mb_resolve_recording_via_release_group", fallback)
+
+    result = metadata.lookup_musicbrainz("Radiohead", "Karma Police")
+    assert fallback_calls == [("Radiohead", "Karma Police")]
+    assert result["album"] == "OK Computer"
+    assert result["release_mbid"] == "ok-computer"
+    assert result["track_number"] == 6
+
+
+def test_well_supported_recording_skips_release_group_fallback(monkeypatch):
+    metadata = _import_metadata_or_skip()
+    from constants import MB_RELEASE_GROUP_FALLBACK_MAX_RELEASES
+
+    monkeypatch.setattr(metadata, "get_setting_bool", lambda *a, **k: True)
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    releases = [
+        {
+            "id": f"release-{index}", "title": "The Album",
+            "release-group": {"primary-type": "Album", "title": "The Album"},
+        }
+        for index in range(MB_RELEASE_GROUP_FALLBACK_MAX_RELEASES + 1)
+    ]
+    recording = {
+        "id": "studio-rec", "score": 100, "title": "Song",
+        "artist-credit": [{"name": "Artist"}], "releases": releases,
+    }
+    monkeypatch.setattr(metadata, "_mb_search_recordings", lambda *a, **k: [recording])
+
+    def unexpected_fallback(*args, **kwargs):
+        raise AssertionError("strong recording should not spend fallback requests")
+
+    monkeypatch.setattr(
+        metadata, "_mb_resolve_recording_via_release_group", unexpected_fallback,
+    )
+    assert metadata.lookup_musicbrainz("Artist", "Song")["album"] == "The Album"
+
+
+def test_release_group_fallback_uses_the_recording_repeated_across_editions(monkeypatch):
+    metadata = _import_metadata_or_skip()
+    calls = []
+    responses = iter([
+        {
+            "release-groups": [{
+                "id": "single-group", "score": 100,
+                "title": "Karma Police", "primary-type": "Single",
+            }],
+        },
+        {
+            "releases": [
+                {
+                    "id": "single-a", "media": [{"tracks": [{
+                        "recording": {"id": "studio", "title": "Karma Police", "length": 264000},
+                    }]}],
+                },
+                {
+                    "id": "single-b", "media": [{"tracks": [{
+                        "recording": {"id": "studio", "title": "Karma Police", "length": 264000},
+                    }]}],
+                },
+                {
+                    "id": "single-c", "media": [{"tracks": [{
+                        "recording": {"id": "alternate", "title": "Karma Police", "length": 250000},
+                    }]}],
+                },
+            ],
+        },
+        {
+            "releases": [{
+                "id": "album-release", "title": "OK Computer", "date": "1997",
+                "release-group": {"title": "OK Computer", "primary-type": "Album"},
+                "media": [{"track-count": 12, "tracks": [{
+                    "number": "6", "recording": {"id": "studio"},
+                }]}],
+            }],
+        },
+    ])
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    def fake_get(url, *, params, headers, timeout):
+        calls.append((url, params))
+        return Response(next(responses))
+
+    monkeypatch.setattr(metadata, "_mb_get_with_retry", fake_get)
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+
+    recording = metadata._mb_resolve_recording_via_release_group(
+        "Radiohead", "Karma Police", {},
+    )
+    assert recording["id"] == "studio"
+    assert recording["releases"][0]["title"] == "OK Computer"
+    assert metadata._extract_track_position(recording["releases"][0]) == (6, 12)
+    assert calls[0][0].endswith("/release-group/")
+    assert calls[1][1]["release-group"] == "single-group"
+    assert calls[2][1]["recording"] == "studio"
+    assert "recordings" in calls[2][1]["inc"].split()

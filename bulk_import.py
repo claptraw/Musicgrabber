@@ -118,7 +118,7 @@ def _candidate_channel_matches_expected_artist(candidate: dict, expected_artist:
 def apply_priority_source_boost(results: list, priority_source: Optional[str]) -> list:
     """Re-rank search results so the user-chosen source wins close calls.
 
-    Adds PRIORITY_SOURCE_BOOST to the quality_score of any result whose
+    Adds PRIORITY_SOURCE_BOOST to the relevance_score of any result whose
     source matches priority_source, then re-sorts descending. Mutates the
     list in place and also returns it for convenience.
     No-op when priority_source is empty/None or results is empty.
@@ -128,8 +128,8 @@ def apply_priority_source_boost(results: list, priority_source: Optional[str]) -
     target = priority_source.strip().lower()
     for r in results:
         if (r.get("source") or "").lower() == target:
-            r["quality_score"] = (r.get("quality_score") or 0) + PRIORITY_SOURCE_BOOST
-    results.sort(key=lambda r: r.get("quality_score") or 0, reverse=True)
+            r["relevance_score"] = (r.get("relevance_score") or 0) + PRIORITY_SOURCE_BOOST
+    results.sort(key=lambda r: r.get("relevance_score") or 0, reverse=True)
     return results
 
 
@@ -236,7 +236,7 @@ def process_bulk_import_worker(import_id: str):
     """Background worker to process bulk import tracks one by one
 
     Searches all available sources in parallel
-    via search_all() and picks the best result by quality score.
+    via search_all() and picks the best result by relevance score.
     """
     # Load import details
     with db_conn() as conn:
@@ -262,7 +262,7 @@ def process_bulk_import_worker(import_id: str):
             None if _preferred_sources_raw == "all"
             else [s.strip() for s in _preferred_sources_raw.split(",") if s.strip()]
         )
-        # priority_source is a single source ID that gets a quality_score bonus
+        # priority_source is a single source ID that gets a relevance_score bonus
         # applied below, so it wins close calls against other sources.
         try:
             _priority_source = import_row["priority_source"]
@@ -308,7 +308,7 @@ def process_bulk_import_worker(import_id: str):
                 conn.execute("UPDATE bulk_import_tracks SET status = 'searching' WHERE id = ?", (track_id,))
                 conn.commit()
 
-            # Search preferred (or all) sources in parallel, ranked by quality score
+            # Search preferred (or all) sources in parallel, ranked by relevance score
             try:
                 search_query = f"{artist} - {song}"
 
@@ -355,7 +355,7 @@ def process_bulk_import_worker(import_id: str):
                         time.sleep(base_delay)
                         continue
 
-                    # Results are already sorted by quality_score descending.
+                    # Results are already sorted by relevance_score descending.
                     best_match = search_results[0]
                     if override_dir and artist:
                         # Album mode: be strict on artist to avoid tribute/cover uploads.
@@ -486,7 +486,7 @@ def process_bulk_import_worker(import_id: str):
                             "title": r.get("title", ""),
                             "channel": r.get("channel", ""),
                             "source": r.get("source", "unknown"),
-                            "score": r.get("quality_score"),
+                            "score": r.get("relevance_score"),
                             "breakdown": r.get("score_breakdown", []),
                         }
 
@@ -543,7 +543,11 @@ def process_bulk_import_worker(import_id: str):
                     _get_download_pool().submit(process_download, job_id, video_id, convert_to_flac,
                                           source_url, _pname, use_playlists_dir,
                                           user_id=user_id, override_dir=override_dir,
-                                          skip_dupe_check=_skip_dupes, custom_subdir=custom_subdir)
+                                          skip_dupe_check=_skip_dupes, custom_subdir=custom_subdir,
+                                          fallback_allowed_sources=(
+                                              set(preferred_sources_list)
+                                              if preferred_sources_list is not None else None
+                                          ))
 
             except Exception as e:
                 with db_conn() as conn:

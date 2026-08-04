@@ -374,7 +374,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                     # quality bonus on Monochrome. A perfect match earns 200
                     # of relevance before the quality and source bonuses
                     # below stack on top.
-                    adjusted_score = int(confidence * 200) + quality_score
+                    relevance_score = int(confidence * 200) + quality_score
                     if quality_score:
                         score_breakdown.append(f"source_quality=+{quality_score}")
                     # Soulseek users often share properly ripped files. Give
@@ -408,7 +408,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                         "artist": artist,
                         "channel": username,  # Show username as "channel"
                         "quality": quality_label,
-                        "quality_score": adjusted_score,
+                        "relevance_score": relevance_score,
                         "score_breakdown": score_breakdown,
                         "source": "soulseek",
                         "duration": str(file_info.get("length", 0)),
@@ -434,8 +434,8 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
     except Exception as e:
         print(f"slskd search error: {e}")
 
-    # Sort by quality score (descending)
-    results.sort(key=lambda x: x["quality_score"], reverse=True)
+    # Sort by relevance score (descending). Audio quality is one component.
+    results.sort(key=lambda x: x["relevance_score"], reverse=True)
 
     return results[:SLSKD_MAX_RESULTS]
 

@@ -6,7 +6,6 @@ Platform detection, track fetching, playlist refresh, and background scheduler.
 
 import json
 import pathlib
-import random
 import re
 import shutil
 import sqlite3
@@ -1639,17 +1638,63 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
 
 _scheduler_running = False
 _scheduler_lock = threading.Lock()
+_scheduler_wake_event = threading.Event()
+
+
+def wake_scheduler():
+    """Wake the scheduler so a changed playlist deadline is applied immediately."""
+    _scheduler_wake_event.set()
+
+
+def _seconds_until_next_playlist_check() -> float:
+    """Return the bounded delay until the earliest enabled playlist is due.
+
+    ``WATCHED_PLAYLIST_CHECK_HOURS`` remains the maximum sweep interval (and its
+    zero value still disables scheduling), but a playlist with a shorter interval
+    must wake the scheduler sooner.  SQLite owns the timestamp arithmetic here so
+    it exactly matches the due-query below, including fractional-hour intervals.
+    """
+    maximum = max(60.0, WATCHED_PLAYLIST_CHECK_HOURS * 3600.0)
+    with db_conn() as conn:
+        row = conn.execute("""
+            SELECT MIN(
+                CASE
+                    WHEN last_checked IS NULL THEN 0.0
+                    ELSE MAX(
+                        0.0,
+                        (julianday(last_checked, '+' || refresh_interval_hours || ' hours')
+                         - julianday('now')) * 86400.0
+                    )
+                END
+            ) AS seconds_until_due
+            FROM watched_playlists
+            WHERE enabled = 1
+        """).fetchone()
+
+    next_due = row[0] if row else None
+    if next_due is None:
+        return maximum
+    # One second avoids spinning at the exact SQLite timestamp boundary, where
+    # the due predicate intentionally remains strictly less-than.
+    return min(maximum, max(1.0, float(next_due) + 1.0))
 
 
 def watched_playlist_scheduler():
-    """Background thread that periodically checks watched playlists"""
-    print(f"Watched playlist scheduler started (checking every {WATCHED_PLAYLIST_CHECK_HOURS} hours)")
+    """Background thread that refreshes each playlist when its own deadline is due."""
+    print(
+        "Watched playlist scheduler started "
+        f"(maximum sweep interval {WATCHED_PLAYLIST_CHECK_HOURS} hours)"
+    )
 
     # Brief delay to let the app fully initialise, then check immediately
     time.sleep(10)
     print("Scheduler: Running initial check for overdue playlists...")
 
     while _scheduler_running:
+        # Clear before inspecting the database. If an API mutation arrives during
+        # the query/refresh pass it sets the event again and the wait below returns
+        # immediately, so no changed deadline is lost.
+        _scheduler_wake_event.clear()
         try:
             # Run the check
             print("Scheduler: Checking watched playlists...")
@@ -1676,14 +1721,17 @@ def watched_playlist_scheduler():
         except Exception as e:
             print(f"Scheduler error: {e}")
 
-        # Sleep until next check interval
-        base_sleep_seconds = WATCHED_PLAYLIST_CHECK_HOURS * 3600
-        jitter = random.uniform(0.95, 1.05)
-        sleep_seconds = max(60, int(base_sleep_seconds * jitter))
-        elapsed = 0
-        while elapsed < sleep_seconds and _scheduler_running:
-            time.sleep(60)  # Check every minute if we should stop
-            elapsed += 60
+        if not _scheduler_running:
+            break
+
+        try:
+            sleep_seconds = _seconds_until_next_playlist_check()
+        except Exception as e:
+            print(f"Scheduler deadline error: {e}")
+            sleep_seconds = max(60.0, WATCHED_PLAYLIST_CHECK_HOURS * 3600.0)
+
+        print(f"Scheduler: Next deadline check in {sleep_seconds / 60:.1f} minutes")
+        _scheduler_wake_event.wait(timeout=sleep_seconds)
 
 
 def start_scheduler():

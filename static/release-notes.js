@@ -11,12 +11,51 @@ const RELEASE_NOTES = {
         title: "What's New in v3.1.0",
         sections: [
             {
+                heading: "Email notifications can now introduce themselves",
+                items: [
+                    "SMTP settings now have a Send Test Email button. It uses the values currently in the form, so you can check a change before saving it, while still using an already-saved password when that field is hidden.",
+                    "A failed test now says whether DNS, the connection, STARTTLS, authentication, sender or recipient was rejected instead of silently doing nothing. The toggle is also labelled Use STARTTLS now: it is intended for port 587, not implicit TLS on port 465.",
+                ]
+            },
+            {
+                heading: "Downloading the same track twice at once no longer breaks both",
+                items: [
+                    "Every download used to write its working files straight into the destination folder, all named after the track. Two jobs for the same song at the same time would therefore delete each other's half-finished files, and whichever one next reached for a file the other had tidied away failed with a baffling \"No such file or directory\". This was reachable whenever the same track sat in two watched playlists refreshing together, or turned up twice in one bulk import.",
+                    "Each download now works in its own staging area and only the finished audio moves into your library, so two jobs simply cannot reach each other's files. Anything left behind by a hard restart is cleared on startup.",
+                    "This had been filed as a flaky thumbnail server, because cover art is fetched first and so was usually the first casualty. It was never the CDN's fault.",
+                ]
+            },
+            {
+                heading: "A missing thumbnail no longer costs you the track",
+                items: [
+                    "Separately, yt-dlp converts cover art before it downloads any audio, so if the thumbnail was genuinely missing, the whole download was abandoned before a single byte of music arrived, leaving nothing on disk to rescue.",
+                    "A download that trips over cover art now gets one more attempt with thumbnail embedding turned off. You lose nothing by it: MusicGrabber fetches proper album art from Cover Art Archive, iTunes or Deezer straight afterwards and replaces the video thumbnail anyway.",
+                ]
+            },
+            {
+                heading: "Starting up now takes about a second",
+                items: [
+                    "The container used to sit there for 30 seconds or more before the web page would load at all. The cause was gloriously self-inflicted: the database connection pool only fills up as connections are handed back, so at boot it is empty, and the code read empty as everyone is busy and waited out a full 15-second timeout before opening the connection it could have had straight away.",
+                    "The pool now grows on demand and only waits when every connection is genuinely in use, which is the situation it was actually written for. Startup housekeeping has also moved into the background thread that already runs it on a schedule, so checking your library for deleted files no longer holds the door shut.",
+                    "Measured on a local container: 15.9 seconds down to 0.8, and under a second on a restart.",
+                    "A small loading panel now appears the moment the page arrives, so the brief gap while the app finishes waking up no longer looks like something has broken. It also picks up your saved theme before the first paint, sparing light-theme users a flash of the void.",
+                ]
+            },
+            {
                 heading: "ReplayGain, without touching the audio",
                 items: [
                     "New downloads can now be measured and tagged with ReplayGain 2.0 track gain and peak, referenced to the standard -18 LUFS. Settings → Write ReplayGain Tags turns it on; it is off by default.",
                     "Nothing is re-encoded. This is the polite cousin of Normalise Loudness: it writes down how loud the track is and leaves your player to act on it, which means it is safe on lossless files and can be undone by deleting four tags.",
                     "Album gain and album peak are added once every track on a record has arrived, worked out across the whole album so the quiet track five stays quieter than the singles instead of being levelled flat.",
                     "Files that already carry ReplayGain tags are left exactly as they are, unless you turn on Replace Existing ReplayGain Tags. FLAC, MP3, M4A, Ogg and Opus are supported.",
+                ]
+            },
+            {
+                heading: "Watched schedules have learned to read a clock",
+                items: [
+                    "A playlist or artist set to every 30 minutes now really is checked every 30 minutes. Previously its own interval only decided whether it was due after the global scheduler woke, and that scheduler slept for 24 hours by default.",
+                    "Adding, resuming, deleting, or changing a watch wakes the scheduler immediately to recalculate its next deadline. Restarting the container is no longer an accidental scheduling control.",
+                    "Last checked now says just now, Xm ago, Xh ago, or Xd ago, with the exact local timestamp on hover. The old date-only display made every same-day refresh look as though it never happened.",
                 ]
             },
             {
@@ -35,11 +74,26 @@ const RELEASE_NOTES = {
                 ]
             },
             {
+                heading: "Relevance and audio quality now have separate name badges",
+                items: [
+                    "The score that orders search results measures artist/title match, views, duration and a source bonus. It is now called relevance_score throughout the app and API instead of the misleading quality_score.",
+                    "Actual audio quality remains quality_tier, which drives the minimum-quality filter. Search order and filtering behaviour have not changed; only the contract finally says what each number means. API clients reading search results should switch to relevance_score.",
+                ]
+            },
+            {
                 heading: "The right album, not just a plausible one",
                 items: [
                     "MusicBrainz scores search matches on string similarity alone, so every recording of a popular song ties on 100 and the order between them is arbitrary. Asking it for one result was drawing a raffle ticket, which is how “Around the World” kept arriving on the live album Alive 2006.",
                     "MusicGrabber now asks for a shortlist, asks again with a studio-album filter, and works out which recording is the canonical take before picking a release from it. Compilations, DJ mixes, live bootlegs and “(Boombox Rehearsals)” takes now lose on purpose.",
                     "Measured against a 31-track test corpus spanning bootleg-heavy artists, dance compilations and non-English releases: the old behaviour got 3.7 of 31 right, the new one gets 26.",
+                ]
+            },
+            {
+                heading: "Manual picks can spot a suspiciously short delivery",
+                items: [
+                    "Choosing a live version, remix, edit or extended mix still overrides MusicBrainz's canonical duration on purpose. Your click remains the decision, not merely a polite suggestion.",
+                    "MusicGrabber now remembers the duration displayed on that exact result. If a provider advertises a four-minute track but delivers a perfectly playable 30-second CDN sample, the download fails honestly instead of filing the preview in your library as mission accomplished.",
+                    "Only substantial shortfalls are rejected, and incomplete manual picks are not silently replaced with a different version. Results whose provider supplied no duration retain the existing integrity checks.",
                 ]
             },
             {

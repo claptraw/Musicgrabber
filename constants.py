@@ -168,6 +168,7 @@ EXCLUDED_SCAN_DIR_NAMES = frozenset({
     '$recycle.bin',          # Windows/SMB shares
     'recycler',              # Windows, pre-Vista
     '.upgrade_quarantine',   # MusicGrabber's upgrade holding pen
+    '.mg_staging',           # per-job download staging, see STAGING_DIR_NAME
     '@eadir',                # Synology thumbnail/index sidecar folders
     '.ds_store',             # macOS, a directory in some sync-tool wreckage
     '.spotlight-v100',       # macOS Spotlight index
@@ -181,6 +182,12 @@ EXCLUDED_SCAN_DIR_NAMES = frozenset({
 # Per-UID Linux trash folders are `.Trash-1000`, `.Trash-1001`, and so on, so an
 # exact-name set can never catch the lot. Prefix-matched, case-insensitively.
 EXCLUDED_SCAN_DIR_PREFIXES = ('.trash-',)
+
+# Each download gets its own directory under {music_dir}/.mg_staging/ to work in.
+# yt-dlp writes its .part, .webp and final files there, and only the finished
+# audio is moved into the library. Two jobs for the same track therefore cannot
+# scribble on each other's working files, which they cheerfully used to do.
+STAGING_DIR_NAME = '.mg_staging'
 
 # YouTube 403 retry
 YTDLP_403_MAX_RETRIES = 2       # Retry attempts on 403/Forbidden errors
@@ -244,6 +251,12 @@ ACOUSTID_MIN_SCORE = 0.8         # Below this, the match is too dodgy to trust
 MIN_SONG_DURATION_SECS = 30      # Files shorter than this are too brief to fingerprint reliably
 MAX_AUDIO_START_OFFSET_SECS = 1.0  # Start offsets above this indicate a preview segment, not a full track
 MB_DURATION_TOLERANCE = 0.10     # 10% either side of MusicBrainz expected duration; outside = wrong track
+# Manual picks may intentionally differ from MusicBrainz, but the downloaded
+# bytes should still resemble the duration advertised by the exact result the
+# user clicked. Only reject a substantial shortfall so rounding and metadata
+# drift do not turn into false preview alarms.
+SELECTED_RESULT_DURATION_TOLERANCE = 0.10
+SELECTED_RESULT_MIN_SHORTFALL_SECS = 15.0
 SILENCE_DETECT_DURATION = 8.0    # Seconds of continuous silence that flags a sabotaged track
 SILENCE_DETECT_NOISE = -50.0     # dB threshold below which audio counts as silence
 SILENCE_DETECT_MIN_START = 15.0  # Ignore silence that starts before this point (legitimate intros)
@@ -268,6 +281,10 @@ MB_RECORDING_SEARCH_LIMIT = 25   # Shortlist size per query; 100 measured no bet
 MB_TEXT_SCORE_FLOOR = 85         # Below this the text match is too shaky to trust
 MB_RECORDING_SPREAD_WEIGHT = 3.0  # Weight on log1p(release count) when ranking recordings
 MB_ALT_TAKE_PENALTY = 12.0       # Penalty for live/remix/demo markers in a recording title
+# A recording seen on only a handful of releases is weak evidence for popular
+# songs: live bootlegs often occupy the whole search page one recording at a
+# time. In that narrow case, resolve the exact-title release group instead.
+MB_RELEASE_GROUP_FALLBACK_MAX_RELEASES = 4
 # Penalty when the recording title is what we asked for plus extra qualifiers,
 # e.g. "(Boombox Rehearsals)" or "(Masters at Work RAW dub)". Deliberately heavy:
 # when every candidate is a variant the penalty cancels out, so it can only help.

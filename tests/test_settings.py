@@ -124,6 +124,26 @@ def test_settings_put_unknown_key_ignored(api, base_url):
     assert r.status_code == 200
 
 
+def test_email_test_endpoint_reports_invalid_form_values(api, base_url):
+    """The SMTP tester must explain bad input without attempting delivery."""
+    r = api.post(
+        f"{base_url}/api/settings/test/email",
+        json={
+            "smtp_host": "",
+            "smtp_port": 587,
+            "smtp_user": "",
+            "smtp_pass": "",
+            "smtp_from": "",
+            "smtp_to": "tester@example.com",
+            "smtp_tls": True,
+        },
+        timeout=10,
+    )
+
+    assert r.status_code == 200
+    assert r.json() == {"success": False, "message": "SMTP host is required"}
+
+
 def test_settings_mp3_bitrate_write_and_restore(api, base_url):
     """mp3_bitrate should persist (this regressed in v2.8.2)."""
     settings = api.get(f"{base_url}/api/settings", timeout=10).json()["settings"]

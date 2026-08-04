@@ -735,7 +735,7 @@ def parse_youtube_search_results(stdout: str, query: str | None = None) -> list[
             channel = data.get("channel", data.get("uploader", "Unknown"))
             duration_secs = data.get("duration") or 0
             views = data.get("view_count")
-            quality_score, score_breakdown = score_search_result_with_breakdown(
+            relevance_score, score_breakdown = score_search_result_with_breakdown(
                 title, channel, query,
                 duration_seconds=duration_secs or None,
                 view_count=views,
@@ -754,7 +754,7 @@ def parse_youtube_search_results(stdout: str, query: str | None = None) -> list[
                     f"https://www.youtube.com/watch?v={data.get('id')}" if data.get("id") else ""
                 ),
                 "quality": None,
-                "quality_score": quality_score,
+                "relevance_score": relevance_score,
                 "score_breakdown": score_breakdown,
                 "slskd_username": None,
                 "slskd_filename": None,
@@ -827,7 +827,7 @@ def search_youtube(query: str, limit: int) -> list[dict]:
 
                 if result_no_cookies.returncode == 0:
                     results = parse_youtube_search_results(result_no_cookies.stdout, query=query)
-                    results.sort(key=lambda x: x["quality_score"], reverse=True)
+                    results.sort(key=lambda x: x["relevance_score"], reverse=True)
                     if results:
                         print(f"YouTube search cookieless retry succeeded for '{query}', cookies look stale")
                         _note_cookie_failure()
@@ -845,7 +845,7 @@ def search_youtube(query: str, limit: int) -> list[dict]:
             return []
 
         results = parse_youtube_search_results(result.stdout, query=query)
-        results.sort(key=lambda x: x["quality_score"], reverse=True)
+        results.sort(key=lambda x: x["relevance_score"], reverse=True)
         return results[:limit]
 
     except Exception as e:

@@ -943,8 +943,16 @@
 
         renderPlaylistServicesText();
 
+        // Dismiss the pure-HTML boot panel from index.html. Called from initApp's
+        // finally block, so it goes whether we land on the app, the login screen,
+        // or a config fetch that fell over.
+        function dismissBootPanel() {
+            document.getElementById('bootPanel')?.remove();
+        }
+
         // Load config from server then handle auth and app initialisation
         (async function initApp() {
+          try {
             let config = null;
             try {
                 const resp = await fetch(withRootPath('/api/config'));
@@ -1026,6 +1034,9 @@
             applyUserRoleToUI();
             populateSourceChips();
             startSourceHealthPolling();
+          } finally {
+            dismissBootPanel();
+          }
         })();
 
         // Restore convert on/off from localStorage (namespaced per user)
@@ -1602,7 +1613,7 @@
                         updateSourceStatus(ev.source, ev.status, ev.count);
                         if (ev.status === 'done' && ev.results && ev.results.length) {
                             accumulator.push(...ev.results);
-                            accumulator.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+                            accumulator.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0));
                             renderResults(accumulator);
                             renderedOnce = true;
                             // Re-render wipes thumbnails, so re-apply any fetched artwork.
@@ -1817,7 +1828,7 @@
                         merged.push(result);
                     }
                 }
-                merged.sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+                merged.sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0));
                 renderResults(merged);
                 updateSourceStatus(source, 'done', (data.results || []).length);
                 if (currentArtworkUrl && currentArtworkArtist && currentArtworkTitle) {
@@ -2182,8 +2193,8 @@
         // once a minimum is set. "Keep undeclared" brings them back for anyone who
         // wants the safety net. With the filter on "Any quality" nothing is hidden.
         //
-        // Worth knowing: the list is ordered by quality_score, which is a relevance
-        // score (title/artist match, views, duration), not an audio one. YouTube
+        // Worth knowing: the list is ordered by relevance_score (title/artist match,
+        // views, duration and source bonus), not by audio quality. YouTube
         // tends to top it because it has the exact title, which is precisely why an
         // undeclared result could otherwise sit above real lossless ones.
         //
@@ -2602,6 +2613,21 @@
             }
         }
 
+        function resultDurationSeconds(value) {
+            if (typeof value === 'number') {
+                return Number.isFinite(value) && value > 0 ? value : null;
+            }
+            const text = String(value || '').trim();
+            if (!text) return null;
+            if (/^\d+$/.test(text)) return Number(text) || null;
+            const parts = text.split(':');
+            if (parts.length < 2 || parts.length > 3 || parts.some(part => !/^\d+$/.test(part))) {
+                return null;
+            }
+            const seconds = parts.reduce((total, part) => total * 60 + Number(part), 0);
+            return seconds > 0 ? seconds : null;
+        }
+
         async function downloadTrack(result, element) {
             // Check queue size limit
             const queueSize = await getQueueSize();
@@ -2624,6 +2650,10 @@
                     source: result.source || 'youtube',
                     search_token: currentSearchLogToken
                 };
+                const selectedDurationSecs = resultDurationSeconds(result.duration);
+                if (selectedDurationSecs) {
+                    payload.selected_duration_secs = selectedDurationSecs;
+                }
                 if (result.artist || result.channel) {
                     payload.artist = result.artist || result.channel;
                 }
@@ -5377,7 +5407,7 @@
                         if (hours === 24) intervalText = 'daily';
                         else if (hours === 168) intervalText = 'weekly';
                         else if (hours >= 720) intervalText = 'monthly';
-                        watchedScheduleInfo.textContent = `Automatic checks run ${intervalText}. Per-playlist intervals determine when each is due.`;
+                        watchedScheduleInfo.textContent = `Automatic checks follow each playlist's own interval. The global ${intervalText} setting is only the maximum time between scheduler sweeps.`;
                     } else {
                         watchedScheduleInfo.textContent = 'Automatic checks disabled. Use "Check All Now" or set WATCHED_PLAYLIST_CHECK_HOURS.';
                     }
@@ -5437,6 +5467,7 @@
                 };
                 const platformIcon = platformIcons[p.platform] || '<i class="fa-solid fa-list"></i>';
                 const lastChecked = p.last_checked ? formatTimeAgo(p.last_checked) : 'Never';
+                const lastCheckedExact = p.last_checked ? formatTimeExact(p.last_checked) : '';
                 const statusColor = p.enabled ? 'var(--accent)' : 'var(--text-secondary)';
                 const intervalText = p.refresh_interval_hours >= 720 ? 'monthly' :
                                      p.refresh_interval_hours === 168 ? 'weekly' :
@@ -5459,7 +5490,7 @@
                             ${!p.enabled ? '<span class="watched-card-paused">Paused</span>' : ''}
                         </div>
                         <div class="watched-card-meta">
-                            ${p.tracked_count} tracks · ${p.downloaded_count || 0} downloaded · ${intervalText} · Last checked: ${lastChecked}
+                            ${p.tracked_count} tracks · ${p.downloaded_count || 0} downloaded · ${intervalText} · Last checked: <span title="${escapeAttr(lastCheckedExact)}">${escapeHtml(lastChecked)}</span>
                         </div>
                         ${refreshState === 'error' && p.refresh_error && !isRefreshing ? `
                         <div class="watched-card-refresh-error">
@@ -5589,7 +5620,23 @@
         }
 
         function formatTimeAgo(isoString) {
+            if (!isoString) return '';
+            const normalized = /Z$|[+-]\d{2}:\d{2}$/.test(isoString) ? isoString : `${String(isoString).replace(' ', 'T')}Z`;
+            const date = new Date(normalized);
+            if (Number.isNaN(date.getTime())) return '';
+            const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+            if (seconds < 60) return 'just now';
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+            if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
             return formatDateYmd(isoString);
+        }
+
+        function formatTimeExact(isoString) {
+            if (!isoString) return '';
+            const normalized = /Z$|[+-]\d{2}:\d{2}$/.test(isoString) ? isoString : `${String(isoString).replace(' ', 'T')}Z`;
+            const date = new Date(normalized);
+            return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
         }
 
         async function addWatchedPlaylist() {
@@ -7291,7 +7338,7 @@
                     : artist.refresh_interval_hours >= 1 ? 'hourly'
                     : 'every 30min';
                 const lastChecked = artist.last_checked
-                    ? `Last checked: ${formatTimeAgo(artist.last_checked)}`
+                    ? `Last checked: <span title="${escapeAttr(formatTimeExact(artist.last_checked))}">${escapeHtml(formatTimeAgo(artist.last_checked))}</span>`
                     : 'Never checked';
                 let stageHtml = '';
                 if (isRunning) {
@@ -8798,6 +8845,7 @@
                 'youtube-cookies': { btn: 'testYoutubeCookiesBtn', result: 'youtubeCookiesTestResult', label: 'Test Cookies' },
                 'spotify-cookies': { btn: 'testSpotifyCookiesBtn', result: 'spotifyCookiesTestResult', label: 'Test Cookies' },
                 'apprise': { btn: 'testAppriseBtn', result: 'appriseTestResult', label: 'Test Apprise' },
+                'email': { btn: 'testEmailBtn', result: 'emailTestResult', label: 'Send Test Email' },
             };
             const ids = idMap[service] || { btn: `test${service.charAt(0).toUpperCase() + service.slice(1)}Btn`, result: `${service}TestResult`, label: 'Test Connection' };
             const btn = document.getElementById(ids.btn);
@@ -8851,6 +8899,19 @@
                 body = {
                     url: document.getElementById('settingAppriseUrl').value.trim()
                 };
+            } else if (service === 'email') {
+                body = {
+                    smtp_host: document.getElementById('settingSmtpHost').value.trim(),
+                    smtp_port: Number(document.getElementById('settingSmtpPort').value),
+                    smtp_user: document.getElementById('settingSmtpUser').value.trim(),
+                    smtp_from: document.getElementById('settingSmtpFrom').value.trim(),
+                    smtp_to: document.getElementById('settingSmtpTo').value.trim(),
+                    smtp_tls: document.getElementById('settingSmtpTls').checked
+                };
+                const smtpPassword = document.getElementById('settingSmtpPass').value;
+                // A blank password field can mean "configured, but masked". Let
+                // the server use the saved secret unless a replacement was typed.
+                if (smtpPassword) body.smtp_pass = smtpPassword;
             }
 
             try {
@@ -8920,6 +8981,7 @@
         document.getElementById('testYoutubeCookiesBtn').addEventListener('click', () => testConnection('youtube-cookies'));
         document.getElementById('testSpotifyCookiesBtn').addEventListener('click', () => testConnection('spotify-cookies'));
         document.getElementById('testAppriseBtn').addEventListener('click', () => testConnection('apprise'));
+        document.getElementById('testEmailBtn').addEventListener('click', () => testConnection('email'));
         const uploadYoutubeCookiesBtn = document.getElementById('uploadYoutubeCookiesBtn');
         const youtubeCookiesFile = document.getElementById('youtubeCookiesFile');
         const youtubeCookiesTextarea = document.getElementById('settingYoutubeCookies');

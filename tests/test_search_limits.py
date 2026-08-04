@@ -8,6 +8,20 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import search
+from models import SearchResult
+
+
+def test_search_result_contract_names_the_rank_as_relevance():
+    payload = SearchResult(
+        video_id="result-1",
+        title="Track",
+        channel="Artist",
+        duration="3:30",
+        thumbnail="",
+    ).model_dump()
+
+    assert payload["relevance_score"] == 40
+    assert "quality_score" not in payload
 
 
 def test_source_search_slot_rejects_overlap_and_recovers(monkeypatch):
@@ -88,7 +102,7 @@ def test_event_stream_uses_expanded_cap_for_sparse_sources(monkeypatch):
     def results_for(source_name):
         def search_source(_query, limit):
             return [
-                {"video_id": f"{source_name}-{i}", "quality_score": 100 - i}
+                {"video_id": f"{source_name}-{i}", "relevance_score": 100 - i}
                 for i in range(limit)
             ]
         return search_source
@@ -122,15 +136,15 @@ def test_automated_search_cache_returns_isolated_copies(monkeypatch):
 
     def fake_search_all(*args, **kwargs):
         calls.append(1)
-        return ([{"video_id": "one", "quality_score": 10}], {"album_title": "Album"})
+        return ([{"video_id": "one", "relevance_score": 10}], {"album_title": "Album"})
 
     monkeypatch.setattr(search, "search_all", fake_search_all)
     first, _ = search.search_all_cached("Artist - Track", 10)
-    first[0]["quality_score"] = 999
+    first[0]["relevance_score"] = 999
     second, album = search.search_all_cached("Artist - Track", 10)
 
     assert len(calls) == 1
-    assert second[0]["quality_score"] == 10
+    assert second[0]["relevance_score"] == 10
     assert album == {"album_title": "Album"}
 
 

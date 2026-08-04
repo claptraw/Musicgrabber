@@ -10,8 +10,69 @@
     <link rel="preload" as="font" type="font/woff2" crossorigin href="__ROOT_PATH__/static/fonts/suse-mono-400-latin.woff2">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg==" crossorigin="anonymous" referrerpolicy="no-referrer">
     <link rel="stylesheet" href="__ROOT_PATH__/static/style.css?v=__CACHE_BUST__">
+    <script>
+        // Apply the saved theme before first paint, so neither the boot panel nor
+        // the app underneath it flashes dark at somebody who picked light.
+        try {
+            document.documentElement.setAttribute('data-theme', localStorage.getItem('theme') || 'dark');
+        } catch (e) {}
+    </script>
+    <style>
+        /* Boot panel. Deliberately inline and self-contained: it needs to paint
+           the moment the DOM does, which is a good while before 400KB of app.js
+           has turned up and populated anything. Without it the first thing you
+           see is an empty, uninitialised app shell, which looks convincingly
+           like a broken one. */
+        #bootPanel {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+            padding: 24px;
+            text-align: center;
+            background: var(--bg-primary, #0a0a0b);
+            color: var(--text-primary, #f5f5f5);
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+        #bootPanel img { border-radius: 12px; opacity: 0.9; }
+        #bootPanel h1 { margin: 0; font-size: 1.35rem; font-weight: 600; }
+        #bootPanel p { margin: 0; font-size: 0.875rem; color: var(--text-secondary, #888); }
+        #bootBar {
+            width: min(240px, 70vw);
+            height: 3px;
+            border-radius: 3px;
+            overflow: hidden;
+            background: var(--bg-tertiary, #1c1c1f);
+        }
+        #bootBar span {
+            display: block;
+            width: 40%;
+            height: 100%;
+            border-radius: 3px;
+            background: var(--accent, #22c55e);
+            animation: bootSlide 1.1s ease-in-out infinite;
+        }
+        @keyframes bootSlide {
+            from { transform: translateX(-100%); }
+            to   { transform: translateX(250%); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            #bootBar span { animation: none; width: 100%; opacity: 0.55; }
+        }
+    </style>
 </head>
 <body>
+    <div id="bootPanel" role="status" aria-live="polite">
+        <img src="__ROOT_PATH__/static/favicon.png" width="64" height="64" alt="">
+        <h1>Music Grabber</h1>
+        <div id="bootBar"><span></span></div>
+        <p>Warming up the decks...</p>
+    </div>
+
     <!-- Login screen (shown when users_exist=true and no valid session) -->
     <div id="loginScreen" style="display:none;" class="auth-screen">
         <div class="auth-card">
@@ -1142,12 +1203,17 @@
                             <input type="text" id="settingSmtpTo" placeholder="you@example.com">
                         </div>
                         <label class="settings-label">
-                            <span>Use TLS</span>
+                            <span>Use STARTTLS</span>
                             <div class="toggle-switch">
                                 <input type="checkbox" id="settingSmtpTls" checked>
                                 <span class="toggle-slider"></span>
                             </div>
                         </label>
+                        <span class="settings-hint-sm">Normally on for port 587. Port 465 uses implicit TLS and is not supported by this toggle.</span>
+                        <div class="apprise-test-row">
+                            <button type="button" class="btn test-btn" id="testEmailBtn">Send Test Email</button>
+                            <div id="emailTestResult" class="test-result"></div>
+                        </div>
                     </div>
                 </details>
             </div>

@@ -26,6 +26,12 @@ class DownloadRequest(BaseModel):
     title: str
     artist: Optional[str] = None
     search_token: Optional[str] = None
+    # Duration advertised by the exact search result the user clicked. This is
+    # independent of canonical MusicBrainz duration, so intentional live/remix
+    # choices remain valid while CDN samples can be recognised after download.
+    selected_duration_secs: Optional[float] = Field(
+        default=None, gt=0, le=86400, allow_inf_nan=False,
+    )
     download_type: str = "single"  # "single" or "playlist"
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
     # Source routing
@@ -191,7 +197,7 @@ class SearchResult(BaseModel):
     source: str = "youtube"  # "youtube", "soundcloud", "zvu4no", "freemp3cloud", or "soulseek"
     source_url: Optional[str] = None  # Full URL for non-YouTube sources
     quality: Optional[str] = None  # e.g., None for YouTube, format string for others
-    quality_score: int = 40  # For sorting (higher = better)
+    relevance_score: int = 40  # Artist/title/duration/source rank; higher is better
     # 0 = source declined to say (YouTube/SoundCloud), 1-5 = the shared tier
     # scale in constants.py. Drives the UI's minimum-quality filter.
     quality_tier: int = 0
@@ -231,6 +237,15 @@ class TestLidarrRequest(BaseModel):
 
 class TestAppriseRequest(BaseModel):
     url: Optional[str] = None
+
+class TestEmailRequest(BaseModel):
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    smtp_user: Optional[str] = None
+    smtp_pass: Optional[str] = None
+    smtp_from: Optional[str] = None
+    smtp_to: Optional[str] = None
+    smtp_tls: Optional[bool] = None
 
 class TestYouTubeCookiesRequest(BaseModel):
     cookies: Optional[str] = None

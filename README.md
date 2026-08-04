@@ -1,5 +1,5 @@
 # Music Grabber
-**v3.1.0 (development)**
+**v3.1.0**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -7,7 +7,9 @@ If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
 
 ## Why?
 
-Lidarr's great for albums, but grabbing a single track you heard on the radio shouldn't require navigating menus or pulling an artist's entire discography. This is for the "I want one song, not a commitment" use case.
+It started as the "I want one song, not a commitment" tool: Lidarr's great for albums, but grabbing a single track you heard on the radio shouldn't require navigating menus or pulling an artist's entire discography. Search, tap, done; that's still the heart of it.
+
+It has since grown well past that brief. Watched Playlists and Watched Artists keep your library current on their own, checking six playlist platforms plus MusicBrainz for new singles so you don't have to remember to. Multi-source search now reaches proper lossless Qobuz and Soulseek alongside YouTube and SoundCloud; Album mode handles the odd full release; track upgrades, provenance auditing, and multi-user support round out the rest. It's not trying to become Lidarr (see below); it just turns out "grab one song" was the thin end of a much bigger wedge.
 
 ## What this project is not
 
@@ -21,7 +23,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 ## Features
 
-- **Multi-source search:** YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek searched in parallel; quality-ranked results with source badges and score explanations
+- **Multi-source search:** YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek searched in parallel; relevance-ranked results with source badges and score explanations, plus a separate audio-quality tier where the provider declares one
 - **Live search progress:** results stream in as each source answers, with live status for completed, slow, parked, or unavailable sources; repeated timeouts automatically bench an unhealthy source until a background probe clears it
 - **Monochrome/Qobuz source:** searches the Tidal catalogue via hifi-api metadata, then resolves matching Qobuz FLAC streams by ISRC. It can serve proper lossless when the proxy gods are smiling. Enabled by default and configurable in Search Sources
 - **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
@@ -47,6 +49,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Loudness normalisation:** optional two-pass EBU R128 normalisation brings lossy web sources to -14 LUFS without touching lossless masters
 - **Automatic Music import:** optionally copy each completed download into a mounted macOS Music "Automatically Add to Music" folder
 - **Enhanced metadata:** AcoustID audio fingerprinting with MusicBrainz lookups, falling back to source tags. For "Artist - Title" queries, MusicBrainz expected duration is used as a scoring signal at search time, so a 1:41 DJ edit won't outrank the 3:31 original
+- **Manual picks remain deliberate, not gullible:** choosing a live version, remix or edit is allowed to disagree with MusicBrainz, but MusicGrabber remembers the duration shown on that exact result and rejects downloaded bytes that are substantially shorter. A valid 30-second CDN preview can no longer dress up as the four-minute track you clicked
 - **Synced lyrics:** automatic lyrics fetching from LRClib, saved as `.lrc` files
 - **Auto-organise:** `Singles/Artist/Title.flac` (or flat `Singles/Artist - Title.flac` with "Organise by Artist" off). Optional track-number filenames produce `Singles/Artist/1 - Title.flac` when metadata includes a track number. Album mode uses `Albums/Artist/Album/Track.flac`
 - **Duplicate detection:** local filesystem check plus optional Navidrome Subsonic API check
@@ -315,8 +318,8 @@ Settings are stored in the database and persist across container restarts.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PUID` | `0` | User ID for file ownership (like *arr stack) |
-| `PGID` | `0` | Group ID for file ownership (like *arr stack) |
+| `PUID` | `0` | User ID for file ownership (like *arr stack); low NAS service IDs such as TrueNAS `568` are supported |
+| `PGID` | `0` | Group ID for file ownership (like *arr stack); low NAS service IDs such as TrueNAS `568` are supported |
 | `LISTEN_ADDR` | `0.0.0.0` | Bind address for the web service (set `::` for IPv6 environments) |
 | `LISTEN_PORT` | `8080` | Bind port for the web service inside the container |
 | `MUSIC_DIR` | `/music` | Music library root inside container |
@@ -370,7 +373,7 @@ Settings are stored in the database and persist across container restarts.
 | `SOURCE_FREEMP3CLOUD_ENABLED` | `true` | Enable FreeMp3Cloud search results |
 | `SOURCE_SOULSEEK_ENABLED` | `false` | Enable Soulseek/slskd search results. Credentials alone do not enable Soulseek |
 | `SOURCE_MONOCHROME_ENABLED` | `true` | Enable Monochrome/Qobuz search results |
-| `SOURCE_OFFLINE_FALLBACK` | `true` | Try another enabled source after a download source fails |
+| `SOURCE_OFFLINE_FALLBACK` | `true` | Try another enabled source after a download source fails; watched-playlist and bulk-import source allow-lists are still enforced |
 | `SOURCE_HEALTH_CHECKS_ENABLED` | `true` | Hide unhealthy sources until a background probe confirms recovery |
 | `SOURCE_HEALTH_CHECK_INTERVAL_MINUTES` | `10` | Minutes between scheduled source health probes |
 | `SOURCE_HEALTH_COOLDOWN_MINUTES` | `10` | Minimum time a failed source remains parked before it can be probed again |
@@ -384,7 +387,7 @@ Settings are stored in the database and persist across container restarts.
 | `SLSKD_REQUIRE_FREE_SLOT` | `true` | Only show Soulseek results from users with free upload slots |
 | `SLSKD_MAX_RETRIES` | `5` | Max retry attempts for failed Soulseek downloads |
 | `SLSKD_MATCH_CONFIDENCE_FLOOR` | `0.55` | Minimum Soulseek filename/path match confidence from `0.0` to `1.0`; lower values allow looser matches |
-| `WATCHED_PLAYLIST_CHECK_HOURS` | `24` | How often to check watched playlists (in hours): 24=daily, 168=weekly, 720=monthly, 0=disabled |
+| `WATCHED_PLAYLIST_CHECK_HOURS` | `24` | Maximum time between scheduler sweeps. Shorter per-playlist/per-artist intervals wake sooner; `0` disables automatic checks |
 | `WATCHED_HISTORY_RECHECK_HOURS` | `24` | Minimum interval before retrying unresolved append-mode tracks that have left the upstream playlist |
 | `WATCHED_REFRESH_STALE_SECONDS` | `1800` | How long before a stuck `running` refresh is auto-failed (seconds) |
 | `LIBRARY_RECONCILE_INTERVAL` | `1800` | How often MusicGrabber reconciles deleted/renamed files against the job database (seconds) |
@@ -520,7 +523,10 @@ environment:
   - SMTP_TLS=true
 ```
 
-`SMTP_TO` can be a comma-separated list for multiple recipients.
+`SMTP_TO` can be a comma-separated list for multiple recipients. `SMTP_TLS=true`
+means STARTTLS, normally on port 587; implicit TLS on port 465 is not supported.
+The Settings page can send a test email using the values currently in the form
+and reports connection, STARTTLS, authentication, sender, and recipient failures.
 
 **Generic webhook:**
 
@@ -533,7 +539,7 @@ environment:
 
 ### Soulseek Integration (Optional)
 
-MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled, search results from YouTube and Soulseek are shown together, ranked by quality; FLAC files from Soulseek appear at the top.
+MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled, search results from YouTube and Soulseek are shown together, ranked by relevance. Soulseek's declared codec and bitrate contribute to that rank and also feed the separate minimum-quality filter, so a good FLAC match still receives its due without pretending audio quality and title relevance are the same measurement.
 
 Soulseek is disabled by default. Turn it on in Settings under Search Sources, or set `SOURCE_SOULSEEK_ENABLED=true`. Entering credentials alone does not enable it.
 
@@ -667,13 +673,13 @@ Automatically monitor Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, T
 
 1. Add a playlist URL in the "Watched" tab
 2. MusicGrabber fetches the current tracklist and stores hashes of each track
-3. A built-in scheduler checks playlists periodically (default: daily)
-4. New tracks are queued for download, searching all selected sources for the best quality available
+3. A built-in scheduler checks each playlist at its selected interval (30 minutes, hourly, 6/12 hours, daily, weekly, or monthly)
+4. New tracks are queued for download, searching only the selected sources for the best quality available
 5. If "Generate M3U" is enabled, a `.m3u` file is created and updated on every refresh as new tracks are downloaded
 
 Each watched playlist can also:
 - Use Append or Mirror sync for its M3U
-- Limit preferred sources, useful when a SoundCloud set should stay on SoundCloud, or a playlist deserves Soulseek/Monochrome first
+- Limit allowed sources, useful when a SoundCloud set must stay on SoundCloud. The selection remains strict during automatic fallback and manual job retry; if every selected source is disabled or unavailable, the track fails instead of wandering off to another provider
 - Route downloads into the standard Playlists directory or a custom subfolder under your music root
 - Show missing tracks, candidate search results, and manual retry controls when the automatic match is not good enough
 
@@ -685,11 +691,11 @@ The scheduler runs automatically inside the container. Control it with:
 
 ```yaml
 environment:
-  - WATCHED_PLAYLIST_CHECK_HOURS=24  # Check daily (default)
-  # Or: 168 for weekly, 720 for monthly, 0 to disable
+  - WATCHED_PLAYLIST_CHECK_HOURS=24  # Maximum sweep interval (default)
+  # Shorter per-playlist/per-artist deadlines wake sooner; 0 disables automation
 ```
 
-Each playlist also has its own interval (daily, weekly, or monthly) that you set when adding it. The scheduler runs at the global interval and checks which playlists are due based on their individual settings.
+Each playlist and watched artist has its own interval. The scheduler sleeps until the earliest enabled item is due, without exceeding the global sweep interval above. Adding, resuming, or changing an interval wakes it immediately to recalculate; there is no restart ritual and no need to leave a sacrificial playlist by the router.
 
 **Manual refresh:**
 
@@ -818,10 +824,12 @@ Downloads are organised as:
 With `ENABLE_MUSICBRAINZ=true`:
 1. Fingerprints the downloaded audio with AcoustID/Chromaprint to identify the actual recording
 2. If AcoustID matches confidently, uses the correct artist, title, album, and year from MusicBrainz
-3. Falls back to a text-based MusicBrainz search if fingerprinting fails or scores too low
+3. Falls back to a text-based MusicBrainz search if fingerprinting fails or scores too low. For bootleg-heavy catalogues where the best search hit appears on only a handful of releases, it checks the exact-title single/EP release group and follows the recording reused across its official editions back to a studio album; well-supported results keep the normal two-request path
 4. Falls back to cleaned source metadata if neither lookup finds anything
 5. Sets album to "Singles" by default when no album is found
 6. Fetches proper cover art using Cover Art Archive, then iTunes/Deezer fallbacks, keeping source thumbnails as the last resort
+
+Manual selections intentionally bypass the canonical MusicBrainz duration rejection so you can choose a live version, remix, edit, or extended mix. They still have an independent completeness check: when the selected search result advertised a duration, downloaded audio shorter by more than both 10% and 15 seconds is rejected as a likely preview/sample or truncated response. If the source supplied no duration, MusicGrabber keeps the existing codec, container, start-offset, silence, and HTTP content-length checks rather than inventing one.
 
 ### ReplayGain
 
@@ -964,6 +972,7 @@ music.yourdomain.com {
 | `POST` | `/api/settings/test/youtube-cookies` | Test YouTube cookie validity |
 | `POST` | `/api/settings/test/spotify-cookies` | Test Spotify cookie validity |
 | `POST` | `/api/settings/test/apprise` | Test Apprise notification URL |
+| `POST` | `/api/settings/test/email` | Send a test email with SMTP settings |
 | `GET` | `/api/settings/youtube-cookies/status` | Get cookie upload status |
 
 ### Search and Preview
@@ -973,9 +982,9 @@ music.yourdomain.com {
 | `GET` | `/api/sources` | List available search sources (for source selector UI) |
 | `GET` | `/api/sources/health` | Get current source and Monochrome proxy health state |
 | `POST` | `/api/sources/health/recheck` | Start an admin-only background re-check of every source |
-| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "all/youtube/soundcloud/zvu4no/freemp3cloud/monochrome/soulseek"}`) |
-| `POST` | `/api/search/stream` | Stream per-source status and ranked results as NDJSON |
-| `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured) |
+| `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "all/youtube/soundcloud/zvu4no/freemp3cloud/monochrome/soulseek"}`); results expose `relevance_score` for ordering and `quality_tier` for declared audio quality |
+| `POST` | `/api/search/stream` | Stream per-source status and ranked results as NDJSON, using the same `relevance_score`/`quality_tier` result contract |
+| `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured); results use the same ranking and quality fields |
 | `GET` | `/api/search/artwork` | Find display artwork for a search result (`?artist=...&title=...`) |
 | `GET` | `/api/preview/{video_id}` | Get a streamable audio URL. Monochrome accepts its complete `url` plus optional `artist` and `title` hints for lossless fallback resolution |
 | `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
@@ -984,7 +993,7 @@ music.yourdomain.com {
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/zvu4no/freemp3cloud/monochrome/soulseek", "download_type": "single/playlist"}`) |
+| `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/zvu4no/freemp3cloud/monochrome/soulseek", "download_type": "single/playlist"}`). The Tracks UI also returns its valid `search_token` and numeric `selected_duration_secs`; together they enable manual-result completeness checking |
 | `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` and `source_history` provenance) |
 | `GET` | `/api/jobs/downloadable` | Paginated list of completed jobs available to save to device (`?page=1&per_page=50`) |
 | `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source` and `source_history`) |
@@ -1032,7 +1041,7 @@ music.yourdomain.com {
 |--------|----------|-------------|
 | `GET` | `/api/watched-playlists` | List all watched playlists |
 | `POST` | `/api/watched-playlists` | Add a playlist to watch |
-| `GET` | `/api/watched-playlists/schedule` | Get next scheduled check time |
+| `GET` | `/api/watched-playlists/schedule` | Get scheduler enablement and maximum sweep interval |
 | `GET` | `/api/watched-playlists/orphans` | Find unclaimed audio left in watched-playlist folders |
 | `POST` | `/api/watched-playlists/orphans/move` | Move selected orphaned files into the normal Singles layout |
 | `GET` | `/api/watched-playlists/{id}` | Get watched playlist details |
@@ -1150,6 +1159,7 @@ docker compose up -d
   ```
 - Find your UID/GID with: `id $USER`
 - Double-check the values are correct; a wrong `PUID`/`PGID` can also break Spotify playlist imports (Chromium won't launch if it can't write to its temp directories)
+- TrueNAS commonly uses service UID/GID `568`. Debian may print `useradd warning: ... outside of the UID_MIN ... range` when the container creates that account. This is cosmetic: low numeric IDs are supported. Check that the container becomes healthy and that the host dataset grants `568:568` write access; changing the IDs merely to silence the warning usually swaps a harmless complaint for a real permissions problem
 
 **Spotify playlists over 100 tracks not importing fully?**
 - Large playlists require the headless browser fallback, which needs extra shared memory:

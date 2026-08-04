@@ -244,6 +244,207 @@ def test_thumbnail_postprocess_failure_detection(stderr, expected):
     assert downloads._is_thumbnail_postprocess_failure(stderr) is expected
 
 
+# yt-dlp runs --convert-thumbnails as a 'before_dl' postprocessor, so a missing
+# thumbnail kills the job before any audio is fetched and there is nothing left
+# to salvage. These cover the retry that gives the track a second chance.
+
+def test_strip_thumbnail_args_removes_art_handling_and_nothing_else():
+    downloads = _import_downloads_or_skip()
+    cmd = downloads._build_ytdlp_download_cmd(
+        "abc123", "/music/Singles/Artist/Title.%(ext)s", False, use_cookies=False
+    )
+    stripped = downloads._strip_thumbnail_args(cmd)
+
+    assert "--embed-thumbnail" not in stripped
+    assert "--convert-thumbnails" not in stripped
+    assert "jpg" not in stripped          # the value went with its flag
+    assert "--ppa" not in stripped
+    assert not any(arg.startswith("ffmpeg:") for arg in stripped)
+
+    # Everything that actually fetches audio must survive intact.
+    assert stripped[0] == "yt-dlp"
+    assert stripped[-1].endswith("abc123")
+    for kept in ("-x", "--embed-metadata", "--add-metadata", "-o", "--audio-quality"):
+        assert kept in stripped
+    assert "/music/Singles/Artist/Title.%(ext)s" in stripped
+    assert stripped.count("--parse-metadata") == 2
+
+
+def test_retry_without_thumbnail_reruns_with_art_disabled(monkeypatch):
+    downloads = _import_downloads_or_skip()
+    seen = {}
+
+    def fake_run(cmd, timeout, has_cookies):
+        seen["cmd"] = cmd
+        return "result", False
+
+    monkeypatch.setattr(downloads, "_run_ytdlp_with_retries", fake_run)
+
+    result, timed_out = downloads._retry_ytdlp_without_thumbnail(
+        ["yt-dlp", "--embed-thumbnail", "--convert-thumbnails", "jpg", "-x", "url"],
+        300,
+        False,
+        "ERROR: [Errno 2] No such file or directory: '/music/Singles/a/b.webp'",
+    )
+
+    assert (result, timed_out) == ("result", False)
+    assert seen["cmd"] == ["yt-dlp", "-x", "url"]
+
+
+def test_retry_without_thumbnail_leaves_real_failures_alone(monkeypatch):
+    """A 403 is not a cover-art problem; retrying without art would just waste a call."""
+    downloads = _import_downloads_or_skip()
+
+    def explode(*args, **kwargs):
+        raise AssertionError("should not have retried")
+
+    monkeypatch.setattr(downloads, "_run_ytdlp_with_retries", explode)
+
+    assert downloads._retry_ytdlp_without_thumbnail(
+        ["yt-dlp", "--embed-thumbnail", "url"],
+        300,
+        False,
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+    ) == (None, False)
+
+
+@pytest.mark.parametrize(
+    "actual,advertised,expected_ok",
+    [
+        (30, 240, False),   # classic CDN preview: valid audio, wrong amount of it
+        (180, 240, False),  # a decodable but substantially truncated response
+        (218, 240, True),   # within 10%; metadata/rounding drift gets grace
+        (14, 20, True),     # tiny tracks also need the 15-second absolute grace
+        (420, 420, True),   # an intentional seven-minute live/extended version
+        (420, 240, True),   # longer-than-advertised is not a preview shortfall
+        (30, None, True),   # sources that advertise no duration keep old checks
+    ],
+)
+def test_selected_result_duration_detects_samples_without_rejecting_variants(
+    actual, advertised, expected_ok,
+):
+    downloads = _import_downloads_or_skip()
+    ok, reason = downloads._check_duration_against_selected_result(actual, advertised)
+    assert ok is expected_ok
+    assert bool(reason) is (not expected_ok)
+
+
+def test_manual_completeness_gate_requires_search_token_and_single_job(monkeypatch):
+    """Only a real manual search pick should activate the selected-duration gate."""
+    import sqlite3
+    from contextlib import contextmanager
+
+    downloads = _import_downloads_or_skip()
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """CREATE TABLE jobs (
+               id TEXT PRIMARY KEY,
+               search_token TEXT,
+               selected_duration_secs REAL,
+               download_type TEXT
+           )"""
+    )
+    conn.executemany(
+        "INSERT INTO jobs VALUES (?, ?, ?, ?)",
+        [
+            ("manual", "server-token", 240, "single"),
+            ("automatic", None, 240, "single"),
+            ("playlist", "server-token", 240, "playlist"),
+        ],
+    )
+
+    @contextmanager
+    def fake_db_conn():
+        yield conn
+
+    monkeypatch.setattr(downloads, "db_conn", fake_db_conn)
+    assert downloads._check_manual_download_completeness(30, "manual")[0] is False
+    assert downloads._check_manual_download_completeness(30, "automatic") == (True, "")
+    assert downloads._check_manual_download_completeness(30, "playlist") == (True, "")
+    # The selected seven-minute version matches its own advertised duration,
+    # while the old manual-pick rule still permits it to differ from a
+    # four-minute canonical MusicBrainz recording.
+    conn.execute(
+        "UPDATE jobs SET selected_duration_secs = 420 WHERE id = 'manual'"
+    )
+    assert downloads._check_manual_download_completeness(420, "manual") == (True, "")
+    assert downloads._check_duration_against_mb(
+        420, {"expected_duration_secs": 240}, "Artist", "Song (live)", job_id="manual",
+    ) == (True, "")
+
+
+# ---------------------------------------------------------------------------
+# _maybe_mark_monochrome_unhealthy: a single track missing from every leg
+# (Qobuz proxies, qbdlx, Deezer rescue, Tidal stream) raises the exact same
+# exception as the whole leg being down. These confirm we re-check the leg
+# itself before parking Monochrome for everyone over one unlucky search
+# result -- see docs/requests and bugs.md, "the shared qbdlx token pool
+# remains fragile".
+# ---------------------------------------------------------------------------
+
+def test_maybe_mark_monochrome_unhealthy_skips_healthy_leg(monkeypatch):
+    downloads = _import_downloads_or_skip()
+    import monochrome
+    import servicecheck
+
+    monkeypatch.setattr(monochrome, "download_leg_healthy",
+                         lambda: (True, "3/28 shared tokens usable this cycle"))
+    calls = []
+    monkeypatch.setattr(servicecheck, "mark_unhealthy", lambda *a, **k: calls.append((a, k)))
+
+    downloads._maybe_mark_monochrome_unhealthy(
+        RuntimeError("Monochrome: no stream available for ISRC GBZZZ9900001 at an allowed quality on any leg")
+    )
+
+    assert calls == []  # one obscure track is not evidence the whole source is down
+
+
+def test_maybe_mark_monochrome_unhealthy_parks_source_when_leg_is_down(monkeypatch):
+    downloads = _import_downloads_or_skip()
+    import monochrome
+    import servicecheck
+
+    reason = "all Qobuz proxies down; qbdlx fallback also unavailable (0/28 shared tokens usable this cycle)"
+    monkeypatch.setattr(monochrome, "download_leg_healthy", lambda: (False, reason))
+    calls = []
+    monkeypatch.setattr(servicecheck, "mark_unhealthy", lambda *a, **k: calls.append((a, k)))
+
+    downloads._maybe_mark_monochrome_unhealthy(RuntimeError("boom"))
+
+    assert calls == [(("monochrome", reason), {})]
+
+
+def test_maybe_mark_monochrome_unhealthy_falls_back_to_exception_text_when_leg_gives_no_reason(monkeypatch):
+    downloads = _import_downloads_or_skip()
+    import monochrome
+    import servicecheck
+
+    monkeypatch.setattr(monochrome, "download_leg_healthy", lambda: (False, ""))
+    calls = []
+    monkeypatch.setattr(servicecheck, "mark_unhealthy", lambda *a, **k: calls.append((a, k)))
+
+    downloads._maybe_mark_monochrome_unhealthy(RuntimeError("boom"))
+
+    assert calls == [(("monochrome", "boom"), {})]
+
+
+def test_maybe_mark_monochrome_unhealthy_fails_open_when_probe_errors(monkeypatch):
+    """If we can't even tell whether the leg is healthy, don't punish it for that."""
+    downloads = _import_downloads_or_skip()
+    import monochrome
+    import servicecheck
+
+    def _boom():
+        raise RuntimeError("probe itself blew up")
+    monkeypatch.setattr(monochrome, "download_leg_healthy", _boom)
+    calls = []
+    monkeypatch.setattr(servicecheck, "mark_unhealthy", lambda *a, **k: calls.append((a, k)))
+
+    downloads._maybe_mark_monochrome_unhealthy(RuntimeError("no stream available"))
+
+    assert calls == []
+
+
 def test_auto_route_single_uses_album_artist_for_folder(tmp_path, monkeypatch):
     downloads = _import_downloads_or_skip()
 
@@ -895,3 +1096,81 @@ def test_playlist_routed_single_all_settings_on(api, base_url):
     assert "Combo Test" in od.parts, \
         f"override_dir should be inside the playlist folder with all settings on, got: {od}"
     _cleanup(api, base_url, job_id)
+
+
+# Two jobs downloading the same track used to share one output directory and
+# delete each other's .part/.webp files mid-flight. Each job now gets its own.
+
+def test_staging_dirs_are_unique_per_job(tmp_path, monkeypatch):
+    downloads = _import_downloads_or_skip()
+    monkeypatch.setattr(downloads, "get_setting", lambda k, d=None, **kw: str(tmp_path))
+
+    a = downloads._make_staging_dir("job-a")
+    b = downloads._make_staging_dir("job-b")
+
+    assert a != b
+    assert a.is_dir() and b.is_dir()
+    assert a.parent == b.parent == tmp_path / ".mg_staging"
+
+    # The collision that started all this: same filename, different sandboxes.
+    (a / "Me at the zoo.webp").write_text("a")
+    (b / "Me at the zoo.webp").write_text("b")
+    assert (a / "Me at the zoo.webp").read_text() == "a"
+    assert (b / "Me at the zoo.webp").read_text() == "b"
+
+
+def test_clear_staging_dir_removes_parent_only_when_last_one_goes(tmp_path, monkeypatch):
+    downloads = _import_downloads_or_skip()
+    monkeypatch.setattr(downloads, "get_setting", lambda k, d=None, **kw: str(tmp_path))
+
+    a = downloads._make_staging_dir("job-a")
+    b = downloads._make_staging_dir("job-b")
+    root = a.parent
+
+    downloads._clear_staging_dir(a)
+    assert not a.exists()
+    assert root.is_dir()      # job-b is still working in there
+
+    downloads._clear_staging_dir(b)
+    assert not root.exists()  # last one out turns the lights off
+
+
+def test_clear_staging_dir_tolerates_none_and_missing(tmp_path, monkeypatch):
+    downloads = _import_downloads_or_skip()
+    monkeypatch.setattr(downloads, "get_setting", lambda k, d=None, **kw: str(tmp_path))
+    downloads._clear_staging_dir(None)
+    downloads._clear_staging_dir(tmp_path / ".mg_staging" / "never-existed")
+
+
+def test_promote_from_staging_moves_the_finished_file(tmp_path, monkeypatch):
+    downloads = _import_downloads_or_skip()
+    monkeypatch.setattr(downloads, "get_setting", lambda k, d=None, **kw: str(tmp_path))
+
+    staging = downloads._make_staging_dir("job-a")
+    src = staging / "Track.flac"
+    src.write_bytes(b"audio")
+    dest = tmp_path / "Singles" / "Artist"
+
+    final = downloads._promote_from_staging(src, dest)
+
+    assert final == dest / "Track.flac"
+    assert final.read_bytes() == b"audio"
+    assert not src.exists()
+
+
+def test_sweep_staging_dirs_clears_abandoned_sandboxes(tmp_path, monkeypatch):
+    downloads = _import_downloads_or_skip()
+    monkeypatch.setattr(downloads, "get_setting", lambda k, d=None, **kw: str(tmp_path))
+
+    downloads._make_staging_dir("crashed-1")
+    downloads._make_staging_dir("crashed-2")
+
+    assert downloads.sweep_staging_dirs() == 2
+    assert not (tmp_path / ".mg_staging").exists()
+    assert downloads.sweep_staging_dirs() == 0  # nothing left, and no tantrum
+
+
+def test_staging_dir_name_is_excluded_from_library_scans():
+    """A hidden working folder inside the music root must not show up as library."""
+    from constants import EXCLUDED_SCAN_DIR_NAMES, STAGING_DIR_NAME
+    assert STAGING_DIR_NAME in EXCLUDED_SCAN_DIR_NAMES

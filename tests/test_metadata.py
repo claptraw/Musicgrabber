@@ -233,6 +233,10 @@ def test_lookup_musicbrainz_tags_track_number_from_search_response(monkeypatch):
     """The real regression: a plain text search must yield a track number."""
     metadata = _import_metadata_or_skip()
     monkeypatch.setattr(metadata, "get_setting_bool", lambda *a, **kw: True)
+    monkeypatch.setattr(
+        metadata, "_mb_resolve_recording_via_release_group",
+        lambda *args, **kwargs: None,
+    )
     _patch_httpx(monkeypatch, metadata, [_FakeResp(200, {
         "recordings": [{
             "id": "rec-1",

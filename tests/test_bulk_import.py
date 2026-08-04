@@ -30,20 +30,20 @@ def _import_bulk_import_or_skip():
 def test_priority_boost_lets_soulseek_win_close_call():
     bulk_import = _import_bulk_import_or_skip()
     results = [
-        {"source": "youtube",  "quality_score": 120, "title": "yt"},
-        {"source": "soulseek", "quality_score": 100, "title": "slsk"},
+        {"source": "youtube",  "relevance_score": 120, "title": "yt"},
+        {"source": "soulseek", "relevance_score": 100, "title": "slsk"},
     ]
     out = bulk_import.apply_priority_source_boost(results, "soulseek")
     assert out[0]["source"] == "soulseek", \
         "Boosted source should overtake a higher-scoring non-priority result"
-    assert out[0]["quality_score"] == 100 + bulk_import.PRIORITY_SOURCE_BOOST
+    assert out[0]["relevance_score"] == 100 + bulk_import.PRIORITY_SOURCE_BOOST
 
 
 def test_priority_boost_noop_when_priority_source_is_empty():
     bulk_import = _import_bulk_import_or_skip()
     results = [
-        {"source": "youtube",  "quality_score": 120},
-        {"source": "soulseek", "quality_score": 100},
+        {"source": "youtube",  "relevance_score": 120},
+        {"source": "soulseek", "relevance_score": 100},
     ]
     out = bulk_import.apply_priority_source_boost(list(results), None)
     assert out[0]["source"] == "youtube"
@@ -55,8 +55,8 @@ def test_priority_boost_does_not_invent_results():
     """If the priority source returned nothing, the next best wins."""
     bulk_import = _import_bulk_import_or_skip()
     results = [
-        {"source": "youtube",  "quality_score": 120},
-        {"source": "soundcloud", "quality_score": 80},
+        {"source": "youtube",  "relevance_score": 120},
+        {"source": "soundcloud", "relevance_score": 80},
     ]
     out = bulk_import.apply_priority_source_boost(results, "soulseek")
     assert out[0]["source"] == "youtube", \
@@ -66,8 +66,8 @@ def test_priority_boost_does_not_invent_results():
 def test_priority_boost_is_case_insensitive():
     bulk_import = _import_bulk_import_or_skip()
     results = [
-        {"source": "YouTube", "quality_score": 120},
-        {"source": "Soulseek", "quality_score": 100},
+        {"source": "YouTube", "relevance_score": 120},
+        {"source": "Soulseek", "relevance_score": 100},
     ]
     out = bulk_import.apply_priority_source_boost(results, "SOULSEEK")
     assert out[0]["source"] == "Soulseek"

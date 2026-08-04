@@ -64,7 +64,7 @@ def test_hires_match_returns_hires_result():
     assert _VALID_ISRC in result["source_url"]
     assert "via=isrc-direct" in result["score_breakdown"]
     # Direct identity-pinned pick: flat 1000 plus the hires bonus.
-    assert result["quality_score"] == 1000 + monochrome._QUALITY_BONUS["HI_RES_LOSSLESS"]
+    assert result["relevance_score"] == 1000 + monochrome._QUALITY_BONUS["HI_RES_LOSSLESS"]
     mock_lookup.assert_called_once()
 
 
@@ -82,7 +82,7 @@ def test_non_hires_match_returns_lossless():
 
     assert result is not None
     assert result["quality"] == "LOSSLESS"
-    assert result["quality_score"] == 1000 + monochrome._QUALITY_BONUS["LOSSLESS"]
+    assert result["relevance_score"] == 1000 + monochrome._QUALITY_BONUS["LOSSLESS"]
 
 
 # ---------------------------------------------------------------------------

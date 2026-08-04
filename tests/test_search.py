@@ -6,7 +6,7 @@ marked 'slow'. Run the fast suite with: pytest -m "not slow"
 import pytest
 
 
-RESULT_KEYS = ["video_id", "title", "quality_score", "source"]
+RESULT_KEYS = ["video_id", "title", "relevance_score", "source"]
 
 
 @pytest.mark.slow
@@ -58,8 +58,8 @@ def test_search_scores_are_numeric(api, base_url):
     )
     results = r.json().get("results", [])
     for item in results:
-        assert isinstance(item["quality_score"], (int, float)), (
-            f"quality_score is not numeric: {item['quality_score']}"
+        assert isinstance(item["relevance_score"], (int, float)), (
+            f"relevance_score is not numeric: {item['relevance_score']}"
         )
 
 

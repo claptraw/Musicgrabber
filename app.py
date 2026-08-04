@@ -47,7 +47,7 @@ from models import (
     WatchedArtistRequest, WatchedArtistUpdate,
     SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestLidarrRequest, TestYouTubeCookiesRequest,
-    TestAppriseRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest, QueueMissingTrackCandidateRequest,
+    TestAppriseRequest, TestEmailRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest, QueueMissingTrackCandidateRequest,
     OrphanMoveRequest,
     AlbumDownloadRequest, ExploreRequest, PatchTagsRequest,
     LoginRequest, ChangePasswordRequest, CreateUserRequest,
@@ -77,13 +77,14 @@ from downloads import (
     rebuild_watched_playlist_m3u, rebuild_album_m3u,
     trigger_navidrome_scan, trigger_jellyfin_scan,
     check_navidrome_duplicate, check_lidarr_duplicate,
+    get_job_source_allowlist,
 )
 from bulk_import import clean_bulk_import_line, start_bulk_import_for_tracks, process_bulk_import_worker
 from watched_playlists import (
     detect_playlist_platform, fetch_playlist_tracks, refresh_watched_playlist,
-    fetch_listenbrainz_createdfor, start_scheduler,
+    fetch_listenbrainz_createdfor, start_scheduler, wake_scheduler,
 )
-from watched_artists import refresh_watched_artist, start_artist_scheduler
+from watched_artists import refresh_watched_artist, start_artist_scheduler, wake_artist_scheduler
 from upgrades import (
     start_upgrade_scheduler, run_scan_all, get_candidates,
     get_candidates_page, search_candidate, dismiss_candidate,
@@ -103,6 +104,7 @@ from metadata import (
 )
 from utils import clean_title, hash_track, is_valid_youtube_id, iter_library_audio_files, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 from coverart import fetch_cover_art_url
+from notifications import send_test_email
 
 URL_BASED_SOURCES = {"soundcloud", "zvu4no", "freemp3cloud", "monochrome"}
 DIRECT_PREVIEW_SOURCES = {"zvu4no", "freemp3cloud"}
@@ -1162,6 +1164,27 @@ def test_apprise_notification(http_request: Request, body: TestAppriseRequest = 
         return {"success": False, "message": "Notification failed  -  check server logs for details"}
 
 
+@app.post("/api/settings/test/email")
+def test_email_notification(http_request: Request, body: TestEmailRequest = None):
+    """Send a test email using current form values and saved secret fallbacks."""
+    user_id = http_request.state.user_id
+
+    def supplied_or_saved(key: str):
+        supplied = getattr(body, key, None) if body else None
+        return supplied if supplied is not None else _get_typed_setting(key, user_id=user_id)
+
+    success, message = send_test_email(
+        smtp_host=supplied_or_saved("smtp_host"),
+        smtp_port=supplied_or_saved("smtp_port"),
+        smtp_user=supplied_or_saved("smtp_user"),
+        smtp_pass=supplied_or_saved("smtp_pass"),
+        smtp_from=supplied_or_saved("smtp_from"),
+        smtp_to=supplied_or_saved("smtp_to"),
+        smtp_tls=supplied_or_saved("smtp_tls"),
+    )
+    return {"success": success, "message": message}
+
+
 @app.get("/api/settings/youtube-cookies/status")
 def youtube_cookies_status(http_request: Request):
     """Return non-sensitive status for the cookies file."""
@@ -1758,7 +1781,7 @@ def search(request: SearchRequest, http_request: Request):
                 source=item["source"],
                 source_url=item.get("source_url"),
                 quality=item["quality"],
-                quality_score=item["quality_score"],
+                relevance_score=item["relevance_score"],
                 quality_tier=item.get("quality_tier", quality_tier_of_result(item)),
                 slskd_username=item["slskd_username"],
                 slskd_filename=item["slskd_filename"],
@@ -1817,7 +1840,7 @@ def _search_result_payload(item: dict) -> dict:
         "source": item["source"],
         "source_url": item.get("source_url"),
         "quality": item["quality"],
-        "quality_score": item["quality_score"],
+        "relevance_score": item["relevance_score"],
         "quality_tier": item.get("quality_tier", quality_tier_of_result(item)),
         "slskd_username": item["slskd_username"],
         "slskd_filename": item["slskd_filename"],
@@ -1914,7 +1937,7 @@ def search_slskd_endpoint(request: SearchRequest):
                 video_count=None,
                 source="soulseek",
                 quality=r["quality"],
-                quality_score=r["quality_score"],
+                relevance_score=r["relevance_score"],
                 slskd_username=r["slskd_username"],
                 slskd_filename=r["slskd_filename"],
                 slskd_size=r.get("slskd_size") or r.get("size"),
@@ -2065,27 +2088,35 @@ def download(body: DownloadRequest, http_request: Request):
             override_dir = str(get_albums_dir(user_id=user_id) / sanitize_filename(route_artist) / sanitize_filename(album_name))
 
         valid_search_token = _validated_search_token(body.search_token, user_id=user_id)
+        # Only a server-issued search token turns this client-supplied value into
+        # manual-result evidence. API callers without a preceding search cannot
+        # accidentally make an automated download use the manual bypass/gate.
+        selected_duration_secs = (
+            float(body.selected_duration_secs)
+            if valid_search_token and body.selected_duration_secs
+            else None
+        )
 
         if body.download_type == "playlist":
             conn.execute(
                 """INSERT INTO jobs
-                   (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac, source_url, search_token, user_id,
+                   (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac, source_url, search_token, selected_duration_secs, user_id,
                     override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    job_id, body.video_id, title, "queued", "playlist", title, "youtube", int(body.convert_to_flac), source_url, valid_search_token, user_id,
+                    job_id, body.video_id, title, "queued", "playlist", title, "youtube", int(body.convert_to_flac), source_url, valid_search_token, None, user_id,
                     None, None, None, None, None, None,
                 )
             )
         else:
             conn.execute(
                 """INSERT INTO jobs
-                   (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, slskd_size, convert_to_flac, source_url, search_token, user_id,
+                   (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, slskd_size, convert_to_flac, source_url, search_token, selected_duration_secs, user_id,
                     override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     job_id, body.video_id, title, artist or "", "queued", "single", source,
-                    body.slskd_username, body.slskd_filename, body.slskd_size, int(body.convert_to_flac), source_url, valid_search_token, user_id,
+                    body.slskd_username, body.slskd_filename, body.slskd_size, int(body.convert_to_flac), source_url, valid_search_token, selected_duration_secs, user_id,
                     override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total,
                 )
             )
@@ -2420,6 +2451,7 @@ def retry_job(job_id: str, http_request: Request):
 
     # Re-queue the job based on source type
     convert_to_flac = bool(job.get("convert_to_flac", 1))
+    source_allowlist = get_job_source_allowlist(job_id)
 
     # Restore watched-playlist routing so retried jobs land in Playlists, not Singles.
     # The routing flags are not stored on the job row itself, so we look them up via
@@ -2466,7 +2498,7 @@ def retry_job(job_id: str, http_request: Request):
         )
     else:
         # For both YouTube and URL-based sources (SoundCloud, zvu4no, etc):
-        # search across all sources and pick the best untried candidate.
+        # search the job's allowed sources and pick the best untried candidate.
         # Re-trying the same source_url or video_id that already failed is pointless.
         prior_id = job.get("video_id") or ""
         attempted = {prior_id} if prior_id else set()
@@ -2477,7 +2509,8 @@ def retry_job(job_id: str, http_request: Request):
         if artist_hint or title_hint:
             query = f"{artist_hint} - {title_hint}".strip(" -")
             try:
-                for cand in search_all(query, limit=12)[0]:
+                retry_sources = sorted(source_allowlist) if source_allowlist is not None else None
+                for cand in search_all(query, limit=12, sources=retry_sources)[0]:
                     cand_id = (cand.get("video_id") or "").strip()
                     if cand_id and cand_id not in attempted:
                         new_id = cand_id
@@ -2497,6 +2530,7 @@ def retry_job(job_id: str, http_request: Request):
             override_dir=job.get("override_dir"),
             skip_dupe_check=bool(job.get("override_dir")),
             attempted_ids=attempted,
+            fallback_allowed_sources=source_allowlist,
         )
 
     return {"job_id": job_id, "status": "queued"}
@@ -3354,8 +3388,8 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                     _lb_priority = None
                 conn.execute("""
                     INSERT INTO watched_playlists
-                    (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, lb_username, custom_subdir)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, url, name, platform, refresh_interval_hours, last_checked, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, lb_username, custom_subdir)
+                    VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (playlist_id, lb["playlist_url"], lb["name"], "listenbrainz",
                       refresh_hours, int(body.convert_to_flac),
                       int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(lb["tracks"]), user_id,
@@ -3392,6 +3426,8 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                     custom_subdir=(body.custom_subdir or "").strip() or None,
                 )
 
+        wake_scheduler()
+
         return {
             "created": len(created),
             "skipped": skipped,
@@ -3426,14 +3462,20 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
         _new_priority = (body.priority_source or "").strip().lower() or None
         if _new_priority in ("any", "all", "none"):
             _new_priority = None
+        _new_preferred_sources = (
+            "soundcloud"
+            if platform == "soundcloud"
+            and (not body.preferred_sources or body.preferred_sources == "all")
+            else (body.preferred_sources or "all")
+        )
         conn.execute("""
             INSERT INTO watched_playlists
-            (id, url, name, platform, refresh_interval_hours, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, custom_subdir)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, url, name, platform, refresh_interval_hours, last_checked, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, custom_subdir)
+            VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (playlist_id, body.url, playlist_name, platform,
               body.refresh_interval_hours, int(body.convert_to_flac),
               int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(tracks), user_id,
-              "soundcloud" if platform == "soundcloud" and (not body.preferred_sources or body.preferred_sources == "all") else (body.preferred_sources or "all"),
+              _new_preferred_sources,
               _new_priority,
               (body.custom_subdir or "").strip() or None))
 
@@ -3456,7 +3498,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
             watch_playlist_id=playlist_id,
             use_playlists_dir=body.use_playlists_dir,
             user_id=user_id,
-            preferred_sources=body.preferred_sources or "all",
+            preferred_sources=_new_preferred_sources,
             priority_source=body.priority_source,
             custom_subdir=(body.custom_subdir or "").strip() or None,
         )
@@ -3472,6 +3514,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
     }
     if fetch_warning:
         resp["warning"] = fetch_warning
+    wake_scheduler()
     return resp
 
 
@@ -3661,6 +3704,7 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, ht
             (playlist_id, *_scope_params)
         ).fetchone()
 
+    wake_scheduler()
     return {"playlist": dict(updated)}
 
 
@@ -3686,6 +3730,7 @@ def delete_watched_playlist(playlist_id: str, http_request: Request):
         conn.execute("DELETE FROM watched_playlists WHERE id = ?", (playlist_id,))
         conn.commit()
 
+    wake_scheduler()
     return {"message": f"Deleted watched playlist '{playlist['name']}'"}
 
 
@@ -3883,7 +3928,7 @@ def queue_watched_playlist_track_candidate(
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"""SELECT id, name, convert_to_flac, use_playlists_dir, custom_subdir
+            f"""SELECT id, name, convert_to_flac, use_playlists_dir, custom_subdir, preferred_sources
                 FROM watched_playlists
                 WHERE id = ? AND {_scope_frag}""",
             (playlist_id, *_scope_params)
@@ -3963,6 +4008,15 @@ def queue_watched_playlist_track_candidate(
             use_playlists_dir=use_playlists_dir,
             user_id=user_id,
             custom_subdir=custom_subdir,
+            fallback_allowed_sources=(
+                None
+                if (playlist["preferred_sources"] or "all") == "all"
+                else {
+                    source_id.strip().lower()
+                    for source_id in playlist["preferred_sources"].split(",")
+                    if source_id.strip()
+                }
+            ),
         )
 
     return {"job_id": job_id, "status": "queued", "message": f"Queued {artist} - {title}"}
@@ -4429,6 +4483,7 @@ def update_watched_artist(artist_id: str, request: WatchedArtistUpdate, http_req
         ).fetchone()
     if not updated:
         raise HTTPException(status_code=404, detail="Artist not found")
+    wake_artist_scheduler()
     return dict(updated)
 
 
@@ -4448,6 +4503,7 @@ def delete_watched_artist(artist_id: str, http_request: Request):
         conn.execute("DELETE FROM watched_artist_tracks WHERE artist_id = ?", (artist_id,))
         conn.execute("DELETE FROM watched_artists WHERE id = ?", (artist_id,))
         conn.commit()
+    wake_artist_scheduler()
     return {"success": True, "message": f"Stopped watching {artist[0]}"}
 
 

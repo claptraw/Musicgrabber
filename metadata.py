@@ -22,6 +22,7 @@ from constants import (
     MB_ARTIST_SEARCH_LIMIT, TIMEOUT_MUSICBRAINZ_ARTIST,
     MB_RECORDING_SEARCH_LIMIT, MB_TEXT_SCORE_FLOOR, MB_RECORDING_SPREAD_WEIGHT,
     MB_ALT_TAKE_PENALTY, MB_TITLE_MISMATCH_PENALTY, MB_STUDIO_ALBUM_FILTER,
+    MB_RELEASE_GROUP_FALLBACK_MAX_RELEASES,
     DEEZER_SEARCH_URL, DEEZER_API_URL, TIMEOUT_DEEZER,
     DEEZER_METADATA_MATCH_FLOOR, DEEZER_METADATA_SEARCH_LIMIT,
 )
@@ -226,6 +227,158 @@ def _release_score_for(rel: dict, expected_artist: str) -> int:
     return _score_release_group(rg, expected_artist)
 
 
+def _mb_resolve_recording_via_release_group(
+    artist: str,
+    title: str,
+    headers: dict,
+) -> Optional[dict]:
+    """Resolve a weak text-search result through an exact-title release group.
+
+    MusicBrainz does not support browsing release groups by recording. What it
+    *does* provide is a useful three-link chain for songs released as singles:
+    exact release-group search -> releases in that group -> releases containing
+    the recurring recording. The recording used on most editions of the single
+    is a much better studio-take signal than a page full of one-off bootlegs.
+
+    This is deliberately a fallback. It costs three more rate-limited requests,
+    and songs without an eponymous single/EP simply keep the ordinary result.
+    """
+    import time as _time
+
+    try:
+        group_response = _mb_get_with_retry(
+            "https://musicbrainz.org/ws/2/release-group/",
+            params={
+                "query": f'artist:"{artist}" AND releasegroup:"{title}"',
+                "fmt": "json",
+                "limit": 10,
+            },
+            headers=headers,
+            timeout=TIMEOUT_HTTP_REQUEST,
+        )
+        if group_response.status_code != 200:
+            return None
+
+        wanted_title = _normalise_track_title(title)
+        groups = [
+            group for group in (group_response.json().get("release-groups") or [])
+            if int(group.get("score", 0)) >= MB_TEXT_SCORE_FLOOR
+            and _normalise_track_title(group.get("title") or "") == wanted_title
+        ]
+        if not groups:
+            return None
+
+        # A same-name single is the strongest evidence, followed by an EP. An
+        # album named after its title track remains a useful last resort.
+        type_order = {"Single": 3, "EP": 2, "Album": 1}
+        group = max(groups, key=lambda item: (
+            type_order.get(item.get("primary-type") or "", 0),
+            int(item.get("score", 0)),
+        ))
+
+        _time.sleep(1)
+        group_releases_response = _mb_get_with_retry(
+            "https://musicbrainz.org/ws/2/release/",
+            params={
+                "release-group": group.get("id"),
+                "status": "official",
+                "fmt": "json",
+                "limit": 100,
+                "inc": "recordings release-groups artist-credits",
+            },
+            headers=headers,
+            timeout=TIMEOUT_HTTP_REQUEST,
+        )
+        if group_releases_response.status_code != 200:
+            return None
+
+        # Count distinct releases, rather than raw track appearances: a boxed
+        # set with the same song on two discs should not get two votes.
+        candidates: dict[str, dict] = {}
+        for release in group_releases_response.json().get("releases") or []:
+            release_id = release.get("id")
+            seen_on_release: set[str] = set()
+            for medium in release.get("media") or []:
+                for track in medium.get("tracks") or []:
+                    recording = track.get("recording") or {}
+                    recording_id = recording.get("id")
+                    if (
+                        not recording_id
+                        or recording_id in seen_on_release
+                        or _normalise_track_title(recording.get("title") or track.get("title") or "")
+                           != wanted_title
+                    ):
+                        continue
+                    seen_on_release.add(recording_id)
+                    entry = candidates.setdefault(recording_id, {
+                        "recording": dict(recording),
+                        "release_ids": set(),
+                    })
+                    if release_id:
+                        entry["release_ids"].add(release_id)
+
+        if not candidates:
+            return None
+
+        chosen = max(
+            candidates.values(),
+            key=lambda item: (
+                len(item["release_ids"]),
+                bool(item["recording"].get("length")),
+                item["recording"].get("id") or "",
+            ),
+        )["recording"]
+
+        # The release-group leg identifies the take, but its releases are all
+        # singles/EPs. One stable browse by recording restores album context.
+        _time.sleep(1)
+        recording_releases_response = _mb_get_with_retry(
+            "https://musicbrainz.org/ws/2/release/",
+            params={
+                "recording": chosen.get("id"),
+                "type": "album",
+                "status": "official",
+                "fmt": "json",
+                "limit": 100,
+                "inc": "release-groups artist-credits recordings",
+            },
+            headers=headers,
+            timeout=TIMEOUT_HTTP_REQUEST,
+        )
+        if recording_releases_response.status_code == 200:
+            releases = recording_releases_response.json().get("releases") or []
+            if releases:
+                # A release browse returns complete tracklists, whereas recording
+                # search returns only the matched track. Trim it to the same shape
+                # so _extract_track_position does not mistake album track 1 for
+                # the song we actually resolved.
+                matching_releases = []
+                for release in releases:
+                    matching_media = []
+                    for medium in release.get("media") or []:
+                        tracks = [
+                            track for track in (medium.get("tracks") or [])
+                            if (track.get("recording") or {}).get("id") == chosen.get("id")
+                        ]
+                        if not tracks:
+                            continue
+                        matched_medium = dict(medium)
+                        matched_medium["tracks"] = tracks
+                        matching_media.append(matched_medium)
+                    if matching_media:
+                        matched_release = dict(release)
+                        matched_release["media"] = matching_media
+                        matching_releases.append(matched_release)
+                if matching_releases:
+                    chosen["releases"] = matching_releases
+
+        return chosen if chosen.get("releases") else None
+    except Exception:
+        # A costly second opinion must never turn otherwise usable metadata into
+        # a failed lookup when MusicBrainz has a transient wobble.
+        return None
+
+
 def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
     """Look up track metadata from MusicBrainz.
 
@@ -270,6 +423,19 @@ def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
 
         recording = max(recordings,
                         key=lambda rec: _score_recording_canonicity(rec, artist, title))
+
+        # A popular studio take normally appears on many releases. When the best
+        # search hit has only a few, recording search has probably handed us one
+        # live bootleg from a catalogue full of them. Resolve the exact-title
+        # release group only in that weak-evidence case; the ordinary two-request
+        # path stays quick for well-behaved catalogues.
+        if len(recording.get("releases") or []) <= MB_RELEASE_GROUP_FALLBACK_MAX_RELEASES:
+            _time.sleep(1)
+            group_recording = _mb_resolve_recording_via_release_group(
+                artist, title, headers,
+            )
+            if group_recording:
+                recording = group_recording
 
         # Extract metadata
         metadata = {

@@ -147,6 +147,63 @@ def test_prune_qobuz_proxy_failures_removes_expired_entries(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# download_leg_healthy: gates Monochrome's overall source health. The qbdlx
+# leg's reason used to be discarded on both the healthy and unhealthy paths
+# (`ok, _reason = qbdlx_healthy()`); it's now threaded through so a live
+# token-pool note actually reaches servicecheck and the UI's "unavailable"
+# tooltip, instead of only ever saying "also unavailable".
+# ---------------------------------------------------------------------------
+
+def test_download_leg_healthy_true_when_proxies_up(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: True)
+
+    ok, reason = monochrome.download_leg_healthy()
+
+    assert ok is True
+    assert reason == ""
+
+
+def test_download_leg_healthy_true_via_qbdlx_when_proxies_down(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
+    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: True)
+    monkeypatch.setattr("qbdlx.download_leg_healthy",
+                         lambda: (True, "3/28 shared tokens usable this cycle"))
+
+    ok, reason = monochrome.download_leg_healthy()
+
+    assert ok is True
+
+
+def test_download_leg_healthy_false_reports_qbdlx_reason(monkeypatch):
+    """The qbdlx reason must survive, not just collapse into 'also unavailable'."""
+    import monochrome
+    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
+    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: True)
+    monkeypatch.setattr(
+        "qbdlx.download_leg_healthy",
+        lambda: (False, "qbdlx could not resolve a stream (0/28 shared tokens usable this cycle)"),
+    )
+
+    ok, reason = monochrome.download_leg_healthy()
+
+    assert ok is False
+    assert "0/28 shared tokens usable this cycle" in reason
+
+
+def test_download_leg_healthy_false_when_qbdlx_disabled(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
+    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: False)
+
+    ok, reason = monochrome.download_leg_healthy()
+
+    assert ok is False
+    assert "qbdlx" in reason.lower()
+
+
+# ---------------------------------------------------------------------------
 # _get_qobuz_stream_url fallback chain
 # ---------------------------------------------------------------------------
 
@@ -978,7 +1035,7 @@ def test_deezer_isrc_rescue_no_hints_no_network(monkeypatch):
 def test_search_monochrome_skips_hifi_when_deezer_delivers(monkeypatch):
     import monochrome
     fake_results = [
-        {"quality_score": 100 - i, "source_url": f"monochrome://x{i}?isrc=GBABC123456{i}&src=deezer"}
+        {"relevance_score": 100 - i, "source_url": f"monochrome://x{i}?isrc=GBABC123456{i}&src=deezer"}
         for i in range(5)
     ]
     monkeypatch.setattr(monochrome, "_deezer_search_leg", lambda q, limit: fake_results)
@@ -993,10 +1050,10 @@ def test_search_monochrome_skips_hifi_when_deezer_delivers(monkeypatch):
 
 def test_search_monochrome_tops_up_from_hifi_and_dedupes(monkeypatch):
     import monochrome
-    deezer = [{"quality_score": 90, "source_url": "monochrome://1?isrc=GB28K1100036&src=deezer"}]
+    deezer = [{"relevance_score": 90, "source_url": "monochrome://1?isrc=GB28K1100036&src=deezer"}]
     hifi = [
-        {"quality_score": 80, "source_url": "monochrome://2?isrc=GB28K1100036&src=tidal"},  # dupe
-        {"quality_score": 70, "source_url": "monochrome://3?isrc=USUM71703861&src=tidal"},
+        {"relevance_score": 80, "source_url": "monochrome://2?isrc=GB28K1100036&src=tidal"},  # dupe
+        {"relevance_score": 70, "source_url": "monochrome://3?isrc=USUM71703861&src=tidal"},
     ]
     monkeypatch.setattr(monochrome, "_deezer_search_leg", lambda q, limit: deezer)
     monkeypatch.setattr(monochrome, "_hifi_search_leg", lambda q, limit: hifi)

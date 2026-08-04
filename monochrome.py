@@ -328,10 +328,12 @@ def download_leg_healthy() -> tuple[bool, str]:
     try:
         from qbdlx import qbdlx_enabled, download_leg_healthy as qbdlx_healthy
         if qbdlx_enabled():
-            ok, _reason = qbdlx_healthy()
+            ok, qbdlx_reason = qbdlx_healthy()
             if ok:
-                print("Monochrome: proxies down but qbdlx direct-Qobuz fallback is healthy")
+                note = f" ({qbdlx_reason})" if qbdlx_reason else ""
+                print(f"Monochrome: proxies down but qbdlx direct-Qobuz fallback is healthy{note}")
                 return True, ""
+            return False, f"all Qobuz proxies down; qbdlx fallback also unavailable ({qbdlx_reason or 'no reason given'})"
     except Exception as exc:
         print(f"Monochrome: qbdlx health probe errored: {exc}")
 
@@ -591,7 +593,7 @@ def _deezer_rank_bonus(rank: int | None) -> tuple[int, str | None]:
 
 def _build_monochrome_result(track_id, isrc: str, quality: str, src: str,
                              title: str, artist: str, duration,
-                             cover: str, quality_score: int,
+                             cover: str, relevance_score: int,
                              score_breakdown: list[str]) -> dict:
     """Stamp out the normalised result dict every Monochrome leg emits.
 
@@ -613,7 +615,7 @@ def _build_monochrome_result(track_id, isrc: str, quality: str, src: str,
         "source": "monochrome",
         "source_url": source_url,
         "quality": quality,
-        "quality_score": quality_score,
+        "relevance_score": relevance_score,
         "score_breakdown": score_breakdown,
         "slskd_username": None,
         "slskd_filename": None,
@@ -658,7 +660,7 @@ def resolve_by_isrc(isrc: str, artist: str = "", title: str = "") -> dict | None
     bonus = _QUALITY_BONUS[quality]
     # Flat high score: this is a direct, identity-pinned pick, not a contender in
     # a ranked free-text list, so it sits above anything the search legs produce.
-    quality_score = 1000 + bonus
+    relevance_score = 1000 + bonus
     score_breakdown = ["via=isrc-direct", f"source_quality=+{bonus}"]
 
     return _build_monochrome_result(
@@ -670,7 +672,7 @@ def resolve_by_isrc(isrc: str, artist: str = "", title: str = "") -> dict | None
         artist=item_artist or artist,
         duration=duration,
         cover=cover,
-        quality_score=quality_score,
+        relevance_score=relevance_score,
         score_breakdown=score_breakdown,
     )
 
@@ -711,7 +713,7 @@ def _deezer_search_leg(query: str, limit: int) -> list[dict]:
         version = item.get("title_version") or ""
 
         combined = f"{artist} - {title}"
-        quality_score, score_breakdown = score_search_result_with_breakdown(
+        relevance_score, score_breakdown = score_search_result_with_breakdown(
             combined, artist, query,
             duration_seconds=duration or None,
             view_count=None,
@@ -723,7 +725,7 @@ def _deezer_search_leg(query: str, limit: int) -> list[dict]:
             _deezer_rank_bonus(item.get("rank")),
         ):
             if delta:
-                quality_score += delta
+                relevance_score += delta
                 score_breakdown.append(reason)
 
         candidates.append({
@@ -734,7 +736,7 @@ def _deezer_search_leg(query: str, limit: int) -> list[dict]:
             "album": album,
             "cover": cover,
             "duration": duration,
-            "quality_score": quality_score,
+            "relevance_score": relevance_score,
             "score_breakdown": score_breakdown,
         })
 
@@ -743,7 +745,7 @@ def _deezer_search_leg(query: str, limit: int) -> list[dict]:
 
     # Only Qobuz-verify the contenders; no point burning proxy calls on the
     # page-two also-rans.
-    candidates.sort(key=lambda c: c["quality_score"], reverse=True)
+    candidates.sort(key=lambda c: c["relevance_score"], reverse=True)
     candidates = candidates[:limit]
 
     with ThreadPoolExecutor(max_workers=min(4, len(candidates))) as pool:
@@ -763,7 +765,7 @@ def _deezer_search_leg(query: str, limit: int) -> list[dict]:
             continue
 
         bonus = _QUALITY_BONUS[quality_str]
-        quality_score = cand["quality_score"] + bonus
+        relevance_score = cand["relevance_score"] + bonus
         breakdown = cand["score_breakdown"] + [f"source_quality=+{bonus}", "via=deezer-isrc"]
 
         results.append(_build_monochrome_result(
@@ -775,11 +777,11 @@ def _deezer_search_leg(query: str, limit: int) -> list[dict]:
             artist=cand["artist"],
             duration=cand["duration"],
             cover=cand["cover"],
-            quality_score=quality_score,
+            relevance_score=relevance_score,
             score_breakdown=breakdown,
         ))
 
-    results.sort(key=lambda x: x["quality_score"], reverse=True)
+    results.sort(key=lambda x: x["relevance_score"], reverse=True)
     return results
 
 
@@ -867,14 +869,14 @@ def _qbdlx_search_fallback(query: str, limit: int) -> list[dict]:
         version = item.get("version") or ""
 
         combined = f"{artist} - {title}"
-        quality_score, score_breakdown = score_search_result_with_breakdown(
+        relevance_score, score_breakdown = score_search_result_with_breakdown(
             combined, artist, query,
             duration_seconds=duration or None,
             view_count=None,
             album=album,
         )
         bonus = _QUALITY_BONUS["LOSSLESS"]
-        quality_score += bonus
+        relevance_score += bonus
         score_breakdown.append(f"source_quality=+{bonus}")
         score_breakdown.append("via=qbdlx-direct (hifi-api down)")
 
@@ -883,7 +885,7 @@ def _qbdlx_search_fallback(query: str, limit: int) -> list[dict]:
             _album_edition_penalty(album, query),
         ):
             if delta:
-                quality_score += delta
+                relevance_score += delta
                 score_breakdown.append(reason)
 
         # The item id slot carries the Qobuz track id here; the download path keys
@@ -898,11 +900,11 @@ def _qbdlx_search_fallback(query: str, limit: int) -> list[dict]:
             artist=artist,
             duration=duration,
             cover=cover,
-            quality_score=quality_score,
+            relevance_score=relevance_score,
             score_breakdown=score_breakdown,
         ))
 
-    results.sort(key=lambda x: x["quality_score"], reverse=True)
+    results.sort(key=lambda x: x["relevance_score"], reverse=True)
     if results:
         print(f"Monochrome: hifi-api search empty, served {len(results)} result(s) via qbdlx direct Qobuz")
     return results[:limit]
@@ -964,7 +966,7 @@ def search_monochrome(query: str, limit: int) -> list[dict]:
     if hifi_results:
         seen = {_result_isrc(r) for r in deezer_results}
         merged = deezer_results + [r for r in hifi_results if _result_isrc(r) not in seen]
-        merged.sort(key=lambda x: x["quality_score"], reverse=True)
+        merged.sort(key=lambda x: x["relevance_score"], reverse=True)
         return merged[:limit]
     if deezer_results:
         return deezer_results[:limit]
@@ -1045,13 +1047,13 @@ def _hifi_search_leg(query: str, limit: int) -> list[dict]:
             bonus = _QUALITY_BONUS.get(quality_str, 30)
 
             combined = f"{artist} - {title}"
-            quality_score, score_breakdown = score_search_result_with_breakdown(
+            relevance_score, score_breakdown = score_search_result_with_breakdown(
                 combined, artist, query,
                 duration_seconds=duration or None,
                 view_count=None,
                 album=album,
             )
-            quality_score += bonus
+            relevance_score += bonus
             score_breakdown.append(f"source_quality=+{bonus}")
 
             for delta, reason in (
@@ -1060,7 +1062,7 @@ def _hifi_search_leg(query: str, limit: int) -> list[dict]:
                 _popularity_bonus(popularity),
             ):
                 if delta:
-                    quality_score += delta
+                    relevance_score += delta
                     score_breakdown.append(reason)
 
             params = urlencode({"isrc": isrc, "quality": quality_str, "src": "tidal"})
@@ -1078,14 +1080,14 @@ def _hifi_search_leg(query: str, limit: int) -> list[dict]:
                 "source": "monochrome",
                 "source_url": source_url,
                 "quality": quality_str,
-                "quality_score": quality_score,
+                "relevance_score": relevance_score,
                 "score_breakdown": score_breakdown,
                 "slskd_username": None,
                 "slskd_filename": None,
                 "slskd_size": None,
             })
 
-        results.sort(key=lambda x: x["quality_score"], reverse=True)
+        results.sort(key=lambda x: x["relevance_score"], reverse=True)
         return results[:limit]
 
     except Exception as e:

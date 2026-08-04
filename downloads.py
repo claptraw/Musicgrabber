@@ -5,6 +5,7 @@ Single track, playlist, and Soulseek download handlers.
 Library scan triggers and M3U playlist generation.
 """
 
+import contextlib
 import json
 import math
 import re
@@ -25,6 +26,7 @@ import httpx
 from constants import (
     AUDIO_EXTENSIONS,
     MUSIC_DIR,
+    STAGING_DIR_NAME,
     TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_SEARCH, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
     TIMEOUT_FFMPEG_CONVERT, TIMEOUT_HTTP_REQUEST,
     LOUDNORM_TARGET_I, LOUDNORM_TARGET_TP, LOUDNORM_TARGET_LRA,
@@ -37,6 +39,7 @@ from constants import (
     YOUTUBE_SEARCH_MULTIPLIER, YOUTUBE_SEARCH_MIN_FETCH,
     MAX_AUDIO_START_OFFSET_SECS,
     MB_DURATION_TOLERANCE,
+    SELECTED_RESULT_DURATION_TOLERANCE, SELECTED_RESULT_MIN_SHORTFALL_SECS,
     SILENCE_DETECT_DURATION, SILENCE_DETECT_NOISE,
     SILENCE_DETECT_MIN_START, SILENCE_DETECT_MAX_END_FRAC,
 )
@@ -555,6 +558,64 @@ def _check_duration_against_mb(actual_secs: float, mb_metadata: Optional[dict], 
     )
 
 
+def _check_duration_against_selected_result(
+    actual_secs: float,
+    selected_secs: float | None,
+) -> tuple[bool, str]:
+    """Reject bytes substantially shorter than the result the user clicked.
+
+    This deliberately checks only a shortfall. A live version, extended mix or
+    edit can disagree wildly with MusicBrainz and is still the user's chosen
+    result; its downloaded bytes should nevertheless be close to the duration
+    that result advertised. CDN previews typically arrive as a perfectly valid
+    30-second audio file, so codec/container integrity checks cannot spot them.
+    """
+    try:
+        actual = float(actual_secs)
+        selected = float(selected_secs or 0)
+    except (TypeError, ValueError):
+        return True, ""
+    if actual <= 0 or selected <= 0:
+        return True, ""
+
+    allowed_shortfall = max(
+        SELECTED_RESULT_MIN_SHORTFALL_SECS,
+        selected * SELECTED_RESULT_DURATION_TOLERANCE,
+    )
+    shortfall = selected - actual
+    if shortfall <= allowed_shortfall:
+        return True, ""
+    return (
+        False,
+        f"Manual download appears incomplete: got {actual:.0f}s, but the selected "
+        f"search result advertised {selected:.0f}s (short by {shortfall:.0f}s). "
+        "The source may have returned a preview/sample or a truncated file."
+    )
+
+
+def _check_manual_download_completeness(
+    actual_secs: float,
+    job_id: str | None,
+) -> tuple[bool, str]:
+    """Apply the selected-result duration gate only to authenticated manual picks."""
+    if not job_id:
+        return True, ""
+    try:
+        with db_conn() as conn:
+            row = conn.execute(
+                """SELECT search_token, selected_duration_secs, download_type
+                   FROM jobs WHERE id = ?""",
+                (job_id,),
+            ).fetchone()
+        if not row or not row[0] or row[2] != "single":
+            return True, ""
+        return _check_duration_against_selected_result(actual_secs, row[1])
+    except Exception:
+        # Old/test schemas may not have the new column. Absence of evidence is
+        # not evidence of a sample, so retain the existing integrity checks.
+        return True, ""
+
+
 def _note_blacklist_entry(
     *,
     source: str,
@@ -671,18 +732,69 @@ def _reject_if_live_version(
     return True
 
 
+def _normalise_source_allowlist(raw_sources) -> set[str] | None:
+    """Return a normalised source allow-list, or None when every source is allowed."""
+    if raw_sources is None:
+        return None
+    if isinstance(raw_sources, str):
+        values = raw_sources.split(",")
+    else:
+        values = raw_sources
+    sources = {
+        str(source).strip().lower()
+        for source in values
+        if source is not None and str(source).strip()
+    }
+    if not sources or "all" in sources:
+        return None
+    return sources
+
+
+def get_job_source_allowlist(job_id: str) -> set[str] | None:
+    """Recover the watched import's source snapshot for a queued job.
+
+    Bulk imports own the authoritative snapshot. Jobs queued by the manual
+    watched-track picker have no bulk row, so they fall back to the playlist's
+    current selection. Ordinary jobs return None and may use every source.
+    """
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """SELECT bi.preferred_sources
+               FROM bulk_import_tracks bit
+               JOIN bulk_imports bi ON bi.id = bit.import_id
+               WHERE bit.job_id = ?
+               LIMIT 1""",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                """SELECT wp.preferred_sources
+                   FROM watched_playlist_tracks wpt
+                   JOIN watched_playlists wp ON wp.id = wpt.playlist_id
+                   WHERE wpt.job_id = ?
+                   LIMIT 1""",
+                (job_id,),
+            ).fetchone()
+    return _normalise_source_allowlist(row["preferred_sources"] if row else None)
+
+
 def _find_alternate_search_candidate(
     query: str,
     attempted_ids: set[str],
     exclude_sources: set[str] | None = None,
     expected_artist: str | None = None,
     expected_title: str | None = None,
+    allowed_sources: set[str] | None = None,
 ) -> dict | None:
     """Search across sources and return the best untried candidate.
 
     `exclude_sources` skips entire sources, used when a source is offline so we
     don't keep picking more results from the same dead platform (e.g. three
     Monochrome hits in a row when the Qobuz proxies are all down).
+
+    `allowed_sources` is a strict import or watched-playlist contract. Fallback
+    may narrow it as providers fail, but must never widen it.
 
     When `expected_artist`/`expected_title` are supplied, each candidate must clear
     FALLBACK_MATCH_CONFIDENCE_FLOOR before we'll hand it back. Results are already
@@ -692,19 +804,30 @@ def _find_alternate_search_candidate(
     """
     if not query.strip():
         return None
-    exclude_sources = exclude_sources or set()
+    exclude_sources = {source.lower() for source in (exclude_sources or set())}
+    allowed_sources = _normalise_source_allowlist(allowed_sources)
+    search_sources = None
+    if allowed_sources is not None:
+        search_sources = sorted(allowed_sources - exclude_sources)
+        if not search_sources:
+            return None
     try:
         from search import search_all, log_ranked_results
         from matching import compute_match_confidence
 
-        results = search_all(query, limit=12)[0]
+        results = search_all(query, limit=12, sources=search_sources)[0]
         log_ranked_results("Alternate candidate search", query, results)
         gate = bool(expected_artist or expected_title)
         for cand in results:
             cand_id = (cand.get("video_id") or "").strip()
+            cand_source = (cand.get("source") or "youtube").strip().lower()
             if not cand_id or cand_id in attempted_ids:
                 continue
-            if cand.get("source") in exclude_sources:
+            if cand_source in exclude_sources:
+                continue
+            # Keep this defensive check even though search_all() also enforces the
+            # list: alternate sources are the last place an allow-list may escape.
+            if allowed_sources is not None and cand_source not in allowed_sources:
                 continue
             if gate:
                 confidence, _breakdown = compute_match_confidence(
@@ -1840,6 +1963,75 @@ def _cleanup_temp_files(artist_dir: Path, sanitized_title: str) -> int:
     return removed
 
 
+def _make_staging_dir(job_id: str, user_id: str | None = None) -> Path:
+    """Give one download its own private directory to make a mess in.
+
+    yt-dlp writes a `.part`, a `.webp`, and assorted temp files alongside the
+    final audio, all named after the track. Two jobs for the same track pointed
+    at the same folder will therefore happily delete each other's working files
+    mid-flight, which surfaces as a baffling "No such file or directory" on
+    whichever file the loser happened to reach for first. Staging each job
+    separately makes that collision structurally impossible rather than merely
+    unlikely.
+
+    Lives under the music root so the finished file moves into the library with
+    a rename rather than a copy. Pair with _clear_staging_dir() in a finally.
+    """
+    music_dir = Path(get_setting("music_dir", str(MUSIC_DIR), user_id=user_id))
+    staging = music_dir / STAGING_DIR_NAME / job_id
+    try:
+        staging.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        # Read-only or unmountable music dir; the download was doomed regardless,
+        # but fail here with something that actually explains itself.
+        raise Exception(f"Could not create staging directory {staging}: {e}")
+    return staging
+
+
+def _clear_staging_dir(staging: Path | None) -> None:
+    """Bin a job's staging directory, and the parent once the last job is done."""
+    if not staging:
+        return
+    shutil.rmtree(staging, ignore_errors=True)
+    # Tidy the parent when it empties, so the music root isn't left wearing an
+    # empty hidden folder forever. Fails harmlessly while a sibling is still busy.
+    try:
+        staging.parent.rmdir()
+    except OSError:
+        pass
+
+
+def sweep_staging_dirs() -> int:
+    """Bin any staging directories left behind by a hard restart. Returns the count.
+
+    The finally in process_download clears these on the way out, so anything
+    still here belongs to a job that was killed mid-download and is now scrap.
+    """
+    staging_root = Path(get_setting("music_dir", str(MUSIC_DIR))) / STAGING_DIR_NAME
+    if not staging_root.is_dir():
+        return 0
+    removed = 0
+    for leftover in staging_root.iterdir():
+        if leftover.is_dir():
+            shutil.rmtree(leftover, ignore_errors=True)
+            removed += 1
+    try:
+        staging_root.rmdir()
+    except OSError:
+        pass
+    if removed:
+        print(f"Cleared {removed} abandoned download staging director{'y' if removed == 1 else 'ies'}")
+    return removed
+
+
+def _promote_from_staging(audio_file: Path, dest_dir: Path) -> Path:
+    """Move a finished download out of staging and into the library."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    final_path = dest_dir / audio_file.name
+    shutil.move(str(audio_file), str(final_path))
+    return final_path
+
+
 def _relocate_for_normalised_artist(audio_file: Path, old_artist: str, new_artist: str, user_id: str | None = None) -> Path:
     """Move a downloaded file to the correct artist directory after MusicBrainz normalisation.
 
@@ -2075,6 +2267,52 @@ def _is_thumbnail_postprocess_failure(stderr: str) -> bool:
     if "no such file or directory" in s and (".webp" in s or ".jpg" in s or ".png" in s):
         return True
     return False
+
+
+def _strip_thumbnail_args(cmd: list[str]) -> list[str]:
+    """Return the yt-dlp command with every trace of cover-art handling removed.
+
+    That includes the `--ppa` crop, which exists solely to square off the
+    embedded thumbnail and has nothing useful to contribute once there isn't
+    one. It is the only `--ppa` we pass, so dropping it wholesale is safe.
+    """
+    stripped: list[str] = []
+    skip_next = False
+    for arg in cmd:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--embed-thumbnail":
+            continue
+        if arg in ("--convert-thumbnails", "--ppa"):
+            skip_next = True  # these take a value; drop that too
+            continue
+        stripped.append(arg)
+    return stripped
+
+
+def _retry_ytdlp_without_thumbnail(
+    download_cmd: list[str], timeout: int, has_cookies: bool, stderr: str
+):
+    """Retry a failed download with cover art switched off, if that is what broke it.
+
+    `--convert-thumbnails` is a `before_dl` postprocessor, so yt-dlp runs it
+    *before* fetching a single byte of audio. A missing thumbnail there raises a
+    bare `FileNotFoundError`, which yt-dlp's own handler does not catch (it only
+    catches PostProcessingError), so the download is abandoned with no audio file
+    at all and the usual salvage path has nothing to rescue. Losing a track
+    because a CDN fumbled a piece of cover art that we replace with proper album
+    art moments later is a spectacularly bad trade, so have one more go without it.
+
+    Returns (result, timed_out), or (None, False) when this was not a thumbnail
+    failure and the caller should keep its original error.
+    """
+    if not _is_thumbnail_postprocess_failure(stderr):
+        return None, False
+    print("Download failed on cover art; retrying once without thumbnail embedding")
+    return _run_ytdlp_with_retries(
+        _strip_thumbnail_args(download_cmd), timeout, has_cookies
+    )
 
 
 def _recover_from_ytdlp_postprocess_failure(artist_dir: Path, sanitized_title: str, stderr: str) -> Path | None:
@@ -3278,7 +3516,10 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     artist_dir = get_download_dir(artist, user_id=user_id)
                     artist_dir.mkdir(parents=True, exist_ok=True)
                     safe_title = _output_stem(artist, title, video_id, user_id=user_id)
-                output_template = str(artist_dir / f"{safe_title}.%(ext)s")
+                # Own staging directory per track, so two playlists grabbing the
+                # same song at once don't fight over each other's temp files.
+                staging = _make_staging_dir(f"{job_id}-{video_id}", user_id=user_id)
+                output_template = str(staging / f"{safe_title}.%(ext)s")
                 download_cmd = _build_ytdlp_download_cmd(video_id, output_template, convert_to_flac, user_id=user_id)
                 has_cookies = "--cookies" in download_cmd
 
@@ -3293,7 +3534,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                     # Permission denied on temp file rename  -  clean up and retry once
                     stderr = download_result.stderr if download_result else ""
                     if not download_timed_out and download_result and _is_permission_error(stderr):
-                        cleaned = _cleanup_temp_files(artist_dir, safe_title)
+                        cleaned = _cleanup_temp_files(staging, safe_title)
                         if cleaned:
                             print(f"Retrying playlist track after cleaning {cleaned} temp file(s)")
                             download_result, download_timed_out = _run_ytdlp_with_retries(
@@ -3306,19 +3547,34 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                         stderr = download_result.stderr if download_result else ""
                         if not download_timed_out and download_result:
                             audio_file = _recover_from_ytdlp_postprocess_failure(
-                                artist_dir, safe_title, stderr
+                                staging, safe_title, stderr
                             )
+                            # Cover art can kill the download before any audio
+                            # lands, leaving nothing to salvage. Try again without it.
+                            if not audio_file:
+                                retry_result, retry_timed_out = _retry_ytdlp_without_thumbnail(
+                                    download_cmd, TIMEOUT_YTDLP_DOWNLOAD, has_cookies, stderr
+                                )
+                                if retry_result and not retry_timed_out and retry_result.returncode == 0:
+                                    download_result = retry_result
                     if download_timed_out or not download_result or (download_result.returncode != 0 and not audio_file):
+                        _clear_staging_dir(staging)
                         failed_tracks += 1
                         continue
 
                 if not audio_file:
                     try:
-                        audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
+                        audio_file = _find_downloaded_audio_or_raise(staging, safe_title)
                     except Exception as e:
                         print(f"Playlist track output lookup failed: {e}")
+                        _clear_staging_dir(staging)
                         failed_tracks += 1
                         continue
+
+                # Out of the sandbox and into the library before anything downstream
+                # goes looking for it.
+                audio_file = _promote_from_staging(audio_file, artist_dir)
+                _clear_staging_dir(staging)
 
                 valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(audio_file)
                 if not valid_audio:
@@ -3752,6 +4008,20 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             )
             raise Exception(f"Soulseek audio integrity check failed: {invalid_reason}")
 
+        manual_ok, manual_reason = _check_manual_download_completeness(
+            actual_duration_secs, job_id,
+        )
+        if not manual_ok:
+            move_to_trash(final_file, user_id=user_id)
+            _note_blacklist_entry(
+                source="soulseek",
+                reason="preview_audio",
+                note=manual_reason,
+                job_id=job_id,
+                uploader=username,
+            )
+            raise Exception(manual_reason)
+
         # Apply metadata (AcoustID fingerprinting first, then text-based MusicBrainz fallback)
         _update_job(job_id, progress_stage="Looking up metadata")
         metadata_source = _default_metadata_source("soulseek")
@@ -3922,6 +4192,33 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
 
 
+def _maybe_mark_monochrome_unhealthy(dl_exc: Exception) -> None:
+    """Park Monochrome only if the leg itself looks down, not just this track.
+
+    A single obscure track missing from Qobuz and Tidal alike raises the exact
+    same "no stream available on any leg" exception as the whole leg being
+    unreachable (see monochrome._resolve_monochrome_stream_url). Taking that
+    exception at face value used to park all of Monochrome for everyone for a
+    full cooldown over one unlucky search result. Re-probe the actual leg
+    health first, same probe servicecheck's own scheduled check uses, and only
+    park the source if that agrees something is genuinely wrong.
+    """
+    try:
+        from monochrome import download_leg_healthy
+        leg_ok, leg_reason = download_leg_healthy()
+    except Exception as probe_exc:
+        print(f"monochrome download_leg_healthy probe failed: {probe_exc}")
+        leg_ok, leg_reason = True, ""  # couldn't tell; don't punish the source for our probe failing
+    if leg_ok:
+        print(f"Monochrome: track unavailable but the leg re-checked healthy, not parking the source ({dl_exc})")
+        return
+    try:
+        from servicecheck import mark_unhealthy
+        mark_unhealthy("monochrome", leg_reason or str(dl_exc))
+    except Exception as health_exc:
+        print(f"servicecheck mark_unhealthy failed: {health_exc}")
+
+
 def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: str, title_hint: str,
                                  convert_to_flac: bool = True,
                                  playlist_name: str = None, use_playlists_dir: bool = False,
@@ -3931,7 +4228,8 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                                  custom_subdir: str | None = None,
                                  source_label: str = "",
                                  download_fn=None,
-                                 fallback_exclude_sources: set[str] | None = None):
+                                 fallback_exclude_sources: set[str] | None = None,
+                                 fallback_allowed_sources: set[str] | None = None):
     """Download a direct MP3 source, no yt-dlp required.
 
     The download_url is captured at search time. artist_hint and title_hint come
@@ -3975,6 +4273,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             query, attempted_ids,
             exclude_sources=excluded or None,
             expected_artist=artist, expected_title=title,
+            allowed_sources=fallback_allowed_sources,
         )
         if not alternate:
             return False
@@ -4010,6 +4309,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             skip_dupe_check=skip_dupe_check,
             custom_subdir=custom_subdir,
             fallback_exclude_sources=excluded,
+            fallback_allowed_sources=fallback_allowed_sources,
         )
         return True
 
@@ -4088,11 +4388,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                 source_path.unlink(missing_ok=True)
                 download_failed_reason = f"{source_label} source unavailable: {dl_exc}"
                 if source_label == "monochrome":
-                    try:
-                        from servicecheck import mark_unhealthy
-                        mark_unhealthy(source_label, str(dl_exc))
-                    except Exception as health_exc:
-                        print(f"servicecheck mark_unhealthy failed: {health_exc}")
+                    _maybe_mark_monochrome_unhealthy(dl_exc)
                 print(download_failed_reason)
                 break
             valid_audio, integrity_reason, actual_duration_secs = _validate_audio_integrity(source_path)
@@ -4125,6 +4421,23 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                 if _try_alternate_candidate(download_failed_reason, exclude_source=source_label):
                     return
             raise Exception(download_failed_reason)
+
+        manual_ok, manual_reason = _check_manual_download_completeness(
+            actual_duration_secs, job_id,
+        )
+        if not manual_ok:
+            source_path.unlink(missing_ok=True)
+            _note_blacklist_entry(
+                source=source_label,
+                reason="preview_audio",
+                note=manual_reason,
+                job_id=job_id,
+                video_id=video_id or None,
+                uploader=artist,
+            )
+            # Do not silently swap an explicit live/remix/edit choice for an
+            # automatically selected canonical version. Fail this pick honestly.
+            raise Exception(manual_reason)
 
         # Capture the downloaded stream before conversion. Probing the output later
         # cannot tell us that (for example) Opus 320 originated as MP3 128.
@@ -4379,7 +4692,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                      attempted_ids: set[str] | None = None, integrity_attempt: int = 1,
                      user_id: str | None = None, override_dir: str | None = None,
                      skip_dupe_check: bool = False, custom_subdir: str | None = None,
-                     fallback_exclude_sources: set[str] | None = None):
+                     fallback_exclude_sources: set[str] | None = None,
+                     fallback_allowed_sources: set[str] | None = None):
     """Process a download job.
 
     source_url overrides the default YouTube URL construction  -  used for
@@ -4394,6 +4708,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
     is_freemp3cloud = source_url and "meln.top" in source_url
     is_monochrome  = source_url and source_url.startswith("monochrome://")
     is_url_source  = bool(source_url)
+    fallback_allowed_sources = _normalise_source_allowlist(fallback_allowed_sources)
 
     attempted_ids = set(attempted_ids or [])
     attempted_ids.add(video_id)
@@ -4450,6 +4765,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             source_label=direct_label,
             download_fn=direct_fn,
             fallback_exclude_sources=fallback_exclude_sources,
+            fallback_allowed_sources=fallback_allowed_sources,
         )
         return
 
@@ -4458,6 +4774,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
     else:
         source_label = "youtube"
     target_url = source_url or f"https://www.youtube.com/watch?v={video_id}"
+    staging = None  # set once we get as far as downloading; cleared in the finally
 
     try:
         if not is_url_source and not is_valid_youtube_id(video_id):
@@ -4583,9 +4900,11 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             safe_title = _output_stem(artist, forced_track_title or title, video_id, user_id=user_id)
         artist_dir.mkdir(parents=True, exist_ok=True)
 
-        # Download with best audio quality
+        # Download with best audio quality, into this job's own staging directory
+        # so a concurrent download of the same track cannot trample our temp files.
         _update_job(job_id, progress_stage="Downloading audio")
-        output_template = str(artist_dir / f"{safe_title}.%(ext)s")
+        staging = _make_staging_dir(job_id, user_id=user_id)
+        output_template = str(staging / f"{safe_title}.%(ext)s")
         download_cmd = _build_ytdlp_download_cmd(
             video_id, output_template, convert_to_flac,
             source_url=source_url,
@@ -4611,7 +4930,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
             # Permission denied on temp file rename  -  clean up and retry once
             if download_result and _is_permission_error(stderr):
-                cleaned = _cleanup_temp_files(artist_dir, safe_title)
+                cleaned = _cleanup_temp_files(staging, safe_title)
                 if cleaned:
                     print(f"Retrying download after cleaning {cleaned} temp file(s)")
                     download_result, download_timed_out = _run_ytdlp_with_retries(
@@ -4622,8 +4941,18 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
 
             if stderr:
                 audio_file = _recover_from_ytdlp_postprocess_failure(
-                    artist_dir, safe_title, stderr
+                    staging, safe_title, stderr
                 )
+
+            # Nothing to salvage. If cover art was the culprit, the audio never
+            # downloaded at all, so ask again without it.
+            if stderr and not audio_file:
+                retry_result, retry_timed_out = _retry_ytdlp_without_thumbnail(
+                    download_cmd, TIMEOUT_YTDLP_DOWNLOAD, has_cookies, stderr
+                )
+                if retry_result and not retry_timed_out and retry_result.returncode == 0:
+                    download_result = retry_result
+                    stderr = None
 
             if stderr and not audio_file:
                 error_msg = f"Download failed: {stderr}"
@@ -4635,7 +4964,11 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 raise Exception(error_msg)
 
         if not audio_file:
-            audio_file = _find_downloaded_audio_or_raise(artist_dir, safe_title)
+            audio_file = _find_downloaded_audio_or_raise(staging, safe_title)
+
+        # Out of the sandbox and into the library. Everything downstream expects
+        # the file to be sitting in its final directory.
+        audio_file = _promote_from_staging(audio_file, artist_dir)
 
         # Integrity gate: if the file is corrupted/truncated, retry once then pivot.
         _update_job(job_id, progress_stage="Checking integrity")
@@ -4660,6 +4993,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                     override_dir=override_dir,
                     skip_dupe_check=skip_dupe_check,
                     custom_subdir=custom_subdir,
+                    fallback_exclude_sources=fallback_exclude_sources,
+                    fallback_allowed_sources=fallback_allowed_sources,
                 )
 
             _note_blacklist_entry(
@@ -4676,6 +5011,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 alternate = _find_alternate_search_candidate(
                     query, attempted_ids,
                     expected_artist=artist, expected_title=title,
+                    allowed_sources=fallback_allowed_sources,
                 )
                 if alternate:
                     alt_id = alternate.get("video_id")
@@ -4699,11 +5035,29 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         skip_dupe_check=skip_dupe_check,
                         custom_subdir=custom_subdir,
                         fallback_exclude_sources=fallback_exclude_sources,
+                        fallback_allowed_sources=fallback_allowed_sources,
                     )
 
             raise Exception(
                 f"Downloaded audio failed integrity checks and no alternate candidate succeeded: {integrity_reason}"
             )
+
+        manual_ok, manual_reason = _check_manual_download_completeness(
+            actual_duration_secs, job_id,
+        )
+        if not manual_ok:
+            audio_file.unlink(missing_ok=True)
+            _note_blacklist_entry(
+                source=source_label,
+                reason="preview_audio",
+                note=manual_reason,
+                job_id=job_id,
+                video_id=video_id,
+                uploader=channel,
+            )
+            # The chosen bytes are incomplete. Preserve the user's version
+            # choice by failing instead of substituting another search result.
+            raise Exception(manual_reason)
 
         # In album mode with conversion off, yt-dlp often leaves .webm files, which
         # are awkward to tag. Remux to .opus/.ogg (stream copy) so tags/art can land.
@@ -4744,6 +5098,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 alternate = _find_alternate_search_candidate(
                     query, attempted_ids,
                     expected_artist=artist, expected_title=title,
+                    allowed_sources=fallback_allowed_sources,
                 )
                 if alternate:
                     alt_id = alternate.get("video_id")
@@ -4763,6 +5118,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         skip_dupe_check=skip_dupe_check,
                         custom_subdir=custom_subdir,
                         fallback_exclude_sources=fallback_exclude_sources,
+                        fallback_allowed_sources=fallback_allowed_sources,
                     )
             raise Exception(dur_reason)
 
@@ -4940,6 +5296,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 query, attempted_ids,
                 exclude_sources=excluded or None,
                 expected_artist=artist, expected_title=title,
+                allowed_sources=fallback_allowed_sources,
             )
             if alternate:
                 alt_id = (alternate.get("video_id") or "").strip()
@@ -4971,6 +5328,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                         skip_dupe_check=skip_dupe_check,
                         custom_subdir=custom_subdir,
                         fallback_exclude_sources=excluded,
+                        fallback_allowed_sources=fallback_allowed_sources,
                     )
 
         _update_job(job_id, status="failed", error=str(e), progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
@@ -4985,3 +5343,8 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             error=str(e),
             user_id=user_id,
         )
+
+    finally:
+        # Whatever happened, this job's sandbox goes. A half-downloaded track
+        # helps nobody, and leaving it would defeat the point of the isolation.
+        _clear_staging_dir(staging)

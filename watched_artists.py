@@ -5,7 +5,6 @@ Monitors MusicBrainz for new singles from followed artists and auto-downloads th
 Mirrors the watched playlists pattern: lock, fetch, diff, queue, done.
 """
 
-import random
 import sqlite3
 import threading
 import time
@@ -19,6 +18,37 @@ from utils import hash_track, spawn_daemon_thread, check_duplicate
 
 _scheduler_running = False
 _scheduler_lock = threading.Lock()
+_scheduler_wake_event = threading.Event()
+
+
+def wake_artist_scheduler():
+    """Wake the artist scheduler after an artist deadline changes."""
+    _scheduler_wake_event.set()
+
+
+def _seconds_until_next_artist_check() -> float:
+    """Return the bounded delay until the earliest enabled artist is due."""
+    maximum = max(60.0, WATCHED_PLAYLIST_CHECK_HOURS * 3600.0)
+    with db_conn() as conn:
+        row = conn.execute("""
+            SELECT MIN(
+                CASE
+                    WHEN last_checked IS NULL THEN 0.0
+                    ELSE MAX(
+                        0.0,
+                        (julianday(last_checked, '+' || refresh_interval_hours || ' hours')
+                         - julianday('now')) * 86400.0
+                    )
+                END
+            ) AS seconds_until_due
+            FROM watched_artists
+            WHERE enabled = 1
+        """).fetchone()
+
+    next_due = row[0] if row else None
+    if next_due is None:
+        return maximum
+    return min(maximum, max(1.0, float(next_due) + 1.0))
 
 
 def refresh_watched_artist(artist_id: str) -> dict:
@@ -268,6 +298,7 @@ def refresh_watched_artist(artist_id: str) -> dict:
             conn.commit()
 
             finish_refresh_success(import_id)
+            wake_artist_scheduler()
 
             return {
                 "artist_id": artist_id,
@@ -282,6 +313,7 @@ def refresh_watched_artist(artist_id: str) -> dict:
             error_msg = str(e)
             print(f"Watched artist refresh error for {artist.get('name', artist_id)}: {error_msg}")
             finish_refresh_error(error_msg)
+            wake_artist_scheduler()
             return {
                 "artist_id": artist_id,
                 "name": artist.get("name", ""),
@@ -290,14 +322,18 @@ def refresh_watched_artist(artist_id: str) -> dict:
 
 
 def watched_artist_scheduler():
-    """Background thread that periodically checks watched artists for new singles."""
-    print(f"Watched artist scheduler started (checking every {WATCHED_PLAYLIST_CHECK_HOURS} hours)")
+    """Background thread that refreshes each artist when its own deadline is due."""
+    print(
+        "Watched artist scheduler started "
+        f"(maximum sweep interval {WATCHED_PLAYLIST_CHECK_HOURS} hours)"
+    )
 
     # Let the main scheduler go first
     time.sleep(15)
     print("Artist scheduler: Running initial check for overdue artists...")
 
     while _scheduler_running:
+        _scheduler_wake_event.clear()
         try:
             print("Artist scheduler: Checking watched artists...")
             with db_conn() as conn:
@@ -322,13 +358,17 @@ def watched_artist_scheduler():
         except Exception as e:
             print(f"Artist scheduler error: {e}")
 
-        base_sleep_seconds = WATCHED_PLAYLIST_CHECK_HOURS * 3600
-        jitter = random.uniform(0.95, 1.05)
-        sleep_seconds = max(60, int(base_sleep_seconds * jitter))
-        elapsed = 0
-        while elapsed < sleep_seconds and _scheduler_running:
-            time.sleep(60)
-            elapsed += 60
+        if not _scheduler_running:
+            break
+
+        try:
+            sleep_seconds = _seconds_until_next_artist_check()
+        except Exception as e:
+            print(f"Artist scheduler deadline error: {e}")
+            sleep_seconds = max(60.0, WATCHED_PLAYLIST_CHECK_HOURS * 3600.0)
+
+        print(f"Artist scheduler: Next deadline check in {sleep_seconds / 60:.1f} minutes")
+        _scheduler_wake_event.wait(timeout=sleep_seconds)
 
 
 def start_artist_scheduler():

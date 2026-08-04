@@ -453,8 +453,8 @@ def search_candidate(user_id: str | None, candidate_id: int, force: bool = False
         )
         if conf < UPGRADE_MATCH_FLOOR:
             continue
-        score = r.get("quality_score", 0) or 0
-        if best is None or (tier, score) > (best["tier"], best["result"].get("quality_score", 0) or 0):
+        score = r.get("relevance_score", 0) or 0
+        if best is None or (tier, score) > (best["tier"], best["result"].get("relevance_score", 0) or 0):
             best = {"tier": tier, "verified": verified, "confidence": conf, "result": r}
 
     with db_conn() as conn:

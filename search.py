@@ -115,7 +115,7 @@ def parse_soundcloud_search_results(stdout: str, query: str | None = None) -> li
             channel = data.get("uploader", data.get("channel", "Unknown"))
             duration_secs = data.get("duration") or 0
             views = data.get("view_count")
-            quality_score, score_breakdown = score_search_result_with_breakdown(
+            relevance_score, score_breakdown = score_search_result_with_breakdown(
                 title, channel, query,
                 duration_seconds=duration_secs or None,
                 view_count=views,
@@ -132,7 +132,7 @@ def parse_soundcloud_search_results(stdout: str, query: str | None = None) -> li
                 "source": "soundcloud",
                 "source_url": data.get("webpage_url", data.get("url", "")),
                 "quality": None,
-                "quality_score": quality_score,
+                "relevance_score": relevance_score,
                 "score_breakdown": score_breakdown,
                 "slskd_username": None,
                 "slskd_filename": None,
@@ -162,7 +162,7 @@ def search_soundcloud(query: str, limit: int) -> list[dict]:
             return []
 
         results = parse_soundcloud_search_results(result.stdout, query=query)
-        results.sort(key=lambda x: x["quality_score"], reverse=True)
+        results.sort(key=lambda x: x["relevance_score"], reverse=True)
         return results[:limit]
 
     except Exception as e:
@@ -376,7 +376,7 @@ def _stamp_quality_tiers(results: list[dict]) -> None:
 
 
 def _apply_mb_duration_scores(results: list[dict], expected_duration_secs: float) -> None:
-    """Mutate quality_score on each result based on delta from MB expected duration.
+    """Mutate relevance_score on each result based on delta from MB expected duration.
 
     Operates in-place  -  call after blacklist filtering, before final sort.
     """
@@ -399,18 +399,18 @@ def _apply_mb_duration_scores(results: list[dict], expected_duration_secs: float
             continue
         delta_ratio = abs(secs - expected_duration_secs) / expected_duration_secs
         if delta_ratio <= 0.02:
-            r["quality_score"] += 40
+            r["relevance_score"] += 40
             r.setdefault("score_breakdown", []).append("mb_search_duration=+40")
         elif delta_ratio <= 0.05:
-            r["quality_score"] += 20
+            r["relevance_score"] += 20
             r.setdefault("score_breakdown", []).append("mb_search_duration=+20")
         elif delta_ratio <= 0.10:
             pass
         elif delta_ratio <= 0.25:
-            r["quality_score"] -= 30
+            r["relevance_score"] -= 30
             r.setdefault("score_breakdown", []).append("mb_search_duration=-30")
         else:
-            r["quality_score"] -= 60
+            r["relevance_score"] -= 60
             r.setdefault("score_breakdown", []).append("mb_search_duration=-60")
 
 
@@ -424,7 +424,7 @@ def log_ranked_results(context: str, query: str, results: list[dict], top_n: int
         title = (r.get("title") or "").strip() or "Unknown"
         channel = (r.get("channel") or "").strip() or "Unknown"
         source = r.get("source") or "unknown"
-        score = r.get("quality_score")
+        score = r.get("relevance_score")
         breakdown = format_score_breakdown(r.get("score_breakdown") or [])
         print(f"  {idx}. [{source}] {channel} - {title} (score {score}) :: {breakdown}")
 
@@ -449,7 +449,7 @@ def _apply_blacklist_filter(results: list[dict], source: str | None = None) -> l
         r_source = r.get("source", "youtube")
         channel = (r.get("channel") or "").lower()
         if channel and channel in blocked_uploaders.get(r_source, set()):
-            r["quality_score"] = r.get("quality_score", 0) - _BLACKLIST_UPLOADER_PENALTY
+            r["relevance_score"] = r.get("relevance_score", 0) - _BLACKLIST_UPLOADER_PENALTY
         filtered.append(r)
     return filtered
 
@@ -482,7 +482,7 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
     results = _apply_blacklist_filter(results, source=source)
     if expected_dur:
         _apply_mb_duration_scores(results, expected_dur)
-    results.sort(key=lambda x: x["quality_score"], reverse=True)
+    results.sort(key=lambda x: x["relevance_score"], reverse=True)
     return results[:limit]
 
 
@@ -517,10 +517,16 @@ def _search_all_events(
     source and should get it even if it's currently parked.
     """
     active = _enabled_sources(include_soulseek=include_soulseek)
-    if sources:
-        # Intersect requested sources with enabled ones; fall back to all if none survive
-        filtered = {k: v for k, v in active.items() if k in sources}
-        active = filtered if filtered else active
+    if sources is not None:
+        # An explicit source list is an allow-list, not a preference. If none of
+        # its sources are currently enabled, return no results rather than quietly
+        # widening the search to every enabled provider.
+        requested = {
+            str(source).strip().lower()
+            for source in sources
+            if source is not None and str(source).strip()
+        }
+        active = {k: v for k, v in active.items() if k in requested}
 
     parked: list[str] = []
     if enforce_availability:
@@ -592,7 +598,7 @@ def _search_all_events(
                 _stamp_quality_tiers(batch)
                 if expected_dur:
                     _apply_mb_duration_scores(batch, expected_dur)
-                batch.sort(key=lambda x: x["quality_score"], reverse=True)
+                batch.sort(key=lambda x: x["relevance_score"], reverse=True)
                 servicecheck.record_search_success(source_name)
                 yield {
                     "type": "source",
@@ -632,12 +638,12 @@ def _search_all_events(
 
 
 def search_all(query: str, limit: int, sources: list[str] | None = None, include_soulseek: bool = False) -> tuple[list[dict], dict | None]:
-    """Search enabled sources in parallel, merge by quality score.
+    """Search enabled sources in parallel, merge by relevance score.
 
     Thin blocking consumer of _search_all_events: it drains the progress events
     into one merged, score-sorted list. If *sources* is provided (list of source
-    IDs), only those are used, falling back to all enabled sources if the filtered
-    set is empty (e.g. source disabled globally but a playlist prefers it).
+    IDs), only those are used. If none are enabled, the result is empty; an
+    explicit allow-list is never widened to other sources.
 
     Returns (results, album_suggestion) where album_suggestion is a dict with
     artist_name, artist_mbid, album_title, release_mbid, or None if the query
@@ -650,7 +656,7 @@ def search_all(query: str, limit: int, sources: list[str] | None = None, include
             all_results.extend(ev["results"])
         elif ev["type"] == "album_suggestion":
             album_suggestion = {k: v for k, v in ev.items() if k != "type"}
-    all_results.sort(key=lambda x: x["quality_score"], reverse=True)
+    all_results.sort(key=lambda x: x["relevance_score"], reverse=True)
     return all_results[:limit], album_suggestion
 
 
@@ -658,13 +664,17 @@ def _automated_search_cache_key(query: str, limit: int, sources: list[str] | Non
                                 include_soulseek: bool) -> tuple:
     """Build a key that changes when the usable source selection changes."""
     active = _enabled_sources(include_soulseek=include_soulseek)
-    if sources:
-        filtered = {name: cfg for name, cfg in active.items() if name in sources}
-        active = filtered if filtered else active
+    requested = None
+    if sources is not None:
+        requested = tuple(sorted({
+            str(source).strip().lower()
+            for source in sources
+            if source is not None and str(source).strip()
+        }))
+        active = {name: cfg for name, cfg in active.items() if name in requested}
     usable = tuple(sorted(
         name for name in active if servicecheck.is_source_available(name)
     ))
-    requested = tuple(sorted(set(sources or [])))
     return ((query or "").strip().casefold(), int(limit), requested, usable, bool(include_soulseek))
 
 
