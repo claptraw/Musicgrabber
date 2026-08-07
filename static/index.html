@@ -1280,6 +1280,13 @@
                         </label>
                         <span class="settings-hint-sm">Hidden Monochrome fallback used when all configured Qobuz proxies fail.</span>
                     </div>
+                    <div class="settings-row">
+                        <label class="settings-checkbox-label">
+                            <input type="checkbox" id="settingMonochromeBrowserFallback">
+                            <span>Use browser-authenticated playback fallback</span>
+                        </label>
+                        <span class="settings-hint-sm">Last resort after the Qobuz proxy and qbdlx. Keeps one SeleniumBase Chrome session alive to complete Monochrome's Turnstile flow and resolve authorised resources; media still downloads normally outside Chrome.</span>
+                    </div>
                 </div>
             </div>
 

@@ -5480,6 +5480,14 @@
                 const refreshLabel = isRefreshing
                     ? formatRefreshStage(refreshStage, refreshStartedAt, p.platform)
                     : '';
+                // Tracks that have left the upstream playlist. Mirror mode has stopped
+                // listing them, append mode is keeping them on purpose; either way they
+                // are not part of "how big is this playlist", which is what the first
+                // two figures answer.
+                const departedCount = p.departed_count || 0;
+                const departedText = departedCount
+                    ? ` &middot; ${departedCount} ${p.sync_mode === 'mirror' ? 'no longer upstream' : 'kept from earlier'}`
+                    : '';
 
                 return `
                     <div class="watched-card">
@@ -5490,7 +5498,7 @@
                             ${!p.enabled ? '<span class="watched-card-paused">Paused</span>' : ''}
                         </div>
                         <div class="watched-card-meta">
-                            ${p.tracked_count} tracks · ${p.downloaded_count || 0} downloaded · ${intervalText} · Last checked: <span title="${escapeAttr(lastCheckedExact)}">${escapeHtml(lastChecked)}</span>
+                            ${p.tracked_count} tracks · ${p.downloaded_count || 0} downloaded${departedText} · ${intervalText} · Last checked: <span title="${escapeAttr(lastCheckedExact)}">${escapeHtml(lastChecked)}</span>
                         </div>
                         ${refreshState === 'error' && p.refresh_error && !isRefreshing ? `
                         <div class="watched-card-refresh-error">
@@ -5505,7 +5513,7 @@
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
-                            <label class="watched-card-toggle" title="Generate and update a .m3u playlist file as tracks are downloaded">
+                            <label class="watched-card-toggle" title="Generate and update a .m3u playlist file as tracks are downloaded. Switching this off stops MusicGrabber updating it; any .m3u already written stays where it is, for you to keep or delete.">
                                 M3U
                                 <div class="toggle-switch">
                                     <input type="checkbox" ${p.make_m3u ? 'checked' : ''} onchange="updateWatchedPlaylistM3u('${p.id}', this.checked)">
@@ -6121,20 +6129,26 @@
                 if (!resp.ok) throw new Error('Failed to fetch');
                 const data = await resp.json();
 
-                if (!data.total) {
+                if (!data.total && !data.departed) {
                     panel.textContent = 'No tracks tracked yet.';
                     return;
                 }
 
                 const tracks = data.tracks;
+                // Sections are mutually exclusive: a departed track belongs in its own
+                // group whatever its download state, so the headings add up to the
+                // summary line instead of counting the same track twice.
                 const sections = {
-                    downloaded: tracks.filter(t => t.downloaded_at),
+                    downloaded: tracks.filter(t => t.downloaded_at && !t.removed_at),
                     failed: tracks.filter(t => !t.downloaded_at && ['failed', 'completed_with_errors', null].includes(t.job_status) && !t.removed_at),
-                    pending: tracks.filter(t => !t.downloaded_at && ['queued', 'downloading'].includes(t.job_status)),
+                    pending: tracks.filter(t => !t.downloaded_at && ['queued', 'downloading'].includes(t.job_status) && !t.removed_at),
                     removed: tracks.filter(t => t.removed_at),
                 };
 
-                let html = `<div class="track-list-summary">${data.downloaded} downloaded &middot; ${data.failed} failed &middot; ${data.pending} pending</div>`;
+                const departedSummary = data.departed
+                    ? ` &middot; ${data.departed} ${data.sync_mode === 'mirror' ? 'no longer upstream' : 'kept from earlier'}`
+                    : '';
+                let html = `<div class="track-list-summary">${data.downloaded} downloaded &middot; ${data.failed} failed &middot; ${data.pending} pending${departedSummary}</div>`;
 
                 function trackRow(t, i, actions) {
                     const rowId = `tl-track-${playlistId}-${i}`;
@@ -6200,9 +6214,12 @@
                 }
 
                 if (sections.removed.length) {
-                    html += `<div class="track-list-section-header">Removed Upstream (${sections.removed.length})</div>`;
-                    html += sections.removed.map((t, i) => trackRow(t, `r${i}`, () =>
-                        `<span class="track-status-chip track-status-removed">removed</span>`
+                    const removedHeading = data.sync_mode === 'mirror'
+                        ? `Removed Upstream (${sections.removed.length})`
+                        : `No Longer Upstream, Kept (${sections.removed.length})`;
+                    html += `<div class="track-list-section-header">${removedHeading}</div>`;
+                    html += sections.removed.map((t, i) => trackRow(t, `r${i}`, (t) =>
+                        `<span class="track-status-chip track-status-removed">${t.downloaded_at ? 'kept' : 'gone'}</span>`
                     )).join('');
                 }
 
@@ -7993,6 +8010,7 @@
             'monochrome_hifi_api_url': 'settingMonochromeHifiUrl',
             'monochrome_qobuz_proxy_url': 'settingMonochromeQobuzUrl',
             'monochrome_qbdlx_fallback_enabled': 'settingMonochromeQbdlxFallback',
+            'monochrome_browser_fallback_enabled': 'settingMonochromeBrowserFallback',
             'slskd_url': 'settingSlskdUrl',
             'slskd_user': 'settingSlskdUser',
             'slskd_pass': 'settingSlskdPass',

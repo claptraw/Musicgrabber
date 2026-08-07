@@ -550,16 +550,26 @@ def process_bulk_import_worker(import_id: str):
                                           ))
 
             except Exception as e:
-                with db_conn() as conn:
-                    conn.execute(
-                        "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
-                        (str(e)[:200], track_id)
+                # Recording the failure must never become the failure. If this
+                # write itself blows up (a locked database used to do it), the
+                # exception escaped the loop and abandoned every remaining
+                # track, which is a rotten way to repay one bad row.
+                try:
+                    with db_conn() as conn:
+                        conn.execute(
+                            "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
+                            (str(e)[:200], track_id)
+                        )
+                        conn.execute(
+                            "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                            (import_id,)
+                        )
+                        conn.commit()
+                except Exception as bookkeeping_error:
+                    print(
+                        f"Bulk import {import_id}: failed to record failure for track "
+                        f"{track_id} ({e}): {bookkeeping_error}"
                     )
-                    conn.execute(
-                        "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
-                        (import_id,)
-                    )
-                    conn.commit()
 
             # Standard delay between searches
             time.sleep(base_delay)

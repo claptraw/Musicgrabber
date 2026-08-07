@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -185,6 +187,7 @@ def test_download_leg_healthy_false_reports_qbdlx_reason(monkeypatch):
         "qbdlx.download_leg_healthy",
         lambda: (False, "qbdlx could not resolve a stream (0/28 shared tokens usable this cycle)"),
     )
+    monkeypatch.setattr("monochrome_browser.browser_fallback_enabled", lambda: False)
 
     ok, reason = monochrome.download_leg_healthy()
 
@@ -196,11 +199,42 @@ def test_download_leg_healthy_false_when_qbdlx_disabled(monkeypatch):
     import monochrome
     monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
     monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: False)
+    monkeypatch.setattr("monochrome_browser.browser_fallback_enabled", lambda: False)
 
     ok, reason = monochrome.download_leg_healthy()
 
     assert ok is False
     assert "qbdlx" in reason.lower()
+
+
+def test_download_leg_healthy_true_via_browser_without_launching_it(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
+    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: False)
+    monkeypatch.setattr(
+        "monochrome_browser.browser_fallback_health",
+        lambda: (True, "browser-authenticated playback available on demand"),
+    )
+
+    ok, reason = monochrome.download_leg_healthy()
+
+    assert ok is True
+    assert "browser-authenticated" in reason
+
+
+def test_download_leg_healthy_remembers_repeated_browser_failure(monkeypatch):
+    import monochrome
+    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
+    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: False)
+    monkeypatch.setattr(
+        "monochrome_browser.browser_fallback_health",
+        lambda: (False, "Chrome failed twice"),
+    )
+
+    ok, reason = monochrome.download_leg_healthy()
+
+    assert ok is False
+    assert "Chrome failed twice" in reason
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +560,37 @@ def test_download_monochrome_raises_when_proxy_and_qbdlx_fail(monkeypatch, tmp_p
             output,
         )
     assert not output.exists()
+
+
+def test_qbdlx_is_tried_before_browser_fallback(monkeypatch):
+    import monochrome
+
+    monkeypatch.setattr(
+        monochrome,
+        "_get_qobuz_stream_url",
+        lambda *a, **k: (_ for _ in ()).throw(
+            monochrome.QobuzProxyError("proxy down", transport_failure=True)
+        ),
+    )
+    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
+    monkeypatch.setattr(
+        "qbdlx.resolve_qobuz_stream_url",
+        lambda isrc, quality_fmt: "https://qobuz.test/fast.flac",
+    )
+    monkeypatch.setattr(
+        "monochrome_browser.resolve_unified_stream_url",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("browser must not launch when qbdlx succeeds")
+        ),
+    )
+
+    url = monochrome._resolve_monochrome_stream_url(
+        "monochrome://123?isrc=GBAYE9200070&quality=LOSSLESS",
+        artist_hint="Radiohead",
+        title_hint="Creep",
+    )
+
+    assert url == "https://qobuz.test/fast.flac"
 
 
 # ---------------------------------------------------------------------------
@@ -1111,6 +1176,33 @@ def test_download_rescues_malformed_isrc_via_deezer(monkeypatch, tmp_path):
     assert rescue_calls == [("David Guetta", "Titanium", "QT&JC2622262")]
     assert stream_calls and stream_calls[0] == "GB28K1100036"
     assert output.exists() and output.stat().st_size > 0
+
+
+def test_download_decrypts_browser_cenc_resource_without_persisting_key(monkeypatch, tmp_path):
+    import monochrome
+
+    monkeypatch.setattr(
+        monochrome, "_resolve_monochrome_stream_url", lambda *a, **k: "https://cdn.test/encrypted.mp4"
+    )
+    monkeypatch.setattr("monochrome_browser.pop_decryption_key", lambda url: "a1" * 16)
+    monkeypatch.setattr(
+        monochrome.httpx, "stream", lambda *a, **k: _FakeStreamResponse(b"encrypted-media")
+    )
+    calls = []
+
+    def fake_ffmpeg(args, **kwargs):
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"fLaCclean-audio")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(monochrome.subprocess, "run", fake_ffmpeg)
+    output = tmp_path / "track.flac"
+
+    monochrome.download_monochrome_track("monochrome://123?isrc=TEST", output)
+
+    assert output.read_bytes().startswith(b"fLaC")
+    assert not (tmp_path / "track.flac.encrypted.mp4").exists()
+    assert calls and calls[0][calls[0].index("-decryption_key") + 1] == "a1" * 16
 
 
 def test_download_falls_back_to_tidal_stream_for_tidal_results(monkeypatch, tmp_path):

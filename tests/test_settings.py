@@ -28,6 +28,7 @@ EXPECTED_KEYS = [
     "source_health_checks_enabled",
     "source_health_check_interval_minutes",
     "source_health_cooldown_minutes",
+    "monochrome_browser_fallback_enabled",
     "notify_on",
 ]
 
@@ -51,6 +52,10 @@ def test_settings_audio_format_is_valid(api, base_url):
 
 def test_fresh_install_keeps_source_format_by_default():
     assert SETTINGS_SCHEMA["default_convert_to_flac"]["default"] is False
+
+
+def test_fresh_install_enables_monochrome_browser_fallback():
+    assert SETTINGS_SCHEMA["monochrome_browser_fallback_enabled"]["default"] is True
 
 
 def test_existing_conversion_preference_survives_db_migrations(tmp_path, monkeypatch):

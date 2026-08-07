@@ -3,7 +3,7 @@ services:
     build: .
     container_name: music-grabber
     restart: unless-stopped
-    # Chromium needs more shared memory for headless browser - Spotify playlists over 100 tracks WILL fail without this
+    # Browser fallbacks need shared memory: Spotify playlists and Monochrome authentication can fail without this.
     shm_size: '2gb'
     ports:
       - "38274:8080"

@@ -269,7 +269,9 @@ def _reconcile_append_history(
         if (
             track_hash in current_hashes
             or row["downloaded_at"]
-            or row["removed_at"]
+            # removed_at is deliberately NOT a reason to skip: every historical
+            # row here carries one now that departures are recorded in both
+            # modes, and skipping them would quietly retire this whole function.
             or row["job_status"] in ("queued", "downloading")
             or (
                 library_checked_at
@@ -339,6 +341,10 @@ def find_orphaned_playlist_files(playlists: list[dict]) -> list[dict]:
     scanned, and where several playlists share a folder (custom subdirs), a file
     claimed by any of them is safe. Folders of playlists no longer being watched
     at all are out of scope; we can't tell leftovers from keepsakes there.
+
+    Append mode keeps its history on purpose, so a departed track there is still
+    claimed and must never be offered up as an orphan. Only mirror mode disowns
+    what has left the upstream playlist.
     """
     # Group playlists by folder so shared custom folders pool their claims
     folder_map: dict[pathlib.Path, list[dict]] = {}
@@ -351,14 +357,18 @@ def find_orphaned_playlist_files(playlists: list[dict]) -> list[dict]:
     for folder, pls in sorted(folder_map.items()):
         claimed: set[pathlib.Path] = set()
         for pl in pls:
+            # Only mirror mode disowns a departed track; append keeps its history,
+            # so those files are still claimed and must not be offered up.
+            disowns_departures = (pl.get("sync_mode") or "append") == "mirror"
             with db_conn() as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    """SELECT wpt.artist, wpt.title, wpt.resolved_path,
+                    f"""SELECT wpt.artist, wpt.title, wpt.resolved_path,
                               j.artist AS job_artist, j.title AS job_title
                        FROM watched_playlist_tracks wpt
                        LEFT JOIN jobs j ON j.id = wpt.job_id
-                       WHERE wpt.playlist_id = ? AND wpt.removed_at IS NULL""",
+                       WHERE wpt.playlist_id = ?
+                       {"AND wpt.removed_at IS NULL" if disowns_departures else ""}""",
                     (pl["id"],),
                 ).fetchall()
             for row in rows:
@@ -1376,8 +1386,10 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     new_tracks.append((artist, title, track_hash))
                     continue
 
-                # Track has reappeared after being removed upstream  -  clear the removal flag
-                if existing["removed_at"] and sync_mode == "mirror":
+                # Track has reappeared upstream  -  clear the removal flag. Recorded
+                # for both sync modes: removed_at is a fact about the upstream
+                # playlist, not a mirror-mode opinion about what to do about it.
+                if existing["removed_at"]:
                     conn.execute(
                         "UPDATE watched_playlist_tracks SET removed_at = NULL WHERE playlist_id = ? AND track_hash = ?",
                         (playlist_id, track_hash)
@@ -1453,21 +1465,25 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                         f"healed {healed_history_count} historical track(s) from the local library"
                     )
 
-            # In mirror mode: mark any previously tracked tracks that are no longer in the upstream
-            if sync_mode == "mirror":
-                for track_hash, row in tracked.items():
-                    if track_hash not in current_hashes and not row["removed_at"]:
-                        conn.execute(
-                            "UPDATE watched_playlist_tracks SET removed_at = datetime('now') WHERE playlist_id = ? AND track_hash = ?",
-                            (playlist_id, track_hash)
-                        )
-                        removed_count += 1
-
-                if removed_count:
-                    print(
-                        f"Watched playlist '{playlist['name']}' (mirror): "
-                        f"{removed_count} track(s) removed from upstream, marked in DB"
+            # Mark any tracked tracks that are no longer in the upstream playlist.
+            # Both modes record it, because "this track left the playlist" is a
+            # fact and the counts on the card need it; what each mode *does* about
+            # it still differs. Mirror drops them from the M3U, append keeps them
+            # (see rebuild_watched_playlist_m3u), and neither ever deletes audio.
+            for track_hash, row in tracked.items():
+                if track_hash not in current_hashes and not row["removed_at"]:
+                    conn.execute(
+                        "UPDATE watched_playlist_tracks SET removed_at = datetime('now') WHERE playlist_id = ? AND track_hash = ?",
+                        (playlist_id, track_hash)
                     )
+                    removed_count += 1
+
+            if removed_count:
+                _fate = "dropped from the M3U" if sync_mode == "mirror" else "kept"
+                print(
+                    f"Watched playlist '{playlist['name']}' ({sync_mode}): "
+                    f"{removed_count} track(s) no longer upstream, {_fate}"
+                )
 
             # Insert any new tracks so they are tracked before download
             # Build a position lookup from the current upstream order

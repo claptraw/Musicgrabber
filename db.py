@@ -12,6 +12,10 @@ import threading
 import time
 from constants import (
     DB_PATH,
+    DB_BUSY_TIMEOUT_MS,
+    DB_LOCK_RETRY_ATTEMPTS,
+    DB_LOCK_RETRY_DELAY,
+    DB_LOCK_RETRY_MAX_DELAY,
     STALE_JOB_TIMEOUT,
     STALE_JOB_CHECK_INTERVAL,
     LIBRARY_RECONCILE_INTERVAL,
@@ -22,11 +26,115 @@ from constants import (
 )
 
 
+def _is_lock_error(exc: sqlite3.Error) -> bool:
+    """True for the two flavours of "someone else is writing, go away"."""
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database is busy" in msg
+
+
+class MGConnection(sqlite3.Connection):
+    """A pooled connection that tidies up after itself and retries lock errors.
+
+    Two separate things produce "database is locked" on a WAL database with a
+    connection pool, and only one of them is honest contention:
+
+    1. A SELECT whose rows are never fully read (the classic `fetchone()` on a
+       multi-row query) leaves a read transaction, and therefore a WAL snapshot,
+       open on that connection. As soon as anybody else commits, the snapshot is
+       stale and the next write on that connection fails *instantly* with
+       SQLITE_BUSY_SNAPSHOT, reported to us as "database is locked".
+       busy_timeout does not wait for this, because there is nothing to wait for,
+       and the connection stays poisoned until that statement is closed or reset,
+       which is what made the symptom so wonderfully intermittent. With a LIFO
+       pool, the poisoned connection is also the first one handed out next.
+       Hence: track the cursors a lease opens and close them when the lease ends.
+    2. Genuine writer-versus-writer contention, where sqlite's busy_timeout can
+       be outlasted by a bulk import and a fistful of download threads all
+       fancying the single WAL write lock at once. Hence: retry with backoff.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lease_cursors: list[sqlite3.Cursor] = []
+
+    def _retrying(self, op, may_reset: bool):
+        """Run `op`, giving it another go if sqlite says it is locked.
+
+        `may_reset` is only ever True when nothing is pending on this
+        connection, because resetting mid-transaction would quietly bin writes
+        the caller thinks it has made. Losing data beats no data on nobody's
+        scorecard.
+        """
+        delay = DB_LOCK_RETRY_DELAY
+        for attempt in range(DB_LOCK_RETRY_ATTEMPTS):
+            try:
+                return op()
+            except sqlite3.OperationalError as e:
+                last_go = attempt == DB_LOCK_RETRY_ATTEMPTS - 1
+                if last_go or not _is_lock_error(e):
+                    raise
+                if may_reset:
+                    # Nothing of the caller's was pending when this statement
+                    # started, and a statement that lost the lock did not write
+                    # anything, so there is nothing to lose by clearing the
+                    # connection's read snapshot before trying again. This is
+                    # the fix for (1). Note that the failed statement will have
+                    # opened a transaction of its own, hence deciding this from
+                    # the state captured beforehand rather than from now.
+                    self.reset_lease_state()
+                time.sleep(delay)
+                delay = min(delay * 2, DB_LOCK_RETRY_MAX_DELAY)
+
+    def execute(self, *args, **kwargs) -> sqlite3.Cursor:
+        clean = not self.in_transaction
+        cursor = self._retrying(lambda: super(MGConnection, self).execute(*args, **kwargs), clean)
+        self._lease_cursors.append(cursor)
+        return cursor
+
+    def executemany(self, *args, **kwargs) -> sqlite3.Cursor:
+        clean = not self.in_transaction
+        cursor = self._retrying(
+            lambda: super(MGConnection, self).executemany(*args, **kwargs), clean
+        )
+        self._lease_cursors.append(cursor)
+        return cursor
+
+    def commit(self) -> None:
+        # No resetting here: a rollback would throw away the very transaction we
+        # are trying to land. Just wait it out and hope the writer ahead of us
+        # gets on with it.
+        self._retrying(lambda: super(MGConnection, self).commit(), False)
+
+    def reset_lease_state(self) -> None:
+        """Close this lease's cursors and end any transaction still open.
+
+        Called when a connection goes back to the pool, so the next borrower
+        gets a connection with no lingering read snapshot and no half-finished
+        transaction from somebody else's afternoon.
+        """
+        cursors, self._lease_cursors = self._lease_cursors, []
+        for cursor in cursors:
+            try:
+                cursor.close()
+            except sqlite3.Error:
+                pass
+        try:
+            self.rollback()
+        except sqlite3.Error:
+            pass
+
+
 def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
-    conn.execute("PRAGMA busy_timeout=10000")
+    conn = sqlite3.connect(
+        DB_PATH,
+        timeout=DB_BUSY_TIMEOUT_MS / 1000,
+        check_same_thread=False,
+        factory=MGConnection,
+    )
+    conn.execute(f"PRAGMA busy_timeout={DB_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.reset_lease_state()
     return conn
 
 
@@ -79,19 +187,11 @@ def db_conn() -> sqlite3.Connection:
     conn = _get_pooled_conn()
     try:
         yield conn
-        if conn.in_transaction:
-            try:
-                conn.rollback()
-            except sqlite3.Error:
-                pass
-    except Exception:
-        try:
-            conn.rollback()
-        except sqlite3.Error:
-            pass
-        raise
     finally:
         conn.row_factory = None
+        # Closes this lease's cursors and rolls back anything left open, so no
+        # forgotten SELECT can leave the next borrower unable to write.
+        conn.reset_lease_state()
         _return_pooled_conn(conn)
 
 

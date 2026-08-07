@@ -3527,11 +3527,21 @@ def list_watched_playlists(http_request: Request):
         conn.row_factory = sqlite3.Row
 
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        # Counts describe what the playlist contains NOW, not everything it has
+        # ever contained. A 50-track chart that churns weekly used to report
+        # hundreds of "tracks", which told the user nothing useful about either
+        # the playlist or their library. Departed tracks are counted separately;
+        # append mode keeps them, mirror mode has merely stopped listing them.
         playlists = conn.execute(f"""
             SELECT
                 wp.*,
-                (SELECT COUNT(*) FROM watched_playlist_tracks wpt WHERE wpt.playlist_id = wp.id) as tracked_count,
-                (SELECT COUNT(*) FROM watched_playlist_tracks wpt WHERE wpt.playlist_id = wp.id AND wpt.downloaded_at IS NOT NULL) as downloaded_count
+                (SELECT COUNT(*) FROM watched_playlist_tracks wpt
+                  WHERE wpt.playlist_id = wp.id AND wpt.removed_at IS NULL) as tracked_count,
+                (SELECT COUNT(*) FROM watched_playlist_tracks wpt
+                  WHERE wpt.playlist_id = wp.id AND wpt.removed_at IS NULL
+                    AND wpt.downloaded_at IS NOT NULL) as downloaded_count,
+                (SELECT COUNT(*) FROM watched_playlist_tracks wpt
+                  WHERE wpt.playlist_id = wp.id AND wpt.removed_at IS NOT NULL) as departed_count
             FROM watched_playlists wp
             WHERE {_scope_frag}
             ORDER BY wp.created_at DESC
@@ -3559,7 +3569,7 @@ def _scoped_playlist_dicts(http_request: Request) -> list[dict]:
         conn.row_factory = sqlite3.Row
         frag, params = _user_scope(user_id, is_admin)
         rows = conn.execute(
-            f"""SELECT id, name, user_id, use_playlists_dir, custom_subdir
+            f"""SELECT id, name, user_id, use_playlists_dir, custom_subdir, sync_mode
                 FROM watched_playlists WHERE {frag}""",
             params,
         ).fetchall()
@@ -3740,6 +3750,11 @@ def get_missing_watched_tracks(playlist_id: str, http_request: Request):
 
     A track is 'missing' if it has no downloaded_at timestamp and either has no job,
     or its job ended in failure. Tracks still actively queued or downloading are excluded.
+
+    In mirror mode, a track that has left the upstream playlist is not missing, it
+    is simply gone, so it is excluded; chasing it would be downloading something
+    the playlist no longer asks for. Append mode still lists them, because there
+    it is history it deliberately keeps and can still fill in.
     """
     user_id = http_request.state.user_id
     is_admin = http_request.state.is_admin
@@ -3748,19 +3763,25 @@ def get_missing_watched_tracks(playlist_id: str, http_request: Request):
 
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"SELECT name FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            f"SELECT name, sync_mode FROM watched_playlists WHERE id = ? AND {_scope_frag}",
             (playlist_id, *_scope_params)
-        ).fetchone()
+        ).fetchall()
+        playlist = playlist[0] if playlist else None
 
         if not playlist:
             raise HTTPException(status_code=404, detail="Watched playlist not found")
 
+        _departed_frag = (
+            "AND wpt.removed_at IS NULL"
+            if (playlist["sync_mode"] or "append") == "mirror" else ""
+        )
         rows = conn.execute(
-            """SELECT wpt.artist, wpt.title, wpt.first_seen, wpt.removed_at, j.status as job_status
+            f"""SELECT wpt.artist, wpt.title, wpt.first_seen, wpt.removed_at, j.status as job_status
                FROM watched_playlist_tracks wpt
                LEFT JOIN jobs j ON wpt.job_id = j.id
                WHERE wpt.playlist_id = ?
                  AND wpt.downloaded_at IS NULL
+                 {_departed_frag}
                  AND (j.status IS NULL OR j.status IN ('failed', 'completed_with_errors'))""",
             (playlist_id,)
         ).fetchall()
@@ -3777,7 +3798,9 @@ def get_watched_playlist_tracks(playlist_id: str, http_request: Request):
     """Return all tracks for a watched playlist with their download status.
 
     Each track includes its current job status so the UI can show downloaded,
-    failed, pending, and mirror-removed tracks in one place.
+    failed, pending, and departed tracks in one place. Every row is returned,
+    but the summary counts describe current membership only, so they agree with
+    the figures on the playlist card instead of quietly contradicting them.
     """
     user_id = http_request.state.user_id
     is_admin = http_request.state.is_admin
@@ -3786,9 +3809,10 @@ def get_watched_playlist_tracks(playlist_id: str, http_request: Request):
 
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"SELECT name FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            f"SELECT name, sync_mode FROM watched_playlists WHERE id = ? AND {_scope_frag}",
             (playlist_id, *_scope_params)
-        ).fetchone()
+        ).fetchall()
+        playlist = playlist[0] if playlist else None
 
         if not playlist:
             raise HTTPException(status_code=404, detail="Watched playlist not found")
@@ -3805,17 +3829,20 @@ def get_watched_playlist_tracks(playlist_id: str, http_request: Request):
         ).fetchall()
 
     tracks = [dict(r) for r in rows]
-    downloaded = sum(1 for t in tracks if t["downloaded_at"])
-    failed = sum(1 for t in tracks if not t["downloaded_at"] and t["job_status"] in ("failed", "completed_with_errors", None))
-    pending = sum(1 for t in tracks if not t["downloaded_at"] and t["job_status"] in ("queued", "downloading"))
+    current = [t for t in tracks if not t["removed_at"]]
+    downloaded = sum(1 for t in current if t["downloaded_at"])
+    failed = sum(1 for t in current if not t["downloaded_at"] and t["job_status"] in ("failed", "completed_with_errors", None))
+    pending = sum(1 for t in current if not t["downloaded_at"] and t["job_status"] in ("queued", "downloading"))
 
     return {
         "playlist_name": playlist["name"],
+        "sync_mode": playlist["sync_mode"] or "append",
         "tracks": tracks,
-        "total": len(tracks),
+        "total": len(current),
         "downloaded": downloaded,
         "failed": failed,
         "pending": pending,
+        "departed": len(tracks) - len(current),
     }
 
 

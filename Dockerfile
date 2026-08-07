@@ -31,10 +31,47 @@ RUN pip install --no-cache-dir \
     apprise~=1.9.3 \
     bcrypt~=4.2.0
 
+# SeleniumBase is kept beside Playwright rather than replacing the working
+# Spotify/Amazon scrapers. It is used solely for Monochrome's browser Turnstile
+# exchange; Chrome's audio traffic never passes through WebDriver.
+RUN pip install --no-cache-dir seleniumbase~=4.49.0
+
 # Install Playwright browsers into a fixed path so non-root users (PUID/PGID) can find them.
 # Without this, Playwright falls back to ~/.cache/ms-playwright which resolves differently per user.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN playwright install chromium --with-deps
+
+# Playwright installs Xvfb, but SeleniumBase's virtual display also needs xauth.
+# Its PyAutoGUI interaction helper loads the official Python image's _tkinter
+# extension, whose Tcl/Tk runtime libraries are deliberately absent in slim.
+RUN apt-get update && apt-get install -y --no-install-recommends xauth tk8.6 && \
+    rm -rf /var/lib/apt/lists/*
+
+# UC/CDP mode requires headed Google Chrome under Xvfb; true headless mode is
+# intentionally detectable. Debian Chromium is the ARM fallback, where Google
+# does not publish a Linux stable .deb.
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        curl -L https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+            -o /tmp/google-chrome.deb && \
+        apt-get update && apt-get install -y --no-install-recommends /tmp/google-chrome.deb && \
+        rm -f /tmp/google-chrome.deb; \
+    else \
+        apt-get update && apt-get install -y --no-install-recommends chromium chromium-driver; \
+    fi && \
+    rm -rf /var/lib/apt/lists/*
+
+# Avoid runtime driver downloads. Google publishes the UC driver used by
+# SeleniumBase for amd64; on ARM, seed its driver slot from Debian's matching
+# Chromium package instead of downloading an unusable linux64 binary.
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        sbase get uc_driver stable; \
+    else \
+        cp /usr/bin/chromedriver \
+            /usr/local/lib/python3.12/site-packages/seleniumbase/drivers/uc_driver && \
+        chmod a+rwx /usr/local/lib/python3.12/site-packages/seleniumbase/drivers/uc_driver; \
+    fi
 
 # Create app directory
 WORKDIR /app

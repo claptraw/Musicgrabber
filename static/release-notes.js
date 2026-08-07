@@ -9,7 +9,36 @@
 const RELEASE_NOTES = {
     "4.0.0": {
         title: "What's New in v4.0.0",
-        sections: []
+        sections: [
+            {
+                heading: "Monochrome lossless downloads work again",
+                items: [
+                    "Monochrome put its playback behind a Cloudflare Turnstile check, which quietly locked MusicGrabber out and left the Qobuz routes unable to help.",
+                    "There is now an optional fallback that opens a brief Chrome session, completes the same check a visitor gets, and asks for one authorised audio resource. Only that small request happens in the browser; the audio downloads normally afterwards, and protected lossless files are decrypted and remuxed to a clean FLAC before anything else sees them.",
+                    "It is a last resort, not a habit: the browser is never launched for previews, only one session runs at a time, and it takes a few tens of seconds per track. You can turn it off in Settings under Monochrome if you would rather it never started Chrome at all.",
+                    "The container image is larger as a result, since it now ships a browser for this on top of the one used for Spotify.",
+                ]
+            },
+            {
+                heading: "Watched playlist counts finally match the playlist",
+                items: [
+                    "A 150-track playlist could report 244 tracks with 158 downloaded, because every track ever seen was counted, not the ones actually in the playlist. Charts that change weekly were the worst affected: a Top 100 reported 402.",
+                    "Cards now show the playlist as it stands, plus anything left over listed separately as \"kept from earlier\" (append mode) or \"no longer upstream\" (mirror mode). No audio file is deleted either way; append mode still keeps its history and its M3U entries.",
+                    "In mirror mode, the Missing panel no longer lists tracks that have left the playlist, and the track list's summary now agrees with its own section headings.",
+                    "Turning the M3U toggle off stops MusicGrabber updating that .m3u, but any file already written stays put, which is now stated on the toggle rather than left as a surprise.",
+                    "Thanks to Tristan for the detailed report, examples included.",
+                ]
+            },
+            {
+                heading: "\"database is locked\" errors have been evicted",
+                items: [
+                    "Bulk imports could die with sqlite3.OperationalError: database is locked, and changing the preferred source on some watched playlists could silently refuse. Same cause, and it was not the database being busy in the way it appeared.",
+                    "A query whose rows were not all read left a snapshot open on that pooled connection. As soon as anything else saved, the next write on that connection failed immediately, and because the pool hands back the most recently used connection first, the affected one went straight out to the next caller. Connections are now tidied up when they are returned to the pool, and a write that still meets a lock gets retried rather than giving up on the spot.",
+                    "A bulk import also no longer abandons the tracks it has not reached yet when one track goes wrong; recording the failure can no longer become the failure.",
+                    "Thanks to Tristan for the report and for digging into the logs.",
+                ]
+            },
+        ]
     },
     "3.1.0": {
         title: "What's New in v3.1.0",

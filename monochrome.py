@@ -6,8 +6,9 @@ The resolution ladder, in order of preference:
   Search:   Deezer (clean ISRCs, typo-tolerant, machine-readable version labels)
             -> Tidal hifi-api top-up (catalogue gaps, Deezer outage)
             -> qbdlx direct Qobuz (everything else face-down)
-  Download: Qobuz proxies (tier walk) -> qbdlx -> Deezer ISRC rescue
-            -> Tidal stream via hifi-api -> fail honestly
+  Download: Qobuz proxies (tier walk) -> qbdlx -> browser-authenticated
+            Monochrome -> Deezer ISRC rescue -> Tidal stream via hifi-api
+            -> fail honestly
 
 Search endpoint:  GET {DEEZER}/search?q=query (ISRC arrives inline, free of charge)
 Tidal search:     GET {HIFI_API}/search?s=query
@@ -27,6 +28,7 @@ import base64
 import hashlib
 import json
 import re
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -325,6 +327,7 @@ def download_leg_healthy() -> tuple[bool, str]:
     # Proxies are all down, but the qbdlx direct-Qobuz fallback might still be
     # able to serve bytes. If it can, Monochrome is still deliverable, so don't
     # park it.
+    qbdlx_reason = "disabled"
     try:
         from qbdlx import qbdlx_enabled, download_leg_healthy as qbdlx_healthy
         if qbdlx_enabled():
@@ -333,11 +336,25 @@ def download_leg_healthy() -> tuple[bool, str]:
                 note = f" ({qbdlx_reason})" if qbdlx_reason else ""
                 print(f"Monochrome: proxies down but qbdlx direct-Qobuz fallback is healthy{note}")
                 return True, ""
-            return False, f"all Qobuz proxies down; qbdlx fallback also unavailable ({qbdlx_reason or 'no reason given'})"
     except Exception as exc:
+        qbdlx_reason = str(exc)
         print(f"Monochrome: qbdlx health probe errored: {exc}")
 
-    return False, "all Qobuz proxies down (qbdlx fallback also unavailable)"
+    # Browser authentication is intentionally checked on demand rather than by
+    # the periodic health worker: a probe should not launch Chrome merely to
+    # admire it. Use remembered outcomes so repeated real failures eventually
+    # park the source instead of letting an enabled toggle masquerade as health.
+    try:
+        from monochrome_browser import browser_fallback_health
+        browser_ok, browser_reason = browser_fallback_health()
+        if browser_ok:
+            return True, browser_reason
+        if browser_reason:
+            qbdlx_reason = f"{qbdlx_reason}; {browser_reason}"
+    except Exception as exc:
+        print(f"Monochrome: browser fallback availability check errored: {exc}")
+
+    return False, f"all Qobuz proxies down; qbdlx fallback also unavailable ({qbdlx_reason or 'no reason given'})"
 
 
 def _maybe_probe_qobuz_proxies_bg() -> None:
@@ -1384,6 +1401,26 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
     if not cdn_url:
         cdn_url = _resolve_via_qbdlx()
 
+    if not cdn_url:
+        # Monochrome's current web player protects unified playback with a
+        # Turnstile exchange. Keep authentication and the small playback JSON
+        # request in that browser session; the returned media still downloads
+        # through httpx. Do not do this for previews: launching Chrome because
+        # somebody hovered a play button would be both slow and slightly unhinged.
+        if not lossless_only:
+            try:
+                from monochrome_browser import resolve_unified_stream_url
+                cdn_url = resolve_unified_stream_url(
+                    isrc,
+                    quality,
+                    artist=artist_hint,
+                    title=title_hint,
+                ) or ""
+                if cdn_url:
+                    print(f"Monochrome: served ISRC {isrc} via browser-authenticated unified playback")
+            except Exception as exc:
+                print(f"Monochrome: browser-authenticated fallback errored for ISRC {isrc}: {exc}")
+
     # Qobuz genuinely has nothing under this ISRC. Before giving up on Qobuz,
     # ask Deezer whether the ISRC we were handed is simply wrong for the
     # recording (Tidal metadata strikes again) and retry with the real one.
@@ -1416,7 +1453,8 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
     if not cdn_url:
         raise RuntimeError(
             f"Monochrome: no stream available for ISRC {isrc} at an allowed quality "
-            f"on any leg (Qobuz proxies, qbdlx, Deezer rescue, Tidal stream) "
+            f"on any leg (Qobuz proxies, qbdlx, browser-authenticated playback, "
+            f"Deezer rescue, Tidal stream) "
             f"(last error: {last_error})"
         )
     return cdn_url
@@ -1434,6 +1472,16 @@ def download_monochrome_track(source_url: str, output_path: Path,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    decryption_key = None
+    try:
+        from monochrome_browser import pop_decryption_key
+        decryption_key = pop_decryption_key(cdn_url)
+    except Exception:
+        pass
+    download_path = (
+        output_path.with_name(f"{output_path.name}.encrypted.mp4")
+        if decryption_key else output_path
+    )
 
     with httpx.stream(
         "GET",
@@ -1444,20 +1492,40 @@ def download_monochrome_track(source_url: str, output_path: Path,
     ) as resp:
         resp.raise_for_status()
         expected_size = int(resp.headers.get("content-length", 0))
-        with open(output_path, "wb") as f:
+        with open(download_path, "wb") as f:
             for chunk in resp.iter_bytes(chunk_size=65536):
                 f.write(chunk)
 
-    actual_size = output_path.stat().st_size
+    actual_size = download_path.stat().st_size
     if actual_size == 0:
-        output_path.unlink(missing_ok=True)
+        download_path.unlink(missing_ok=True)
         raise RuntimeError(f"Monochrome: download of tidal/{tidal_id} produced an empty file")
     if expected_size > 0 and actual_size < expected_size:
-        output_path.unlink(missing_ok=True)
+        download_path.unlink(missing_ok=True)
         raise RuntimeError(
             f"Monochrome: download truncated for tidal/{tidal_id}: "
             f"got {actual_size} of {expected_size} bytes"
         )
+
+    if decryption_key:
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
+                    "-decryption_key", decryption_key,
+                    "-i", str(download_path),
+                    "-map", "0:a:0", "-c:a", "copy", str(output_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT_MONOCHROME_DOWNLOAD,
+            )
+            if result.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
+                detail = (result.stderr or "ffmpeg produced no audio").strip()[-500:]
+                output_path.unlink(missing_ok=True)
+                raise RuntimeError(f"Monochrome: CENC audio decryption failed: {detail}")
+        finally:
+            download_path.unlink(missing_ok=True)
 
 
 def get_monochrome_preview_url(source_url: str, artist_hint: str = "",

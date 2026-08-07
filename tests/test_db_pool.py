@@ -72,6 +72,120 @@ def test_a_fully_loaned_out_pool_still_blocks(monkeypatch, tmp_path):
         db._return_pooled_conn(conn)
 
 
+def _seeded_table(rows=50):
+    """A table with enough rows that one fetchone() leaves the read unfinished."""
+    with db.db_conn() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, v TEXT)")
+        conn.executemany(
+            "INSERT INTO t (v) VALUES (?)", [(f"row{i}",) for i in range(rows)]
+        )
+        conn.commit()
+
+
+def test_a_half_read_select_does_not_poison_the_next_borrower(monkeypatch, tmp_path):
+    """The bug behind the bulk-import crash: an abandoned SELECT held a WAL snapshot
+    open on the pooled connection, so the next write on it failed instantly with
+    "database is locked" the moment anybody else committed. busy_timeout never
+    helped, because there was nothing to queue behind."""
+    _fresh_pool(monkeypatch, tmp_path, size=2)
+    _seeded_table()
+
+    with db.db_conn() as conn:
+        conn.execute("SELECT * FROM t").fetchone()  # rest of the rows left unread
+
+    # Somebody else commits, staling any snapshot the pooled connection kept.
+    other = db.get_db()
+    other.execute("INSERT INTO t (v) VALUES ('elsewhere')")
+    other.commit()
+    other.reset_lease_state()
+
+    with db.db_conn() as conn:  # LIFO, so this is the very connection from above
+        conn.execute("INSERT INTO t (v) VALUES ('after')")
+        conn.commit()
+
+
+def test_a_stale_snapshot_mid_lease_is_cleared_and_the_write_retried(monkeypatch, tmp_path):
+    """Same poison, but self-inflicted inside one lease: read, someone commits, write."""
+    _fresh_pool(monkeypatch, tmp_path, size=2)
+    _seeded_table()
+    other = db.get_db()
+
+    with db.db_conn() as conn:
+        conn.execute("SELECT * FROM t").fetchone()
+        other.execute("INSERT INTO t (v) VALUES ('elsewhere')")
+        other.commit()
+        other.reset_lease_state()
+        conn.execute("INSERT INTO t (v) VALUES ('same lease')")
+        conn.commit()
+
+
+def test_a_write_waits_for_a_busy_writer_rather_than_erroring(monkeypatch, tmp_path):
+    """Honest contention should queue, which is what busy_timeout is for."""
+    _fresh_pool(monkeypatch, tmp_path, size=2)
+    _seeded_table()
+
+    holder = db.get_db()
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("INSERT INTO t (v) VALUES ('holder')")
+
+    def release():
+        time.sleep(0.5)
+        holder.commit()
+        holder.reset_lease_state()
+
+    threading.Thread(target=release, daemon=True).start()
+    start = time.perf_counter()
+    with db.db_conn() as conn:
+        conn.execute("INSERT INTO t (v) VALUES ('patient')")
+        conn.commit()
+    assert time.perf_counter() - start >= 0.4  # it really did wait its turn
+
+
+def test_uncommitted_writes_die_with_the_lease(monkeypatch, tmp_path):
+    """Cleaning up cursors must not accidentally commit what nobody asked to keep."""
+    _fresh_pool(monkeypatch, tmp_path, size=2)
+    _seeded_table()
+
+    with db.db_conn() as conn:
+        conn.execute("INSERT INTO t (v) VALUES ('forgotten')")  # no commit
+
+    with db.db_conn() as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM t WHERE v = 'forgotten'"
+        ).fetchall()
+    assert rows[0][0] == 0
+
+
+def test_sloppy_readers_and_writers_can_share_the_pool(monkeypatch, tmp_path):
+    """Bulk import plus download threads, in miniature: every write must land."""
+    _fresh_pool(monkeypatch, tmp_path, size=4)
+    _seeded_table()
+    errors = []
+
+    def worker(n):
+        for i in range(40):
+            try:
+                with db.db_conn() as conn:
+                    conn.execute("SELECT * FROM t").fetchone()  # deliberately sloppy
+                    conn.execute("INSERT INTO t (v) VALUES (?)", (f"t{n}-{i}",))
+                    conn.commit()
+            except Exception as e:
+                errors.append(f"thread {n} op {i}: {e}")
+
+    threads = [threading.Thread(target=worker, args=(n,), daemon=True) for n in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert not errors
+    with db.db_conn() as conn:
+        written = conn.execute(
+            "SELECT COUNT(*) FROM t WHERE v LIKE 't%-%'"
+        ).fetchall()[0][0]
+    assert written == 6 * 40
+
+
 def test_concurrent_cold_start_never_exceeds_the_ceiling(monkeypatch, tmp_path):
     """Twelve threads off the blocks at once must not create thirteen connections."""
     _fresh_pool(monkeypatch, tmp_path, size=4)

@@ -16,6 +16,8 @@ _YT_PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOi
 WATCHED_PL_KEYS = [
     "id", "url", "name", "platform", "refresh_interval_hours",
     "last_checked", "last_track_count",
+    # Membership accounting: what the playlist holds now, and what has left it.
+    "tracked_count", "downloaded_count", "departed_count",
 ]
 
 
@@ -32,6 +34,15 @@ def test_list_watched_playlists_shape(api, base_url):
     for pl in playlists:
         for key in WATCHED_PL_KEYS:
             assert key in pl, f"watched playlist missing key: {key}"
+
+
+def test_downloaded_never_exceeds_the_current_track_count(api, base_url):
+    """The shape of Tristan's bug: "158 downloaded" against a 150-track playlist."""
+    playlists = api.get(f"{base_url}/api/watched-playlists", timeout=10).json()["playlists"]
+    for pl in playlists:
+        assert pl["downloaded_count"] <= pl["tracked_count"], (
+            f"{pl['name']}: {pl['downloaded_count']} downloaded of {pl['tracked_count']} tracked"
+        )
 
 
 def _forget_playlist(api, base_url, url):

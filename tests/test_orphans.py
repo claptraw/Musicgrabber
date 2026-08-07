@@ -67,7 +67,8 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(wp, "db_conn", fake_db_conn)
     monkeypatch.setattr(wp, "get_playlists_dir", lambda user_id=None: playlists_dir)
 
-    playlist = {"id": "pl1", "name": "Chill", "user_id": None, "use_playlists_dir": 1, "custom_subdir": ""}
+    playlist = {"id": "pl1", "name": "Chill", "user_id": None, "use_playlists_dir": 1,
+                "custom_subdir": "", "sync_mode": "mirror"}
     return playlists_dir, folder, claimed, orphan, playlist
 
 
@@ -78,6 +79,20 @@ def test_scan_flags_only_unclaimed_audio(tmp_path, monkeypatch):
     assert str(orphan) in files
     assert str(claimed) not in files
     assert all(not f.endswith(".m3u") for f in files)
+
+
+def test_append_mode_keeps_claiming_departed_tracks(tmp_path, monkeypatch):
+    """Departures are now recorded in both modes, but append keeps its history.
+
+    Only mirror mode stops listing a track that left the upstream playlist, so an
+    append playlist's old files must never be offered up for rehoming.
+    """
+    _, _, claimed, orphan, playlist = _setup(tmp_path, monkeypatch)
+    files = [o["file"] for o in wp.find_orphaned_playlist_files([{**playlist, "sync_mode": "append"}])]
+    assert files == []
+    # ...and the same playlist in mirror mode still disowns it
+    files = [o["file"] for o in wp.find_orphaned_playlist_files([{**playlist, "sync_mode": "mirror"}])]
+    assert str(orphan) in files
 
 
 def test_scan_honours_resolved_path_claims(tmp_path, monkeypatch):
@@ -232,7 +247,10 @@ def test_reconcile_append_history_heals_only_inactive_historical_rows(monkeypatc
         "still-downloading": {
             "downloaded_at": None, "removed_at": None, "job_status": "downloading",
         },
-        "mirror-removed": {
+        # Departures are recorded in both modes now, and this function only ever
+        # runs for append playlists, so a departed-but-never-downloaded row is
+        # precisely the history it exists to heal.
+        "departed-history": {
             "downloaded_at": None, "removed_at": "2026-01-01", "job_status": None,
         },
         "recently-checked": {
@@ -268,5 +286,5 @@ def test_reconcile_append_history_heals_only_inactive_historical_rows(monkeypatc
     )
 
     assert count == 0
-    assert resolved == ["historical-missing"]
-    assert [params[1] for _, params in conn.calls] == ["historical-missing"]
+    assert sorted(resolved) == ["departed-history", "historical-missing"]
+    assert sorted(params[1] for _, params in conn.calls) == ["departed-history", "historical-missing"]

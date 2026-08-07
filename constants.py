@@ -103,6 +103,15 @@ MONOCHROME_HIFI_SEARCH_BUDGET = float(os.getenv("MONOCHROME_HIFI_SEARCH_BUDGET",
 TIMEOUT_MONOCHROME_DOWNLOAD = int(os.getenv("TIMEOUT_MONOCHROME_DOWNLOAD", "300"))  # Qobuz FLAC CDN download (FLACs are big)
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
+
+# SQLite locking. busy_timeout is how long sqlite itself will queue behind
+# another writer before giving up; the retry settings are our own second chance
+# on top of that, for the cases sqlite refuses to wait for at all (a stale WAL
+# snapshot fails instantly, no queueing involved).
+DB_BUSY_TIMEOUT_MS = int(os.getenv("DB_BUSY_TIMEOUT_MS", "10000"))
+DB_LOCK_RETRY_ATTEMPTS = 4       # Total tries per statement, including the first
+DB_LOCK_RETRY_DELAY = 0.2        # First backoff pause in seconds, doubling thereafter
+DB_LOCK_RETRY_MAX_DELAY = 1.5    # Ceiling for that doubling, so we never nap for ages
 LIBRARY_RECONCILE_INTERVAL = int(os.getenv("LIBRARY_RECONCILE_INTERVAL", "1800"))  # Reconcile deleted/renamed files every 30 minutes
 
 # Bulk import settings
@@ -332,6 +341,16 @@ MONOCHROME_QOBUZ_PROXY_URL = os.getenv(
 # before declaring the source dead and letting the fallback machinery take over.
 MONOCHROME_PROXY_RETRY_ROUNDS = int(os.getenv("MONOCHROME_PROXY_RETRY_ROUNDS", "5"))
 MONOCHROME_PROXY_RETRY_WAIT = float(os.getenv("MONOCHROME_PROXY_RETRY_WAIT", "3"))
+
+# Current Monochrome playback is protected by a browser Turnstile exchange. A
+# short-lived JWT obtained by the real web app can be presented to the unified
+# playback API; SeleniumBase supplies the normal browser session only for that
+# exchange, while the audio itself still travels through httpx.
+MONOCHROME_BROWSER_FALLBACK_ENABLED = os.getenv(
+    "MONOCHROME_BROWSER_FALLBACK_ENABLED", "true"
+).lower() == "true"
+MONOCHROME_WEB_URL = os.getenv("MONOCHROME_WEB_URL", "https://monochrome.tf")
+MONOCHROME_BROWSER_AUTH_TIMEOUT = int(os.getenv("MONOCHROME_BROWSER_AUTH_TIMEOUT", "75"))
 
 # Deezer public API: no key, no auth, no CAPTCHA, and remarkably typo-tolerant.
 # Used as the primary ISRC oracle for Monochrome search, and to rescue tracks
