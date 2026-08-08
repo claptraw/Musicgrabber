@@ -381,21 +381,21 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                     # these results a source-trust lift after title/artist
                     # relevance, so good matches beat lossy web sources without
                     # letting unrelated files win just because they are FLAC.
-                    adjusted_score += SLSKD_SOURCE_TRUST_BONUS
+                    relevance_score += SLSKD_SOURCE_TRUST_BONUS
                     score_breakdown.append(f"soulseek_trust=+{SLSKD_SOURCE_TRUST_BONUS}")
                     quality_upper = quality_label.upper()
                     if "FLAC" in quality_upper or "WAV" in quality_upper:
-                        adjusted_score += SLSKD_LOSSLESS_BONUS
+                        relevance_score += SLSKD_LOSSLESS_BONUS
                         score_breakdown.append(f"lossless=+{SLSKD_LOSSLESS_BONUS}")
                     if bit_depth := file_info.get("bitDepth", 0):
                         if isinstance(bit_depth, int) and bit_depth >= 24:
-                            adjusted_score += SLSKD_HIRES_BONUS
+                            relevance_score += SLSKD_HIRES_BONUS
                             score_breakdown.append(f"hires=+{SLSKD_HIRES_BONUS}")
                     if has_free_slot:
-                        adjusted_score += 10
+                        relevance_score += 10
                         score_breakdown.append("free_slot=+10")
                     if upload_speed > 1000000:  # > 1MB/s
-                        adjusted_score += 5
+                        relevance_score += 5
                         score_breakdown.append("fast_uploader=+5")
 
                     results.append({

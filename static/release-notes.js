@@ -56,6 +56,14 @@ const RELEASE_NOTES = {
                 ]
             },
             {
+                heading: "Soulseek results show up again",
+                items: [
+                    "Reported by Syrius-consulting: slskd ran the search, found hundreds of files, reported it complete, and MusicGrabber showed nothing at all.",
+                    "A rename in v3.1.0 was only half applied, so the moment a file was good enough to be worth having, the code that scores it fell over and took the whole batch with it. Searches that matched nothing well never hit that line, which is how it went unnoticed for a release.",
+                    "Fixed, and the quality bonuses now actually count, so lossless and hi-res shares outrank a 320 of the same track. Anyone on v3.0.3 or earlier was never affected.",
+                ]
+            },
+            {
                 heading: "Searches wait their turn instead of giving up",
                 items: [
                     "Each source allows one search at a time. That queue existed but was never used: anything arriving while a source was busy got an instant refusal, which to a bulk import looks exactly like \"nobody has this track\", and the track was then written off for good.",
