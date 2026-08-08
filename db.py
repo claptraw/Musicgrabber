@@ -220,7 +220,7 @@ def init_db():
             slskd_username TEXT,
             slskd_filename TEXT,
             slskd_size INTEGER,
-            convert_to_flac INTEGER DEFAULT 0,
+            convert_audio INTEGER DEFAULT 0,
             source_url TEXT,
             selected_duration_secs REAL,
             file_deleted INTEGER DEFAULT 0,
@@ -257,10 +257,13 @@ def init_db():
             conn.execute("ALTER TABLE jobs ADD COLUMN slskd_size INTEGER")
         except sqlite3.OperationalError:
             pass
-        try:
-            conn.execute("ALTER TABLE jobs ADD COLUMN convert_to_flac INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
+        # Renamed from convert_to_flac in v4.0.0. A DB still carrying the old name
+        # is left well alone here; _rename_conversion_columns() below renames it so
+        # the values survive. Adding convert_audio now would leave the old column
+        # sulking in the corner with everyone's actual settings inside it.
+        _job_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+        if not {"convert_audio", "convert_to_flac"} & _job_cols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN convert_audio INTEGER DEFAULT 0")
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN source_url TEXT")
         except sqlite3.OperationalError:
@@ -335,7 +338,7 @@ def init_db():
             skipped INTEGER DEFAULT 0,
             create_playlist INTEGER DEFAULT 0,
             playlist_name TEXT,
-            convert_to_flac INTEGER DEFAULT 0,
+            convert_audio INTEGER DEFAULT 0,
             watch_playlist_id TEXT,
             use_playlists_dir INTEGER DEFAULT 0,
             watch_artist_id TEXT,
@@ -410,7 +413,7 @@ def init_db():
             last_checked TIMESTAMP,
             last_track_count INTEGER DEFAULT 0,
             enabled INTEGER DEFAULT 1,
-            convert_to_flac INTEGER DEFAULT 0,
+            convert_audio INTEGER DEFAULT 0,
             make_m3u INTEGER DEFAULT 0,
             use_playlists_dir INTEGER DEFAULT 0,
             sync_mode TEXT DEFAULT 'append',
@@ -735,7 +738,7 @@ def init_db():
             last_checked TIMESTAMP,
             last_track_count INTEGER DEFAULT 0,
             enabled INTEGER DEFAULT 1,
-            convert_to_flac INTEGER DEFAULT 0,
+            convert_audio INTEGER DEFAULT 0,
             refresh_state TEXT DEFAULT 'idle',
             refresh_stage TEXT,
             refresh_started_at TIMESTAMP,
@@ -1012,6 +1015,33 @@ def init_db():
             "ON album_track_locks (release_mbid, track_title)"
         )
 
+        # --- convert_to_flac → convert_audio (v4.0.0) ---
+        # The flag never meant "make me a FLAC"; it means "convert to whatever
+        # audio_format says", which for most of v3 quietly meant Opus. The column
+        # now says what it does.
+        #
+        # This deliberately runs BEFORE the numbered migrations rather than as a
+        # v13 block after them. The v1 migration rebuilds watched_playlists and
+        # watched_artists by listing their columns by name, and it still runs on a
+        # brand-new DB (db_version starts at 0), so it has to find the new name
+        # already in place. No version stamp is needed: the PRAGMA check below is
+        # its own idempotence, and it is a no-op on every DB created since.
+        for _conv_table in ("jobs", "bulk_imports", "watched_playlists", "watched_artists"):
+            _conv_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({_conv_table})")}
+            if "convert_audio" not in _conv_cols and "convert_to_flac" in _conv_cols:
+                conn.execute(f"ALTER TABLE {_conv_table} RENAME COLUMN convert_to_flac TO convert_audio")
+                print(f"DB: renamed {_conv_table}.convert_to_flac → {_conv_table}.convert_audio")
+
+        # The stored setting gets the same treatment. If a row somehow already
+        # exists under the new key it stays the winner and the old one is binned,
+        # rather than two rows arguing about it forever.
+        conn.execute("""
+            UPDATE settings SET key = 'default_convert_audio'
+            WHERE key = 'default_convert_to_flac'
+              AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'default_convert_audio')
+        """)
+        conn.execute("DELETE FROM settings WHERE key = 'default_convert_to_flac'")
+
         # --- DB version tracking ---
         # Version is stored in settings as 'db_version' (integer string).
         # Increment when table recreations or other irreversible migrations run.
@@ -1036,7 +1066,7 @@ def init_db():
                 last_checked TIMESTAMP,
                 last_track_count INTEGER DEFAULT 0,
                 enabled INTEGER DEFAULT 1,
-                convert_to_flac INTEGER DEFAULT 0,
+                convert_audio INTEGER DEFAULT 0,
                 make_m3u INTEGER DEFAULT 0,
                 use_playlists_dir INTEGER DEFAULT 0,
                 sync_mode TEXT DEFAULT 'append',
@@ -1062,7 +1092,7 @@ def init_db():
                 conn.execute("""
                 INSERT OR IGNORE INTO watched_playlists_new
                 SELECT id, url, name, platform, refresh_interval_hours, last_checked,
-                       last_track_count, enabled, convert_to_flac,
+                       last_track_count, enabled, convert_audio,
                        COALESCE(make_m3u, 0),
                        COALESCE(use_playlists_dir, 0),
                        COALESCE(sync_mode, 'append'),
@@ -1081,7 +1111,7 @@ def init_db():
                 conn.execute("""
                 INSERT OR IGNORE INTO watched_playlists_new
                 SELECT id, url, name, platform, refresh_interval_hours, last_checked,
-                       last_track_count, enabled, convert_to_flac,
+                       last_track_count, enabled, convert_audio,
                        COALESCE(make_m3u, 0),
                        COALESCE(use_playlists_dir, 0),
                        COALESCE(sync_mode, 'append'),
@@ -1109,7 +1139,7 @@ def init_db():
                 last_checked TIMESTAMP,
                 last_track_count INTEGER DEFAULT 0,
                 enabled INTEGER DEFAULT 1,
-                convert_to_flac INTEGER DEFAULT 0,
+                convert_audio INTEGER DEFAULT 0,
                 refresh_state TEXT DEFAULT 'idle',
                 refresh_stage TEXT,
                 refresh_started_at TIMESTAMP,
@@ -1124,7 +1154,7 @@ def init_db():
             conn.execute("""
             INSERT OR IGNORE INTO watched_artists_new
             SELECT id, name, mbid, from_date, refresh_interval_hours, last_checked,
-                   last_track_count, enabled, convert_to_flac,
+                   last_track_count, enabled, convert_audio,
                    COALESCE(refresh_state, 'idle'),
                    refresh_stage, refresh_started_at, refresh_completed_at,
                    refresh_error, refresh_import_id,

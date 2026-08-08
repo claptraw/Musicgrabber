@@ -60,7 +60,15 @@ const RELEASE_NOTES = {
                 items: [
                     "A Paramore track was arriving tagged as being by \"2jqll9htuy62asp1wu\", and filed in the library under that name too.",
                     "The artist was sitting in the file's own path the whole time; the search results simply dropped it before reaching the browser, which then fell back to the name of whoever was sharing the file. Results now carry both, so you can see who you are downloading from without them being credited as the artist.",
+                    "Paths are only guesses too: real shares put folders such as Music (FLAC), complete, Musique, and single-letter buckets before the artist. Downloads now wait in private staging while MusicGrabber reads the file's own ARTIST tag, and only then are checked for duplicates, looked up, tagged, and filed. Untagged files retain the path fallback.",
                     "Retrying an older, wrongly-tagged job will not bring it back either; an artist that is just a Soulseek username is now refused outright.",
+                ]
+            },
+            {
+                heading: "Convert to now names the format it actually uses",
+                items: [
+                    "The old switch was called convert_to_flac even when the selected target was Opus, MP3, or ALAC. It is now convert_audio from the browser all the way down to the database columns, which are renamed on first boot with your settings intact. The old name is still accepted from API clients, still returned in responses, and DEFAULT_CONVERT_TO_FLAC still works in your compose file.",
+                    "Settings now warns when conversion would turn a lossless source into Opus, MP3, or lossy AAC-in-M4A. Keep source remains the shipped default, and is the choice that leaves a genuine FLAC exactly as it arrived.",
                 ]
             },
             {

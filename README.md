@@ -79,7 +79,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 MusicGrabber keeps the provider's source format by default. This avoids unnecessary re-encoding and prevents a lossy web download from turning up in a FLAC overcoat pretending it has always summered in the south of France.
 
-If you prefer a uniform library, choose **Convert to** and select FLAC, ALAC, Opus, or MP3. FLAC and ALAC preserve genuinely lossless input, but converting YouTube, SoundCloud, MP3, AAC, or Opus audio to a lossless container cannot restore information that has already gone missing. Monochrome and Soulseek may provide native lossless files; MusicGrabber records the known source and stored formats separately so the distinction survives the trip into your library.
+If you prefer a uniform library, choose **Convert to** and select FLAC, ALAC, Opus, or MP3. Opus, MP3, and the bitrate-limited AAC-in-M4A choices are lossy; when one is selected the Settings screen warns that converting a lossless source will permanently discard quality. FLAC and true ALAC preserve genuinely lossless input, but converting YouTube, SoundCloud, MP3, AAC, or Opus audio to a lossless container cannot restore information that has already gone missing. Monochrome and Soulseek may provide native lossless files; MusicGrabber records the known source and stored formats separately so the distinction survives the trip into your library.
 
 ## Audio Provenance Audit
 
@@ -332,7 +332,7 @@ Settings are stored in the database and persist across container restarts.
 | `ENABLE_DEEZER_METADATA` | `true` | Fill album details from Deezer when MusicBrainz has no suitable release metadata |
 | `ENABLE_LYRICS` | `true` | Enable automatic lyrics fetching from LRClib |
 | `ACOUSTID_API_KEY` | *(shared built-in)* | AcoustID API key for audio fingerprinting. A shared key is built in but **may hit rate limits**. Register a free key at [acoustid.org](https://acoustid.org/login) and set it here (or via Settings tab) to avoid sharing quota |
-| `DEFAULT_CONVERT_TO_FLAC` | `false` | Keep the provider's source format by default. Set to `true` to enable conversion |
+| `DEFAULT_CONVERT_AUDIO` | `false` | Keep the provider's source format by default. Set to `true` to enable conversion to `AUDIO_FORMAT`. Renamed in v4.0.0; the old `DEFAULT_CONVERT_TO_FLAC` still works and never forced FLAC, which is exactly why it was renamed |
 | `AUDIO_FORMAT` | `opus` | Output format when conversion is enabled: `flac`, `alac`, `opus`, or `mp3` |
 | `MP3_BITRATE` | `v2` | MP3 quality preset: `v2`, `v0`, `320k`, `256k`, `192k`, or `128k` |
 | `OPUS_BITRATE` | `256k` | Opus bitrate: `256k`, `192k`, `128k`, or `96k` |
@@ -548,7 +548,7 @@ environment:
 
 ### Soulseek Integration (Optional)
 
-MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled, search results from YouTube and Soulseek are shown together, ranked by relevance. Soulseek's declared codec and bitrate contribute to that rank and also feed the separate minimum-quality filter, so a good FLAC match still receives its due without pretending audio quality and title relevance are the same measurement. The artist inferred from the shared file path is kept separate from the Soulseek peer name: the peer remains visible as the source of the download, but does not end up credited in the tags or awarded an unexpected folder in your library.
+MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled, search results from YouTube and Soulseek are shown together, ranked by relevance. Soulseek's declared codec and bitrate contribute to that rank and also feed the separate minimum-quality filter, so a good FLAC match still receives its due without pretending audio quality and title relevance are the same measurement. The peer remains visible as the source of the download but is kept separate from the artist. A search result may initially infer an artist from the remote path; after download, MusicGrabber validates the file in private staging and prefers its embedded `ARTIST` tag before metadata lookup, tagging, duplicate detection, or choosing the library folder. Untagged files fall back to the path guess, since even a folder called `Music (FLAC)` is occasionally all the evidence the internet has volunteered.
 
 Soulseek is disabled by default. Turn it on in Settings under Search Sources, or set `SOURCE_SOULSEEK_ENABLED=true`. Entering credentials alone does not enable it.
 
@@ -1071,8 +1071,8 @@ music.yourdomain.com {
 |--------|----------|-------------|
 | `GET` | `/api/watched-artists/search` | Search MusicBrainz for an artist (`?q=Artist+Name`); returns up to 5 candidates |
 | `GET` | `/api/watched-artists` | List all watched artists with track counts |
-| `POST` | `/api/watched-artists` | Add an artist to watch (`{mbid, name, from_date, refresh_interval_hours, convert_to_flac, auto_add_albums}`) |
-| `PUT` | `/api/watched-artists/{id}` | Update artist settings (`enabled`, `refresh_interval_hours`, `convert_to_flac`, `from_date`, `auto_add_albums`) |
+| `POST` | `/api/watched-artists` | Add an artist to watch (`{mbid, name, from_date, refresh_interval_hours, convert_audio, auto_add_albums}`) |
+| `PUT` | `/api/watched-artists/{id}` | Update artist settings (`enabled`, `refresh_interval_hours`, `convert_audio`, `from_date`, `auto_add_albums`) |
 | `GET` | `/api/watched-artists/{id}/albums` | List known albums for a followed artist with status (`seen`, `queued`, `failed`) and whether each is already on disk |
 | `DELETE` | `/api/watched-artists/{id}` | Stop watching an artist (downloaded tracks kept) |
 | `POST` | `/api/watched-artists/{id}/refresh` | Manually trigger a singles check for one artist |

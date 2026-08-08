@@ -172,7 +172,7 @@ def upgrade_output_profile(user_id: str | None = None) -> dict:
     so the Watched UI reports the same settings the worker will use.
     """
     conversion_enabled = get_setting_bool(
-        "default_convert_to_flac", False, user_id=user_id
+        "default_convert_audio", False, user_id=user_id
     )
     if not conversion_enabled:
         return {
@@ -650,7 +650,7 @@ def _download_candidate_to_staging(user_id: str | None, row, staging_dir: Path) 
     source_url = row["found_source_url"]
     artist = row["artist"] or ""
     title = row["title"] or Path(row["path"]).stem
-    convert = get_setting_bool("default_convert_to_flac", False, user_id=user_id)
+    convert = get_setting_bool("default_convert_audio", False, user_id=user_id)
     job_id = str(_uuid.uuid4())[:8]
     staging_dir.mkdir(parents=True, exist_ok=True)
 
@@ -658,7 +658,7 @@ def _download_candidate_to_staging(user_id: str | None, row, staging_dir: Path) 
         conn.execute(
             """INSERT INTO jobs
                (id, video_id, title, artist, status, download_type, source,
-                slskd_username, slskd_filename, slskd_size, convert_to_flac, source_url,
+                slskd_username, slskd_filename, slskd_size, convert_audio, source_url,
                 user_id, override_dir)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (job_id, video_id, title, artist, "queued", "upgrade", source,

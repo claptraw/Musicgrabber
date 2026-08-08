@@ -878,7 +878,7 @@ def test_download_job_shape(api, base_url):
     """Every expected field should be present on a freshly queued job."""
     expected_keys = [
         "id", "video_id", "title", "artist", "status",
-        "error", "download_type", "source", "convert_to_flac",
+        "error", "download_type", "source", "convert_audio", "convert_to_flac",
     ]
     job_id, _ = _queue_download(api, base_url)
     job = api.get(f"{base_url}/api/jobs/{job_id}", timeout=10).json()

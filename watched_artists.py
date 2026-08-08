@@ -117,7 +117,7 @@ def _refresh_artist_albums(conn, artist: dict, artist_id: str, user_id: str | No
     new_count = 0
     queued_count = 0
     failed_count = 0
-    convert_to_flac = bool(artist.get("convert_to_flac", 1))
+    convert_audio = bool(artist.get("convert_audio", 1))
 
     for album in current_albums:
         release_mbid = (album.get("release_mbid") or "").strip()
@@ -131,7 +131,7 @@ def _refresh_artist_albums(conn, artist: dict, artist_id: str, user_id: str | No
         try:
             result = albums.queue_album_download(
                 artist["name"], title, release_mbid,
-                convert_to_flac=convert_to_flac, user_id=user_id,
+                convert_audio=convert_audio, user_id=user_id,
             )
             conn.execute(
                 """INSERT INTO watched_artist_albums
@@ -387,10 +387,10 @@ def refresh_watched_artist(artist_id: str) -> dict:
             import_id = None
             set_refresh_stage("queueing")
             if tracks_to_import:
-                convert_to_flac = bool(artist.get("convert_to_flac", 1))
+                convert_audio = bool(artist.get("convert_audio", 1))
                 import_id = start_bulk_import_for_tracks(
                     tracks_to_import,
-                    convert_to_flac=convert_to_flac,
+                    convert_audio=convert_audio,
                     watch_artist_id=artist_id,
                     user_id=user_id,
                 )

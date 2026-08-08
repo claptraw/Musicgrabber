@@ -155,13 +155,13 @@ def _is_peon(request: Request) -> bool:
 
 def _enforce_peon_format(request: Request, body) -> None:
     """Peons cannot toggle conversion on or off. Force their requests onto whatever
-    the admin has set globally for default_convert_to_flac. Belt to the UI's braces:
+    the admin has set globally for the default conversion mode. Belt to the UI's braces:
     the toggle is hidden, but a peon with the dev tools open could still try to send
     their own value, so we overwrite it server-side."""
     if not _is_peon(request):
         return
-    if hasattr(body, "convert_to_flac"):
-        body.convert_to_flac = get_setting_bool("default_convert_to_flac", False)
+    if hasattr(body, "convert_audio"):
+        body.convert_audio = get_setting_bool("default_convert_audio", False)
 
 
 # =============================================================================
@@ -280,9 +280,14 @@ def get_config(request: Request):
     # install with one account (the owner) stays login-free, same as no-account mode.
     users_exist = user_count >= 2
 
+    default_convert_audio = get_setting_bool("default_convert_audio", False)
     return {
         "version": VERSION,
-        "default_convert_to_flac": get_setting_bool("default_convert_to_flac", False),
+        "default_convert_audio": default_convert_audio,
+        # Compatibility for pre-v4 browsers and API clients. The stored setting and
+        # its column have both been renamed; this key is emitted purely so an older
+        # cached frontend or a third-party script does not lose its footing.
+        "default_convert_to_flac": default_convert_audio,
         "audio_format": get_setting("audio_format", "opus"),
         "playlists_subdir": get_setting("playlists_subdir", ""),
         "organise_by_artist": organise_by_artist,
@@ -1525,12 +1530,12 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
             job_id = str(uuid.uuid4())[:8]
             artist = mismatch["expected_artist"] or ""
             title = mismatch["expected_title"] or ""
-            convert_to_flac = get_setting_bool("default_convert_to_flac", False, user_id=user_id)
+            convert_audio = get_setting_bool("default_convert_audio", False, user_id=user_id)
             conn.execute(
                 """INSERT INTO jobs
-                   (id, title, artist, status, download_type, source, convert_to_flac, skip_mismatch_check, user_id)
+                   (id, title, artist, status, download_type, source, convert_audio, skip_mismatch_check, user_id)
                    VALUES (?, ?, ?, 'queued', 'single', 'youtube', ?, 1, ?)""",
-                (job_id, title, artist, int(convert_to_flac), user_id)
+                (job_id, title, artist, int(convert_audio), user_id)
             )
             # Re-link the watched playlist track to this new job so the mismatch skip works
             if mismatch["playlist_id"]:
@@ -1547,7 +1552,7 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
         conn.commit()
 
     # Re-queue the download
-    convert_to_flac = bool(job.get("convert_to_flac", 1))
+    convert_audio = bool(job.get("convert_audio", 1))
 
     # Restore watched-playlist routing so the file lands in the right folder, not Singles.
     _pl_name, _use_pl_dir = None, False
@@ -1570,7 +1575,7 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
             job["slskd_filename"],
             job.get("artist", ""),
             job.get("title", ""),
-            convert_to_flac,
+            convert_audio,
             user_id=user_id,
             override_dir=job.get("override_dir"),
             playlist_name=_pl_name,
@@ -1600,7 +1605,7 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
             process_download,
             job_id,
             new_id,
-            convert_to_flac,
+            convert_audio,
             source_url=new_source_url,
             playlist_name=_pl_name,
             use_playlists_dir=_use_pl_dir,
@@ -2079,23 +2084,23 @@ def download(body: DownloadRequest, http_request: Request):
         if body.download_type == "playlist":
             conn.execute(
                 """INSERT INTO jobs
-                   (id, video_id, title, status, download_type, playlist_name, source, convert_to_flac, source_url, search_token, selected_duration_secs, user_id,
+                   (id, video_id, title, status, download_type, playlist_name, source, convert_audio, source_url, search_token, selected_duration_secs, user_id,
                     override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    job_id, body.video_id, title, "queued", "playlist", title, "youtube", int(body.convert_to_flac), source_url, valid_search_token, None, user_id,
+                    job_id, body.video_id, title, "queued", "playlist", title, "youtube", int(body.convert_audio), source_url, valid_search_token, None, user_id,
                     None, None, None, None, None, None,
                 )
             )
         else:
             conn.execute(
                 """INSERT INTO jobs
-                   (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, slskd_size, convert_to_flac, source_url, search_token, selected_duration_secs, user_id,
+                   (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename, slskd_size, convert_audio, source_url, search_token, selected_duration_secs, user_id,
                     override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     job_id, body.video_id, title, artist or "", "queued", "single", source,
-                    body.slskd_username, body.slskd_filename, body.slskd_size, int(body.convert_to_flac), source_url, valid_search_token, selected_duration_secs, user_id,
+                    body.slskd_username, body.slskd_filename, body.slskd_size, int(body.convert_audio), source_url, valid_search_token, selected_duration_secs, user_id,
                     override_dir, album_release_mbid, album_name, album_track_title, album_track_number, album_track_total,
                 )
             )
@@ -2109,7 +2114,7 @@ def download(body: DownloadRequest, http_request: Request):
 
     # Queue the download based on source
     if body.download_type == "playlist":
-        spawn_daemon_thread(process_playlist_download, job_id, body.video_id, title, body.convert_to_flac, True,
+        spawn_daemon_thread(process_playlist_download, job_id, body.video_id, title, body.convert_audio, True,
                             user_id=user_id)
     elif source == "soulseek":
         spawn_daemon_thread(
@@ -2119,7 +2124,7 @@ def download(body: DownloadRequest, http_request: Request):
             body.slskd_filename,
             artist or "",
             title,
-            body.convert_to_flac,
+            body.convert_audio,
             user_id=user_id,
             override_dir=override_dir,
             playlist_name=body.playlist_name,
@@ -2128,7 +2133,7 @@ def download(body: DownloadRequest, http_request: Request):
         )
     elif source in URL_BASED_SOURCES:
         spawn_daemon_thread(
-            process_download, job_id, body.video_id, body.convert_to_flac,
+            process_download, job_id, body.video_id, body.convert_audio,
             source_url=source_url,
             playlist_name=body.playlist_name,
             use_playlists_dir=body.use_playlists_dir,
@@ -2138,7 +2143,7 @@ def download(body: DownloadRequest, http_request: Request):
         )
     else:
         spawn_daemon_thread(
-            process_download, job_id, body.video_id, body.convert_to_flac,
+            process_download, job_id, body.video_id, body.convert_audio,
             playlist_name=body.playlist_name,
             use_playlists_dir=body.use_playlists_dir,
             user_id=user_id,
@@ -2167,6 +2172,19 @@ def _ensure_utc_suffix(timestamp: str | None) -> str | None:
         return timestamp
     # SQLite format uses space, ISO uses T
     return timestamp.replace(' ', 'T') + 'Z'
+
+
+def _expose_conversion_intent(row: dict) -> dict:
+    """Normalise the conversion flag and keep the pre-v4 field name alongside it.
+
+    The column is honest now, so this exists only for clients written against the
+    old name. Works for jobs, watched playlists and watched artists alike; they all
+    carry the same flag under the same column.
+    """
+    convert_audio = bool(row.get("convert_audio", 0))
+    row["convert_audio"] = convert_audio
+    row["convert_to_flac"] = convert_audio
+    return row
 
 
 @app.get("/api/jobs")
@@ -2200,7 +2218,7 @@ def get_jobs(limit: int = 20, http_request: Request = None):
         jobs = []
         stale_ids = []  # Jobs that claim file exists but it doesn't
         for row in rows:
-            job = dict(row)
+            job = _expose_conversion_intent(dict(row))
             job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
             job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
             job['progress_at'] = _ensure_utc_suffix(job.get('progress_at'))
@@ -2283,7 +2301,7 @@ def get_job(job_id: str, http_request: Request):
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    job = dict(row)
+    job = _expose_conversion_intent(dict(row))
     job['created_at'] = _ensure_utc_suffix(job.get('created_at'))
     job['completed_at'] = _ensure_utc_suffix(job.get('completed_at'))
     job['progress_at'] = _ensure_utc_suffix(job.get('progress_at'))
@@ -2429,7 +2447,7 @@ def retry_job(job_id: str, http_request: Request):
         conn.commit()
 
     # Re-queue the job based on source type
-    convert_to_flac = bool(job.get("convert_to_flac", 1))
+    convert_audio = bool(job.get("convert_audio", 1))
     source_allowlist = get_job_source_allowlist(job_id)
 
     # Restore watched-playlist routing so retried jobs land in Playlists, not Singles.
@@ -2458,7 +2476,7 @@ def retry_job(job_id: str, http_request: Request):
                 _use_pl_dir = True
 
     if job["download_type"] == "playlist":
-        spawn_daemon_thread(process_playlist_download, job_id, job["video_id"], job["playlist_name"], convert_to_flac, True,
+        spawn_daemon_thread(process_playlist_download, job_id, job["video_id"], job["playlist_name"], convert_audio, True,
                             user_id=user_id)
     elif job.get("source") == "soulseek" and job.get("slskd_username") and job.get("slskd_filename"):
         spawn_daemon_thread(
@@ -2468,7 +2486,7 @@ def retry_job(job_id: str, http_request: Request):
             job["slskd_filename"],
             job.get("artist", ""),
             job.get("title", ""),
-            convert_to_flac,
+            convert_audio,
             user_id=user_id,
             override_dir=job.get("override_dir"),
             playlist_name=_pl_name,
@@ -2502,7 +2520,7 @@ def retry_job(job_id: str, http_request: Request):
             process_download,
             job_id,
             new_id,
-            convert_to_flac,
+            convert_audio,
             source_url=new_source_url,
             playlist_name=_pl_name,
             use_playlists_dir=_use_pl_dir,
@@ -3170,10 +3188,10 @@ def bulk_import_async(body: AsyncBulkImportRequest, http_request: Request):
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO bulk_imports
-               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac, use_playlists_dir, user_id, preferred_sources, priority_source)
+               (id, status, total_tracks, create_playlist, playlist_name, convert_audio, use_playlists_dir, user_id, preferred_sources, priority_source)
                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)""",
             (import_id, len(tracks_to_import), int(body.create_playlist),
-             _playlist_name, int(body.convert_to_flac), int(body.use_playlists_dir), user_id, _preferred_sources, _priority_source)
+             _playlist_name, int(body.convert_audio), int(body.use_playlists_dir), user_id, _preferred_sources, _priority_source)
         )
 
         # Insert all tracks
@@ -3213,7 +3231,7 @@ def get_bulk_import_status(import_id: str, http_request: Request):
         if not import_row:
             raise HTTPException(status_code=404, detail="Import not found")
 
-        import_row = dict(import_row)
+        import_row = _expose_conversion_intent(dict(import_row))
 
         # Get recent track statuses for display
         cursor = conn.execute(
@@ -3290,7 +3308,7 @@ def list_bulk_imports(limit: int = 10, http_request: Request = None):
             f"SELECT * FROM bulk_imports WHERE {_scope_frag} ORDER BY created_at DESC LIMIT ?",
             (*_scope_params, limit)
         )
-        imports = [dict(row) for row in cursor.fetchall()]
+        imports = [_expose_conversion_intent(dict(row)) for row in cursor.fetchall()]
 
     return {"imports": imports}
 
@@ -3368,10 +3386,10 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                     _lb_priority = None
                 conn.execute("""
                     INSERT INTO watched_playlists
-                    (id, url, name, platform, refresh_interval_hours, last_checked, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, lb_username, custom_subdir)
+                    (id, url, name, platform, refresh_interval_hours, last_checked, convert_audio, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, lb_username, custom_subdir)
                     VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (playlist_id, lb["playlist_url"], lb["name"], "listenbrainz",
-                      refresh_hours, int(body.convert_to_flac),
+                      refresh_hours, int(body.convert_audio),
                       int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(lb["tracks"]), user_id,
                       body.preferred_sources or "all", _lb_priority, platform_id,
                       (body.custom_subdir or "").strip() or None))
@@ -3397,7 +3415,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
             if lb["tracks"]:
                 start_bulk_import_for_tracks(
                     lb["tracks"],
-                    body.convert_to_flac,
+                    body.convert_audio,
                     watch_playlist_id=playlist_id,
                     use_playlists_dir=body.use_playlists_dir,
                     user_id=user_id,
@@ -3450,10 +3468,10 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
         )
         conn.execute("""
             INSERT INTO watched_playlists
-            (id, url, name, platform, refresh_interval_hours, last_checked, convert_to_flac, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, custom_subdir)
+            (id, url, name, platform, refresh_interval_hours, last_checked, convert_audio, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, custom_subdir)
             VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (playlist_id, body.url, playlist_name, platform,
-              body.refresh_interval_hours, int(body.convert_to_flac),
+              body.refresh_interval_hours, int(body.convert_audio),
               int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(tracks), user_id,
               _new_preferred_sources,
               _new_priority,
@@ -3474,7 +3492,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
     if tracks:
         import_id = start_bulk_import_for_tracks(
             tracks,
-            body.convert_to_flac,
+            body.convert_audio,
             watch_playlist_id=playlist_id,
             use_playlists_dir=body.use_playlists_dir,
             user_id=user_id,
@@ -3528,7 +3546,7 @@ def list_watched_playlists(http_request: Request):
         """, _scope_params).fetchall()
 
     return {
-        "playlists": [dict(p) for p in playlists]
+        "playlists": [_expose_conversion_intent(dict(p)) for p in playlists]
     }
 
 
@@ -3605,7 +3623,7 @@ def get_watched_playlist(playlist_id: str, http_request: Request):
         """, (playlist_id,)).fetchall()
 
     return {
-        "playlist": dict(playlist),
+        "playlist": _expose_conversion_intent(dict(playlist)),
         "tracks": [dict(t) for t in tracks]
     }
 
@@ -3614,7 +3632,7 @@ def get_watched_playlist(playlist_id: str, http_request: Request):
 def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, http_request: Request):
     """Update watched playlist settings"""
     if _is_peon(http_request):
-        request.convert_to_flac = None  # Peons cannot change conversion setting
+        request.convert_audio = None  # Peons cannot change conversion setting
     user_id = http_request.state.user_id
     is_admin = http_request.state.is_admin
     with db_conn() as conn:
@@ -3648,9 +3666,9 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, ht
                 updates.append("pause_reason = NULL")
                 updates.append("gone_strikes = 0")
 
-        if request.convert_to_flac is not None:
-            updates.append("convert_to_flac = ?")
-            params.append(int(request.convert_to_flac))
+        if request.convert_audio is not None:
+            updates.append("convert_audio = ?")
+            params.append(int(request.convert_audio))
 
         if request.make_m3u is not None:
             updates.append("make_m3u = ?")
@@ -3839,7 +3857,7 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"SELECT id, name, convert_to_flac, use_playlists_dir, preferred_sources, priority_source, custom_subdir FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            f"SELECT id, name, convert_audio, use_playlists_dir, preferred_sources, priority_source, custom_subdir FROM watched_playlists WHERE id = ? AND {_scope_frag}",
             (playlist_id, *_scope_params)
         ).fetchone()
 
@@ -3851,7 +3869,7 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
     # M3U rebuild and watched_playlist_tracks update happen automatically on completion.
     import_id = start_bulk_import_for_tracks(
         tracks=[(request.artist, request.title)],
-        convert_to_flac=bool(playlist["convert_to_flac"]),
+        convert_audio=bool(playlist["convert_audio"]),
         watch_playlist_id=playlist_id,
         use_playlists_dir=bool(playlist["use_playlists_dir"]),
         user_id=user_id,
@@ -3938,7 +3956,7 @@ def queue_watched_playlist_track_candidate(
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"""SELECT id, name, convert_to_flac, use_playlists_dir, custom_subdir, preferred_sources
+            f"""SELECT id, name, convert_audio, use_playlists_dir, custom_subdir, preferred_sources
                 FROM watched_playlists
                 WHERE id = ? AND {_scope_frag}""",
             (playlist_id, *_scope_params)
@@ -3965,7 +3983,7 @@ def queue_watched_playlist_track_candidate(
         conn.execute(
             """INSERT INTO jobs
                (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename,
-                slskd_size, convert_to_flac, source_url, user_id)
+                slskd_size, convert_audio, source_url, user_id)
                VALUES (?, ?, ?, ?, 'queued', 'single', ?, ?, ?, ?, ?, ?, ?)""",
             (
                 job_id,
@@ -3976,7 +3994,7 @@ def queue_watched_playlist_track_candidate(
                 request.slskd_username,
                 request.slskd_filename,
                 request.slskd_size,
-                int(bool(playlist["convert_to_flac"])),
+                int(bool(playlist["convert_audio"])),
                 source_url,
                 user_id,
             ),
@@ -3987,7 +4005,7 @@ def queue_watched_playlist_track_candidate(
         )
         conn.commit()
 
-    convert_to_flac = bool(playlist["convert_to_flac"])
+    convert_audio = bool(playlist["convert_audio"])
     custom_subdir = (playlist["custom_subdir"] or "").strip() or None
     playlist_name = playlist["name"] if (playlist["use_playlists_dir"] or custom_subdir) else None
     use_playlists_dir = bool(playlist["use_playlists_dir"])
@@ -4000,7 +4018,7 @@ def queue_watched_playlist_track_candidate(
             request.slskd_filename,
             artist,
             title,
-            convert_to_flac,
+            convert_audio,
             user_id=user_id,
             playlist_name=playlist_name,
             use_playlists_dir=use_playlists_dir,
@@ -4012,7 +4030,7 @@ def queue_watched_playlist_track_candidate(
             process_download,
             job_id,
             request.video_id,
-            convert_to_flac,
+            convert_audio,
             source_url=source_url,
             playlist_name=playlist_name,
             use_playlists_dir=use_playlists_dir,
@@ -4177,11 +4195,11 @@ def add_watched_artist(body: WatchedArtistRequest, http_request: Request):
         with db_conn() as conn:
             conn.execute(
                 """INSERT INTO watched_artists
-                   (id, name, mbid, from_date, refresh_interval_hours, convert_to_flac,
+                   (id, name, mbid, from_date, refresh_interval_hours, convert_audio,
                     watch_singles, user_id)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (artist_id, body.name, body.mbid, body.from_date,
-                 body.refresh_interval_hours, int(body.convert_to_flac),
+                 body.refresh_interval_hours, int(body.convert_audio),
                  int(body.watch_singles), user_id)
             )
             conn.commit()
@@ -4251,7 +4269,7 @@ def list_watched_artists(http_request: Request):
                ORDER BY wa.name COLLATE NOCASE""",
             _scope_params
         ).fetchall()
-    return {"artists": [dict(r) for r in rows]}
+    return {"artists": [_expose_conversion_intent(dict(r)) for r in rows]}
 
 
 @app.get("/api/upgrades/candidates")
@@ -4513,7 +4531,7 @@ def export_audio_audit(
 def update_watched_artist(artist_id: str, request: WatchedArtistUpdate, http_request: Request):
     """Update a watched artist's settings."""
     if _is_peon(http_request):
-        request.convert_to_flac = None  # Peons cannot change conversion setting
+        request.convert_audio = None  # Peons cannot change conversion setting
     user_id = http_request.state.user_id
     is_admin = http_request.state.is_admin
     _scope_frag, _scope_params = _user_scope(user_id, is_admin)
@@ -4524,8 +4542,8 @@ def update_watched_artist(artist_id: str, request: WatchedArtistUpdate, http_req
         updates.append("enabled = ?"); params.append(int(request.enabled))
     if request.refresh_interval_hours is not None:
         updates.append("refresh_interval_hours = ?"); params.append(request.refresh_interval_hours)
-    if request.convert_to_flac is not None:
-        updates.append("convert_to_flac = ?"); params.append(int(request.convert_to_flac))
+    if request.convert_audio is not None:
+        updates.append("convert_audio = ?"); params.append(int(request.convert_audio))
     if request.from_date is not None:
         updates.append("from_date = ?"); params.append(request.from_date)
 
@@ -4751,14 +4769,14 @@ def retry_missing_artist_track(artist_id: str, request: RetryMissingTrackRequest
     with db_conn() as conn:
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         artist = conn.execute(
-            f"SELECT name, convert_to_flac FROM watched_artists WHERE id = ? AND {_scope_frag}",
+            f"SELECT name, convert_audio FROM watched_artists WHERE id = ? AND {_scope_frag}",
             (artist_id, *_scope_params)
         ).fetchone()
         if not artist:
             raise HTTPException(status_code=404, detail="Artist not found")
     import_id = start_bulk_import_for_tracks(
         [(request.artist, request.title)],
-        convert_to_flac=bool(artist[1]),
+        convert_audio=bool(artist[1]),
         watch_artist_id=artist_id,
         user_id=user_id,
     )
@@ -4774,7 +4792,7 @@ def retry_all_missing_artist_tracks(artist_id: str, http_request: Request):
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         artist = conn.execute(
-            f"SELECT name, convert_to_flac FROM watched_artists WHERE id = ? AND {_scope_frag}",
+            f"SELECT name, convert_audio FROM watched_artists WHERE id = ? AND {_scope_frag}",
             (artist_id, *_scope_params)
         ).fetchone()
         if not artist:
@@ -4793,7 +4811,7 @@ def retry_all_missing_artist_tracks(artist_id: str, http_request: Request):
         return {"success": True, "queued": 0, "import_id": None}
     import_id = start_bulk_import_for_tracks(
         [(t["artist"], t["title"]) for t in tracks],
-        convert_to_flac=bool(artist["convert_to_flac"]),
+        convert_audio=bool(artist["convert_audio"]),
         watch_artist_id=artist_id,
         user_id=user_id,
     )
@@ -5184,7 +5202,7 @@ def albums_download(body: AlbumDownloadRequest, http_request: Request):
             release_mbid,
             make_m3u=body.make_m3u,
             m3u_name=(body.m3u_name or "").strip(),
-            convert_to_flac=body.convert_to_flac,
+            convert_audio=body.convert_audio,
             user_id=user_id,
         )
     except AlbumTracklistUnavailable as e:

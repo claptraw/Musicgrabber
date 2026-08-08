@@ -18,6 +18,14 @@ from constants import (
 from db import db_conn
 
 
+# Settings whose environment variable has been renamed. The old spelling still
+# works so nobody's docker-compose quietly changes behaviour on upgrade; the
+# current spelling takes precedence when both are present.
+LEGACY_ENV_ALIASES = {
+    "default_convert_audio": "DEFAULT_CONVERT_TO_FLAC",
+}
+
+
 def get_setting(key: str, default: str = "", user_id: str | None = None) -> str:
     """Get a setting value.
 
@@ -32,6 +40,14 @@ def get_setting(key: str, default: str = "", user_id: str | None = None) -> str:
     env_value = os.getenv(env_key)
     if env_value is not None:
         return env_value
+
+    # Then the pre-rename name, so a compose file written for an older release
+    # keeps doing what its author intended. The current name wins if both are set.
+    legacy_env_key = LEGACY_ENV_ALIASES.get(key)
+    if legacy_env_key:
+        env_value = os.getenv(legacy_env_key)
+        if env_value is not None:
+            return env_value
 
     # Per-user setting (only for user-scoped keys when a user_id is given)
     if user_id and key in USER_SETTINGS_KEYS:
@@ -165,7 +181,7 @@ SETTINGS_SCHEMA = {
     "enable_musicbrainz": {"type": "bool", "default": True, "env": "ENABLE_MUSICBRAINZ"},
     "enable_deezer_metadata": {"type": "bool", "default": True, "env": "ENABLE_DEEZER_METADATA"},
     "enable_lyrics": {"type": "bool", "default": True, "env": "ENABLE_LYRICS"},
-    "default_convert_to_flac": {"type": "bool", "default": False, "env": "DEFAULT_CONVERT_TO_FLAC"},
+    "default_convert_audio": {"type": "bool", "default": False, "env": "DEFAULT_CONVERT_AUDIO"},
     "audio_format": {"type": "str", "default": "opus", "env": "AUDIO_FORMAT"},
     "mp3_bitrate": {"type": "str", "default": "v2", "env": "MP3_BITRATE"},
     "opus_bitrate": {"type": "str", "default": "256k", "env": "OPUS_BITRATE"},
@@ -294,7 +310,12 @@ def _is_env_override(key: str) -> bool:
     """Check if a setting is being overridden by an environment variable."""
     schema = SETTINGS_SCHEMA.get(key, {})
     env_key = schema.get("env", key.upper())
-    return os.getenv(env_key) is not None
+    if os.getenv(env_key) is not None:
+        return True
+    # A renamed setting is still locked when only the old env var is set, otherwise
+    # the UI would offer an editable field that the environment silently overrules.
+    legacy_env_key = LEGACY_ENV_ALIASES.get(key)
+    return bool(legacy_env_key and os.getenv(legacy_env_key) is not None)
 
 
 def get_singles_dir(user_id: str | None = None) -> Path:

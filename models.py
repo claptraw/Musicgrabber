@@ -4,10 +4,22 @@ MusicGrabber - Pydantic Request/Response Models
 
 import re
 from typing import Optional
-from pydantic import BaseModel, Field, field_validator
-from constants import DEFAULT_CONVERT_TO_FLAC, MAX_SEARCH_QUERY_LENGTH
+from pydantic import AliasChoices, BaseModel, Field, field_validator
+from constants import DEFAULT_CONVERT_AUDIO, MAX_SEARCH_QUERY_LENGTH
 
 _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+
+
+def _convert_audio_field(default=DEFAULT_CONVERT_AUDIO, *, prefix=""):
+    """Canonical conversion flag with the pre-v4 name as an input alias.
+
+    `prefix` covers the settings-level spelling (`default_convert_audio`), which
+    was renamed at the same time and for the same reason.
+    """
+    return Field(
+        default=default,
+        validation_alias=AliasChoices(f"{prefix}convert_audio", f"{prefix}convert_to_flac"),
+    )
 
 
 def _validate_mbid(v: str | None) -> str | None:
@@ -33,7 +45,7 @@ class DownloadRequest(BaseModel):
         default=None, gt=0, le=86400, allow_inf_nan=False,
     )
     download_type: str = "single"  # "single" or "playlist"
-    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC  # Whether to convert to FLAC or keep original format
+    convert_audio: bool = _convert_audio_field()
     # Source routing
     source: str = "youtube"  # "youtube", "soundcloud", "zvu4no", "freemp3cloud", or "soulseek"
     source_url: Optional[str] = None  # Full URL for non-YouTube sources (e.g. SoundCloud/zvu4no)
@@ -62,7 +74,7 @@ class AsyncBulkImportRequest(BaseModel):
     create_playlist: bool = False
     playlist_name: Optional[str] = None
     playlist_source_url: Optional[str] = None
-    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+    convert_audio: bool = _convert_audio_field()
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
     preferred_sources: Optional[str] = None  # Comma-separated source IDs or "all"
     priority_source: Optional[str] = None  # One source ID that gets a huge score boost during selection
@@ -70,7 +82,7 @@ class AsyncBulkImportRequest(BaseModel):
 class WatchedPlaylistRequest(BaseModel):
     url: str  # Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, etc. playlist URL
     refresh_interval_hours: float = 24
-    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+    convert_audio: bool = _convert_audio_field()
     make_m3u: bool = False
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
     sync_mode: str = "append"  # "append" = grow forever; "mirror" = track upstream removals in M3U
@@ -81,7 +93,7 @@ class WatchedPlaylistRequest(BaseModel):
 class WatchedPlaylistUpdate(BaseModel):
     refresh_interval_hours: Optional[float] = None
     enabled: Optional[bool] = None
-    convert_to_flac: Optional[bool] = None
+    convert_audio: Optional[bool] = _convert_audio_field(None)
     make_m3u: Optional[bool] = None
     use_playlists_dir: Optional[bool] = None
     sync_mode: Optional[str] = None  # "append" or "mirror"
@@ -96,7 +108,7 @@ class SettingsUpdate(BaseModel):
     enable_musicbrainz: Optional[bool] = None
     enable_deezer_metadata: Optional[bool] = None
     enable_lyrics: Optional[bool] = None
-    default_convert_to_flac: Optional[bool] = None
+    default_convert_audio: Optional[bool] = _convert_audio_field(None, prefix="default_")
     audio_format: Optional[str] = None  # "flac", "alac", "opus", or "mp3"
     mp3_bitrate: Optional[str] = None    # "v0", "v2", or "320k"/"256k"/"192k"/"128k"
     opus_bitrate: Optional[str] = None   # "320k"/"256k"/"192k"/"128k"/"96k"
@@ -259,7 +271,7 @@ class WatchedArtistRequest(BaseModel):
     name: str
     from_date: str  # YYYY-MM-DD
     refresh_interval_hours: float = 24
-    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+    convert_audio: bool = _convert_audio_field()
     auto_add_albums: bool = False  # Seeds current albums as already-seen; only later arrivals get queued
     watch_singles: bool = True  # Off for an albums-only follow, so no singles get hoovered up
     _validate_mbid = field_validator("mbid")(_validate_mbid)
@@ -267,7 +279,7 @@ class WatchedArtistRequest(BaseModel):
 class WatchedArtistUpdate(BaseModel):
     enabled: Optional[bool] = None
     refresh_interval_hours: Optional[float] = None
-    convert_to_flac: Optional[bool] = None
+    convert_audio: Optional[bool] = _convert_audio_field(None)
     from_date: Optional[str] = None
     auto_add_albums: Optional[bool] = None
     watch_singles: Optional[bool] = None
@@ -278,7 +290,7 @@ class AlbumDownloadRequest(BaseModel):
     release_mbid: str
     make_m3u: bool = False
     m3u_name: Optional[str] = None
-    convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+    convert_audio: bool = _convert_audio_field()
     # Set when the grab came from a followed artist's album list, so the album is
     # recorded as already dealt with and auto-add doesn't cheerfully queue it again.
     watch_artist_id: Optional[str] = None

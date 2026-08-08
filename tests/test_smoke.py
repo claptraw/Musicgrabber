@@ -9,9 +9,10 @@ def test_service_reachable(api, base_url):
 def test_config_shape(api, base_url):
     r = api.get(f"{base_url}/api/config", timeout=10)
     d = r.json()
-    for key in ("version", "audio_format", "music_dir", "auth_required", "volume_mounted"):
+    for key in ("version", "default_convert_audio", "audio_format", "music_dir", "auth_required", "volume_mounted"):
         assert key in d, f"config missing key: {key}"
     assert isinstance(d["version"], str) and d["version"]
+    assert d["default_convert_audio"] == d["default_convert_to_flac"]
     assert d["volume_mounted"] is True, "volume not mounted - is Docker running correctly?"
 
 

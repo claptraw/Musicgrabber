@@ -94,42 +94,42 @@ def _patch_settings(monkeypatch, values):
 
 
 def test_target_tier_conversion_uses_selected_format(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": True,
+    _patch_settings(monkeypatch, {"default_convert_audio": True,
                                   "audio_format": "opus", "opus_bitrate": "256k"})
     assert target_tier() == TIER_LOSSY_256
 
 
 def test_target_tier_flac_format_is_lossless(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": False, "audio_format": "flac"})
+    _patch_settings(monkeypatch, {"default_convert_audio": False, "audio_format": "flac"})
     assert target_tier() == TIER_LOSSLESS
 
 
 def test_target_tier_alac_is_lossless(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": False, "audio_format": "alac",
+    _patch_settings(monkeypatch, {"default_convert_audio": False, "audio_format": "alac",
                                   "alac_bitrate": "lossless"})
     assert target_tier() == TIER_LOSSLESS
 
 
 def test_target_tier_mp3_320(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": False, "audio_format": "mp3",
+    _patch_settings(monkeypatch, {"default_convert_audio": False, "audio_format": "mp3",
                                   "mp3_bitrate": "320"})
     assert target_tier() == TIER_LOSSY_320
 
 
 def test_target_tier_mp3_v2_default(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": False, "audio_format": "mp3",
+    _patch_settings(monkeypatch, {"default_convert_audio": False, "audio_format": "mp3",
                                   "mp3_bitrate": "v2"})
     assert target_tier() == TIER_LOSSY_192
 
 
 def test_target_tier_opus_320(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": False, "audio_format": "opus",
+    _patch_settings(monkeypatch, {"default_convert_audio": False, "audio_format": "opus",
                                   "opus_bitrate": "320k"})
     assert target_tier() == TIER_LOSSY_320
 
 
 def test_upgrade_output_profile_makes_lossy_conversion_explicit(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": True,
+    _patch_settings(monkeypatch, {"default_convert_audio": True,
                                   "audio_format": "opus", "opus_bitrate": "256k"})
     assert upgrade_output_profile() == {
         "upgrade_conversion_enabled": True,
@@ -139,19 +139,19 @@ def test_upgrade_output_profile_makes_lossy_conversion_explicit(monkeypatch):
 
 
 def test_upgrade_output_profile_describes_mp3_vbr(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": True,
+    _patch_settings(monkeypatch, {"default_convert_audio": True,
                                   "audio_format": "mp3", "mp3_bitrate": "v2"})
     assert upgrade_output_profile()["upgrade_output_label"] == "MP3 V2 (~190 kbps)"
 
 
 def test_upgrade_output_profile_distinguishes_lossy_aac_from_alac(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": True,
+    _patch_settings(monkeypatch, {"default_convert_audio": True,
                                   "audio_format": "alac", "alac_bitrate": "192k"})
     assert upgrade_output_profile()["upgrade_output_label"] == "AAC 192 kbps (.m4a)"
 
 
 def test_upgrade_output_profile_says_when_conversion_is_off(monkeypatch):
-    _patch_settings(monkeypatch, {"default_convert_to_flac": False,
+    _patch_settings(monkeypatch, {"default_convert_audio": False,
                                   "audio_format": "opus", "opus_bitrate": "256k"})
     assert upgrade_output_profile() == {
         "upgrade_conversion_enabled": False,
@@ -162,7 +162,7 @@ def test_upgrade_output_profile_says_when_conversion_is_off(monkeypatch):
 
 def test_below_target_flagging(monkeypatch):
     # Lossless target: a 128 MP3 is below, a FLAC is not.
-    _patch_settings(monkeypatch, {"default_convert_to_flac": True, "audio_format": "flac"})
+    _patch_settings(monkeypatch, {"default_convert_audio": True, "audio_format": "flac"})
     tgt = target_tier()
     assert tier_of("mp3", 128) < tgt
     assert tier_of("flac", 0) >= tgt

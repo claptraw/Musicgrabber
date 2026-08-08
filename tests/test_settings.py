@@ -15,7 +15,7 @@ EXPECTED_KEYS = [
     "music_dir",
     "enable_musicbrainz",
     "enable_lyrics",
-    "default_convert_to_flac",
+    "default_convert_audio",
     "audio_format",
     "min_audio_bitrate",
     "singles_subdir",
@@ -51,15 +51,36 @@ def test_settings_audio_format_is_valid(api, base_url):
 
 
 def test_fresh_install_keeps_source_format_by_default():
-    assert SETTINGS_SCHEMA["default_convert_to_flac"]["default"] is False
+    assert SETTINGS_SCHEMA["default_convert_audio"]["default"] is False
 
 
 def test_fresh_install_enables_monochrome_browser_fallback():
     assert SETTINGS_SCHEMA["monochrome_browser_fallback_enabled"]["default"] is True
 
 
+def _migrate_old_db(old_db, monkeypatch):
+    """Run init_db against a throwaway database on an isolated pool."""
+    migration_pool = queue.LifoQueue(maxsize=db._DB_POOL_SIZE)
+    monkeypatch.setattr(db, "_db_pool", migration_pool)
+    monkeypatch.setattr(db, "DB_PATH", str(old_db))
+    monkeypatch.delenv("DEFAULT_CONVERT_TO_FLAC", raising=False)
+    monkeypatch.delenv("DEFAULT_CONVERT_AUDIO", raising=False)
+    migration_pool.put(db.get_db())
+    return migration_pool
+
+
+def _drain(pool):
+    while not pool.empty():
+        pool.get_nowait().close()
+
+
 def test_existing_conversion_preference_survives_db_migrations(tmp_path, monkeypatch):
-    """Changing the fresh-install default must not rewrite an existing choice."""
+    """Changing the fresh-install default must not rewrite an existing choice.
+
+    The pre-upgrade row is written under the old key on purpose: v4.0.0 renames it
+    to default_convert_audio, and a rename that loses the value is just a slower
+    way of resetting everyone's settings.
+    """
     old_db = tmp_path / "pre-upgrade.db"
     with sqlite3.connect(old_db) as conn:
         conn.execute("""
@@ -79,18 +100,102 @@ def test_existing_conversion_preference_survives_db_migrations(tmp_path, monkeyp
 
     # Isolate init_db's connection pool so this temporary database cannot leak
     # into the rest of the suite.
-    migration_pool = queue.LifoQueue(maxsize=db._DB_POOL_SIZE)
-    monkeypatch.setattr(db, "_db_pool", migration_pool)
-    monkeypatch.setattr(db, "DB_PATH", str(old_db))
-    monkeypatch.delenv("DEFAULT_CONVERT_TO_FLAC", raising=False)
-    migration_pool.put(db.get_db())
+    migration_pool = _migrate_old_db(old_db, monkeypatch)
 
     try:
         db.init_db()
-        assert get_setting_bool("default_convert_to_flac", False) is True
+        assert get_setting_bool("default_convert_audio", False) is True
+        with db.db_conn() as conn:
+            leftover = conn.execute(
+                "SELECT COUNT(*) FROM settings WHERE key = 'default_convert_to_flac'"
+            ).fetchone()[0]
+        assert leftover == 0, "the old settings key should not linger after the rename"
     finally:
-        while not migration_pool.empty():
-            migration_pool.get_nowait().close()
+        _drain(migration_pool)
+
+
+def test_per_row_conversion_flags_survive_the_column_rename(tmp_path, monkeypatch):
+    """The four tables carrying the flag must keep their values, not just their shape."""
+    old_db = tmp_path / "pre-upgrade-columns.db"
+    with sqlite3.connect(old_db) as conn:
+        conn.execute("""
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # db_version 12 means every numbered migration is already behind us, which
+        # is the state an actual v3 install upgrades from.
+        conn.execute("INSERT INTO settings (key, value) VALUES ('db_version', '12')")
+        conn.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY, convert_to_flac INTEGER DEFAULT 0)")
+        conn.execute("INSERT INTO jobs (id, convert_to_flac) VALUES ('job-yes', 1)")
+        conn.execute("INSERT INTO jobs (id, convert_to_flac) VALUES ('job-no', 0)")
+        conn.execute("""
+            CREATE TABLE watched_artists (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, mbid TEXT NOT NULL,
+                from_date TEXT NOT NULL, convert_to_flac INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute(
+            "INSERT INTO watched_artists (id, name, mbid, from_date, convert_to_flac)"
+            " VALUES ('a1', 'Paramore', 'mbid-1', '2026-01-01', 1)"
+        )
+
+    migration_pool = _migrate_old_db(old_db, monkeypatch)
+
+    try:
+        db.init_db()
+        with db.db_conn() as conn:
+            job_flags = dict(conn.execute("SELECT id, convert_audio FROM jobs").fetchall())
+            artist_flag = conn.execute(
+                "SELECT convert_audio FROM watched_artists WHERE id = 'a1'"
+            ).fetchone()[0]
+            job_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+
+        assert job_flags == {"job-yes": 1, "job-no": 0}
+        assert artist_flag == 1
+        assert "convert_to_flac" not in job_cols, "the old column should be gone, not duplicated"
+    finally:
+        _drain(migration_pool)
+
+
+def test_migration_is_idempotent_on_an_already_renamed_db(tmp_path, monkeypatch):
+    """Running init_db twice must not undo, duplicate, or blank the rename."""
+    fresh_db = tmp_path / "fresh.db"
+    migration_pool = _migrate_old_db(fresh_db, monkeypatch)
+
+    try:
+        db.init_db()
+        with db.db_conn() as conn:
+            conn.execute("INSERT INTO jobs (id, convert_audio) VALUES ('job-1', 1)")
+            conn.commit()
+
+        db.init_db()  # second boot, same database
+
+        with db.db_conn() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+            flag = conn.execute("SELECT convert_audio FROM jobs WHERE id = 'job-1'").fetchone()[0]
+
+        assert "convert_audio" in cols
+        assert "convert_to_flac" not in cols
+        assert flag == 1
+    finally:
+        _drain(migration_pool)
+
+
+def test_legacy_env_var_still_drives_the_renamed_setting(tmp_path, monkeypatch):
+    """A compose file written for v3 must not silently stop converting."""
+    from settings import _is_env_override
+
+    monkeypatch.delenv("DEFAULT_CONVERT_AUDIO", raising=False)
+    monkeypatch.setenv("DEFAULT_CONVERT_TO_FLAC", "true")
+    assert get_setting_bool("default_convert_audio", False) is True
+    assert _is_env_override("default_convert_audio") is True, "the UI field must still lock"
+
+    # And when both are set, the current name is the one in charge.
+    monkeypatch.setenv("DEFAULT_CONVERT_AUDIO", "false")
+    assert get_setting_bool("default_convert_audio", True) is False
 
 
 def test_settings_monochrome_enabled_by_default(api, base_url):

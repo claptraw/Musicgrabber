@@ -11,7 +11,7 @@ import pytest
 
 JOB_KEYS = [
     "id", "video_id", "title", "artist", "status",
-    "error", "download_type", "source", "convert_to_flac",
+    "error", "download_type", "source", "convert_audio", "convert_to_flac",
 ]
 
 # A very short, well-known track on YouTube - Aphex Twin's "Avril 14th" excerpt (official)
@@ -49,7 +49,7 @@ def test_queue_download_and_cleanup(api, base_url):
         "title": "Me at the zoo",
         "artist": "jawed",
         "source": "youtube",
-        "convert_to_flac": True,
+        "convert_audio": True,
     }
     r = api.post(f"{base_url}/api/download", json=payload, timeout=15)
     assert r.status_code == 200
@@ -63,6 +63,8 @@ def test_queue_download_and_cleanup(api, base_url):
     assert r2.status_code == 200
     d = r2.json()
     assert d.get("status") in ("queued", "downloading", "completed", "failed", "completed_with_errors")
+    assert d["convert_audio"] is True
+    assert bool(d["convert_to_flac"]) is True  # Legacy response field remains compatible.
 
     # Clean up so we don't leave test jobs in the queue
     api.delete(f"{base_url}/api/jobs/cleanup", timeout=10)

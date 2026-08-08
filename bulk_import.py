@@ -172,7 +172,7 @@ def clean_bulk_import_line(line: str) -> str:
 
 def start_bulk_import_for_tracks(
     tracks: list[tuple[str, str]],
-    convert_to_flac: bool,
+    convert_audio: bool,
     watch_playlist_id: Optional[str] = None,
     use_playlists_dir: bool = False,
     watch_artist_id: Optional[str] = None,
@@ -208,11 +208,11 @@ def start_bulk_import_for_tracks(
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO bulk_imports
-               (id, status, total_tracks, create_playlist, playlist_name, convert_to_flac,
+               (id, status, total_tracks, create_playlist, playlist_name, convert_audio,
                 watch_playlist_id, use_playlists_dir, watch_artist_id, user_id, preferred_sources,
                 override_dir, album_release_mbid, album_total_tracks, custom_subdir, priority_source)
                VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (import_id, len(tracks), int(convert_to_flac), watch_playlist_id,
+            (import_id, len(tracks), int(convert_audio), watch_playlist_id,
              int(use_playlists_dir), watch_artist_id, user_id, preferred_sources or "all",
              override_dir, album_release_mbid, album_total_tracks, custom_subdir or None,
              _priority)
@@ -292,7 +292,7 @@ def process_bulk_import_worker(import_id: str):
         if not import_row:
             return
 
-        convert_to_flac = bool(import_row["convert_to_flac"])
+        convert_audio = bool(import_row["convert_audio"])
         create_playlist = bool(import_row["create_playlist"])
         playlist_name = import_row["playlist_name"]
         watch_playlist_id = import_row["watch_playlist_id"]
@@ -527,26 +527,26 @@ def process_bulk_import_worker(import_id: str):
                         conn.execute(
                             """INSERT INTO jobs
                                (id, video_id, title, artist, status, download_type, playlist_name, source,
-                                slskd_username, slskd_filename, slskd_size, source_url, convert_to_flac, user_id)
+                                slskd_username, slskd_filename, slskd_size, source_url, convert_audio, user_id)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             (
                                 job_id, video_id, song, artist, "queued", "single",
                                 import_id if create_playlist else None,
                                 source, slskd_username, slskd_filename, slskd_size,
-                                source_url, int(convert_to_flac), user_id,
+                                source_url, int(convert_audio), user_id,
                             )
                         )
                     elif create_playlist:
                         conn.execute(
-                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name, source, source_url, convert_to_flac, user_id) "
+                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name, source, source_url, convert_audio, user_id) "
                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (job_id, video_id, song, artist, "queued", "single", import_id, source, source_url, int(convert_to_flac), user_id)
+                            (job_id, video_id, song, artist, "queued", "single", import_id, source, source_url, int(convert_audio), user_id)
                         )
                     else:
                         conn.execute(
-                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, source_url, convert_to_flac, user_id) "
+                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, source_url, convert_audio, user_id) "
                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (job_id, video_id, song, artist, "queued", "single", source, source_url, int(convert_to_flac), user_id)
+                            (job_id, video_id, song, artist, "queued", "single", source, source_url, int(convert_audio), user_id)
                         )
 
                     conn.execute(
@@ -624,7 +624,7 @@ def process_bulk_import_worker(import_id: str):
                         slskd_filename,
                         artist,
                         song,
-                        convert_to_flac,
+                        convert_audio,
                         user_id=user_id,
                         override_dir=override_dir,
                         playlist_name=_pname,
@@ -633,7 +633,7 @@ def process_bulk_import_worker(import_id: str):
                         slskd_size=slskd_size,
                     )
                 else:
-                    _get_download_pool().submit(process_download, job_id, video_id, convert_to_flac,
+                    _get_download_pool().submit(process_download, job_id, video_id, convert_audio,
                                           source_url, _pname, use_playlists_dir,
                                           user_id=user_id, override_dir=override_dir,
                                           skip_dupe_check=_skip_dupes, custom_subdir=custom_subdir,

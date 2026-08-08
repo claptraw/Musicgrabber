@@ -1503,7 +1503,7 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                 set_refresh_stage("queueing")
                 import_id = start_bulk_import_for_tracks(
                     tracks_to_import,
-                    bool(playlist["convert_to_flac"]),
+                    bool(playlist["convert_audio"]),
                     watch_playlist_id=playlist_id,
                     use_playlists_dir=use_playlists_dir,
                     user_id=user_id,

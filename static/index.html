@@ -118,8 +118,9 @@
             <div class="header-controls">
                 <label class="header-format-label peon-hide" title="Choose whether downloads keep their source format or are converted to the format selected in Settings.">
                     <span id="headerFormatLabel">Keep source</span>
-                    <div class="toggle-switch" id="flacToggle">
-                        <input type="checkbox" id="convertToFlac">
+                    <span id="headerLossyWarning" class="header-lossy-warning" style="display:none;"><i class="fa-solid fa-triangle-exclamation"></i> Lossy target</span>
+                    <div class="toggle-switch" id="conversionToggle">
+                        <input type="checkbox" id="convertAudio">
                         <span class="toggle-slider"></span>
                     </div>
                 </label>
@@ -393,7 +394,7 @@
                         <label class="watched-control-label" title="Convert new singles to the selected audio format">
                             <span id="artistFlacLabel">Keep source</span>
                             <div class="toggle-switch">
-                                <input type="checkbox" id="artistConvertToFlac">
+                                <input type="checkbox" id="artistConvertAudio">
                                 <span class="toggle-slider"></span>
                             </div>
                         </label>
@@ -532,7 +533,7 @@
                     <label class="watched-control-label peon-hide" title="Convert new tracks to the selected audio format">
                         <span id="watchedFormatLabel">Keep source</span>
                         <div class="toggle-switch" id="watchedFlacToggle">
-                            <input type="checkbox" id="watchedConvertToFlac">
+                            <input type="checkbox" id="watchedConvertAudio">
                             <span class="toggle-slider"></span>
                         </div>
                     </label>
@@ -871,6 +872,7 @@
                             </div>
                             <span id="alacFormatNote" style="display:none;" class="mp3-format-note">ALAC (.m4a) is lossless. Lower bitrates here actually fall back to AAC inside the same .m4a container, so anything below "Lossless" is lossy.</span>
                             <span id="mp3FormatNote" style="display:none;" class="mp3-format-note">MP3 may cause quality loss if the source is already lossy (e.g. from YouTube).</span>
+                            <span id="lossyConversionWarning" style="display:none;" class="lossy-conversion-warning"></span>
                             <div id="mp3QualityRow" style="display:none;margin-top:6px;">
                                 <span class="settings-label-sub">MP3 Quality</span>
                                 <div class="format-btn-group">
@@ -906,7 +908,7 @@
                         </div>
                         <span class="settings-hint settings-hint-full"><strong>Keep source</strong> stores the audio in the format supplied by the provider and avoids an unnecessary re-encode. <strong>Convert to</strong> re-encodes each download to your selected format.</span>
                         <span class="settings-hint settings-hint-full"><strong>Quality note:</strong> FLAC and ALAC can preserve a lossless source, but converting lossy MP3, AAC, Opus, YouTube, or SoundCloud audio to them cannot restore lost quality.</span>
-                        <input type="checkbox" id="settingDefaultFlac" style="display:none;">
+                        <input type="checkbox" id="settingDefaultConvertAudio" style="display:none;">
                         <input type="text" id="settingAudioFormat" value="opus" style="display:none;">
                         <input type="hidden" id="settingMp3Bitrate" value="v2">
                         <input type="hidden" id="settingOpusBitrate" value="320k">

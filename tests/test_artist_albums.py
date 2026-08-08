@@ -103,7 +103,7 @@ def test_new_release_group_gets_queued_on_refresh(fresh_db, monkeypatch):
 
     monkeypatch.setattr(wa.albums, "queue_album_download", fake_queue)
 
-    artist = {"mbid": "mbid-1", "name": "Radiohead", "convert_to_flac": 1}
+    artist = {"mbid": "mbid-1", "name": "Radiohead", "convert_audio": 1}
     with fresh_db() as conn:
         result = wa._refresh_artist_albums(conn, artist, "a1", None)
 
@@ -131,7 +131,7 @@ def test_previously_seen_release_group_not_queued_twice(fresh_db, monkeypatch):
         return {"import_id": "imp-1"}
 
     monkeypatch.setattr(wa.albums, "queue_album_download", fake_queue)
-    artist = {"mbid": "mbid-1", "name": "Radiohead", "convert_to_flac": 1}
+    artist = {"mbid": "mbid-1", "name": "Radiohead", "convert_audio": 1}
 
     with fresh_db() as conn:
         first = wa._refresh_artist_albums(conn, artist, "a1", None)
@@ -164,7 +164,7 @@ def test_a_new_earliest_pressing_does_not_make_a_known_album_look_new(fresh_db, 
         return {"import_id": "imp-1"}
 
     monkeypatch.setattr(wa.albums, "queue_album_download", fake_queue)
-    artist = {"mbid": "mbid-1", "name": "Radiohead", "convert_to_flac": 1}
+    artist = {"mbid": "mbid-1", "name": "Radiohead", "convert_audio": 1}
 
     monkeypatch.setattr(wa, "fetch_artist_albums", lambda mbid: [
         {"title": "OK Computer", "year": "1997", "release_mbid": "rel-original",
@@ -202,7 +202,7 @@ def test_one_album_failing_does_not_abort_the_rest(fresh_db, monkeypatch):
         return {"import_id": "imp-2"}
 
     monkeypatch.setattr(wa.albums, "queue_album_download", fake_queue)
-    artist = {"mbid": "mbid-1", "name": "Radiohead", "convert_to_flac": 1}
+    artist = {"mbid": "mbid-1", "name": "Radiohead", "convert_audio": 1}
 
     with fresh_db() as conn:
         result = wa._refresh_artist_albums(conn, artist, "a1", None)

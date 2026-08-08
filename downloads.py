@@ -49,7 +49,7 @@ from db import db_conn, log_match_mismatch, get_album_track_lock, complete_album
 from metadata import (
     lookup_metadata, lookup_musicbrainz_by_isrc, fetch_lyrics, save_lyrics_file,
     apply_metadata_to_file, read_existing_track_number, verify_recording,
-    apply_replaygain_tags, read_replaygain_tags,
+    apply_replaygain_tags, read_replaygain_tags, read_artist_title,
 )
 from notifications import send_notification
 from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir, get_albums_dir, resolve_custom_subdir
@@ -97,6 +97,29 @@ def _default_metadata_source(source: str) -> str:
     if source_name == "soulseek":
         return "soulseek_guessed"
     return "youtube_guessed"
+
+
+def _prefer_slskd_embedded_artist(file_path: Path, fallback_artist: str) -> str:
+    """Prefer a downloaded Soulseek file's ARTIST tag over a path guess.
+
+    Soulseek paths commonly begin with library roots (``Music (FLAC)``),
+    completed-download folders, language-specific variants such as ``Musique``,
+    or single-letter buckets.  Those are useful addresses but terrible artist
+    credits.  Once the file is local, its embedded tag is the best source we
+    have short of a successful fingerprint lookup.  Blank and explicit
+    ``Unknown Artist`` tags are not improvements, so they retain the fallback.
+    """
+    embedded_artist, _embedded_title = read_artist_title(file_path)
+    if not embedded_artist:
+        return fallback_artist
+
+    # Tags come from an untrusted remote file. Remove controls and collapse
+    # whitespace before the value reaches a filesystem path or an API query.
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", " ", str(embedded_artist))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned or cleaned.casefold() in {"unknown", "unknown artist"}:
+        return fallback_artist
+    return cleaned
 
 
 def _move_completed_file(source: Path, dest: Path) -> Path:
@@ -1301,7 +1324,7 @@ def _extract_source_format_from_info(info: dict) -> tuple[str, int]:
 def _build_ytdlp_download_cmd(
     video_id: str,
     output_template: str,
-    convert_to_flac: bool,
+    convert_audio: bool,
     source_url: str = None,
     use_cookies: bool = True,
     user_id: str | None = None,
@@ -1313,7 +1336,7 @@ def _build_ytdlp_download_cmd(
     user_id picks up the per-user format choice, so yt-dlp converts straight to
     the right format rather than transcoding twice (lossy-to-lossy is a war crime).
     """
-    if convert_to_flac:
+    if convert_audio:
         fmt = get_setting("audio_format", "opus", user_id=user_id)
         fmt = fmt if fmt in ("flac", "opus", "mp3", "alac") else "opus"
         # ALAC with a non-lossless bitrate means "lossy AAC in an .m4a container".
@@ -1483,7 +1506,7 @@ _ALLOWED_JOB_COLS = frozenset({
     "video_id", "title", "artist", "status", "error", "download_type",
     "playlist_name", "total_tracks", "completed_tracks", "failed_tracks",
     "skipped_tracks", "m3u_path", "source", "slskd_username", "slskd_filename", "slskd_size",
-    "convert_to_flac", "source_url", "file_deleted", "metadata_source",
+    "convert_audio", "source_url", "file_deleted", "metadata_source",
     "override_dir", "album_release_mbid", "album_name", "album_track_title",
     "album_track_number", "album_track_total", "completed_at", "uploader",
     "audio_quality", "progress_stage", "source_history",
@@ -2389,14 +2412,14 @@ def _get_lossy_codec_args(fmt: str, user_id: str | None = None) -> tuple[str, li
     return _FORMAT_CODEC_MAP[fmt]
 
 
-def _enforce_target_format(audio_file: Path, convert_to_flac: bool, user_id: str | None = None) -> Path:
+def _enforce_target_format(audio_file: Path, convert_audio: bool, user_id: str | None = None) -> Path:
     """If the downloaded file isn't in the target format, convert it.
 
     yt-dlp usually handles conversion via --audio-format, but if post-processing
     fails and we recover the raw file (e.g. Opus when user wants MP3), this catches it.
     Returns the path to the final file (may be different from audio_file).
     """
-    if not convert_to_flac:
+    if not convert_audio:
         return audio_file
 
     target_fmt = get_setting("audio_format", "opus", user_id=user_id)
@@ -3411,7 +3434,7 @@ def rebuild_watched_playlist_m3u(playlist_id: str, playlist_name: str, use_playl
     return m3u_path
 
 
-def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str, convert_to_flac: bool = True, use_playlists_dir: bool = True, user_id: str | None = None):
+def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str, convert_audio: bool = True, use_playlists_dir: bool = True, user_id: str | None = None):
     """Process a playlist download job.
 
     When use_playlists_dir is True and playlists_subdir is configured, tracks are saved to
@@ -3524,7 +3547,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 # same song at once don't fight over each other's temp files.
                 staging = _make_staging_dir(f"{job_id}-{video_id}", user_id=user_id)
                 output_template = str(staging / f"{safe_title}.%(ext)s")
-                download_cmd = _build_ytdlp_download_cmd(video_id, output_template, convert_to_flac, user_id=user_id)
+                download_cmd = _build_ytdlp_download_cmd(video_id, output_template, convert_audio, user_id=user_id)
                 has_cookies = "--cookies" in download_cmd
 
                 download_result, download_timed_out = _run_ytdlp_with_retries(
@@ -3614,7 +3637,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                         continue
 
                 # If yt-dlp's post-processor didn't convert, catch it here
-                audio_file = _enforce_target_format(audio_file, convert_to_flac, user_id=user_id)
+                audio_file = _enforce_target_format(audio_file, convert_audio, user_id=user_id)
 
                 # Optional loudness normalisation (playlist tracks come from YouTube)
                 _normalise_loudness(audio_file, "youtube", user_id=user_id)
@@ -3793,8 +3816,9 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
 
 
-def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_to_flac: bool = True, user_id: str | None = None, override_dir: str | None = None, playlist_name: str = None, use_playlists_dir: bool = False, custom_subdir: str | None = None, slskd_size: int | None = None):
+def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_audio: bool = True, user_id: str | None = None, override_dir: str | None = None, playlist_name: str = None, use_playlists_dir: bool = False, custom_subdir: str | None = None, slskd_size: int | None = None):
     """Process a Soulseek download job via slskd"""
+    staging = None
     album_ctx = _get_job_album_context(job_id)
     if not override_dir and album_ctx.get("override_dir"):
         override_dir = album_ctx["override_dir"]
@@ -3826,39 +3850,6 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         # Update job with extracted info (store slskd peer as uploader for blacklist)
         _update_job(job_id, title=title, artist=artist, uploader=username)
 
-        # Check for duplicates (local filesystem, then Navidrome, then Lidarr)
-        _update_job(job_id, progress_stage="Checking for duplicates")
-        existing_file = check_duplicate(artist, title, user_id=user_id)
-        if not existing_file:
-            existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
-        if not existing_file:
-            existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
-        # Sentinel Navidrome paths are unusable for playlist M3U entries
-        if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
-            existing_file = None
-        if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
-            source_label = "library" if existing_file.exists() else "Navidrome"
-            _update_job(
-                job_id,
-                status="completed",
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                error=f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
-            )
-            real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
-            marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing, skip_mismatch=True)
-            if marked and (existing_file.is_absolute() or existing_file.exists()):
-                _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir, user_id=user_id, custom_subdir=custom_subdir)
-            return
-        elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
-            _update_job(
-                job_id,
-                status="completed",
-                completed_at=datetime.now(timezone.utc).isoformat(),
-                error=f"Already exists: {_display_path(existing_file)}"
-            )
-            _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None, skip_mismatch=True)
-            return
-
         # Create download directory: custom playlist dir, Playlists/Name/, album override,
         # or standard Singles layout.
         if custom_subdir and playlist_name:
@@ -3877,8 +3868,15 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         elif override_dir:
             artist_dir = Path(override_dir)
         else:
-            artist_dir = get_download_dir(artist, user_id=user_id)
-        artist_dir.mkdir(parents=True, exist_ok=True)
+            # The path-derived artist is only a provisional guess. Do not create
+            # its library folder until the downloaded file's own tags have had
+            # their say.
+            artist_dir = None
+
+        # Keep the untrusted acquisition outside the library until integrity and
+        # embedded metadata have been checked. This also prevents two jobs with
+        # the same remote filename from trampling each other.
+        staging = _make_staging_dir(job_id, user_id=user_id)
 
         # Download from slskd with retries on common queue/abort failures
         _update_job(job_id, progress_stage="Downloading audio")
@@ -3918,7 +3916,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             tried_candidates.add(candidate_key)
 
             try:
-                downloaded_file = download_from_slskd(cand_username, cand_filename, artist_dir, size=cand_size)
+                downloaded_file = download_from_slskd(cand_username, cand_filename, staging, size=cand_size)
                 if not downloaded_file or not downloaded_file.exists():
                     raise Exception("Download completed but file not found")
 
@@ -3955,6 +3953,64 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         if not downloaded_file:
             raise Exception(last_error or "Soulseek download failed")
 
+        # The remote path tells us where the peer stored the file, not who made
+        # the music. Prefer the raw file's ARTIST tag before naming, metadata
+        # lookup, tagging, or library placement. AcoustID/MusicBrainz can still
+        # canonicalise it later; untagged files retain the path fallback.
+        guessed_artist = artist
+        artist = _prefer_slskd_embedded_artist(downloaded_file, guessed_artist)
+        if artist != guessed_artist:
+            print(
+                f"slskd: embedded ARTIST tag corrected path guess "
+                f"'{guessed_artist}' -> '{artist}'"
+            )
+            _update_job(job_id, artist=artist)
+
+        # Only now do we know which artist to ask the library about. Checking
+        # duplicates against a path root such as "Music (FLAC)" can both miss a
+        # real Paramore duplicate and, worse, skip the job for an unrelated file
+        # under that container folder. The staged acquisition is discarded by
+        # the finally block if a corrected duplicate already exists.
+        _update_job(job_id, progress_stage="Checking for duplicates")
+        existing_file = check_duplicate(artist, title, user_id=user_id)
+        if not existing_file:
+            existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
+        if not existing_file:
+            existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
+        # Sentinel Navidrome paths are unusable for playlist M3U entries.
+        if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
+            existing_file = None
+        if existing_file and playlist_name and get_setting_bool("skip_dupes", True, user_id=user_id):
+            source_label = "library" if existing_file.exists() else "Navidrome"
+            _update_job(
+                job_id,
+                status="completed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error=f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
+            )
+            real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
+            marked = _mark_watched_track_downloaded(job_id, resolved_path=real_existing, skip_mismatch=True)
+            if marked and (existing_file.is_absolute() or existing_file.exists()):
+                _append_to_physical_m3u(existing_file, playlist_name, use_playlists_dir, user_id=user_id, custom_subdir=custom_subdir)
+            return
+        elif existing_file and get_setting_bool("skip_dupes", True, user_id=user_id):
+            _update_job(
+                job_id,
+                status="completed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error=f"Already exists: {_display_path(existing_file)}"
+            )
+            _mark_watched_track_downloaded(
+                job_id,
+                resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None,
+                skip_mismatch=True,
+            )
+            return
+
+        if artist_dir is None:
+            artist_dir = get_download_dir(artist, user_id=user_id)
+        artist_dir.mkdir(parents=True, exist_ok=True)
+
         # Rename to our standard naming
         if playlists_dir:
             sanitized_title = _playlist_stem(forced_album_artist or artist, forced_track_title or title, Path(filename).stem or job_id)
@@ -3964,20 +4020,20 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
         # Probe the source file BEFORE conversion so we know the real quality
         source_format_info = None
-        if convert_to_flac and source_ext != '.flac':
+        if convert_audio and source_ext != '.flac':
             src_quality_str, src_bitrate = probe_audio_quality(downloaded_file)
             if src_quality_str:
                 src_codec = src_quality_str.split()[0]
                 source_format_info = (src_codec, src_bitrate)
 
         # Determine final filename
-        audio_fmt = get_setting("audio_format", "opus", user_id=user_id) if convert_to_flac else None
+        audio_fmt = get_setting("audio_format", "opus", user_id=user_id) if convert_audio else None
         if audio_fmt not in ("flac", "opus", "mp3", "alac"):
             audio_fmt = "flac"
 
         # ALAC lives in an .m4a container
         target_ext = ".m4a" if audio_fmt == "alac" else (f".{audio_fmt}" if audio_fmt else source_ext)
-        needs_convert = convert_to_flac and source_ext != target_ext
+        needs_convert = convert_audio and source_ext != target_ext
 
         if needs_convert:
             _update_job(job_id, progress_stage="Converting audio")
@@ -4204,6 +4260,12 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             user_id=user_id,
         )
 
+    finally:
+        # Soulseek now uses the same private staging discipline as the other
+        # download paths. Raw or half-processed files never become library
+        # residents merely because a remote folder looked like an artist.
+        _clear_staging_dir(staging)
+
 
 
 def _maybe_mark_monochrome_unhealthy(dl_exc: Exception) -> None:
@@ -4234,7 +4296,7 @@ def _maybe_mark_monochrome_unhealthy(dl_exc: Exception) -> None:
 
 
 def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: str, title_hint: str,
-                                 convert_to_flac: bool = True,
+                                 convert_audio: bool = True,
                                  playlist_name: str = None, use_playlists_dir: bool = False,
                                  video_id: str = "", attempted_ids: set[str] | None = None,
                                  user_id: str | None = None, override_dir: str | None = None,
@@ -4312,7 +4374,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         process_download(
             job_id,
             alt_id,
-            convert_to_flac,
+            convert_audio,
             source_url=alt_source_url,
             playlist_name=playlist_name,
             use_playlists_dir=use_playlists_dir,
@@ -4461,7 +4523,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
 
         # Convert to the user's chosen format if requested.
         _update_job(job_id, progress_stage="Converting audio")
-        if convert_to_flac:
+        if convert_audio:
             audio_fmt = get_setting("audio_format", "opus", user_id=user_id)
             if audio_fmt not in _FORMAT_CODEC_MAP:
                 audio_fmt = "flac"
@@ -4495,7 +4557,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         _update_job(job_id, progress_stage="Probing quality")
         audio_quality, bitrate_kbps = probe_audio_quality(
             output_path,
-            source_info=source_format_info if convert_to_flac else None,
+            source_info=source_format_info if convert_audio else None,
         )
         min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
@@ -4701,7 +4763,7 @@ def _append_to_physical_m3u(audio_file: Path, playlist_name: str, use_playlists_
         print(f"Warning: could not update {m3u_path}: {e}")
 
 
-def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, source_url: str = None,
+def process_download(job_id: str, video_id: str, convert_audio: bool = True, source_url: str = None,
                      playlist_name: str = None, use_playlists_dir: bool = False,
                      attempted_ids: set[str] | None = None, integrity_attempt: int = 1,
                      user_id: str | None = None, override_dir: str | None = None,
@@ -4772,7 +4834,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
             direct_label, direct_fn = "freemp3cloud", download_freemp3cloud_track
         _process_direct_mp3_download(
             job_id, source_url, artist_hint, title_hint,
-            convert_to_flac, playlist_name, use_playlists_dir,
+            convert_audio, playlist_name, use_playlists_dir,
             video_id=video_id, attempted_ids=attempted_ids, user_id=user_id,
             override_dir=override_dir, skip_dupe_check=skip_dupe_check,
             custom_subdir=custom_subdir,
@@ -4830,7 +4892,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         info = json.loads(info_result.stdout)
 
         # Capture source audio format before yt-dlp converts it
-        source_format_info = _extract_source_format_from_info(info) if convert_to_flac else None
+        source_format_info = _extract_source_format_from_info(info) if convert_audio else None
 
         # Extract artist and title  -  SoundCloud uses 'uploader' for artist
         full_title = info.get("title", "Unknown")
@@ -4920,7 +4982,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         staging = _make_staging_dir(job_id, user_id=user_id)
         output_template = str(staging / f"{safe_title}.%(ext)s")
         download_cmd = _build_ytdlp_download_cmd(
-            video_id, output_template, convert_to_flac,
+            video_id, output_template, convert_audio,
             source_url=source_url,
             use_cookies=not is_url_source,
             user_id=user_id,
@@ -4997,7 +5059,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 return process_download(
                     job_id,
                     video_id,
-                    convert_to_flac,
+                    convert_audio,
                     source_url=source_url,
                     playlist_name=playlist_name,
                     use_playlists_dir=use_playlists_dir,
@@ -5038,7 +5100,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                     return process_download(
                         job_id,
                         alt_id,
-                        convert_to_flac,
+                        convert_audio,
                         source_url=alt_source_url,
                         playlist_name=playlist_name,
                         use_playlists_dir=use_playlists_dir,
@@ -5080,7 +5142,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
         # If yt-dlp's post-processor didn't convert (e.g. recovered from a failed conversion),
         # catch it here and convert ourselves. Stops Opus files sneaking through when MP3 is wanted.
         _update_job(job_id, progress_stage="Converting audio")
-        audio_file = _enforce_target_format(audio_file, convert_to_flac, user_id=user_id)
+        audio_file = _enforce_target_format(audio_file, convert_audio, user_id=user_id)
 
         # Optional loudness normalisation for lossy web sources (YouTube/SoundCloud here)
         _normalise_loudness(audio_file, source_label, user_id=user_id, job_id=job_id)
@@ -5132,7 +5194,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                     return process_download(
                         job_id,
                         alt_id,
-                        convert_to_flac,
+                        convert_audio,
                         source_url=alt_source_url,
                         playlist_name=playlist_name,
                         use_playlists_dir=use_playlists_dir,
@@ -5342,7 +5404,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                     return process_download(
                         job_id,
                         alt_id,
-                        convert_to_flac,
+                        convert_audio,
                         source_url=alt_source_url,
                         playlist_name=playlist_name,
                         use_playlists_dir=use_playlists_dir,

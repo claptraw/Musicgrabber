@@ -353,7 +353,13 @@ ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
 DEEZER_SEARCH_URL = "https://api.deezer.com/search"
 
 # Default settings for fields that need startup values
-DEFAULT_CONVERT_TO_FLAC = os.getenv("DEFAULT_CONVERT_TO_FLAC", "false").lower() == "true"
+# Enables conversion to AUDIO_FORMAT; it has never meant "always FLAC", which is
+# precisely why the old DEFAULT_CONVERT_TO_FLAC spelling had to go. That spelling
+# is still honoured so existing deployments carry on unchanged.
+DEFAULT_CONVERT_AUDIO = os.getenv(
+    "DEFAULT_CONVERT_AUDIO",
+    os.getenv("DEFAULT_CONVERT_TO_FLAC", "false"),
+).lower() == "true"
 
 # Monochrome (Qobuz/Tidal), configurable so you can point at a self-hosted hifi-api
 MONOCHROME_HIFI_API_URL = os.getenv(

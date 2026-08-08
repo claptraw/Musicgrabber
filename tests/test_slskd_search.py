@@ -25,6 +25,7 @@ exactly like an honest "no matches".
 """
 
 import os
+import subprocess
 import sys
 
 import pytest
@@ -240,3 +241,124 @@ def test_the_uploader_name_is_never_accepted_as_the_artist(monkeypatch):
 
     assert seen.get("artist") == "Paramore", f"artist ended up as {seen.get('artist')!r}"
     assert seen.get("uploader") == "2jqll9htuy62asp1wu", "the peer is still recorded, just not as the artist"
+
+
+@pytest.mark.parametrize("path_guess", ["Music (FLAC)", "complete", "Musique", "P"])
+def test_embedded_artist_beats_common_soulseek_container_folders(monkeypatch, path_guess):
+    """The four wrong live-search guesses that exposed this bug."""
+    import downloads
+
+    monkeypatch.setattr(downloads, "read_artist_title", lambda _path: ("Paramore", "Ignorance"))
+
+    assert downloads._prefer_slskd_embedded_artist(
+        downloads.Path("staged.flac"), path_guess
+    ) == "Paramore"
+
+
+@pytest.mark.parametrize("embedded", [None, "", "  ", "Unknown", "Unknown Artist"])
+def test_unusable_embedded_artist_keeps_the_path_fallback(monkeypatch, embedded):
+    import downloads
+
+    monkeypatch.setattr(downloads, "read_artist_title", lambda _path: (embedded, "Ignorance"))
+
+    assert downloads._prefer_slskd_embedded_artist(
+        downloads.Path("staged.flac"), "Paramore"
+    ) == "Paramore"
+
+
+def test_embedded_artist_is_cleaned_before_it_reaches_tags_or_paths(monkeypatch):
+    import downloads
+
+    monkeypatch.setattr(
+        downloads,
+        "read_artist_title",
+        lambda _path: ("  Paramore\x00\n  ", "Ignorance"),
+    )
+
+    assert downloads._prefer_slskd_embedded_artist(
+        downloads.Path("staged.flac"), "Music (FLAC)"
+    ) == "Paramore"
+
+
+def test_real_flac_artist_tag_is_read_before_path_fallback(tmp_path):
+    """Do not let a mocked tag reader make the central promise circular."""
+    import downloads
+    from mutagen.flac import FLAC
+
+    audio_path = tmp_path / "Ignorance.flac"
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=0.1",
+            str(audio_path),
+        ],
+        check=True,
+    )
+    audio = FLAC(str(audio_path))
+    audio["ARTIST"] = "Paramore"
+    audio.save()
+
+    assert downloads._prefer_slskd_embedded_artist(
+        audio_path, "Music (FLAC)"
+    ) == "Paramore"
+
+
+def test_slskd_stages_file_then_routes_with_embedded_artist(monkeypatch, tmp_path):
+    """Exercise the ordering: acquire, validate/read tags, then choose a folder."""
+    import downloads
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    raw_file = staging / "2. Ignorance.flac"
+    raw_file.write_bytes(b"audio-shaped test fixture")
+    seen = {"job_updates": []}
+
+    monkeypatch.setattr(downloads, "_get_job_album_context", lambda _j: {})
+    monkeypatch.setattr(downloads, "_get_album_track_tag_context", lambda _j: (None, None))
+    monkeypatch.setattr(downloads, "ensure_album_cover_files", lambda *a, **k: None)
+    monkeypatch.setattr(downloads, "get_album_art_context", lambda *a, **k: (None, None))
+
+    def _check_duplicate(artist, _title, **_kwargs):
+        seen["duplicate_artist"] = artist
+        return None
+
+    monkeypatch.setattr(downloads, "check_duplicate", _check_duplicate)
+    monkeypatch.setattr(downloads, "check_navidrome_duplicate", lambda *a, **k: None)
+    monkeypatch.setattr(downloads, "check_lidarr_duplicate", lambda *a, **k: None)
+    monkeypatch.setattr(downloads, "_playlist_album_tags", lambda *a, **k: (None, None, False))
+    monkeypatch.setattr(downloads, "_make_staging_dir", lambda *a, **k: staging)
+    monkeypatch.setattr(downloads, "_clear_staging_dir", lambda path: seen.update(cleaned=path))
+    monkeypatch.setattr(downloads, "_validate_audio_integrity", lambda _p: (True, "", 219))
+    monkeypatch.setattr(downloads, "read_artist_title", lambda _p: ("Paramore", "Ignorance"))
+    monkeypatch.setattr(downloads, "send_notification", lambda **_k: None)
+
+    def _download(_username, _filename, dest_dir, **_kwargs):
+        seen["download_dest"] = dest_dir
+        return raw_file
+
+    def _route(artist, **_kwargs):
+        seen["routed_artist"] = artist
+        raise RuntimeError("stop after routing decision")
+
+    monkeypatch.setattr(downloads, "download_from_slskd", _download)
+    monkeypatch.setattr(downloads, "get_download_dir", _route)
+    monkeypatch.setattr(
+        downloads,
+        "_update_job",
+        lambda _job_id, **fields: seen["job_updates"].append(fields),
+    )
+
+    downloads.process_slskd_download(
+        job_id="job1",
+        username="helpful_peer",
+        filename=r"Music (FLAC)\Paramore\Brand New Eyes\2. Ignorance.flac",
+        artist="Music (FLAC)",
+        title="Ignorance",
+        slskd_size=40_000_000,
+    )
+
+    assert seen["download_dest"] == staging
+    assert seen["duplicate_artist"] == "Paramore"
+    assert seen["routed_artist"] == "Paramore"
+    assert seen["cleaned"] == staging
+    assert any(update.get("artist") == "Paramore" for update in seen["job_updates"])

@@ -448,7 +448,7 @@
         const watchedError = document.getElementById('watchedError');
         const refreshAllWatchedBtn = document.getElementById('refreshAllWatchedBtn');
         const watchedScheduleInfo = document.getElementById('watchedScheduleInfo');
-        const watchedConvertToFlac = document.getElementById('watchedConvertToFlac');
+        const watchedConvertAudio = document.getElementById('watchedConvertAudio');
         const toast = document.getElementById('toast');
         const tabs = document.querySelectorAll('.tab');
         const lineCounter = document.getElementById('lineCounter');
@@ -457,8 +457,8 @@
         const settingsTabContainer = document.getElementById('settingsTabContainer');
         const createPlaylistCheckbox = document.getElementById('createPlaylistCheckbox');
         const playlistNameInput = document.getElementById('playlistNameInput');
-        const convertToFlacCheckbox = document.getElementById('convertToFlac');
-        let watchedFlacTouched = false;
+        const convertAudioCheckbox = document.getElementById('convertAudio');
+        let watchedConversionTouched = false;
 
         // =============================================================================
         // Destination Picker (unified "Add to..." for Playlist and Album)
@@ -812,22 +812,58 @@
 
         function updateConversionLabels() {
             const headerLabel = document.getElementById('headerFormatLabel');
-            if (headerLabel) headerLabel.textContent = conversionChoiceLabel(convertToFlacCheckbox.checked);
+            if (headerLabel) headerLabel.textContent = conversionChoiceLabel(convertAudioCheckbox.checked);
 
             const watchedLabel = document.getElementById('watchedFormatLabel');
-            if (watchedLabel && watchedConvertToFlac) {
-                watchedLabel.textContent = conversionChoiceLabel(watchedConvertToFlac.checked);
+            if (watchedLabel && watchedConvertAudio) {
+                watchedLabel.textContent = conversionChoiceLabel(watchedConvertAudio.checked);
             }
 
             const artistLabel = document.getElementById('artistFlacLabel');
-            const artistCheckbox = document.getElementById('artistConvertToFlac');
+            const artistCheckbox = document.getElementById('artistConvertAudio');
             if (artistLabel && artistCheckbox) {
                 artistLabel.textContent = conversionChoiceLabel(artistCheckbox.checked);
+            }
+
+            updateLossyConversionWarning();
+        }
+
+        function conversionTargetIsLossy() {
+            if (audioFormat === 'opus' || audioFormat === 'mp3') return true;
+            if (audioFormat === 'alac') {
+                return (document.getElementById('settingAlacBitrate')?.value || 'lossless') !== 'lossless';
+            }
+            return false;
+        }
+
+        function conversionTargetName() {
+            const labels = { flac: 'FLAC', alac: 'ALAC', opus: 'Opus', mp3: 'MP3' };
+            if (audioFormat === 'alac' && conversionTargetIsLossy()) return 'AAC in an M4A container';
+            return labels[audioFormat] || 'Opus';
+        }
+
+        function updateLossyConversionWarning() {
+            const warning = document.getElementById('lossyConversionWarning');
+            const conversionEnabled = document.getElementById('settingDefaultConvertAudio')?.checked ?? false;
+            const message = `Warning: converting a lossless source to ${conversionTargetName()} is a quality downgrade. Choose Keep source to preserve the original audio.`;
+            if (warning) {
+                warning.textContent = message;
+                warning.style.display = conversionEnabled && conversionTargetIsLossy() ? 'block' : 'none';
+            }
+
+            const headerControl = document.querySelector('.header-format-label');
+            const headerWouldDowngrade = convertAudioCheckbox?.checked && conversionTargetIsLossy();
+            const headerWarning = document.getElementById('headerLossyWarning');
+            if (headerWarning) headerWarning.style.display = headerWouldDowngrade ? 'inline' : 'none';
+            if (headerControl) {
+                headerControl.title = headerWouldDowngrade
+                    ? message
+                    : 'Choose whether downloads keep their source format or are converted to the format selected in Settings.';
             }
         }
 
         function setDefaultConversionMode(enabled) {
-            const input = document.getElementById('settingDefaultFlac');
+            const input = document.getElementById('settingDefaultConvertAudio');
             if (!input) return;
             if (input.disabled && input.checked !== Boolean(enabled)) return;
 
@@ -866,7 +902,7 @@
 
             updateConversionLabels();
 
-            const conversionEnabled = document.getElementById('settingDefaultFlac')?.checked ?? false;
+            const conversionEnabled = document.getElementById('settingDefaultConvertAudio')?.checked ?? false;
             const alacNote = document.getElementById('alacFormatNote');
             if (alacNote) alacNote.style.display = conversionEnabled && audioFormat === 'alac' ? 'block' : 'none';
             const mp3Note = document.getElementById('mp3FormatNote');
@@ -927,6 +963,7 @@
             const input = document.getElementById('settingAlacBitrate');
             if (input) input.value = val;
             localStorage.setItem(userStorageKey('alacBitrate'), val);
+            updateLossyConversionWarning();
         }
 
         const versionLabel = document.getElementById('versionLabel');
@@ -976,10 +1013,10 @@
                 }
 
                 // Set convert on/off from server if not saved locally
-                if (localStorage.getItem(userStorageKey('convertToFlac')) === null && typeof config.default_convert_to_flac === 'boolean') {
-                    convertToFlacCheckbox.checked = config.default_convert_to_flac;
-                    if (watchedConvertToFlac && !watchedFlacTouched) {
-                        watchedConvertToFlac.checked = config.default_convert_to_flac;
+                if (localStorage.getItem(userStorageKey('convertAudio')) === null && typeof config.default_convert_audio === 'boolean') {
+                    convertAudioCheckbox.checked = config.default_convert_audio;
+                    if (watchedConvertAudio && !watchedConversionTouched) {
+                        watchedConvertAudio.checked = config.default_convert_audio;
                     }
                     updateConversionLabels();
                 }
@@ -1041,9 +1078,14 @@
         })();
 
         // Restore convert on/off from localStorage (namespaced per user)
-        const savedFlacPref = localStorage.getItem(userStorageKey('convertToFlac'));
-        if (savedFlacPref !== null) {
-            convertToFlacCheckbox.checked = savedFlacPref === 'true';
+        const legacyConvertPref = localStorage.getItem(userStorageKey('convertToFlac'));
+        const savedConvertPref = localStorage.getItem(userStorageKey('convertAudio')) ?? legacyConvertPref;
+        if (savedConvertPref !== null) {
+            convertAudioCheckbox.checked = savedConvertPref === 'true';
+            if (legacyConvertPref !== null) {
+                localStorage.setItem(userStorageKey('convertAudio'), legacyConvertPref);
+                localStorage.removeItem(userStorageKey('convertToFlac'));
+            }
         }
 
         // Restore audio format picker from localStorage (namespaced per user)
@@ -1053,22 +1095,22 @@
         }
         updateConversionLabels();
 
-        if (watchedConvertToFlac) {
-            watchedConvertToFlac.addEventListener('change', () => {
-                watchedFlacTouched = true;
+        if (watchedConvertAudio) {
+            watchedConvertAudio.addEventListener('change', () => {
+                watchedConversionTouched = true;
                 updateConversionLabels();
             });
         }
-        const artistConvertToFlac = document.getElementById('artistConvertToFlac');
-        if (artistConvertToFlac) {
-            artistConvertToFlac.addEventListener('change', updateConversionLabels);
+        const artistConvertAudio = document.getElementById('artistConvertAudio');
+        if (artistConvertAudio) {
+            artistConvertAudio.addEventListener('change', updateConversionLabels);
         }
 
         // Save convert preference when header toggle is flipped
-        convertToFlacCheckbox.addEventListener('change', () => {
-            localStorage.setItem(userStorageKey('convertToFlac'), convertToFlacCheckbox.checked);
-            if (watchedConvertToFlac && !watchedFlacTouched) {
-                watchedConvertToFlac.checked = convertToFlacCheckbox.checked;
+        convertAudioCheckbox.addEventListener('change', () => {
+            localStorage.setItem(userStorageKey('convertAudio'), convertAudioCheckbox.checked);
+            if (watchedConvertAudio && !watchedConversionTouched) {
+                watchedConvertAudio.checked = convertAudioCheckbox.checked;
             }
             updateConversionLabels();
         });
@@ -2164,7 +2206,7 @@
             const playlistName = `Similar to ${artist} (${dateSuffix})`;
             const makePlaylist = document.getElementById('explorePlaylistCheckbox')?.checked ?? true;
 
-            const requestBody = { songs, convert_to_flac: true };
+            const requestBody = { songs, convert_audio: true };
             if (makePlaylist) {
                 requestBody.create_playlist = true;
                 requestBody.playlist_name = playlistName;
@@ -2652,7 +2694,7 @@
                 const payload = {
                     video_id: result.video_id,
                     title: queuedTitle,
-                    convert_to_flac: convertToFlacCheckbox.checked,
+                    convert_audio: convertAudioCheckbox.checked,
                     source: result.source || 'youtube',
                     search_token: currentSearchLogToken
                 };
@@ -2745,7 +2787,7 @@
                 const data = await response.json();
 
                 // Update toast with success message
-                const formatMsg = convertToFlacCheckbox.checked ? '' : ' (original format)';
+                const formatMsg = convertAudioCheckbox.checked ? ` (${conversionChoiceLabel(true)})` : ' (original format)';
                 const qualityMsg = result.quality ? ` [${formatQualityLabel(result.quality)}]` : '';
                 const pl = getSelectedPlaylist();
                 const playlistMsg = pl ? ` → ${pl.name}` : '';
@@ -4008,7 +4050,7 @@
             try {
                 const requestBody = {
                     songs,
-                    convert_to_flac: convertToFlacCheckbox.checked
+                    convert_audio: convertAudioCheckbox.checked
                 };
                 if (createPlaylist) {
                     requestBody.create_playlist = true;
@@ -4603,7 +4645,7 @@
                             release_mbid: state.selectedRelease.release_mbid,
                             make_m3u: makeM3u,
                             m3u_name: makeM3u ? (state.selectedM3uName || null) : null,
-                            convert_to_flac: convertToFlacCheckbox.checked,
+                            convert_audio: convertAudioCheckbox.checked,
                         }),
                     });
                     if (!resp.ok) {
@@ -5429,7 +5471,7 @@
                         release_mbid: fields.release_mbid,
                         make_m3u: makeM3u,
                         m3u_name: makeM3u ? (playlistNameInput.value.trim() || null) : null,
-                        convert_to_flac: convertToFlacCheckbox.checked,
+                        convert_audio: convertAudioCheckbox.checked,
                     }),
                 });
                 const data = await resp.json().catch(() => ({}));
@@ -5576,7 +5618,7 @@
                         release_mbid: album.release_mbid,
                         make_m3u: makeM3u,
                         m3u_name: makeM3u ? (playlistNameInput.value.trim() || null) : null,
-                        convert_to_flac: convertToFlacCheckbox.checked,
+                        convert_audio: convertAudioCheckbox.checked,
                     }),
                 });
                 const data = await dlResp.json().catch(() => ({}));
@@ -5932,9 +5974,9 @@
                         </div>` : ''}
                         <div class="watched-card-settings">
                             <label class="watched-card-toggle" title="Choose whether new tracks keep their source format or are converted">
-                                ${conversionChoiceLabel(p.convert_to_flac)}
+                                ${conversionChoiceLabel(p.convert_audio)}
                                 <div class="toggle-switch">
-                                    <input type="checkbox" ${p.convert_to_flac ? 'checked' : ''} onchange="updateWatchedPlaylistFlac('${p.id}', this.checked)">
+                                    <input type="checkbox" ${p.convert_audio ? 'checked' : ''} onchange="updateWatchedPlaylistConversion('${p.id}', this.checked)">
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
@@ -6111,7 +6153,7 @@
                     body: JSON.stringify({
                         url: url,
                         refresh_interval_hours: parseFloat(watchedIntervalSelect.value),
-                        convert_to_flac: watchedConvertToFlac ? watchedConvertToFlac.checked : convertToFlacCheckbox.checked,
+                        convert_audio: watchedConvertAudio ? watchedConvertAudio.checked : convertAudioCheckbox.checked,
                         make_m3u: document.getElementById('watchedMakeM3u') ? document.getElementById('watchedMakeM3u').checked : false,
                         use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false,
                         sync_mode: document.getElementById('watchedSyncModeSelect') ? document.getElementById('watchedSyncModeSelect').value : 'append',
@@ -6266,7 +6308,7 @@
                     body: JSON.stringify({
                         url: username,
                         refresh_interval_hours: parseFloat(watchedIntervalSelect.value),
-                        convert_to_flac: watchedConvertToFlac ? watchedConvertToFlac.checked : convertToFlacCheckbox.checked,
+                        convert_audio: watchedConvertAudio ? watchedConvertAudio.checked : convertAudioCheckbox.checked,
                         make_m3u: document.getElementById('watchedMakeM3u') ? document.getElementById('watchedMakeM3u').checked : false,
                         use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false,
                         sync_mode: 'mirror',
@@ -6373,17 +6415,17 @@
             }
         }
 
-        async function updateWatchedPlaylistFlac(playlistId, convertToFlac) {
+        async function updateWatchedPlaylistConversion(playlistId, convertAudio) {
             try {
                 const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ convert_to_flac: convertToFlac })
+                    body: JSON.stringify({ convert_audio: convertAudio })
                 });
 
                 if (!response.ok) throw new Error('Update failed');
 
-                showToast(convertToFlac ? 'Format: FLAC' : 'Format: Opus');
+                showToast(conversionChoiceLabel(convertAudio));
             } catch (error) {
                 showToast('Failed to update format setting', true);
                 loadWatchedPlaylists();
@@ -7328,7 +7370,7 @@
             const batchBtn = document.getElementById('artistAlbumBatchBtn');
             // Same checkbox every other album download reads, so albums all behave
             // the same way regardless of which door you came in through.
-            const convertToFlac = document.getElementById('convertToFlac')?.checked ?? false;
+            const convertAudio = document.getElementById('convertAudio')?.checked ?? false;
 
             const picked = Array.from(
                 document.querySelectorAll('#artistAlbumChecklist input[type="checkbox"]:checked')
@@ -7356,7 +7398,7 @@
                             name: selectedArtistName,
                             from_date: new Date().toISOString().slice(0, 10),
                             refresh_interval_hours: 24,
-                            convert_to_flac: convertToFlac,
+                            convert_audio: convertAudio,
                             auto_add_albums: true,
                             watch_singles: false,
                         })
@@ -7388,7 +7430,7 @@
                             album_title: album.title,
                             release_mbid: album.release_mbid,
                             release_group_mbid: album.release_group_mbid || '',
-                            convert_to_flac: convertToFlac,
+                            convert_audio: convertAudio,
                             watch_artist_id: watchArtistId || undefined,
                         })
                     });
@@ -7423,7 +7465,7 @@
             if (!selectedArtistMbid) return;
             const fromDate = document.getElementById('artistFromDate').value;
             const intervalHours = parseInt(document.getElementById('artistIntervalSelect').value);
-            const convertToFlac = document.getElementById('artistConvertToFlac').checked;
+            const convertAudio = document.getElementById('artistConvertAudio').checked;
             const statusEl = document.getElementById('artistAddStatus');
             const addBtn = document.getElementById('addArtistBtn');
 
@@ -7440,7 +7482,7 @@
                         name: selectedArtistName,
                         from_date: fromDate,
                         refresh_interval_hours: intervalHours,
-                        convert_to_flac: convertToFlac,
+                        convert_audio: convertAudio,
                         watch_singles: true,
                     })
                 });
@@ -8089,10 +8131,10 @@
                             </div>
                         </label>
                         <label class="watched-card-toggle" title="Choose whether new singles keep their source format or are converted">
-                            ${conversionChoiceLabel(artist.convert_to_flac)}
+                            ${conversionChoiceLabel(artist.convert_audio)}
                             <div class="toggle-switch">
-                                <input type="checkbox" ${artist.convert_to_flac ? 'checked' : ''}
-                                    onchange="updateArtistFlac('${artist.id}', this.checked)">
+                                <input type="checkbox" ${artist.convert_audio ? 'checked' : ''}
+                                    onchange="updateArtistConversion('${artist.id}', this.checked)">
                                 <span class="toggle-slider"></span>
                             </div>
                         </label>
@@ -8180,12 +8222,12 @@
             }
         }
 
-        async function updateArtistFlac(artistId, convertToFlac) {
+        async function updateArtistConversion(artistId, convertAudio) {
             try {
                 await apiFetch(`/api/watched-artists/${artistId}`, {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ convert_to_flac: convertToFlac })
+                    body: JSON.stringify({ convert_audio: convertAudio })
                 });
             } catch (e) {
                 showToast('Failed to update format setting', true);
@@ -8816,7 +8858,7 @@
             'enable_deezer_metadata': 'settingEnableDeezerMetadata',
             'enable_lyrics': 'settingEnableLyrics',
             'acoustid_api_key': 'settingAcoustidKey',
-            'default_convert_to_flac': 'settingDefaultFlac',
+            'default_convert_audio': 'settingDefaultConvertAudio',
             'audio_format': 'settingAudioFormat',
             'mp3_bitrate': 'settingMp3Bitrate',
             'opus_bitrate': 'settingOpusBitrate',
@@ -8954,7 +8996,7 @@
 
                 // The conversion-mode buttons are the visible control for the
                 // hidden persisted checkbox.
-                setDefaultConversionMode(document.getElementById('settingDefaultFlac').checked);
+                setDefaultConversionMode(document.getElementById('settingDefaultConvertAudio').checked);
 
                 settingsLoaded = true;
 
@@ -9663,12 +9705,12 @@
                         // Update tracked original value
                         originalValues[key] = value;
 
-                        // Sync header toggle when default_convert_to_flac is saved
-                        if (key === 'default_convert_to_flac') {
-                            convertToFlacCheckbox.checked = value;
-                            localStorage.setItem(userStorageKey('convertToFlac'), value);
-                            if (watchedConvertToFlac && !watchedFlacTouched) {
-                                watchedConvertToFlac.checked = value;
+                        // Sync header toggle when default_convert_audio is saved
+                        if (key === 'default_convert_audio') {
+                            convertAudioCheckbox.checked = value;
+                            localStorage.setItem(userStorageKey('convertAudio'), value);
+                            if (watchedConvertAudio && !watchedConversionTouched) {
+                                watchedConvertAudio.checked = value;
                             }
                             setDefaultConversionMode(value);
                             updateConversionLabels();
@@ -9957,10 +9999,10 @@
                 // globally. The server overrides these on submit either way, but
                 // mirroring the value here keeps the (hidden) UI honest if anyone
                 // peeks via dev tools.
-                const adminDefault = !!(serverConfig && serverConfig.default_convert_to_flac);
-                const flac = document.getElementById('convertToFlac');
-                const watchedFlac = document.getElementById('watchedConvertToFlac');
-                if (flac) flac.checked = adminDefault;
+                const adminDefault = !!(serverConfig && (serverConfig.default_convert_audio ?? serverConfig.default_convert_to_flac));
+                const conversion = document.getElementById('convertAudio');
+                const watchedFlac = document.getElementById('watchedConvertAudio');
+                if (conversion) conversion.checked = adminDefault;
                 if (watchedFlac) watchedFlac.checked = adminDefault;
             }
 

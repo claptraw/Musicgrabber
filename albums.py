@@ -118,7 +118,7 @@ def queue_album_download(
     release_mbid: str,
     make_m3u: bool = False,
     m3u_name: str = "",
-    convert_to_flac: bool | None = None,
+    convert_audio: bool | None = None,
     user_id: str | None = None,
 ) -> dict:
     """Queue a full album for download.
@@ -205,7 +205,7 @@ def queue_album_download(
     import_id = start_bulk_import_for_tracks(
         tracks=track_pairs,
         track_isrcs=track_isrcs,
-        convert_to_flac=convert_to_flac,
+        convert_audio=convert_audio,
         user_id=user_id,
         override_dir=str(album_dir),
         album_release_mbid=release_mbid,
