@@ -9,10 +9,11 @@ import sqlite3
 import threading
 import time
 
+import albums
 from constants import WATCHED_PLAYLIST_CHECK_HOURS, WATCHED_REFRESH_STALE_SECONDS
 from db import db_conn
 from bulk_import import start_bulk_import_for_tracks
-from metadata import fetch_artist_singles
+from metadata import fetch_artist_singles, fetch_artist_albums, MusicBrainzUnavailable
 from utils import hash_track, spawn_daemon_thread, check_duplicate
 
 
@@ -49,6 +50,112 @@ def _seconds_until_next_artist_check() -> float:
     if next_due is None:
         return maximum
     return min(maximum, max(1.0, float(next_due) + 1.0))
+
+
+def seed_artist_albums(artist_id: str, mbid: str, user_id: str | None = None) -> int:
+    """Seed an artist's current album list into watched_artist_albums as 'seen', without queueing.
+
+    Called exactly once, at the moment auto_add_albums is switched on (fresh
+    follow with the toggle already ticked, or an existing artist flipping it on
+    later). This is the anti-avalanche rule: whatever albums already exist get
+    marked as already-known and are never queued; only albums that appear on a
+    later refresh count as new. Mirrors the existing from_date behaviour for
+    singles.
+
+    Raises MusicBrainzUnavailable if MB can't be reached, so the caller can
+    decide whether to persist the toggle at all (better to fail the request
+    than silently enable auto-add with nothing seeded, which would queue the
+    entire back catalogue on the very next refresh).
+    """
+    current_albums = fetch_artist_albums(mbid)
+    if not current_albums:
+        return 0
+
+    seeded = 0
+    with db_conn() as conn:
+        for album in current_albums:
+            release_mbid = (album.get("release_mbid") or "").strip()
+            if not release_mbid:
+                continue
+            # The release-group MBID is the album's stable identity. Falling
+            # back to release_mbid only matters for anything MusicBrainz hands
+            # back without a group, which is rare and harmless.
+            group_mbid = (album.get("release_group_mbid") or "").strip() or release_mbid
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO watched_artist_albums
+                   (artist_id, release_group_mbid, release_mbid, title, year, status)
+                   VALUES (?, ?, ?, ?, ?, 'seen')""",
+                (artist_id, group_mbid, release_mbid, album.get("title") or "", album.get("year") or "")
+            )
+            if cur.rowcount:
+                seeded += 1
+        conn.commit()
+    return seeded
+
+
+def _refresh_artist_albums(conn, artist: dict, artist_id: str, user_id: str | None) -> dict:
+    """Diff MusicBrainz's current album list against what we already know, and
+    queue anything genuinely new via the album pipeline.
+
+    Only called when auto_add_albums is enabled. One MusicBrainz call regardless
+    of how many albums there are (fetch_artist_albums paginates and rate-limits
+    itself internally). One album failing to queue is recorded as 'failed' and
+    does not stop the rest, same lesson bulk import already learned the hard way.
+    """
+    try:
+        current_albums = fetch_artist_albums(artist["mbid"])
+    except MusicBrainzUnavailable as e:
+        print(f"Album refresh skipped for {artist.get('name', artist_id)}: MusicBrainz unreachable ({e})")
+        return {"new_albums": 0, "queued": 0, "failed": 0}
+
+    known_rows = conn.execute(
+        "SELECT release_group_mbid FROM watched_artist_albums WHERE artist_id = ?",
+        (artist_id,)
+    ).fetchall()
+    known = {row[0] for row in known_rows if row[0]}
+
+    new_count = 0
+    queued_count = 0
+    failed_count = 0
+    convert_to_flac = bool(artist.get("convert_to_flac", 1))
+
+    for album in current_albums:
+        release_mbid = (album.get("release_mbid") or "").strip()
+        group_mbid = (album.get("release_group_mbid") or "").strip() or release_mbid
+        if not release_mbid or group_mbid in known:
+            continue  # already seeded, already queued, or already failed once
+
+        new_count += 1
+        title = album.get("title") or ""
+        year = album.get("year") or ""
+        try:
+            result = albums.queue_album_download(
+                artist["name"], title, release_mbid,
+                convert_to_flac=convert_to_flac, user_id=user_id,
+            )
+            conn.execute(
+                """INSERT INTO watched_artist_albums
+                   (artist_id, release_group_mbid, release_mbid, title, year, status, queued_at, import_id)
+                   VALUES (?, ?, ?, ?, ?, 'queued', datetime('now'), ?)
+                   ON CONFLICT(artist_id, release_group_mbid) DO UPDATE SET
+                       status = 'queued', queued_at = datetime('now'), import_id = excluded.import_id""",
+                (artist_id, group_mbid, release_mbid, title, year, result.get("import_id"))
+            )
+            conn.commit()
+            queued_count += 1
+        except Exception as e:
+            print(f"Album auto-add failed for {artist.get('name', artist_id)} - '{title}': {e}")
+            conn.execute(
+                """INSERT INTO watched_artist_albums
+                   (artist_id, release_group_mbid, release_mbid, title, year, status)
+                   VALUES (?, ?, ?, ?, ?, 'failed')
+                   ON CONFLICT(artist_id, release_group_mbid) DO UPDATE SET status = 'failed'""",
+                (artist_id, group_mbid, release_mbid, title, year)
+            )
+            conn.commit()
+            failed_count += 1
+
+    return {"new_albums": new_count, "queued": queued_count, "failed": failed_count}
 
 
 def refresh_watched_artist(artist_id: str) -> dict:
@@ -143,9 +250,16 @@ def refresh_watched_artist(artist_id: str) -> dict:
             conn.commit()
 
         try:
+            # Singles and albums are independent follows. An albums-only artist
+            # skips the singles hunt entirely: no MusicBrainz call, so nothing to
+            # dedupe, nothing to diff and nothing to queue. The stages below still
+            # run, but over an empty list, which costs nothing and keeps the
+            # progress spinner honest rather than mysteriously silent.
+            watch_singles = bool(artist.get("watch_singles", 1))
+
             # Fetch current singles from MusicBrainz
             set_refresh_stage("fetching")
-            mb_tracks = fetch_artist_singles(artist["mbid"])
+            mb_tracks = fetch_artist_singles(artist["mbid"]) if watch_singles else []
 
             # Deduplicate by hash within this release batch  -  MB can list the same
             # recording across multiple single releases (e.g. regional releases).
@@ -286,6 +400,18 @@ def refresh_watched_artist(artist_id: str) -> dict:
                 )
                 conn.commit()
 
+            # Auto-add-albums: one MB call to check for newly-appeared albums and
+            # queue them via the album pipeline. A failure here (MB down, or one
+            # album blowing up) is swallowed so it never sinks the singles refresh
+            # above, which has already succeeded and committed by this point.
+            album_result = {"new_albums": 0, "queued": 0, "failed": 0}
+            if artist.get("auto_add_albums"):
+                set_refresh_stage("albums")
+                try:
+                    album_result = _refresh_artist_albums(conn, artist, artist_id, user_id)
+                except Exception as e:
+                    print(f"Album auto-add refresh error for {artist.get('name', artist_id)}: {e}")
+
             # Update last_checked and track count
             total_tracked = len(tracked) + new_count
             conn.execute(
@@ -307,6 +433,9 @@ def refresh_watched_artist(artist_id: str) -> dict:
                 "queued": len(tracks_to_import),
                 "total_tracked": total_tracked,
                 "import_id": import_id,
+                "new_albums": album_result["new_albums"],
+                "albums_queued": album_result["queued"],
+                "albums_failed": album_result["failed"],
             }
 
         except Exception as e:

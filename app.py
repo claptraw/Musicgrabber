@@ -4,7 +4,6 @@ Music Grabber - A self-hosted music acquisition service
 Searches music sources, downloads best quality audio with optional conversion to FLAC/Opus/MP3, drops into Navidrome/Jellyfin library
 """
 
-import contextlib
 import csv
 import io
 import json
@@ -14,7 +13,6 @@ import sqlite3
 import subprocess
 import tempfile
 import uuid
-import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +32,8 @@ from constants import (
     STALE_JOB_TIMEOUT,
     DOWNLOAD_TOKEN_TTL_SECONDS,
     AUDIO_EXTENSIONS,
+    SEARCH_SLOT_WAIT_INTERACTIVE,
+    SEARCH_SLOT_WAIT_AUTOMATED,
 )
 from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs, cleanup_old_search_logs, upsert_album_track_lock
 from settings import (
@@ -49,7 +49,7 @@ from models import (
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestLidarrRequest, TestYouTubeCookiesRequest,
     TestAppriseRequest, TestEmailRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest, QueueMissingTrackCandidateRequest,
     OrphanMoveRequest,
-    AlbumDownloadRequest, ExploreRequest, PatchTagsRequest,
+    AlbumDownloadRequest, ReleaseGroupResolveRequest, ExploreRequest, PatchTagsRequest,
     LoginRequest, ChangePasswordRequest, CreateUserRequest,
     SetUserPasswordRequest, SetUserRoleRequest,
     DownloadTokenRequest,
@@ -69,12 +69,13 @@ from youtube import (
 from search import (
     search_source, search_all, _search_all_events, get_available_sources,
     clear_automated_search_cache, SOURCE_REGISTRY, quality_tier_of_result,
+    SourceSearchBusy,
 )
 import servicecheck
 from slskd import slskd_enabled, search_slskd
 from downloads import (
     process_download, process_playlist_download, process_slskd_download,
-    rebuild_watched_playlist_m3u, rebuild_album_m3u,
+    rebuild_watched_playlist_m3u,
     trigger_navidrome_scan, trigger_jellyfin_scan,
     check_navidrome_duplicate, check_lidarr_duplicate,
     get_job_source_allowlist,
@@ -84,7 +85,7 @@ from watched_playlists import (
     detect_playlist_platform, fetch_playlist_tracks, refresh_watched_playlist,
     fetch_listenbrainz_createdfor, start_scheduler, wake_scheduler,
 )
-from watched_artists import refresh_watched_artist, start_artist_scheduler, wake_artist_scheduler
+from watched_artists import refresh_watched_artist, start_artist_scheduler, wake_artist_scheduler, seed_artist_albums
 from upgrades import (
     start_upgrade_scheduler, run_scan_all, get_candidates,
     get_candidates_page, search_candidate, dismiss_candidate,
@@ -100,9 +101,11 @@ from audio_provenance import (
 from metadata import (
     search_artist_mbid, fetch_artist_albums, fetch_album_tracks, apply_metadata_to_file,
     guess_musicbrainz_tags, MusicBrainzUnavailable,
-    parse_musicbrainz_release_url, fetch_release_summary,
+    parse_musicbrainz_release_url, fetch_release_summary, search_release_groups,
 )
-from utils import clean_title, hash_track, is_valid_youtube_id, iter_library_audio_files, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
+from album_urls import resolve_album_url
+from albums import album_track_status, queue_album_download, album_on_disk, AlbumTracklistUnavailable, _normalise_album_match_text
+from utils import hash_track, is_valid_youtube_id, iter_library_audio_files, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 from coverart import fetch_cover_art_url
 from notifications import send_test_email
 
@@ -1584,7 +1587,8 @@ def accept_mismatch(mismatch_id: int, http_request: Request):
         if artist_hint or title_hint:
             query = f"{artist_hint} - {title_hint}".strip(" -")
             try:
-                for cand in search_all(query, limit=12)[0]:
+                for cand in search_all(query, limit=12,
+                                       slot_wait=SEARCH_SLOT_WAIT_AUTOMATED)[0]:
                     cand_id = (cand.get("video_id") or "").strip()
                     if cand_id and cand_id not in attempted:
                         new_id = cand_id
@@ -1761,7 +1765,10 @@ def search(request: SearchRequest, http_request: Request):
         source = request.source
         album_suggestion = None
         if source == "all":
-            raw_results, album_suggestion = search_all(request.query, request.limit, include_soulseek=False)
+            raw_results, album_suggestion = search_all(
+                request.query, request.limit, include_soulseek=False,
+                slot_wait=SEARCH_SLOT_WAIT_INTERACTIVE,
+            )
         elif source in SOURCE_REGISTRY:
             raw_results = search_source(source, request.query, request.limit)
         else:
@@ -1817,6 +1824,16 @@ def search(request: SearchRequest, http_request: Request):
         raise HTTPException(status_code=504, detail="Search timed out")
     except HTTPException:
         raise
+    except SourceSearchBusy as e:
+        # We waited and it is still occupied. Nothing has broken, so a 500 would
+        # be a lie and an alarming one; 503 plus a Retry-After says what is
+        # actually true, which is "ask me again in a moment".
+        print(f"search busy: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="That source is busy with another search. Try again in a moment.",
+            headers={"Retry-After": "3"},
+        )
     except Exception as e:
         print(f"search error: {e}")
         raise HTTPException(status_code=500, detail="Search failed")
@@ -1880,6 +1897,7 @@ def search_stream(request: SearchRequest, http_request: Request):
                 sources=sources,
                 include_soulseek=True,
                 enforce_availability=enforce_availability,
+                slot_wait=SEARCH_SLOT_WAIT_INTERACTIVE,
             ):
                 if ev["type"] == "source" and ev["status"] == "done":
                     ev = {**ev, "results": [_search_result_payload(r) for r in ev["results"]]}
@@ -2510,7 +2528,8 @@ def retry_job(job_id: str, http_request: Request):
             query = f"{artist_hint} - {title_hint}".strip(" -")
             try:
                 retry_sources = sorted(source_allowlist) if source_allowlist is not None else None
-                for cand in search_all(query, limit=12, sources=retry_sources)[0]:
+                for cand in search_all(query, limit=12, sources=retry_sources,
+                                       slot_wait=SEARCH_SLOT_WAIT_AUTOMATED)[0]:
                     cand_id = (cand.get("video_id") or "").strip()
                     if cand_id and cand_id not in attempted:
                         new_id = cand_id
@@ -3916,7 +3935,10 @@ def get_watched_playlist_track_candidates(
     sources = None if preferred_sources == "all" else [s.strip() for s in preferred_sources.split(",") if s.strip()]
     query = f"{artist} - {title}".strip(" -")
     fetch_limit = max(1, min(limit, 10))
-    results, _ = search_all(query, limit=fetch_limit, sources=sources, include_soulseek=True)
+    # Someone is waiting on this list in the UI, so queue briefly rather than
+    # making them stare at a spinner while a bulk import finishes its turn.
+    results, _ = search_all(query, limit=fetch_limit, sources=sources, include_soulseek=True,
+                            slot_wait=SEARCH_SLOT_WAIT_INTERACTIVE)
 
     return {
         "query": query,
@@ -4166,25 +4188,68 @@ def add_watched_artist(body: WatchedArtistRequest, http_request: Request):
     _enforce_peon_format(http_request, body)
     user_id = http_request.state.user_id
 
+    # Singles and albums are independent follows, so arriving here for an artist
+    # you already watch is no longer an error: it means "and albums too, please".
+    # Switch on whichever mode was asked for and leave the other one exactly as it
+    # was; nobody wants to lose their singles history by browsing an album list.
     with db_conn() as conn:
         existing = conn.execute(
             "SELECT id FROM watched_artists WHERE mbid = ? AND (user_id = ? OR (user_id IS NULL AND ? IS NULL))",
             (body.mbid, user_id, user_id)
         ).fetchone()
-        if existing:
-            raise HTTPException(status_code=400, detail=f"Already watching this artist (id: {existing[0]})")
 
-    artist_id = str(uuid.uuid4())[:8]
+    if existing:
+        artist_id = existing[0]
+        with db_conn() as conn:
+            if body.watch_singles:
+                # Re-following for singles re-applies the from_date the user just
+                # picked; that is the whole point of the form they filled in.
+                conn.execute(
+                    "UPDATE watched_artists SET watch_singles = 1, from_date = ?, enabled = 1 WHERE id = ?",
+                    (body.from_date, artist_id)
+                )
+            conn.commit()
+        already_watched = True
+    else:
+        artist_id = str(uuid.uuid4())[:8]
+        already_watched = False
+        with db_conn() as conn:
+            conn.execute(
+                """INSERT INTO watched_artists
+                   (id, name, mbid, from_date, refresh_interval_hours, convert_to_flac,
+                    watch_singles, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (artist_id, body.name, body.mbid, body.from_date,
+                 body.refresh_interval_hours, int(body.convert_to_flac),
+                 int(body.watch_singles), user_id)
+            )
+            conn.commit()
 
-    with db_conn() as conn:
-        conn.execute(
-            """INSERT INTO watched_artists
-               (id, name, mbid, from_date, refresh_interval_hours, convert_to_flac, user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (artist_id, body.name, body.mbid, body.from_date,
-             body.refresh_interval_hours, int(body.convert_to_flac), user_id)
-        )
-        conn.commit()
+    # If auto_add_albums was requested, seed the current album list as
+    # already-seen BEFORE flipping the flag on, so the first refresh (spawned
+    # below) can never mistake the whole back catalogue for new arrivals. If
+    # MusicBrainz is unreachable right now, the artist is still created and
+    # watched for singles as normal; auto_add_albums simply stays off and the
+    # warning tells the user to flip the toggle again once MB is back.
+    auto_add_albums_warning = None
+    already_auto_adding = False
+    if already_watched:
+        with db_conn() as conn:
+            row = conn.execute(
+                "SELECT auto_add_albums FROM watched_artists WHERE id = ?", (artist_id,)
+            ).fetchone()
+            already_auto_adding = bool(row and row[0])
+    if body.auto_add_albums and not already_auto_adding:
+        try:
+            seed_artist_albums(artist_id, body.mbid, user_id=user_id)
+            with db_conn() as conn:
+                conn.execute("UPDATE watched_artists SET auto_add_albums = 1 WHERE id = ?", (artist_id,))
+                conn.commit()
+        except MusicBrainzUnavailable as e:
+            auto_add_albums_warning = (
+                f"Could not seed the current album list ({e}); auto-add-albums was left off. "
+                "Try the toggle again once MusicBrainz is reachable."
+            )
 
     # The first refresh seeds the entire back-catalogue from MusicBrainz, which
     # for a prolific artist (Radiohead, looking at you) can take a couple of
@@ -4192,14 +4257,20 @@ def add_watched_artist(body: WatchedArtistRequest, http_request: Request):
     # already polls refresh_state/refresh_stage to show progress. Running it inline
     # would leave the HTTP request hanging long enough to trip client/proxy timeouts.
     spawn_daemon_thread(refresh_watched_artist, artist_id)
-    return {
+    response = {
         "id": artist_id,
         "name": body.name,
         "mbid": body.mbid,
         "from_date": body.from_date,
+        "auto_add_albums": (bool(body.auto_add_albums) or already_auto_adding) and auto_add_albums_warning is None,
+        "watch_singles": bool(body.watch_singles),
+        "already_watched": already_watched,
         "refresh_state": "running",
         "seeding": True,
     }
+    if auto_add_albums_warning:
+        response["warning"] = auto_add_albums_warning
+    return response
 
 
 @app.get("/api/watched-artists")
@@ -4484,6 +4555,8 @@ def update_watched_artist(artist_id: str, request: WatchedArtistUpdate, http_req
         request.convert_to_flac = None  # Peons cannot change conversion setting
     user_id = http_request.state.user_id
     is_admin = http_request.state.is_admin
+    _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+
     updates: list[str] = []
     params: list = []
     if request.enabled is not None:
@@ -4494,9 +4567,56 @@ def update_watched_artist(artist_id: str, request: WatchedArtistUpdate, http_req
         updates.append("convert_to_flac = ?"); params.append(int(request.convert_to_flac))
     if request.from_date is not None:
         updates.append("from_date = ?"); params.append(request.from_date)
+
+    # auto_add_albums: switching it ON seeds the artist's current albums as
+    # already-seen BEFORE the flag itself is persisted below, so nothing reading
+    # this flag (the scheduler included) can ever observe "on" without the seed
+    # rows already in place. That is the anti-avalanche guarantee; flipping it
+    # off, or leaving an already-on artist on, needs no reseed.
+    if request.auto_add_albums is not None:
+        with db_conn() as conn:
+            row = conn.execute(
+                f"SELECT auto_add_albums, mbid FROM watched_artists WHERE id = ? AND {_scope_frag}",
+                (artist_id, *_scope_params)
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Artist not found")
+        if request.auto_add_albums and not row[0]:
+            try:
+                seed_artist_albums(artist_id, row[1], user_id=user_id)
+            except MusicBrainzUnavailable as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not seed the current album list: {e}. Try again in a moment.",
+                )
+        updates.append("auto_add_albums = ?"); params.append(int(request.auto_add_albums))
+
+    if request.watch_singles is not None:
+        updates.append("watch_singles = ?"); params.append(int(request.watch_singles))
+
+    # Both switches off leaves a follow that follows nothing, which would sit in
+    # the list quietly doing sod all forever. Refuse it and point at Delete, which
+    # is what the user actually meant.
+    if request.watch_singles is not None or request.auto_add_albums is not None:
+        with db_conn() as conn:
+            current = conn.execute(
+                f"SELECT watch_singles, auto_add_albums FROM watched_artists WHERE id = ? AND {_scope_frag}",
+                (artist_id, *_scope_params)
+            ).fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail="Artist not found")
+        next_singles = request.watch_singles if request.watch_singles is not None else bool(current[0])
+        next_albums = request.auto_add_albums if request.auto_add_albums is not None else bool(current[1])
+        if not next_singles and not next_albums:
+            raise HTTPException(
+                status_code=400,
+                detail="An artist has to be followed for singles, albums or both. "
+                       "To stop following them entirely, use Delete.",
+            )
+
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
-    _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+
     with db_conn() as conn:
         conn.execute(
             f"UPDATE watched_artists SET {', '.join(updates)} WHERE id = ? AND {_scope_frag}",
@@ -4627,6 +4747,41 @@ def get_missing_artist_tracks(artist_id: str, http_request: Request):
     return {"artist": artist[0], "tracks": [dict(t) for t in tracks]}
 
 
+@app.get("/api/watched-artists/{artist_id}/albums")
+def get_watched_artist_albums(artist_id: str, http_request: Request):
+    """Return the known albums for a watched artist (seen/queued/failed) plus a
+    cheap on-disk check per row. Populated by seeding (on enabling
+    auto_add_albums) and by refreshes once it's on; empty for artists that have
+    never had the toggle switched on."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        artist = conn.execute(
+            f"SELECT name FROM watched_artists WHERE id = ? AND {_scope_frag}",
+            (artist_id, *_scope_params)
+        ).fetchone()
+        if not artist:
+            raise HTTPException(status_code=404, detail="Artist not found")
+        rows = conn.execute(
+            """SELECT title, year, release_mbid, release_group_mbid, status, queued_at, import_id
+               FROM watched_artist_albums
+               WHERE artist_id = ?
+               ORDER BY year DESC NULLS LAST, title""",
+            (artist_id,)
+        ).fetchall()
+
+    artist_name = artist["name"]
+    out = []
+    for r in rows:
+        d = dict(r)
+        # Cheap folder-existence check only; no MusicBrainz call per row.
+        d["on_disk"] = album_on_disk(artist_name, d["title"], user_id=user_id)
+        out.append(d)
+    return {"artist": artist_name, "albums": out}
+
+
 @app.post("/api/watched-artists/{artist_id}/retry-track")
 def retry_missing_artist_track(artist_id: str, request: RetryMissingTrackRequest, http_request: Request):
     """Retry downloading a specific missing single."""
@@ -4736,10 +4891,14 @@ def albums_search_artist(q: str):
 
 
 @app.get("/api/albums/artist/{mbid}/albums")
-def albums_list_artist_albums(mbid: str):
+def albums_list_artist_albums(mbid: str, http_request: Request, artist_name: str = ""):
     """Fetch studio albums for a MusicBrainz artist MBID.
 
-    Returns [{title, year, release_mbid}, ...] sorted by year.
+    Returns [{title, year, release_mbid, release_group_mbid}, ...] sorted by year.
+    Pass ?artist_name= and each album also carries `on_disk`, so a tickable album
+    list can grey out the ones already sitting in the library rather than inviting
+    you to download your own record collection back to yourself. That check is
+    pure filesystem, no extra MusicBrainz traffic.
     503 on MB unavailable.
     """
     if not mbid or not mbid.strip():
@@ -4748,6 +4907,12 @@ def albums_list_artist_albums(mbid: str):
         albums = fetch_artist_albums(mbid.strip())
     except MusicBrainzUnavailable as exc:
         raise HTTPException(status_code=503, detail=f"MusicBrainz unreachable: {exc}. Try again in a moment.")
+
+    artist_name = (artist_name or "").strip()
+    if artist_name:
+        user_id = http_request.state.user_id
+        for album in albums:
+            album["on_disk"] = album_on_disk(artist_name, album.get("title") or "", user_id=user_id)
     return {"albums": albums}
 
 
@@ -4769,70 +4934,10 @@ def albums_get_tracklist(release_mbid: str):
     return {"tracks": tracks}
 
 
-def _album_track_stem(artist: str, title: str, user_id: str | None = None) -> str:
-    """Build the expected filename stem for an album track in override_dir mode."""
-    from utils import sanitize_filename
-    safe_title = sanitize_filename(title or "") or "Unknown Title"
-    if not get_setting_bool("organise_by_artist", True, user_id=user_id):
-        safe_artist = sanitize_filename(artist or "Unknown Artist")
-        return f"{safe_artist} - {safe_title}"
-    return safe_title
-
-
-def _album_track_status(artist: str, album_title: str, tracks: list[dict], user_id: str | None = None) -> dict:
-    """Return existing/missing status for tracklist against the target album directory."""
-    from utils import sanitize_filename
-
-    album_dir = get_albums_dir(user_id=user_id) / sanitize_filename(artist) / sanitize_filename(album_title)
-    audio_files = [p for p in album_dir.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS] if album_dir.exists() else []
-    audio_stems = [p.stem for p in audio_files]
-
-    track_status = []
-    for t in tracks:
-        title = (t.get("title") or "").strip()
-        stem = _album_track_stem(artist, title, user_id=user_id)
-        exists_exact = any((album_dir / f"{stem}{ext}").exists() for ext in AUDIO_EXTENSIONS)
-        exists_fuzzy = False
-        if not exists_exact:
-            norm_title = _normalise_album_match_text(title)
-            if norm_title:
-                for file_stem in audio_stems:
-                    norm_stem = _normalise_album_match_text(file_stem)
-                    if not norm_stem:
-                        continue
-                    if norm_stem == norm_title or norm_stem.endswith(f" {norm_title}"):
-                        exists_fuzzy = True
-                        break
-        exists = bool(exists_exact or exists_fuzzy)
-        track_status.append({
-            "position": t.get("position"),
-            "title": title,
-            "isrc": t.get("isrc"),
-            "exists": exists,
-        })
-
-    existing_tracks = [t for t in track_status if t["exists"]]
-    missing_tracks = [t for t in track_status if not t["exists"]]
-    m3u_files = sorted([p.name for p in album_dir.glob("*.m3u") if p.is_file()], key=str.casefold) if album_dir.exists() else []
-    return {
-        "album_dir": album_dir,
-        "tracks": track_status,
-        "existing_tracks": existing_tracks,
-        "missing_tracks": missing_tracks,
-        "m3u_files": m3u_files,
-    }
-
-
-def _normalise_album_match_text(text: str) -> str:
-    """Normalise track titles for album-track matching."""
-    t = clean_title(text or "")
-    t = t.replace("’", "'").replace("‘", "'").replace("`", "'")
-    t = unicodedata.normalize("NFKD", t)
-    t = "".join(ch for ch in t if not unicodedata.combining(ch))
-    t = re.sub(r"\b(?:feat\.?|ft\.?|featuring)\b.*$", "", t, flags=re.IGNORECASE)
-    t = re.sub(r"\s*[\(\[].*?[\)\]]", "", t)
-    t = re.sub(r"[^a-z0-9]+", " ", t.lower())
-    return re.sub(r"\s+", " ", t).strip()
+# _album_track_stem, album_track_status (formerly _album_track_status) and
+# _normalise_album_match_text now live in albums.py, alongside the rest of the
+# album pipeline (imported at the top of this file). _match_album_track below
+# still leans on _normalise_album_match_text for its own fuzzy matching.
 
 
 def _match_album_track(tracks: list[dict], candidate_title: str) -> dict | None:
@@ -4924,7 +5029,7 @@ def albums_missing_tracks(release_mbid: str, artist: str, album_title: str, requ
         raise HTTPException(status_code=404, detail="No tracks found for this release")
 
     user_id = getattr(request.state, "user_id", None)
-    status = _album_track_status(artist, album_title, tracks, user_id=user_id)
+    status = album_track_status(artist, album_title, tracks, user_id=user_id)
     return {
         "album_dir": str(status["album_dir"]),
         "total_tracks": len(status["tracks"]),
@@ -5024,6 +5129,71 @@ def albums_resolve_url(body: PlaylistFetchRequest, http_request: Request):
     return summary
 
 
+@app.get("/api/albums/search-release")
+def albums_search_release(q: str, artist: str | None = None):
+    """Search MusicBrainz for an album by name, with or without an artist.
+
+    Deliberately does not require an artist first: soundtracks, compilations
+    and Various Artists releases are first-class citizens here, not awkward
+    edge cases. Somebody typing "Trainspotting" should not have to nominate
+    which of its thirty-odd contributors counts as the owner.
+
+    release_mbid comes back null on purpose. Resolving a representative
+    release costs one rate-limited MusicBrainz request per candidate, and
+    nobody needs that for the nine albums they are about to ignore; call
+    /api/albums/resolve-release-group once the user has actually picked one.
+    """
+    if not q or not q.strip():
+        raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
+    try:
+        releases = search_release_groups(q.strip(), artist=(artist or "").strip() or None,
+                                         resolve_releases=False)
+    except MusicBrainzUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"MusicBrainz unreachable: {exc}. Try again in a moment.")
+    return {"releases": releases}
+
+
+@app.post("/api/albums/resolve-release-group")
+def albums_resolve_release_group(body: ReleaseGroupResolveRequest):
+    """Turn a chosen release-group into concrete album download fields.
+
+    The other half of the lazy search above: one request, for the one album
+    the user actually wants, handing back exactly what /api/albums/download
+    expects.
+    """
+    rg_mbid = (body.release_group_mbid or "").strip()
+    if not rg_mbid:
+        raise HTTPException(status_code=400, detail="release_group_mbid is required")
+    try:
+        summary = fetch_release_summary("release-group", rg_mbid)
+    except MusicBrainzUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"MusicBrainz unreachable: {exc}. Try again in a moment.")
+    if not summary:
+        raise HTTPException(status_code=404, detail="MusicBrainz has no usable release in that release group")
+    return summary
+
+
+@app.post("/api/albums/resolve-album-url")
+def albums_resolve_album_url(body: PlaylistFetchRequest):
+    """Work out whether a pasted URL is a Spotify or Apple Music ALBUM, and what it is.
+
+    Returns recognised=False for anything else, including playlist and track
+    URLs from those same services, so the caller can fall through to the
+    ordinary playlist path without a fuss.
+
+    The confidence gate matters here: `confident` false means the caller must
+    ask the user which candidate they meant. Guessing wrong does not cost one
+    duff track, it costs a whole duff album.
+    """
+    url = (body.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    try:
+        return resolve_album_url(url)
+    except MusicBrainzUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"MusicBrainz unreachable: {exc}. Try again in a moment.")
+
+
 @app.post("/api/albums/download")
 def albums_download(body: AlbumDownloadRequest, http_request: Request):
     """Queue a full album for download.
@@ -5031,6 +5201,10 @@ def albums_download(body: AlbumDownloadRequest, http_request: Request):
     Fetches tracklist from MusicBrainz, creates a bulk import job routed to
     Albums/Artist/Album/ instead of the normal Singles layout.
     Returns {import_id} for polling via /api/bulk-import/{id}/status.
+
+    The actual pipeline (tracklist fetch, existing/missing diff, .albuminfo
+    sidecar, in-flight guard, queueing) lives in albums.py so watched_artists.py
+    can reuse it for auto-added albums without importing this whole file.
     """
     _enforce_peon_format(http_request, body)
     user_id = getattr(http_request.state, "user_id", None)
@@ -5038,115 +5212,50 @@ def albums_download(body: AlbumDownloadRequest, http_request: Request):
     artist = body.artist.strip()
     album_title = body.album_title.strip()
     release_mbid = body.release_mbid.strip()
-    make_m3u = body.make_m3u
-    m3u_name = (body.m3u_name or "").strip()
-    convert_to_flac = body.convert_to_flac
 
     if not artist or not album_title or not release_mbid:
         raise HTTPException(status_code=400, detail="artist, album_title, and release_mbid are required")
 
-    tracks = fetch_album_tracks(release_mbid)
-    if not tracks:
-        raise HTTPException(status_code=404, detail="Could not fetch tracklist from MusicBrainz")
+    try:
+        result = queue_album_download(
+            artist,
+            album_title,
+            release_mbid,
+            make_m3u=body.make_m3u,
+            m3u_name=(body.m3u_name or "").strip(),
+            convert_to_flac=body.convert_to_flac,
+            user_id=user_id,
+        )
+    except AlbumTracklistUnavailable as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
-    status = _album_track_status(artist, album_title, tracks, user_id=user_id)
-    album_dir = status["album_dir"]
-    missing_tracks = status["missing_tracks"]
-    album_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write a .albuminfo sidecar so the picker can restore MBID context without a DB.
-    # Atomic write (mkstemp + rename) so a crash mid-write leaves nothing corrupt.
-    albuminfo_path = album_dir / ".albuminfo"
-    if not albuminfo_path.exists():
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=album_dir, suffix=".albuminfo.tmp")
+    # Picked by hand from a followed artist's album list? Record it as dealt with,
+    # otherwise the auto-add diff spots it as a shiny new arrival on the next
+    # refresh and queues the whole thing all over again.
+    watch_artist_id = (body.watch_artist_id or "").strip()
+    group_mbid = (body.release_group_mbid or "").strip() or release_mbid
+    if watch_artist_id:
         try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps({"artist": artist, "album": album_title, "release_mbid": release_mbid}, indent=2))
-            Path(tmp_path).rename(albuminfo_path)
-            set_file_permissions(albuminfo_path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
+            with db_conn() as conn:
+                conn.execute(
+                    """INSERT INTO watched_artist_albums
+                       (artist_id, release_group_mbid, release_mbid, title, year, status,
+                        queued_at, import_id)
+                       VALUES (?, ?, ?, ?, '', 'queued', datetime('now'), ?)
+                       ON CONFLICT(artist_id, release_group_mbid) DO UPDATE SET
+                           status = 'queued',
+                           queued_at = datetime('now'),
+                           import_id = excluded.import_id""",
+                    (watch_artist_id, group_mbid, release_mbid, album_title,
+                     result.get("import_id"))
+                )
+                conn.commit()
+        except Exception as e:
+            # Bookkeeping only. The album is already queued and that is the bit
+            # the user cares about; worst case auto-add offers it again later.
+            print(f"Could not record hand-picked album for artist {watch_artist_id}: {e}")
 
-    # Refuse to queue if an in-flight import is already targeting this album directory.
-    # Catches double-clicks and impatient re-submissions before any files have landed.
-    with db_conn() as conn:
-        inflight = conn.execute(
-            """SELECT id FROM bulk_imports
-               WHERE override_dir = ?
-                 AND status IN ('pending', 'processing')
-                 AND completed_at IS NULL
-               LIMIT 1""",
-            (str(album_dir),),
-        ).fetchone()
-    if inflight:
-        return {
-            "import_id": inflight[0],
-            "track_count": len(tracks),
-            "queued_count": len(missing_tracks),
-            "existing_count": len(status["existing_tracks"]),
-            "missing_count": len(missing_tracks),
-            "album_dir": str(album_dir),
-            "warning": "Download already in progress for this album.",
-            "already_queued": True,
-        }
-
-    # Queue only missing tracks; already-present tracks are left as-is.
-    # ISRC list runs parallel to track_pairs (same list, same order) so the bulk
-    # importer can try the exact studio recording before falling back to free text.
-    track_pairs = [(artist, t["title"]) for t in missing_tracks]
-    track_isrcs = [t.get("isrc") for t in missing_tracks]
-
-    if not track_pairs:
-        updated_m3u = None
-        if make_m3u:
-            updated_m3u = rebuild_album_m3u(album_dir, m3u_name or f"{artist} - {album_title}")
-        return {
-            "import_id": None,
-            "track_count": len(tracks),
-            "queued_count": 0,
-            "existing_count": len(status["existing_tracks"]),
-            "missing_count": 0,
-            "album_dir": str(album_dir),
-            "m3u_updated": bool(updated_m3u),
-            "m3u_path": str(updated_m3u) if updated_m3u else None,
-            "warning": "Album already exists on disk. Nothing queued." + (" Existing M3U updated." if updated_m3u else ""),
-        }
-
-    from bulk_import import start_bulk_import_for_tracks
-    import_id = start_bulk_import_for_tracks(
-        tracks=track_pairs,
-        track_isrcs=track_isrcs,
-        convert_to_flac=convert_to_flac,
-        user_id=user_id,
-        override_dir=str(album_dir),
-        album_release_mbid=release_mbid,
-        album_total_tracks=len(tracks),
-    )
-
-    # If M3U requested, store the album details so create_bulk_playlist can pick it up.
-    # We repurpose the existing create_playlist + playlist_name mechanism.
-    if make_m3u:
-        playlist_label = m3u_name or f"{artist} - {album_title}"
-        if playlist_label.lower().endswith(".m3u"):
-            playlist_label = playlist_label[:-4]
-        playlist_label = sanitize_playlist_name(playlist_label, f"{artist} - {album_title}")
-        with db_conn() as conn:
-            conn.execute(
-                "UPDATE bulk_imports SET create_playlist = 1, playlist_name = ? WHERE id = ?",
-                (playlist_label, import_id)
-            )
-            conn.commit()
-
-    return {
-        "import_id": import_id,
-        "track_count": len(tracks),
-        "queued_count": len(track_pairs),
-        "existing_count": len(status["existing_tracks"]),
-        "missing_count": len(missing_tracks),
-        "album_dir": str(album_dir),
-        "warning": f"{len(status['existing_tracks'])} track(s) already existed; queued {len(track_pairs)} missing track(s).",
-    }
+    return result
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import constants
 import downloads
 import search
 
@@ -45,9 +46,12 @@ def test_automated_cache_key_keeps_empty_allowlist_distinct(monkeypatch):
 
 def test_alternate_search_rejects_source_outside_allowlist(monkeypatch):
     calls = []
+    waits = []
 
-    def fake_search_all(query, limit, sources=None, include_soulseek=False):
+    def fake_search_all(query, limit, sources=None, include_soulseek=False,
+                        slot_wait=0.0, status_out=None):
         calls.append(sources)
+        waits.append(slot_wait)
         # Defensive regression guard: even if a search provider misbehaves and
         # returns another source, the fallback selector must refuse it.
         return ([{
@@ -69,6 +73,9 @@ def test_alternate_search_rejects_source_outside_allowlist(monkeypatch):
 
     assert calls == [["monochrome"]]
     assert result is None
+    # A download is riding on this search, so it must queue for a busy source
+    # rather than come back empty-handed and fail the job over a collision.
+    assert waits == [constants.SEARCH_SLOT_WAIT_AUTOMATED]
 
 
 def test_fallback_stops_when_only_allowed_source_is_excluded(monkeypatch):

@@ -26,7 +26,10 @@ from constants import (
     DEEZER_SEARCH_URL, DEEZER_API_URL, TIMEOUT_DEEZER,
     DEEZER_METADATA_MATCH_FLOOR, DEEZER_METADATA_SEARCH_LIMIT,
 )
-from matching import compute_match_confidence, query_requests_variant, _HEAVY_VERSION_KEYWORDS
+from matching import (
+    compute_match_confidence, query_requests_variant, _HEAVY_VERSION_KEYWORDS,
+    similarity, clean_title, clean_artist, is_junk_artist,
+)
 from settings import get_setting, get_setting_bool
 from utils import set_file_permissions
 
@@ -2088,14 +2091,19 @@ def search_artist_mbid(name: str) -> list[dict]:
             "disambiguation": a.get("disambiguation", ""),
             "score": int(a.get("score", 0)),
         })
-    # Exact case match first, then case-insensitive, then MB relevance score.
-    # Matters for artists like "SiR" where lowercasing loses the distinction.
+    # Artists whose name actually matches come first, then everything else.
+    # Within each group MusicBrainz's own relevance score leads, with exact
+    # capitalisation as the tiebreak; that still keeps "SiR" above "Sir" when
+    # the two score alike, without letting case pedantry decide the whole
+    # ordering. It used to: searching "Raye" put three obscure 85-scoring
+    # artists literally called "Raye" above RAYE the English singer, who
+    # scores 100 but spells herself in capitals. Being upstaged by an
+    # unnamed feature credit on a Dead Prez record is no way to be found.
     name_lower = name.lower()
     results.sort(key=lambda r: (
-        0 if r["name"] == name else
-        1 if r["name"].lower() == name_lower else
-        2,
-        -r["score"]
+        0 if r["name"].lower() == name_lower else 1,
+        -r["score"],
+        0 if r["name"] == name else 1,
     ))
     return results
 
@@ -2268,6 +2276,13 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
                     "title": title,
                     "year": year,
                     "release_mbid": release_mbid,
+                    # The release-group is the album's stable identity; the
+                    # release we picked is merely the earliest pressing of it,
+                    # and which pressing wins can change as MusicBrainz gains
+                    # data. Anything remembering "have I seen this album
+                    # before?" wants this one, not release_mbid, or a tidied-up
+                    # 1974 reissue date turns a familiar album into breaking news.
+                    "release_group_mbid": rg_id,
                 })
 
         offset += len(releases)
@@ -2442,4 +2457,237 @@ def fetch_release_summary(kind: str, mbid: str) -> dict | None:
         "release_mbid": data.get("id") or mbid,
         "year": year,
         "track_count": track_count,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Album-name search and fuzzy album matching
+#
+# Bulk Import's job is to accept "whatever the user pasted or typed", which
+# includes an album name with no artist attached. Trainspotting, Now That's
+# What I Call Music 42, the Guardians of the Galaxy soundtrack: all perfectly
+# reasonable things to type, none of them owned by a single artist. This
+# search deliberately does NOT apply the studio-album filtering that
+# fetch_artist_albums uses; that filter exists to keep an artist's own
+# discography free of noise, which is the opposite of what a browse surface
+# for compilations and soundtracks needs.
+# ---------------------------------------------------------------------------
+
+def _join_artist_credit(credits: list) -> str:
+    """Join a MusicBrainz artist-credit array into a display string.
+
+    MusicBrainz stores the separator inside each credit's own joinphrase
+    (" & ", " feat. "), so we join with "" rather than a space; a plain space
+    join gives "Underworld &  Iggy Pop", extra space and all.
+    """
+    return "".join(
+        (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
+        for ac in (credits or [])
+        if isinstance(ac, dict)
+    ).strip()
+
+
+def _resolve_representative_release(release_group_mbid: str, headers: dict) -> str | None:
+    """Pick a representative official release MBID for a release-group.
+
+    Same picking logic fetch_release_summary uses for a release-group MBID
+    (_pick_release_from_group), reused rather than reinvented. Deliberately
+    skips the second full-release lookup fetch_release_summary makes after
+    that, since search_release_groups already has title/artist/year from the
+    search hit itself and doesn't need to re-confirm them.
+    """
+    response = _mb_get_with_retry(
+        f"https://musicbrainz.org/ws/2/release-group/{release_group_mbid}",
+        params={"inc": "releases", "fmt": "json"},
+        headers=headers, timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
+    )
+    if response.status_code != 200:
+        return None
+    try:
+        group = response.json()
+    except Exception:
+        return None
+    release = _pick_release_from_group(group.get("releases") or [])
+    return release.get("id") if release else None
+
+
+def search_release_groups(
+    query: str, artist: str | None = None, limit: int = 10, resolve_releases: bool = True
+) -> list[dict]:
+    """Search MusicBrainz release-groups by title, optionally narrowed by artist.
+
+    This is a browse surface, not the artist-albums poller: compilations,
+    soundtracks and Various Artists releases are NOT filtered out here on
+    purpose, since a user typing "Trainspotting" or "Now That's What I Call
+    Music 42" with no artist in mind is exactly who this is for. Secondary
+    types come back verbatim so the caller can label what it's showing rather
+    than pretending everything is a plain studio album.
+
+    Each result: {title, artist, year, release_group_mbid, release_mbid,
+    primary_type, secondary_types, score}. release_mbid is a representative
+    official release for the group, resolved the same way fetch_release_summary
+    resolves a release-group MBID (see _resolve_representative_release); it's
+    None when MusicBrainz has no releases catalogued yet for that group, or
+    when resolving it hit a wobble (a candidate missing its release_mbid still
+    beats losing the whole search over one bad apple).
+
+    Raises MusicBrainzUnavailable only if the initial search itself cannot
+    reach MusicBrainz, so the caller can offer a Retry.
+
+    resolve_releases controls how much work a search costs. Resolving a
+    representative release means one extra MusicBrainz request per candidate,
+    each courteously spaced a second apart, so a default search goes from one
+    request to eleven and from instant to over ten seconds. A browse list does
+    not need it: nobody needs the release MBID of the nine albums they are not
+    going to pick. Pass False for interactive search and resolve the single
+    chosen candidate afterwards with fetch_release_summary("release-group", id);
+    candidates then come back with release_mbid set to None. It defaults True
+    so existing callers keep the behaviour they were written against.
+    """
+    if not get_setting_bool("enable_musicbrainz", True):
+        return []
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    import time as _time
+
+    headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+    lucene_query = f'releasegroup:"{query}"'
+    if artist and artist.strip():
+        lucene_query += f' AND artist:"{artist.strip()}"'
+
+    response = _mb_get_with_retry(
+        "https://musicbrainz.org/ws/2/release-group/",
+        params={"query": lucene_query, "fmt": "json", "limit": limit},
+        headers=headers, timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
+    )
+    if response.status_code != 200:
+        return []
+    try:
+        groups = response.json().get("release-groups") or []
+    except Exception:
+        return []
+
+    results = []
+    for rg in groups[:limit]:
+        rg_id = rg.get("id")
+        title = rg.get("title") or ""
+        if not title or not rg_id:
+            continue
+
+        date = rg.get("first-release-date") or ""
+        year = date[:4] if date[:4].isdigit() else ""
+
+        release_mbid = None
+        if resolve_releases:
+            _time.sleep(1)  # MusicBrainz rate limit: 1 req/sec, courtesy between requests
+            try:
+                release_mbid = _resolve_representative_release(rg_id, headers)
+            except MusicBrainzUnavailable:
+                # One candidate's release resolution having a wobble shouldn't
+                # sink the whole browse list.
+                release_mbid = None
+
+        results.append({
+            "title": title,
+            "artist": _join_artist_credit(rg.get("artist-credit") or []),
+            "year": year,
+            "release_group_mbid": rg_id,
+            "release_mbid": release_mbid,
+            "primary_type": rg.get("primary-type") or "",
+            "secondary_types": rg.get("secondary-types") or [],
+            "score": int(rg.get("score", 0)),
+        })
+
+    return results
+
+
+# Confidence gate for treating a scraped artist/album pair as a solid
+# MusicBrainz match. Below this, the caller MUST ask the user to confirm
+# rather than guessing; a wrong album match downloads an entire wrong album's
+# worth of tracks, a much bigger mess than a wrong single track, so the bar
+# sits well above the sort of confidence a single-track match would settle
+# for. Picked by feel rather than measurement; move to constants.py if it
+# ever needs tuning against real-world data.
+ALBUM_MATCH_CONFIDENCE_THRESHOLD = 0.75
+
+
+def _album_artist_score(expected_artist: str, candidate_artist: str) -> float:
+    """Artist half of an album match score.
+
+    Reuses matching.py's normalisation and similarity(), but deliberately does
+    NOT apply its junk-artist gate: "Various Artists" is a legitimate, correct
+    MusicBrainz credit for compilations and soundtracks, not noise to zero out.
+    Track matching zeroes it because nobody wants a single track mistagged
+    "Various Artists"; album matching has the opposite problem, since that IS
+    the right credit for a chunk of what this function exists to find. A VA
+    candidate is scored as a decent-but-not-perfect match instead, so the
+    album title carries the real weight of the decision.
+    """
+    if is_junk_artist(candidate_artist):
+        return 0.6
+    if not expected_artist:
+        return 0.5  # Nothing supplied to compare against.
+    return similarity(clean_artist(expected_artist), clean_artist(candidate_artist or ""))
+
+
+def match_album_to_musicbrainz(artist: str, album: str) -> dict:
+    """Fuzzy-match a scraped artist/album pair to a MusicBrainz release.
+
+    Runs search_release_groups(album, artist=artist) and scores each result
+    against the input using matching.py's existing similarity()/clean_title()/
+    clean_artist() primitives (the same fuzzy stack the rest of MusicGrabber
+    already trusts for tracks), rather than a new one invented for albums.
+
+    Returns:
+        {
+            "match": the best candidate (search_release_groups shape) or None,
+            "confidence": float 0.0-1.0,
+            "confident": bool,  # True only once confidence clears ALBUM_MATCH_CONFIDENCE_THRESHOLD
+            "candidates": up to 5 candidates, best first, for the UI to offer
+                          when not confident,
+        }
+
+    Raises MusicBrainzUnavailable when MusicBrainz cannot be reached at all
+    (propagated straight from search_release_groups).
+    """
+    # Scoring only looks at title and artist, both of which the search hit
+    # already carries, so there is no sense resolving a release for ten
+    # candidates when nine of them are about to lose. The winner gets its
+    # release resolved below.
+    candidates = search_release_groups(album, artist=artist, limit=10, resolve_releases=False)
+    if not candidates:
+        return {"match": None, "confidence": 0.0, "confident": False, "candidates": []}
+
+    scored = []
+    for cand in candidates:
+        title_score = similarity(clean_title(album or ""), clean_title(cand.get("title") or ""))
+        artist_score = _album_artist_score(artist or "", cand.get("artist") or "")
+        # Title carries most of the weight, same balance compute_match_confidence
+        # strikes for tracks: the title is what the user actually typed/scraped.
+        confidence = title_score * 0.65 + artist_score * 0.35
+        scored.append((confidence, cand))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    best_confidence, best_candidate = scored[0]
+
+    # Resolve a real release for the winner only; the album pipeline needs a
+    # release MBID, and one request beats ten. A wobble here leaves it None,
+    # which the caller must treat as "cannot queue this yet" rather than a
+    # match failure.
+    if best_candidate.get("release_group_mbid") and not best_candidate.get("release_mbid"):
+        headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+        try:
+            best_candidate["release_mbid"] = _resolve_representative_release(
+                best_candidate["release_group_mbid"], headers
+            )
+        except MusicBrainzUnavailable:
+            best_candidate["release_mbid"] = None
+
+    return {
+        "match": best_candidate,
+        "confidence": round(best_confidence, 3),
+        "confident": best_confidence >= ALBUM_MATCH_CONFIDENCE_THRESHOLD,
+        "candidates": [cand for _, cand in scored[:5]],
     }

@@ -142,6 +142,44 @@ def test_search_artist_propagates_unavailable(monkeypatch):
         metadata.search_artist_mbid("Bowie")
 
 
+def test_search_artist_does_not_let_capitalisation_bury_the_real_artist(monkeypatch):
+    """Real MusicBrainz answer for "Raye": three obscure acts spelled exactly
+    "Raye" scoring 85, and RAYE the English singer scoring 100 in capitals.
+
+    Ordering exact capitalisation above relevance buried her in fourth place,
+    behind an unnamed feature credit on a Dead Prez record. Name matches still
+    come first as a group; within that group the score leads.
+    """
+    metadata = _import_metadata_or_skip()
+    _patch_httpx(monkeypatch, metadata, [_FakeResp(200, {"artists": [
+        {"id": "m1", "name": "Raye", "disambiguation": "unknown feat. artist", "score": 85},
+        {"id": "m2", "name": "Raye", "disambiguation": "Spanish DJ, producer", "score": 85},
+        {"id": "m3", "name": "Raye", "disambiguation": "Amanda Cygnaeus", "score": 85},
+        {"id": "m4", "name": "RAYE", "disambiguation": "English singer", "score": 100},
+        {"id": "m5", "name": "Collin Raye", "disambiguation": "", "score": 88},
+    ]})])
+
+    results = metadata.search_artist_mbid("Raye")
+
+    assert results[0]["mbid"] == "m4", "the highest-scoring name match should lead"
+    # Collin Raye scores higher than the 85s but is not called "Raye", so he
+    # stays behind the artists who actually own the name.
+    assert [r["mbid"] for r in results][-1] == "m5"
+
+
+def test_search_artist_keeps_exact_capitalisation_as_the_tiebreak(monkeypatch):
+    """When scores tie, capitalisation still decides. "SiR" is not "Sir"."""
+    metadata = _import_metadata_or_skip()
+    _patch_httpx(monkeypatch, metadata, [_FakeResp(200, {"artists": [
+        {"id": "m1", "name": "Sir", "disambiguation": "someone else", "score": 100},
+        {"id": "m2", "name": "SiR", "disambiguation": "American R&B singer", "score": 100},
+    ]})])
+
+    results = metadata.search_artist_mbid("SiR")
+
+    assert results[0]["mbid"] == "m2"
+
+
 def test_search_artist_returns_empty_list_on_4xx(monkeypatch):
     """4xx is a definitive 'no data', not a network problem."""
     metadata = _import_metadata_or_skip()

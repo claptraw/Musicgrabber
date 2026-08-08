@@ -26,6 +26,15 @@ TIMEOUT_YTDLP_SEARCH = 30        # Search queries
 # (proxies down, on the slow fallback) rather than silently dropping the one
 # source that actually serves FLAC. The proper fix for the wait is a progress UI.
 SEARCH_ALL_DEADLINE = int(os.getenv("SEARCH_ALL_DEADLINE", "30"))  # Multi-source search collection deadline
+# Each provider has one admission slot, so two searches wanting the same source
+# at the same moment means one waits. How long it is prepared to wait depends
+# entirely on who is asking: a user watching a spinner would rather have results
+# a moment late than an error, while a bulk import has nobody watching at all and
+# would much rather wait than lose a track for good. Both sit comfortably inside
+# SEARCH_ALL_DEADLINE, since a source that spends the whole deadline queueing
+# would be reported as timed out and contribute nothing anyway.
+SEARCH_SLOT_WAIT_INTERACTIVE = float(os.getenv("SEARCH_SLOT_WAIT_INTERACTIVE", "5"))
+SEARCH_SLOT_WAIT_AUTOMATED = float(os.getenv("SEARCH_SLOT_WAIT_AUTOMATED", "15"))
 TIMEOUT_YTDLP_DOWNLOAD = int(os.getenv("TIMEOUT_YTDLP_DOWNLOAD", "300"))  # Downloading a track (5 minutes)
 TIMEOUT_YTDLP_PREVIEW = 15       # Getting preview URL
 TIMEOUT_YTDLP_PLAYLIST = 60      # Getting playlist contents
@@ -104,6 +113,18 @@ TIMEOUT_MONOCHROME_DOWNLOAD = int(os.getenv("TIMEOUT_MONOCHROME_DOWNLOAD", "300"
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
 
+# Bulk imports run for as long as they need, so they get judged on a progress
+# heartbeat rather than a wall clock. An hour of complete silence means the
+# worker thread has died; the import itself is fine and can be picked back up.
+STALE_BULK_IMPORT_TIMEOUT = int(os.getenv("STALE_BULK_IMPORT_TIMEOUT", "3600"))
+# How many times an import may be brought back to life before we accept it is
+# never going to finish. Counts restarts too: whatever killed it, three goes is
+# plenty, and an unbounded retry is just a slow-motion infinite loop.
+STALE_BULK_IMPORT_MAX_RESUMES = int(os.getenv("STALE_BULK_IMPORT_MAX_RESUMES", "3"))
+# Past this age we stop trying to be helpful. Resuming a months-old import means
+# downloading a pile of music you had almost certainly stopped waiting for.
+STALE_BULK_IMPORT_ABANDON_AFTER = int(os.getenv("STALE_BULK_IMPORT_ABANDON_AFTER", str(7 * 24 * 3600)))
+
 # SQLite locking. busy_timeout is how long sqlite itself will queue behind
 # another writer before giving up; the retry settings are our own second chance
 # on top of that, for the cases sqlite refuses to wait for at all (a stale WAL
@@ -116,6 +137,13 @@ LIBRARY_RECONCILE_INTERVAL = int(os.getenv("LIBRARY_RECONCILE_INTERVAL", "1800")
 
 # Bulk import settings
 BULK_IMPORT_SEARCH_DELAY = 1.0           # Seconds between searches (be courteous to all sources)
+# An empty search is very often a wobble rather than a verdict: a second import
+# holding the per-source admission slot, a proxy having a moment, a provider
+# rate-limiting us. Give the track a few goes before writing it off, because a
+# track marked 'failed' is never looked at again.
+BULK_IMPORT_SEARCH_ATTEMPTS = 3          # Total tries per track, including the first
+BULK_IMPORT_SEARCH_RETRY_DELAY = 4.0     # First backoff pause in seconds, doubling thereafter
+BULK_IMPORT_SEARCH_RETRY_MAX_DELAY = 30.0  # Ceiling for that doubling; an album shouldn't take all afternoon
 PRIORITY_SOURCE_BOOST = 500              # Quality-score bonus applied to the user-chosen "preferred source" during bulk import / watched playlist refreshes. Big enough to win nearly every close call without nuking the strict-artist-match safety net.
 
 # Playlist creation

@@ -18,6 +18,9 @@ from constants import (
     DB_LOCK_RETRY_MAX_DELAY,
     STALE_JOB_TIMEOUT,
     STALE_JOB_CHECK_INTERVAL,
+    STALE_BULK_IMPORT_TIMEOUT,
+    STALE_BULK_IMPORT_MAX_RESUMES,
+    STALE_BULK_IMPORT_ABANDON_AFTER,
     LIBRARY_RECONCILE_INTERVAL,
     SEARCH_LOG_RETENTION_DAYS,
     WATCHED_REFRESH_STALE_SECONDS,
@@ -345,6 +348,12 @@ def init_db():
             rate_limited_until TIMESTAMP,
             error TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            -- Bumped every time a track is dealt with. A long import is perfectly
+            -- entitled to take hours, so silence is the symptom worth watching,
+            -- not elapsed time.
+            progress_at TIMESTAMP,
+            -- How many times this import has been brought back from the dead.
+            resume_count INTEGER DEFAULT 0,
             completed_at TIMESTAMP
         )
     """)
@@ -733,6 +742,11 @@ def init_db():
             refresh_completed_at TIMESTAMP,
             refresh_error TEXT,
             refresh_import_id TEXT,
+            auto_add_albums INTEGER DEFAULT 0,
+            -- Singles and albums are independent switches. Defaults to 1 because
+            -- watching an artist has always meant singles; an albums-only follow
+            -- turns this off so the refresh doesn't go hunting singles nobody asked for.
+            watch_singles INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -755,6 +769,30 @@ def init_db():
     """)
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_watched_artist_tracks_artist ON watched_artist_tracks(artist_id)")
+
+        # Watched artist albums - known albums per followed artist, used by the
+        # "automatically add new albums" toggle. status: 'seen' (known, not
+        # queued), 'queued' (sent to the album pipeline), 'failed' (queueing blew
+        # up, worth another look). Unconditional CREATE TABLE like its sibling
+        # above; no version gate needed since IF NOT EXISTS already covers fresh
+        # and existing DBs alike.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS watched_artist_albums (
+            artist_id TEXT NOT NULL,
+            release_group_mbid TEXT,
+            release_mbid TEXT,
+            title TEXT,
+            year TEXT,
+            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            queued_at TIMESTAMP,
+            import_id TEXT,
+            status TEXT DEFAULT 'seen',
+            UNIQUE (artist_id, release_group_mbid),
+            FOREIGN KEY (artist_id) REFERENCES watched_artists(id) ON DELETE CASCADE
+        )
+    """)
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_watched_artist_albums_artist ON watched_artist_albums(artist_id)")
 
         # Migration: resolved_path - actual on-disk path saved at download time.
         # Sidesteps artist/title lookup mismatches caused by romanisation or
@@ -1335,6 +1373,52 @@ def init_db():
             )
             print(f"DB migrated to version 9: dead Qobuz proxies retired → {new_qobuz_value_v9 or '(none left)'}")
 
+        # v10: artists can now opt in to "automatically add new albums". The column
+        # only needs adding for DBs that predate it; the watched_artist_albums table
+        # itself is created unconditionally above (CREATE TABLE IF NOT EXISTS), same
+        # as its watched_artist_tracks sibling, so there's nothing to migrate there.
+        if db_version < 10:
+            try:
+                conn.execute("ALTER TABLE watched_artists ADD COLUMN auto_add_albums INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # Column already present (fresh DB built from the new schema)
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '10')"
+            )
+            print("DB migrated to version 10: watched artists gain auto_add_albums, watched_artist_albums table added")
+
+        # v11: following an artist splits into two independent switches, singles and
+        # albums. Every artist watched before now was watched for singles, so the
+        # column defaults to 1 and existing follows carry on exactly as they were;
+        # nobody wakes up to find their favourite band quietly unfollowed.
+        if db_version < 11:
+            try:
+                conn.execute("ALTER TABLE watched_artists ADD COLUMN watch_singles INTEGER DEFAULT 1")
+            except sqlite3.OperationalError:
+                pass  # Column already present (fresh DB built from the new schema)
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '11')"
+            )
+            print("DB migrated to version 11: watched artists gain watch_singles")
+
+        # A bulk import had no way of saying "I'm still going", so a worker whose
+        # thread died left a row claiming to be processing until the heat death of
+        # the universe. progress_at is the same heartbeat trick the jobs table
+        # already uses; resume_count stops a doomed import being revived forever.
+        if db_version < 12:
+            for column, spec in (
+                ("progress_at", "TIMESTAMP"),
+                ("resume_count", "INTEGER DEFAULT 0"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE bulk_imports ADD COLUMN {column} {spec}")
+                except sqlite3.OperationalError:
+                    pass  # Column already present (fresh DB built from the new schema)
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '12')"
+            )
+            print("DB migrated to version 12: bulk imports gain a progress heartbeat")
+
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already
         # passed through that mangled migration. Harmless if the column is present.
@@ -1489,6 +1573,117 @@ def cleanup_stale_jobs():
         conn.commit()
 
 
+def cleanup_stale_bulk_imports(orphaned: bool = False) -> tuple[int, int]:
+    """Revive or bury bulk imports whose worker thread is no longer with us.
+
+    An import runs in a daemon thread, so a crash or a container restart leaves
+    the row saying 'processing' with nobody behind it, forever. That is how a
+    test instance ended up with 36 of them, the oldest claiming to have been busy
+    since January.
+
+    `orphaned=True` is the boot pass: nothing survives a restart, so every
+    processing row is dead by definition and there is no point waiting out the
+    timeout. Otherwise we only touch imports that have gone quiet for
+    STALE_BULK_IMPORT_TIMEOUT, judged on the progress heartbeat, because a
+    fourteen-hundred-track import is entitled to take its time.
+
+    Whatever we find is then either resumed (tracks left mid-search go back to
+    pending, and a fresh worker picks up where the old one stopped) or failed,
+    if it has used up its resumes or is simply too old to be wanted. Returns
+    (resumed, failed).
+    """
+    cutoff = "-0 seconds" if orphaned else f"-{int(STALE_BULK_IMPORT_TIMEOUT)} seconds"
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""SELECT bi.id, bi.resume_count, bi.created_at,
+                       bi.created_at < datetime('now', '-{int(STALE_BULK_IMPORT_ABANDON_AFTER)} seconds') AS too_old,
+                       (bi.watch_playlist_id IS NOT NULL
+                        AND NOT EXISTS (SELECT 1 FROM watched_playlists wp WHERE wp.id = bi.watch_playlist_id))
+                       OR (bi.watch_artist_id IS NOT NULL
+                        AND NOT EXISTS (SELECT 1 FROM watched_artists wa WHERE wa.id = bi.watch_artist_id))
+                       AS orphaned_watch
+                FROM bulk_imports bi
+                WHERE bi.status = 'processing'
+                  AND COALESCE(bi.progress_at, bi.created_at) < datetime('now', '{cutoff}')""",
+        ).fetchall()
+        rows = [dict(r) for r in rows]
+
+    if not rows:
+        return 0, 0
+
+    resume_ids, fail_reasons = [], {}
+    for row in rows:
+        resumes = int(row["resume_count"] or 0)
+        if row["orphaned_watch"]:
+            # Deleting a watched playlist leaves its in-flight refresh behind.
+            # Reviving that would download music for something you have already
+            # thrown away, which is nobody's idea of a helpful robot.
+            fail_reasons[row["id"]] = "Abandoned: the watched playlist or artist it belonged to was deleted"
+        elif row["too_old"]:
+            fail_reasons[row["id"]] = (
+                "Abandoned: the worker stopped and the import is older than "
+                f"{STALE_BULK_IMPORT_ABANDON_AFTER // 86400} days"
+            )
+        elif resumes >= STALE_BULK_IMPORT_MAX_RESUMES:
+            fail_reasons[row["id"]] = (
+                f"Gave up after {resumes} resume attempt(s); the worker keeps dying"
+            )
+        else:
+            resume_ids.append(row["id"])
+
+    with db_conn() as conn:
+        for import_id, reason in fail_reasons.items():
+            conn.execute(
+                """UPDATE bulk_imports SET status = 'failed', error = ?,
+                   completed_at = datetime('now') WHERE id = ?""",
+                (reason, import_id)
+            )
+            # Tracks that never got an answer are failed alongside it, so the
+            # progress numbers stop implying work is still going on somewhere.
+            conn.execute(
+                """UPDATE bulk_import_tracks SET status = 'failed',
+                   error = 'Import abandoned before this track was searched'
+                   WHERE import_id = ? AND status IN ('pending', 'searching')""",
+                (import_id,)
+            )
+        for import_id in resume_ids:
+            # A track caught mid-search is not failed, just interrupted. Put it
+            # back in the queue rather than punishing it for our crash.
+            conn.execute(
+                "UPDATE bulk_import_tracks SET status = 'pending' WHERE import_id = ? AND status = 'searching'",
+                (import_id,)
+            )
+            conn.execute(
+                """UPDATE bulk_imports
+                   SET resume_count = COALESCE(resume_count, 0) + 1,
+                       progress_at = datetime('now'), error = NULL
+                   WHERE id = ?""",
+                (import_id,)
+            )
+        conn.commit()
+
+    # Spawn workers only after the DB work is committed, so a fast worker cannot
+    # start reading rows we are still in the middle of rewriting.
+    for import_id in resume_ids:
+        try:
+            # Local imports: utils and bulk_import both lead back to db, and a
+            # circular import at module load would ruin everyone's morning.
+            from bulk_import import process_bulk_import_worker
+            from utils import spawn_daemon_thread
+            spawn_daemon_thread(process_bulk_import_worker, import_id)
+        except Exception as e:
+            print(f"Could not resume bulk import {import_id}: {e}")
+
+    if resume_ids or fail_reasons:
+        how = "orphaned at startup" if orphaned else "stalled"
+        print(
+            f"Bulk import maintenance: {len(resume_ids)} {how} import(s) resumed, "
+            f"{len(fail_reasons)} written off"
+        )
+    return len(resume_ids), len(fail_reasons)
+
+
 def cleanup_stale_watched_refreshes():
     """Mark stuck watched playlist/artist refresh states as failed."""
     stale_arg = (str(WATCHED_REFRESH_STALE_SECONDS),)
@@ -1603,6 +1798,9 @@ def _boot_cleanup():
     """Clear state left behind by a crash or restart. Runs once, off the boot path."""
     cleanup_stale_jobs()
     cleanup_stale_watched_refreshes()
+    # Nothing survives a restart, so every import still marked 'processing' is
+    # orphaned by definition. No sense making it serve out the timeout first.
+    cleanup_stale_bulk_imports(orphaned=True)
     reconcile_deleted_library_files()
     from auth import cleanup_expired_download_tokens, cleanup_expired_sessions
     cleanup_expired_sessions()
@@ -1627,6 +1825,7 @@ def _stale_job_monitor():
         try:
             cleanup_stale_jobs()
             cleanup_stale_watched_refreshes()
+            cleanup_stale_bulk_imports()
             if LIBRARY_RECONCILE_INTERVAL > 0:
                 now = time.time()
                 if now - last_reconcile >= LIBRARY_RECONCILE_INTERVAL:

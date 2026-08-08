@@ -20,6 +20,8 @@ from concurrent.futures import (
 from constants import (
     TIMEOUT_YTDLP_SEARCH,
     SEARCH_ALL_DEADLINE,
+    SEARCH_SLOT_WAIT_INTERACTIVE,
+    SEARCH_SLOT_WAIT_AUTOMATED,
     TIMEOUT_SLSKD_SEARCH,
     SLSKD_EMPTY_RETRY_DELAY,
     SOUNDCLOUD_SEARCH_MULTIPLIER, SOUNDCLOUD_SEARCH_MIN_FETCH,
@@ -237,7 +239,12 @@ _SOURCE_SEARCH_SLOTS_LOCK = threading.Lock()
 
 
 class SourceSearchBusy(RuntimeError):
-    """Raised when an earlier abandoned search is still using this provider."""
+    """Raised when a provider was still busy when we ran out of patience.
+
+    Emphatically NOT the same as "this provider has nothing for you". Treating
+    the two alike is how a bulk import once wrote "No results found" against
+    thirteen tracks it had never actually got round to searching for.
+    """
 
 
 def _source_search_slot(source_name: str) -> threading.BoundedSemaphore:
@@ -247,11 +254,27 @@ def _source_search_slot(source_name: str) -> threading.BoundedSemaphore:
 
 
 def _run_source_search(source_name: str, cfg: dict, query: str, limit: int,
-                       retry_empty_soulseek: bool = True) -> list[dict]:
-    """Run one provider without allowing abandoned calls to pile up behind it."""
+                       retry_empty_soulseek: bool = True,
+                       slot_wait: float = 0.0) -> list[dict]:
+    """Run one provider, queueing politely for its slot rather than barging in.
+
+    The slot stops several searches hammering one provider at once. It used to be
+    a non-blocking grab, which suited an impatient user retyping their query and
+    nobody else: every other caller got an instant refusal that was
+    indistinguishable from a genuine miss. *slot_wait* lets each caller say how
+    long it is prepared to queue, which is all the difference between a search
+    that works and one that fails for no reason the user can see.
+
+    slot_wait <= 0 keeps the original barge-in-or-give-up behaviour.
+    """
     slot = _source_search_slot(source_name)
-    if not slot.acquire(blocking=False):
-        raise SourceSearchBusy(f"{source_name} still has a search in progress")
+    acquired = slot.acquire(timeout=slot_wait) if slot_wait > 0 else slot.acquire(blocking=False)
+    if not acquired:
+        raise SourceSearchBusy(
+            f"{source_name} was still busy after waiting {slot_wait:.0f}s"
+            if slot_wait > 0 else
+            f"{source_name} still has a search in progress"
+        )
     try:
         search_fn = cfg["search_fn"]
         if source_name == "soulseek" and search_fn is search_soulseek:
@@ -463,8 +486,15 @@ def _enabled_sources(include_soulseek: bool = False) -> dict:
     }
 
 
-def search_source(source: str, query: str, limit: int) -> list[dict]:
-    """Search a single registered source."""
+def search_source(source: str, query: str, limit: int,
+                  slot_wait: float = SEARCH_SLOT_WAIT_INTERACTIVE) -> list[dict]:
+    """Search a single registered source.
+
+    Unlike the multi-source fan-out there is nothing to fall back on here, so a
+    busy provider is worth waiting for. If it is still busy afterwards the
+    SourceSearchBusy propagates, and the route turns it into an honest "try again
+    shortly" rather than pretending the server broke.
+    """
     if source not in SOURCE_REGISTRY:
         raise ValueError(f"Unknown search source: {source}")
     cfg = SOURCE_REGISTRY[source]
@@ -474,7 +504,9 @@ def search_source(source: str, query: str, limit: int) -> list[dict]:
     # Fire MB duration lookup in parallel with the source search so it doesn't
     # add any latency  -  both finish before we sort and return.
     with ThreadPoolExecutor(max_workers=2) as pool:
-        search_future = pool.submit(_run_source_search, source, cfg, query, limit)
+        search_future = pool.submit(
+            _run_source_search, source, cfg, query, limit, slot_wait=slot_wait
+        )
         mb_future = pool.submit(_mb_duration_lookup, query)
         results = search_future.result()
         expected_dur = mb_future.result()
@@ -492,6 +524,7 @@ def _search_all_events(
     sources: list[str] | None = None,
     include_soulseek: bool = False,
     enforce_availability: bool = True,
+    slot_wait: float = 0.0,
 ):
     """Run the multi-source fan-out, yielding progress events as sources land.
 
@@ -504,6 +537,7 @@ def _search_all_events(
       {"type": "source", "source": name, "status": "skipped", "reason": ...}
       {"type": "source", "source": name, "status": "done", "count": n, "results": [...]}
       {"type": "source", "source": name, "status": "timeout"}
+      {"type": "source", "source": name, "status": "busy"}
       {"type": "source", "source": name, "status": "error"}
       {"type": "album_suggestion", <album fields>}
       {"type": "done"}
@@ -568,6 +602,7 @@ def _search_all_events(
                     query,
                     limit,
                     retry_empty_soulseek,
+                    slot_wait=slot_wait,
                 )
             ] = name
         # MB lookups run alongside the source searches at no extra cost
@@ -587,6 +622,13 @@ def _search_all_events(
                         expected_dur = None
                 try:
                     source_results = future.result()
+                except SourceSearchBusy as e:
+                    # Distinct from an error on purpose. We never got to ask this
+                    # provider anything, so its silence says nothing about whether
+                    # it has the track, and the caller must not read it as a miss.
+                    print(f"search_all: {source_name} busy: {e}")
+                    yield {"type": "source", "source": source_name, "status": "busy"}
+                    continue
                 except Exception as e:
                     print(f"search_all: {source_name} failed: {e}")
                     yield {"type": "source", "source": source_name, "status": "error"}
@@ -637,7 +679,9 @@ def _search_all_events(
     yield {"type": "done"}
 
 
-def search_all(query: str, limit: int, sources: list[str] | None = None, include_soulseek: bool = False) -> tuple[list[dict], dict | None]:
+def search_all(query: str, limit: int, sources: list[str] | None = None,
+               include_soulseek: bool = False, slot_wait: float = 0.0,
+               status_out: dict | None = None) -> tuple[list[dict], dict | None]:
     """Search enabled sources in parallel, merge by relevance score.
 
     Thin blocking consumer of _search_all_events: it drains the progress events
@@ -648,14 +692,29 @@ def search_all(query: str, limit: int, sources: list[str] | None = None, include
     Returns (results, album_suggestion) where album_suggestion is a dict with
     artist_name, artist_mbid, album_title, release_mbid, or None if the query
     didn't resolve to a known album.
+
+    Pass *status_out* (an empty dict) to find out which sources never answered:
+    it comes back with "busy" and "timeout" lists. An empty result with a
+    non-empty "busy" means nobody has told you the track doesn't exist, only
+    that we didn't manage to ask, which is a very different thing to act on.
     """
     all_results: list[dict] = []
     album_suggestion = None
-    for ev in _search_all_events(query, limit, sources=sources, include_soulseek=include_soulseek):
+    busy: list[str] = []
+    timed_out: list[str] = []
+    for ev in _search_all_events(query, limit, sources=sources,
+                                 include_soulseek=include_soulseek, slot_wait=slot_wait):
         if ev["type"] == "source" and ev["status"] == "done":
             all_results.extend(ev["results"])
+        elif ev["type"] == "source" and ev["status"] == "busy":
+            busy.append(ev["source"])
+        elif ev["type"] == "source" and ev["status"] == "timeout":
+            timed_out.append(ev["source"])
         elif ev["type"] == "album_suggestion":
             album_suggestion = {k: v for k, v in ev.items() if k != "type"}
+    if status_out is not None:
+        status_out["busy"] = busy
+        status_out["timeout"] = timed_out
     all_results.sort(key=lambda x: x["relevance_score"], reverse=True)
     return all_results[:limit], album_suggestion
 
@@ -685,12 +744,18 @@ def clear_automated_search_cache() -> None:
 
 
 def search_all_cached(query: str, limit: int, sources: list[str] | None = None,
-                      include_soulseek: bool = False) -> tuple[list[dict], dict | None]:
+                      include_soulseek: bool = False,
+                      slot_wait: float = SEARCH_SLOT_WAIT_AUTOMATED,
+                      status_out: dict | None = None) -> tuple[list[dict], dict | None]:
     """Search for an automated flow, reusing a recent identical result safely.
 
     Deep copies are returned and stored because bulk priority boosting mutates
     result scores. The short TTL keeps direct-download links fresh enough to use,
     while the bounded LRU prevents a large library becoming a second database.
+
+    Automated callers queue properly for a busy provider by default. Nobody is
+    watching a bulk import, and waiting a few seconds is enormously preferable to
+    marking a track failed forever over a collision that lasted no time at all.
     """
     key = _automated_search_cache_key(query, limit, sources, include_soulseek)
     now = time.time()
@@ -704,10 +769,15 @@ def search_all_cached(query: str, limit: int, sources: list[str] | None = None,
         cached = _AUTOMATED_SEARCH_CACHE.get(key)
         if cached:
             _AUTOMATED_SEARCH_CACHE.move_to_end(key)
+            if status_out is not None:
+                # A cache hit asked nobody, so nobody was busy.
+                status_out["busy"] = []
+                status_out["timeout"] = []
             return deepcopy(cached[1]), deepcopy(cached[2])
 
     results, album_suggestion = search_all(
-        query, limit, sources=sources, include_soulseek=include_soulseek
+        query, limit, sources=sources, include_soulseek=include_soulseek,
+        slot_wait=slot_wait, status_out=status_out
     )
     # An empty search is often a provider having a brief wobble. Caching that
     # would turn a momentary miss into fifteen minutes of determined failure.

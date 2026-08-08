@@ -30,6 +30,7 @@ from constants import (
     UPGRADE_MATCH_FLOOR,
     TIER_LOSSY_128, TIER_LOSSY_192, TIER_LOSSY_256, TIER_LOSSY_320, TIER_LOSSLESS,
     kbps_to_tier as _kbps_to_tier,
+    SEARCH_SLOT_WAIT_AUTOMATED,
 )
 from db import db_conn
 from settings import (
@@ -160,6 +161,46 @@ def target_tier(user_id: str | None = None) -> int:
     if kbps is None:
         return TIER_LOSSLESS
     return _kbps_to_tier(kbps)
+
+
+def upgrade_output_profile(user_id: str | None = None) -> dict:
+    """Describe how an accepted upgrade will actually be stored.
+
+    Search quality describes the candidate *before* MusicGrabber handles it. The
+    upgrade download then follows the normal default-conversion path, so a lossless
+    candidate may quite deliberately land as Opus, MP3, or AAC. Keep this server-side
+    so the Watched UI reports the same settings the worker will use.
+    """
+    conversion_enabled = get_setting_bool(
+        "default_convert_to_flac", False, user_id=user_id
+    )
+    if not conversion_enabled:
+        return {
+            "upgrade_conversion_enabled": False,
+            "upgrade_output_format": None,
+            "upgrade_output_label": "Keep source format",
+        }
+
+    fmt = (get_setting("audio_format", "opus", user_id=user_id) or "opus").strip().lower()
+    if fmt == "flac":
+        label = "FLAC lossless"
+    elif fmt == "alac":
+        bitrate = get_setting("alac_bitrate", "lossless", user_id=user_id)
+        label = "ALAC lossless" if _setting_to_kbps(bitrate) is None else f"AAC {bitrate.rstrip('kK')} kbps (.m4a)"
+    elif fmt == "mp3":
+        bitrate = (get_setting("mp3_bitrate", "v2", user_id=user_id) or "v2").lower()
+        presets = {"v0": "MP3 V0 (~245 kbps)", "v2": "MP3 V2 (~190 kbps)"}
+        label = presets.get(bitrate, f"MP3 {bitrate.rstrip('kK')} kbps")
+    else:
+        fmt = "opus"
+        bitrate = get_setting("opus_bitrate", "256k", user_id=user_id) or "256k"
+        label = f"Opus {bitrate.rstrip('kK')} kbps"
+
+    return {
+        "upgrade_conversion_enabled": True,
+        "upgrade_output_format": fmt,
+        "upgrade_output_label": label,
+    }
 
 
 def content_sha256(path: Path) -> str:
@@ -384,10 +425,11 @@ def _estimate_result_tier(result: dict) -> tuple[int, bool]:
     return TIER_LOSSY_320, False  # zvu4no etc, estimate, unverified
 
 
-def _candidate_public(row) -> dict:
+def _candidate_public(row, user_id: str | None = None) -> dict:
     """Shape a candidate row for the API/UI."""
     d = dict(row)
     d["filename"] = Path(d["path"]).name
+    d.update(upgrade_output_profile(user_id))
     return d
 
 
@@ -410,7 +452,7 @@ def search_candidate(user_id: str | None, candidate_id: int, force: bool = False
     if not force and row["found_searched"] and row["found_at"]:
         try:
             if time.time() - float(row["found_at"]) < UPGRADE_SEARCH_TTL_SECONDS:
-                return _candidate_public(row)
+                return _candidate_public(row, user_id)
         except (TypeError, ValueError):
             pass
 
@@ -432,7 +474,8 @@ def search_candidate(user_id: str | None, candidate_id: int, force: bool = False
         from search import search_all
         from matching import compute_match_confidence
         include_sk = get_setting_bool("source_soulseek_enabled", False, user_id=user_id)
-        results, _ = search_all(query, 8, include_soulseek=include_sk)
+        results, _ = search_all(query, 8, include_soulseek=include_sk,
+                                slot_wait=SEARCH_SLOT_WAIT_AUTOMATED)
     except Exception as e:
         print(f"Upgrade search failed for candidate {candidate_id}: {e}")
         results = []
@@ -485,7 +528,7 @@ def search_candidate(user_id: str | None, candidate_id: int, force: bool = False
         row = conn.execute(
             "SELECT * FROM upgrade_candidates WHERE user_id=? AND id=?", (uid, candidate_id)
         ).fetchone()
-    return _candidate_public(row)
+    return _candidate_public(row, user_id)
 
 
 def get_candidates_page(user_id: str | None, page: int = 1, per_page: int = 10,
@@ -510,7 +553,7 @@ def get_candidates_page(user_id: str | None, page: int = 1, per_page: int = 10,
             params + [per_page, (page - 1) * per_page],
         ).fetchall()
     pages = (total + per_page - 1) // per_page if total else 0
-    return {"items": [_candidate_public(r) for r in rows], "total": total,
+    return {"items": [_candidate_public(r, user_id) for r in rows], "total": total,
             "page": page, "per_page": per_page, "pages": pages}
 
 

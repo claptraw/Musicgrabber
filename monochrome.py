@@ -31,6 +31,7 @@ import re
 import subprocess
 import threading
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlencode, urlparse, parse_qs
@@ -692,6 +693,197 @@ def resolve_by_isrc(isrc: str, artist: str = "", title: str = "") -> dict | None
         relevance_score=relevance_score,
         score_breakdown=score_breakdown,
     )
+
+
+# ---------------------------------------------------------------------------
+# Album-level resolution
+#
+# Resolving an album one track at a time is how you end up with a "Fin." off the
+# wrong record: an artist can easily use the same song title twice, and a
+# free-text search has nothing to tell the two apart. Asking Deezer for the
+# album instead pins every track to a single release, in the right order, and
+# trades N chances of catching a provider mid-wobble for two.
+# ---------------------------------------------------------------------------
+
+def _normalise_album_text(text: str) -> str:
+    """Squash a title down to bare letters and digits for comparison.
+
+    RAYE ends half her song titles with a full stop and Deezer Title Cases The
+    Lot, so anything fussier than this only invents disagreements. Bracketed
+    asides and feature credits go too, since one side almost always has them and
+    the other almost always doesn't.
+    """
+    t = unicodedata.normalize("NFKD", text or "")
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
+    t = t.replace("&", " and ")
+    t = re.sub(r"\s*[\(\[].*?[\)\]]", " ", t)
+    t = re.sub(r"\b(?:feat\.?|ft\.?|featuring)\b.*$", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"[^a-z0-9]+", " ", t.lower())
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _deezer_get(path: str, params: dict | None = None) -> dict:
+    """One Deezer API GET, raising on transport trouble or an error payload."""
+    resp = httpx.get(
+        f"{DEEZER_API_URL}{path}",
+        params=params or {},
+        headers=_HEADERS,
+        timeout=TIMEOUT_DEEZER,
+        follow_redirects=True,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    if isinstance(body, dict) and body.get("error"):
+        raise RuntimeError(f"Deezer API error: {body['error']}")
+    return body if isinstance(body, dict) else {}
+
+
+def _pick_deezer_album(artist: str, album_title: str, expected_count: int) -> dict | None:
+    """Find the Deezer album that matches this MusicBrainz release, or None.
+
+    Deliberately fussy. A wrong album here would poison every track on it, which
+    is far worse than falling back to the per-track search, so the artist must
+    match and the title must match once both are normalised. Track count only
+    breaks ties: deluxe editions and bonus discs mean the counts often differ
+    legitimately, and refusing on that alone would reject a lot of good albums.
+    """
+    want_artist = _normalise_album_text(artist)
+    want_title = _normalise_album_text(album_title)
+    if not (want_artist and want_title):
+        return None
+
+    query = f'artist:"{_deezer_phrase(artist)}" album:"{_deezer_phrase(album_title)}"'
+    try:
+        body = _deezer_get("/search/album", {"q": query, "limit": 10})
+    except Exception as exc:
+        print(f"Monochrome: Deezer album search failed for {artist} - {album_title}: {exc}")
+        return None
+
+    scored = []
+    for item in body.get("data") or []:
+        if _normalise_album_text((item.get("artist") or {}).get("name") or "") != want_artist:
+            continue
+        if _normalise_album_text(item.get("title") or "") != want_title:
+            continue
+        # Closest track count first, then the biggest edition, so a deluxe only
+        # wins when nothing matches the count we were expecting.
+        nb = int(item.get("nb_tracks") or 0)
+        scored.append((abs(nb - expected_count) if expected_count else 0, -nb, item))
+
+    if not scored:
+        return None
+    scored.sort(key=lambda row: (row[0], row[1]))
+    return scored[0][2]
+
+
+def resolve_album_tracks(artist: str, album_title: str, titles: list[str]) -> dict[int, dict]:
+    """Resolve a whole album's tracklist to downloadable Monochrome results.
+
+    Takes the track titles in MusicBrainz order and returns {index: result} for
+    however many could be pinned to a single Deezer album. Anything not returned
+    is the caller's cue to fall back to the ordinary per-track search; a partial
+    answer is perfectly useful, and the fallback is right there.
+
+    Returns {} whenever the album can't be identified, which is a normal outcome
+    rather than an error: plenty of releases simply aren't on Deezer.
+    """
+    if not (monochrome_enabled() and artist and album_title and titles):
+        return {}
+
+    album = _pick_deezer_album(artist, album_title, len(titles))
+    if not album:
+        return {}
+
+    try:
+        detail = _deezer_get(f"/album/{album.get('id')}")
+    except Exception as exc:
+        print(f"Monochrome: Deezer album {album.get('id')} fetch failed: {exc}")
+        return {}
+
+    album_tracks = (detail.get("tracks") or {}).get("data") or []
+    if not album_tracks:
+        return {}
+    cover = detail.get("cover_big") or detail.get("cover") or ""
+
+    # Match on normalised title, claiming each Deezer track at most once so a
+    # hidden reprise can't be handed out twice. Position is the tiebreak for
+    # albums that genuinely repeat a title (interludes love doing this).
+    claimed: set[int] = set()
+    pairs: list[tuple[int, dict]] = []
+    for idx, title in enumerate(titles):
+        want = _normalise_album_text(title)
+        if not want:
+            continue
+        best = None
+        for pos, dz in enumerate(album_tracks):
+            if pos in claimed or _normalise_album_text(dz.get("title") or "") != want:
+                continue
+            if best is None or abs(pos - idx) < abs(best[0] - idx):
+                best = (pos, dz)
+        if best:
+            claimed.add(best[0])
+            pairs.append((idx, best[1]))
+
+    if not pairs:
+        return {}
+
+    # Deezer's album payload omits ISRCs, and the download leg keys off the ISRC,
+    # so each matched track needs its own lookup. Taking Deezer's ISRC rather
+    # than MusicBrainz's is the whole point: it is guaranteed to be the cut that
+    # sits on this album, which is exactly the guarantee we were missing.
+    def _detail(dz: dict) -> dict | None:
+        try:
+            return _deezer_get(f"/track/{dz.get('id')}")
+        except Exception as exc:
+            print(f"Monochrome: Deezer track {dz.get('id')} fetch failed: {exc}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(4, len(pairs))) as pool:
+        details = list(pool.map(lambda pair: _detail(pair[1]), pairs))
+
+    isrcs = [((d or {}).get("isrc") or "").strip().upper() for d in details]
+    with ThreadPoolExecutor(max_workers=min(4, len(pairs))) as pool:
+        lookups = list(pool.map(lambda code: _qobuz_isrc_lookup(code) if _isrc_valid(code) else ([], False), isrcs))
+
+    resolved: dict[int, dict] = {}
+    for (idx, dz), detail_body, isrc, (qobuz_items, transport_failure) in zip(pairs, details, isrcs, lookups):
+        if not _isrc_valid(isrc):
+            continue
+        breakdown = [f"via=deezer-album:{album.get('id')}"]
+        if qobuz_items:
+            quality = "HI_RES_LOSSLESS" if any(t.get("hires") for t in qobuz_items) else "LOSSLESS"
+        elif transport_failure:
+            # Same bargain the search leg strikes: unverifiable is not the same
+            # as absent, and qbdlx may well deliver it at download time.
+            quality = "LOSSLESS"
+            breakdown.append("qobuz_unverified (proxies down)")
+        else:
+            continue  # Qobuz answered and has nothing; let the per-track search try.
+
+        bonus = _QUALITY_BONUS[quality]
+        breakdown.append(f"source_quality=+{bonus}")
+        resolved[idx] = _build_monochrome_result(
+            track_id=dz.get("id", ""),
+            isrc=isrc,
+            quality=quality,
+            src="deezer",
+            # Prefer the album's own spelling of the title and artist; it is the
+            # pressing we are actually downloading from.
+            title=(dz.get("title") or titles[idx]).strip(),
+            artist=((detail_body or {}).get("artist") or {}).get("name") or artist,
+            duration=dz.get("duration") or 0,
+            cover=cover,
+            # Identity-pinned, exactly like resolve_by_isrc, so it sits above
+            # anything a ranked free-text search could produce.
+            relevance_score=1000 + bonus,
+            score_breakdown=breakdown,
+        )
+
+    print(
+        f"Monochrome: album '{artist} - {album_title}' matched Deezer album "
+        f"{album.get('id')} ({album.get('title')}), resolved {len(resolved)}/{len(titles)} tracks"
+    )
+    return resolved
 
 
 def _deezer_search_leg(query: str, limit: int) -> list[dict]:

@@ -1127,6 +1127,15 @@ h1 {
 }
 .upgrade-arrow { color: var(--accent); font-weight: 700; }
 .upgrade-quality-new { font-weight: 600; }
+.upgrade-conversion-arrow { color: var(--text-secondary); font-weight: 700; }
+.upgrade-output-label {
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    font-weight: 600;
+}
 .upgrade-conf { color: var(--text-secondary); font-size: 12px; }
 .upgrade-searching, .upgrade-none { color: var(--text-secondary); font-style: italic; }
 .upgrade-verified {
@@ -2063,6 +2072,18 @@ h1 {
     background: var(--bg-tertiary);
     padding: 2px 6px;
     border-radius: 4px;
+}
+
+/* What this artist is actually followed for. Singles, albums, or both. */
+.watched-card-mode {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    color: var(--accent, var(--text-primary));
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 10px;
 }
 
 .watched-card-refreshing {
@@ -3581,6 +3602,107 @@ h1 {
 .artist-cancel-btn {
     margin-top: 8px;
     margin-left: 8px;
+}
+
+/* --------------------------------------------------------------------------
+   Artist mode chooser: pick the artist once, then decide what you want
+-------------------------------------------------------------------------- */
+
+.artist-mode-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.artist-mode-btn {
+    flex: 1 1 200px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    text-align: left;
+    padding: 10px 12px;
+    height: auto;
+}
+
+.artist-mode-title {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.artist-mode-sub {
+    font-size: 11px;
+    font-weight: 400;
+    opacity: 0.8;
+    line-height: 1.35;
+    white-space: normal;
+}
+
+/* Album checklist: tick the ones you want, ignore the eleven live albums */
+
+.artist-album-checklist-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 0 6px;
+}
+
+.artist-album-count {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-right: auto;
+}
+
+.album-checklist {
+    max-height: 340px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+}
+
+.album-checklist-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+}
+
+.album-checklist-row:last-child {
+    border-bottom: none;
+}
+
+.album-checklist-row input[type="checkbox"] {
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+/* Already in the library. Dimmed as a hint, not disabled: re-grabbing a record
+   you only own as a dodgy 128k rip is a perfectly reasonable thing to want. */
+.album-checklist-row.on-disk .album-checklist-title {
+    opacity: 0.55;
+}
+
+.album-checklist-title {
+    flex: 1;
+    cursor: pointer;
+    color: var(--text-primary);
+}
+
+.album-checklist-year {
+    font-size: 12px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.album-checklist-have {
+    font-size: 11px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 
 /* --------------------------------------------------------------------------

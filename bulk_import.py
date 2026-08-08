@@ -12,7 +12,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
-from constants import BULK_IMPORT_SEARCH_DELAY, PRIORITY_SOURCE_BOOST
+from constants import (
+    BULK_IMPORT_SEARCH_ATTEMPTS,
+    BULK_IMPORT_SEARCH_DELAY,
+    BULK_IMPORT_SEARCH_RETRY_DELAY,
+    BULK_IMPORT_SEARCH_RETRY_MAX_DELAY,
+    PRIORITY_SOURCE_BOOST,
+)
 from db import db_conn, upsert_album_track_lock
 from downloads import process_download, process_slskd_download, create_bulk_playlist
 from notifications import send_notification
@@ -232,6 +238,46 @@ def start_bulk_import_for_tracks(
     return import_id
 
 
+def _resolve_album_up_front(import_id: str, override_dir: str) -> dict[int, dict]:
+    """Pin an album import's tracks to a single release before the loop starts.
+
+    Searching for each track on its own is how "Fin." off the 2023 album ends up
+    being "Fin." off the 2025 one: same artist, same title, and nothing in a
+    free-text query to separate them. Matching the album as a whole settles that
+    once, and spares us N chances of catching a provider mid-wobble.
+
+    Returns {bulk_import_tracks.id: result} for whatever matched. Anything absent
+    takes the ordinary per-track route, so a complete miss costs only the lookup.
+    """
+    try:
+        with db_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, artist, song FROM bulk_import_tracks WHERE import_id = ? ORDER BY line_num",
+                (import_id,),
+            ).fetchall()
+    except Exception as exc:
+        print(f"Bulk import {import_id}: could not read tracks for album resolution: {exc}")
+        return {}
+    if not rows:
+        return {}
+
+    artist = next((r[1] for r in rows if (r[1] or "").strip()), "")
+    # The folder was named after the MusicBrainz release title, and the matcher
+    # strips punctuation anyway, so sanitisation does no harm on the way back out.
+    album_title = Path(override_dir).name
+    if not (artist and album_title):
+        return {}
+
+    try:
+        from monochrome import resolve_album_tracks
+        resolved = resolve_album_tracks(artist, album_title, [r[2] or "" for r in rows])
+    except Exception as exc:
+        print(f"Bulk import {import_id}: album resolution failed: {exc}")
+        return {}
+
+    return {rows[idx][0]: result for idx, result in resolved.items()}
+
+
 def process_bulk_import_worker(import_id: str):
     """Background worker to process bulk import tracks one by one
 
@@ -279,10 +325,21 @@ def process_bulk_import_worker(import_id: str):
             if row:
                 playlist_name = row["name"]
 
-        conn.execute("UPDATE bulk_imports SET status = 'processing' WHERE id = ?", (import_id,))
+        # Start the heartbeat now, so a worker that dies before its first track
+        # is judged from when it actually began rather than when it was queued.
+        conn.execute(
+            "UPDATE bulk_imports SET status = 'processing', progress_at = datetime('now') WHERE id = ?",
+            (import_id,)
+        )
         conn.commit()
 
     base_delay = BULK_IMPORT_SEARCH_DELAY
+
+    # Album imports get one go at matching the whole release before we start
+    # picking tracks off individually. Empty dict is a perfectly normal answer.
+    album_picks: dict[int, dict] = {}
+    if override_dir and album_release_mbid:
+        album_picks = _resolve_album_up_front(import_id, override_dir)
 
     try:
         while True:
@@ -312,14 +369,18 @@ def process_bulk_import_worker(import_id: str):
             try:
                 search_query = f"{artist} - {song}"
 
+                # Layer 0: the album pick, settled before the loop began. Already
+                # tied to one release, which is the only reliable way to tell two
+                # identically-titled tracks on different albums apart.
+                best_match = album_picks.get(track_id)
+
                 # Layer 1: ISRC-first. If the Albums tab handed us an ISRC for this
                 # track, ask Monochrome for that exact studio recording. A hit pins
                 # one recording, so a live take cannot sneak through; we then bypass
                 # the free-text search and its filters entirely. A miss (or no ISRC)
                 # leaves best_match None and the normal free-text leg runs below.
                 isrc = (track.get("isrc") or "").strip()
-                best_match = None
-                if isrc:
+                if not best_match and isrc:
                     from monochrome import resolve_by_isrc
                     best_match = resolve_by_isrc(isrc, artist, song)
 
@@ -328,12 +389,33 @@ def process_bulk_import_worker(import_id: str):
                     search_results = [best_match]
                     log_ranked_results(f"Bulk import {import_id}", search_query, search_results)
                 else:
-                    search_results, _ = search_all_cached(
-                        search_query,
-                        limit=10,
-                        sources=preferred_sources_list,
-                        include_soulseek=True,
-                    )
+                    # An empty result is far more often a wobble than a verdict:
+                    # a second import holding a provider's admission slot, a proxy
+                    # having a moment, someone rate-limiting us. Since a track
+                    # marked 'failed' is never looked at again, give it a few goes
+                    # with a widening pause before writing it off.
+                    search_results = []
+                    search_status: dict = {}
+                    for attempt in range(1, BULK_IMPORT_SEARCH_ATTEMPTS + 1):
+                        search_results, _ = search_all_cached(
+                            search_query,
+                            limit=10,
+                            sources=preferred_sources_list,
+                            include_soulseek=True,
+                            status_out=search_status,
+                        )
+                        if search_results or attempt >= BULK_IMPORT_SEARCH_ATTEMPTS:
+                            break
+                        pause = min(
+                            BULK_IMPORT_SEARCH_RETRY_DELAY * (2 ** (attempt - 1)),
+                            BULK_IMPORT_SEARCH_RETRY_MAX_DELAY,
+                        )
+                        print(
+                            f"Bulk import {import_id}: nothing for '{search_query}' "
+                            f"(attempt {attempt}/{BULK_IMPORT_SEARCH_ATTEMPTS}), "
+                            f"retrying in {pause:.0f}s"
+                        )
+                        time.sleep(pause)
 
                     # Apply the priority-source boost before logging so the ranked log
                     # reflects what the worker will actually pick.
@@ -342,13 +424,24 @@ def process_bulk_import_worker(import_id: str):
                     log_ranked_results(f"Bulk import {import_id}", search_query, search_results)
 
                     if not search_results:
+                        # Say which of the two happened. "No results found" for a
+                        # source we never actually got to ask is how thirteen
+                        # tracks were written off as missing while sitting on
+                        # Monochrome the whole time.
+                        stuck = search_status.get("busy") or []
+                        stalled = search_status.get("timeout") or []
+                        if stuck or stalled:
+                            unreachable = ", ".join(sorted(set(stuck) | set(stalled)))
+                            failure_reason = f"Sources never answered after {BULK_IMPORT_SEARCH_ATTEMPTS} attempts: {unreachable}"
+                        else:
+                            failure_reason = "No results found"
                         with db_conn() as conn:
                             conn.execute(
                                 "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
-                                ("No results found", track_id)
+                                (failure_reason, track_id)
                             )
                             conn.execute(
-                                "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                                "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1, progress_at = datetime('now') WHERE id = ?",
                                 (import_id,)
                             )
                             conn.commit()
@@ -373,7 +466,7 @@ def process_bulk_import_worker(import_id: str):
                                     ("No strict artist match found", track_id)
                                 )
                                 conn.execute(
-                                    "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                                    "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1, progress_at = datetime('now') WHERE id = ?",
                                     (import_id,)
                                 )
                                 conn.commit()
@@ -406,7 +499,7 @@ def process_bulk_import_worker(import_id: str):
                                     (f"No artist match (top result was '{top_title}' by {top_channel})", track_id)
                                 )
                                 conn.execute(
-                                    "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                                    "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1, progress_at = datetime('now') WHERE id = ?",
                                     (import_id,)
                                 )
                                 conn.commit()
@@ -473,7 +566,7 @@ def process_bulk_import_worker(import_id: str):
                             (job_id, watch_artist_id, track_hash)
                         )
                     conn.execute(
-                        "UPDATE bulk_imports SET searched = searched + 1, queued = queued + 1 WHERE id = ?",
+                        "UPDATE bulk_imports SET searched = searched + 1, queued = queued + 1, progress_at = datetime('now') WHERE id = ?",
                         (import_id,)
                     )
 
@@ -561,7 +654,7 @@ def process_bulk_import_worker(import_id: str):
                             (str(e)[:200], track_id)
                         )
                         conn.execute(
-                            "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1 WHERE id = ?",
+                            "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1, progress_at = datetime('now') WHERE id = ?",
                             (import_id,)
                         )
                         conn.commit()

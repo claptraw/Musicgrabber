@@ -423,7 +423,7 @@
         const relatedSuggestions = document.getElementById('relatedSuggestions');
         const resultsTab = document.getElementById('resultsTab');
         const bulkTabContainer = document.getElementById('bulkTabContainer');
-        const albumsTabContainer = document.getElementById('albumsTabContainer');
+        const artistsTabContainer = document.getElementById('artistsTabContainer');
         const bulkInput = document.getElementById('bulkInput');
         const bulkImportBtn = document.getElementById('bulkImportBtn');
         const bulkResults = document.getElementById('bulkResults');
@@ -434,6 +434,7 @@
         const playlistServicesTooltip = document.getElementById('playlistServicesTooltip');
         const fetchSpotifyBtn = document.getElementById('fetchSpotifyBtn');
         const spotifyError = document.getElementById('spotifyError');
+        const albumMatchPanel = document.getElementById('albumMatchPanel');
         const queueTabContainer = document.getElementById('queueTabContainer');
         const queueTab = document.getElementById('queueTab');
         const queueLiveSummary = document.getElementById('queueLiveSummary');
@@ -1301,7 +1302,7 @@
         }
 
         // Tab switching
-        const allTabPanels = [resultsTab, bulkTabContainer, albumsTabContainer, watchedTabContainer, queueTabContainer, statsTabContainer, settingsTabContainer];
+        const allTabPanels = [resultsTab, bulkTabContainer, artistsTabContainer, watchedTabContainer, queueTabContainer, statsTabContainer, settingsTabContainer];
         tabs.forEach(tab => {
             tab.addEventListener('click', () => {
                 tabs.forEach(t => t.classList.remove('active'));
@@ -1314,7 +1315,7 @@
                 const panelMap = {
                     results: resultsTab,
                     bulk: bulkTabContainer,
-                    albums: albumsTabContainer,
+                    artists: artistsTabContainer,
                     watched: watchedTabContainer,
                     queue: queueTabContainer,
                     stats: statsTabContainer,
@@ -1325,8 +1326,10 @@
 
                 // These controls sit above the tab panels in the DOM, so explicitly
                 // scope them to Results instead of letting related-search chips (and
-                // friends) wander into Albums, Queue, Settings, etc.
+                // friends) wander into Artists, Queue, Settings, etc.
                 [
+                    document.getElementById('singleTrackSearch'),
+                    document.getElementById('sourceHealthStrip'),
                     relatedSuggestions,
                     exploreBar,
                     document.getElementById('searchProgress'),
@@ -1340,7 +1343,7 @@
                     stopPreview();
                 }
 
-                if (currentTab === 'albums') {
+                if (currentTab === 'artists') {
                     // Defer one tick so direct album links can populate their richer
                     // MBID-backed state first. A plain tab click remains pristine and
                     // inherits the artist from the last successful singles search.
@@ -1360,7 +1363,6 @@
 
                 if (currentTab === 'watched') {
                     loadWatchedPlaylists();
-                    loadWatchedArtists();
                     loadWatchedUpgrades();
                     loadAudioAudit();
                     populateSourceChips();
@@ -1371,6 +1373,10 @@
                 if (currentTab !== 'watched' && audioAuditPollTimer) {
                     clearTimeout(audioAuditPollTimer);
                     audioAuditPollTimer = null;
+                }
+
+                if (currentTab === 'artists') {
+                    loadWatchedArtists();
                 }
 
                 if (currentTab === 'bulk') {
@@ -2382,11 +2388,11 @@
             } else {
                 parts.push(escapeHtml(result.channel || ''));
             }
-            // Show album if known - clickable to open in Albums tab
+            // Show album if known - clickable to open in the Artists tab's album browser
             if (result.album) {
                 const albumArtist = escapeAttr(result.artist || result.channel || '');
                 const albumTitle = escapeAttr(result.album);
-                parts.push(`<span class="album-link" data-artist="${albumArtist}" data-album="${albumTitle}" title="View album in Albums tab">${escapeHtml(result.album)}</span>`);
+                parts.push(`<span class="album-link" data-artist="${albumArtist}" data-album="${albumTitle}" title="View album in Artists tab">${escapeHtml(result.album)}</span>`);
             }
             return parts.join(' • ');
         }
@@ -2488,7 +2494,7 @@
                     });
                 }
 
-                // Album link - click to open in Albums tab
+                // Album link - click to open in the Artists tab's album browser
                 const albumLink = item.querySelector('.album-link');
                 if (albumLink) {
                     albumLink.addEventListener('click', (e) => {
@@ -2994,7 +3000,7 @@
                             ${sourceUrl ? `<div class="job-details-row"><span class="job-details-label">URL:</span> ${isClickableUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sourceUrl)}</a>` : `<span class="job-details-url">${escapeHtml(sourceUrl)}</span>`}</div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Queued:</span> ${formatTimeFull(job.created_at)}</div>
                             ${job.completed_at ? `<div class="job-details-row"><span class="job-details-label">Completed:</span> ${formatTimeFull(job.completed_at)}</div>` : ''}
-                            ${job.completed_at && job.created_at ? `<div class="job-details-row"><span class="job-details-label">Duration:</span> ${formatDuration(job.created_at, job.completed_at)}</div>` : ''}
+                            ${job.completed_at && job.created_at ? `<div class="job-details-row"><span class="job-details-label">Took:</span> ${formatDuration(job.created_at, job.completed_at)}</div>` : ''}
                             ${['failed', 'completed_with_errors'].includes(job.status) || (job.error || '').includes('mismatch') ? `
                             <div id="score-rationale-link-${escapeHtml(job.id || '')}" class="job-details-row" style="margin-top:4px;">
                                 <a href="#" onclick="event.preventDefault(); event.stopPropagation(); loadScoreRationale('${escapeAttr(job.id || '')}')" style="font-size:12px; color:var(--accent); text-decoration:none;">Why this result?</a>
@@ -4215,13 +4221,645 @@
         }
 
         // =============================================================
-        // Albums tab
+        // Shared album browser
         // =============================================================
+        // Search artist -> pick artist -> list albums -> pick album ->
+        // tracklist with existing/missing legend -> M3U toggle -> download ->
+        // progress. Used to be the whole of the old Albums tab; now it is a
+        // mountable component so the Artists tab (and, from Bulk Import
+        // onwards, another agent's tab) can each get their own independent
+        // instance without stepping on each other's state.
+        //
+        // mountAlbumBrowser(containerEl, options) -> handle
+        //   options.artist            {mbid, name} to pre-select, skipping the
+        //                              search step (used when pinning to a
+        //                              followed artist)
+        //   options.showArtistSearch  show the artist search box; false when
+        //                              options.artist pins the browser to one
+        //                              artist and searching elsewhere makes no
+        //                              sense (default true)
+        //   options.onQueued          callback(data) fired once
+        //                              POST /api/albums/download succeeds
+        //
+        //   handle.setArtist(mbid, name)  programmatically select an artist
+        //   handle.openAlbum(opts)        the Tracks-tab handoff entry point;
+        //                                 opts: {artistName, albumTitle, artistMbid?, releaseMbid?}
+        //   handle.hasSelection()         true if the user has already started
+        //                                 a search or picked something, so
+        //                                 callers know not to clobber it
+        //   handle.searchFor(name)        fills the artist search box and runs
+        //                                 the search (only when showArtistSearch)
+        //   handle.reset()                back to a blank form (pinned artist
+        //                                 mode returns to that artist's album list)
+        //   handle.destroy()              stop polling and empty the container
 
-        let albumSelectedArtist = null;  // {mbid, name}
-        let albumSelectedRelease = null; // {release_mbid, title, year}
-        let albumPollInterval = null;
-        let albumSelectedM3uName = null;
+        let _albumBrowserInstanceCounter = 0;
+
+        function mountAlbumBrowser(containerEl, options = {}) {
+            if (!containerEl) return null;
+            const {
+                artist = null,
+                showArtistSearch = true,
+                onQueued = null,
+            } = options;
+
+            const uid = `ab${++_albumBrowserInstanceCounter}`;
+            const eid = (name) => `${uid}-${name}`;
+
+            containerEl.innerHTML = `
+                ${showArtistSearch ? `
+                <div class="search-box">
+                    <input type="text" id="${eid('artistInput')}" class="search-input" placeholder="Search for an artist…" autocomplete="off">
+                    <button id="${eid('artistSearchBtn')}" class="btn btn-primary search-btn">Search</button>
+                </div>
+                <div class="album-search-note">
+                    Album mode uses best-effort single-track matching, not full release mirroring. It will try to source each track intelligently, but it may not produce a perfect 1:1 album copy. For exact album hunting, use Lidarr (with Usenet/torrents) or Soulseek.
+                </div>
+                ` : ''}
+                <div id="${eid('artistResults')}" class="album-artist-results" style="display:none;"></div>
+
+                <div id="${eid('listSection')}" style="display:none;">
+                    <h3 class="album-section-heading" id="${eid('listHeading')}"></h3>
+                    <div id="${eid('list')}" class="album-list"></div>
+                </div>
+
+                <div id="${eid('tracklistSection')}" style="display:none;">
+                    <h3 class="album-section-heading" id="${eid('tracklistHeading')}"></h3>
+                    <div id="${eid('existingWarning')}" class="album-existing-warning" style="display:none;"></div>
+                    <div id="${eid('trackLegend')}" class="album-track-legend" style="display:none;"></div>
+                    <ol id="${eid('tracklist')}" class="album-tracklist"></ol>
+                    <div class="bulk-playlist-row" style="margin-top: 12px;">
+                        <input type="checkbox" id="${eid('makeM3u')}">
+                        <label for="${eid('makeM3u')}">Generate M3U playlist</label>
+                    </div>
+                    <div id="${eid('m3uHint')}" class="album-m3u-hint" style="display:none;"></div>
+                    <button id="${eid('downloadBtn')}" class="btn btn-primary btn-lg btn-block bulk-import-btn" style="margin-top: 12px;">
+                        Download Album
+                    </button>
+                    <button id="${eid('resetBtn')}" class="btn btn-ghost album-reset-btn" type="button">
+                        ${showArtistSearch ? 'Search Another Album' : 'Pick Another Album'}
+                    </button>
+                </div>
+
+                <div id="${eid('progress')}" style="display:none;"></div>
+            `;
+
+            const els = {
+                artistInput: document.getElementById(eid('artistInput')),
+                artistSearchBtn: document.getElementById(eid('artistSearchBtn')),
+                artistResults: document.getElementById(eid('artistResults')),
+                listSection: document.getElementById(eid('listSection')),
+                list: document.getElementById(eid('list')),
+                listHeading: document.getElementById(eid('listHeading')),
+                tracklistSection: document.getElementById(eid('tracklistSection')),
+                tracklistHeading: document.getElementById(eid('tracklistHeading')),
+                existingWarning: document.getElementById(eid('existingWarning')),
+                trackLegend: document.getElementById(eid('trackLegend')),
+                tracklist: document.getElementById(eid('tracklist')),
+                makeM3u: document.getElementById(eid('makeM3u')),
+                m3uHint: document.getElementById(eid('m3uHint')),
+                downloadBtn: document.getElementById(eid('downloadBtn')),
+                resetBtn: document.getElementById(eid('resetBtn')),
+                progress: document.getElementById(eid('progress')),
+            };
+
+            const state = {
+                selectedArtist: artist ? { mbid: artist.mbid, name: artist.name } : null,
+                selectedRelease: null,
+                selectedM3uName: null,
+                pollInterval: null,
+            };
+
+            function setResetVisible(visible) {
+                if (els.resetBtn) els.resetBtn.classList.toggle('show', !!visible);
+            }
+
+            async function _readApiErrorDetail(resp) {
+                // FastAPI puts errors in {detail: "..."}. Fall back to the status line if
+                // the body is empty / not JSON.
+                try {
+                    const data = await resp.json();
+                    if (data && data.detail) return String(data.detail);
+                } catch {}
+                return `HTTP ${resp.status}`;
+            }
+
+            function _renderRetryError(node, message, onRetry, asListItem = false) {
+                if (!node) return;
+                const wrap = document.createElement(asListItem ? 'li' : 'p');
+                if (!asListItem) wrap.className = 'bulk-intro-text error-text';
+                else wrap.className = 'album-track-item album-track-error';
+                wrap.textContent = message + ' ';
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'album-retry-btn';
+                btn.textContent = 'Retry';
+                btn.addEventListener('click', () => { onRetry(); });
+                wrap.appendChild(btn);
+                node.innerHTML = '';
+                node.appendChild(wrap);
+            }
+
+            function findMatchingAlbum(albums, searchTitle) {
+                if (!searchTitle || !albums.length) return null;
+                function normalise(s) {
+                    return s.toLowerCase()
+                        .replace(/\s*\(.*?\)\s*/g, ' ')
+                        .replace(/\s*\[.*?\]\s*/g, ' ')
+                        .replace(/[^\w\s]/g, '')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                }
+                const norm = normalise(searchTitle);
+                for (const a of albums) if (a.title.toLowerCase() === searchTitle.toLowerCase()) return a;
+                for (const a of albums) if (normalise(a.title) === norm) return a;
+                for (const a of albums) {
+                    const na = normalise(a.title);
+                    if (na && norm && (na.includes(norm) || norm.includes(na))) return a;
+                }
+                return null;
+            }
+
+            async function searchArtist() {
+                const q = els.artistInput ? els.artistInput.value.trim() : '';
+                if (!q || !els.artistResults) return;
+
+                els.artistResults.innerHTML = '<p class="bulk-intro-text">Searching…</p>';
+                els.artistResults.style.display = '';
+                if (els.listSection) els.listSection.style.display = 'none';
+                if (els.tracklistSection) els.tracklistSection.style.display = 'none';
+                if (els.progress) els.progress.style.display = 'none';
+                setResetVisible(false);
+                state.selectedArtist = null;
+                state.selectedRelease = null;
+                state.selectedM3uName = null;
+                if (state.pollInterval) { clearInterval(state.pollInterval); state.pollInterval = null; }
+                if (els.downloadBtn) { els.downloadBtn.disabled = false; els.downloadBtn.textContent = 'Download Album'; }
+
+                try {
+                    const resp = await apiFetch(`/api/albums/search-artist?q=${encodeURIComponent(q)}`);
+                    if (!resp.ok) {
+                        const detail = await _readApiErrorDetail(resp);
+                        _renderRetryError(els.artistResults, `Search failed: ${detail}`, searchArtist);
+                        return;
+                    }
+                    const data = await resp.json();
+                    const artists = data.artists || [];
+                    if (!artists.length) {
+                        els.artistResults.innerHTML = '<p class="bulk-intro-text">No artists found.</p>';
+                        return;
+                    }
+                    els.artistResults.innerHTML = '';
+                    for (const a of artists) {
+                        const btn = document.createElement('button');
+                        btn.className = 'album-artist-btn';
+                        btn.innerHTML = `<span class="album-artist-name">${escapeHtml(a.name)}</span>`
+                            + (a.disambiguation ? ` <span class="album-artist-disambig">${escapeHtml(a.disambiguation)}</span>` : '');
+                        btn.addEventListener('click', () => selectArtist(a, btn));
+                        els.artistResults.appendChild(btn);
+                    }
+                } catch (e) {
+                    _renderRetryError(els.artistResults, `Search failed: ${e.message}`, searchArtist);
+                }
+            }
+
+            async function loadAlbums(a, preselectReleaseMbid = null) {
+                try {
+                    const resp = await apiFetch(`/api/albums/artist/${encodeURIComponent(a.mbid)}/albums`);
+                    if (!resp.ok) {
+                        const detail = await _readApiErrorDetail(resp);
+                        _renderRetryError(els.list, `Failed to load albums: ${detail}`, () => loadAlbums(a, preselectReleaseMbid));
+                        return;
+                    }
+                    const data = await resp.json();
+                    const albums = data.albums || [];
+                    if (!els.list) return albums;
+                    if (!albums.length) {
+                        els.list.innerHTML = '<p class="bulk-intro-text">No albums found.</p>';
+                        return albums;
+                    }
+                    els.list.innerHTML = '';
+                    let preselectBtn = null;
+                    for (const album of albums) {
+                        const albumBtn = document.createElement('button');
+                        albumBtn.className = 'album-list-btn';
+                        if (preselectReleaseMbid && album.release_mbid === preselectReleaseMbid) {
+                            albumBtn.classList.add('selected');
+                            preselectBtn = albumBtn;
+                        }
+                        albumBtn.innerHTML = `<span class="album-list-title">${escapeHtml(album.title)}</span>`
+                            + (album.year ? ` <span class="album-list-year">${escapeHtml(album.year)}</span>` : '');
+                        albumBtn.addEventListener('click', () => selectAlbum(album, albumBtn));
+                        els.list.appendChild(albumBtn);
+                    }
+                    if (preselectReleaseMbid) {
+                        const target = albums.find(al => al.release_mbid === preselectReleaseMbid);
+                        if (target) await selectAlbum(target, preselectBtn);
+                    }
+                    return albums;
+                } catch (e) {
+                    _renderRetryError(els.list, `Failed to load albums: ${e.message}`, () => loadAlbums(a, preselectReleaseMbid));
+                }
+            }
+
+            async function selectArtist(a, btn) {
+                state.selectedArtist = a;
+                state.selectedRelease = null;
+                state.selectedM3uName = null;
+                containerEl.querySelectorAll('.album-artist-btn').forEach(b => b.classList.remove('selected'));
+                if (btn) btn.classList.add('selected');
+
+                if (els.listSection) els.listSection.style.display = 'block';
+                if (els.tracklistSection) els.tracklistSection.style.display = 'none';
+                setResetVisible(false);
+                if (els.listHeading) els.listHeading.textContent = `Albums by ${a.name}`;
+                if (els.list) els.list.innerHTML = '<p class="bulk-intro-text">Loading albums…</p>';
+
+                await loadAlbums(a);
+            }
+
+            async function selectAlbum(album, btn) {
+                state.selectedRelease = album;
+                containerEl.querySelectorAll('.album-list-btn').forEach(b => b.classList.remove('selected'));
+                if (btn) btn.classList.add('selected');
+
+                if (els.downloadBtn) { els.downloadBtn.disabled = false; els.downloadBtn.textContent = 'Download Album'; }
+                setResetVisible(false);
+                if (els.existingWarning) { els.existingWarning.style.display = 'none'; els.existingWarning.textContent = ''; }
+                if (els.trackLegend) { els.trackLegend.style.display = 'none'; els.trackLegend.textContent = ''; }
+                state.selectedM3uName = null;
+                if (els.makeM3u) els.makeM3u.checked = false;
+                if (els.m3uHint) { els.m3uHint.style.display = 'none'; els.m3uHint.textContent = ''; }
+                if (els.tracklistSection) els.tracklistSection.style.display = 'block';
+                if (els.tracklistHeading) els.tracklistHeading.textContent = `${album.title}${album.year ? ' (' + album.year + ')' : ''}`;
+                if (els.tracklist) els.tracklist.innerHTML = '<li>Loading…</li>';
+                if (els.downloadBtn) els.downloadBtn.disabled = true;
+
+                try {
+                    const resp = await apiFetch(`/api/albums/release/${encodeURIComponent(album.release_mbid)}/tracks`);
+                    if (!resp.ok) {
+                        const detail = await _readApiErrorDetail(resp);
+                        _renderRetryError(els.tracklist, `Failed to load tracklist: ${detail}`, () => selectAlbum(album, btn), true);
+                        return;
+                    }
+                    const data = await resp.json();
+                    const tracks = data.tracks || [];
+                    if (!els.tracklist) return;
+                    if (!tracks.length) {
+                        els.tracklist.innerHTML = '<li>No tracks found.</li>';
+                        return;
+                    }
+                    els.tracklist.innerHTML = '';
+                    for (const t of tracks) {
+                        const li = document.createElement('li');
+                        li.className = 'album-track-item';
+                        li.textContent = t.title;
+                        els.tracklist.appendChild(li);
+                    }
+                    if (state.selectedArtist && els.existingWarning) {
+                        try {
+                            const params = new URLSearchParams({
+                                artist: state.selectedArtist.name,
+                                album_title: album.title,
+                            });
+                            const statusResp = await apiFetch(
+                                `/api/albums/release/${encodeURIComponent(album.release_mbid)}/missing?${params.toString()}`
+                            );
+                            if (statusResp.ok) {
+                                const statusData = await statusResp.json();
+                                const existing = Number(statusData.existing_count || 0);
+                                const missing = Number(statusData.missing_count || 0);
+                                const total = Number(statusData.total_tracks || tracks.length || 0);
+
+                                if (Array.isArray(statusData.tracks) && statusData.tracks.length === tracks.length) {
+                                    const liEls = els.tracklist.querySelectorAll('li');
+                                    statusData.tracks.forEach((st, idx) => {
+                                        const li = liEls[idx];
+                                        if (!li) return;
+                                        li.classList.remove('album-track-existing', 'album-track-missing');
+                                        li.classList.add(st.exists ? 'album-track-existing' : 'album-track-missing');
+                                    });
+                                }
+
+                                if (els.trackLegend && existing > 0) {
+                                    els.trackLegend.style.display = 'block';
+                                    els.trackLegend.innerHTML = `<span class="missing">Green</span> = missing (will queue) &nbsp;·&nbsp; <span class="existing">dim</span> = already on disk`;
+                                }
+
+                                if (existing > 0) {
+                                    els.existingWarning.style.display = 'block';
+                                    if (missing <= 0) {
+                                        els.existingWarning.textContent = `Album already exists in ${statusData.album_dir} (${existing}/${total} tracks). Download will queue nothing.`;
+                                    } else {
+                                        els.existingWarning.textContent = `${existing}/${total} track(s) already exist in ${statusData.album_dir}. Only ${missing} missing track(s) will be queued.`;
+                                    }
+                                }
+
+                                const m3uFiles = Array.isArray(statusData.existing_m3u_files) ? statusData.existing_m3u_files : [];
+                                if (statusData.has_existing_m3u && m3uFiles.length > 0) {
+                                    state.selectedM3uName = m3uFiles[0];
+                                    if (els.makeM3u) els.makeM3u.checked = true;
+                                    if (els.m3uHint) {
+                                        els.m3uHint.style.display = 'block';
+                                        els.m3uHint.textContent = `Existing M3U found (${state.selectedM3uName}) - this will be updated.`;
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            // Non-fatal; user can still download.
+                        }
+                    }
+                    if (els.downloadBtn) { els.downloadBtn.disabled = false; els.downloadBtn.textContent = 'Download Album'; }
+                } catch (e) {
+                    _renderRetryError(els.tracklist, `Failed to load tracklist: ${e.message}`, () => selectAlbum(album, btn), true);
+                }
+            }
+
+            function renderProgress(data) {
+                const done = data.completed || 0;
+                const total = data.total_tracks || 0;
+                const failed = data.failed || 0;
+                const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+                const statusText = data.complete
+                    ? `Done: ${done}/${total} tracks${failed ? `, ${failed} failed` : ''}`
+                    : `Downloading: ${done}/${total} tracks…`;
+                return `<div class="bulk-progress-bar-container"><div class="bulk-progress-bar" style="width:${pct}%"></div></div>`
+                    + `<p class="bulk-intro-text">${escapeHtml(statusText)}</p>`;
+            }
+
+            async function downloadAlbum() {
+                if (!state.selectedArtist || !state.selectedRelease) return;
+                const makeM3u = els.makeM3u?.checked || false;
+                setResetVisible(false);
+                if (els.downloadBtn) { els.downloadBtn.disabled = true; els.downloadBtn.textContent = 'Queuing…'; }
+
+                try {
+                    const resp = await apiFetch('/api/albums/download', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            artist: state.selectedArtist.name,
+                            album_title: state.selectedRelease.title,
+                            release_mbid: state.selectedRelease.release_mbid,
+                            make_m3u: makeM3u,
+                            m3u_name: makeM3u ? (state.selectedM3uName || null) : null,
+                            convert_to_flac: convertToFlacCheckbox.checked,
+                        }),
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        throw new Error(err.detail || 'Download failed');
+                    }
+                    const data = await resp.json();
+                    if (els.progress) {
+                        els.progress.style.display = 'block';
+                        const warningLine = data.warning
+                            ? `<p class="settings-hint-sm" style="margin:0 0 8px;">${escapeHtml(data.warning)}</p>`
+                            : '';
+                        els.progress.innerHTML =
+                            `${warningLine}<p class="settings-hint-sm" style="margin:0 0 8px;">Saving to: <code>${escapeHtml(data.album_dir)}</code></p>`;
+                    }
+
+                    if (onQueued) { try { onQueued(data); } catch (e) {} }
+
+                    if (!data.import_id) {
+                        if (els.downloadBtn) { els.downloadBtn.disabled = true; els.downloadBtn.textContent = 'Already Complete'; }
+                        setResetVisible(true);
+                        return;
+                    }
+
+                    if (state.pollInterval) clearInterval(state.pollInterval);
+                    const albumDirHint = `<p class="settings-hint-sm" style="margin:0 0 8px;">Saving to: <code>${escapeHtml(data.album_dir)}</code></p>`;
+                    state.pollInterval = setInterval(async () => {
+                        try {
+                            const statusResp = await apiFetch(`/api/bulk-import/${data.import_id}/status`);
+                            if (!statusResp.ok) return;
+                            const statusData = await statusResp.json();
+                            if (els.progress) els.progress.innerHTML = albumDirHint + renderProgress(statusData);
+                            if (statusData.complete) {
+                                clearInterval(state.pollInterval);
+                                state.pollInterval = null;
+                                if (els.downloadBtn) { els.downloadBtn.disabled = true; els.downloadBtn.textContent = 'Downloaded'; }
+                                setResetVisible(true);
+                            }
+                        } catch (e) { /* transient, keep polling */ }
+                    }, 2000);
+
+                } catch (e) {
+                    if (els.downloadBtn) { els.downloadBtn.disabled = false; els.downloadBtn.textContent = 'Download Album'; }
+                    if (els.progress) {
+                        els.progress.style.display = 'block';
+                        els.progress.innerHTML = `<p class="error-text">Error: ${escapeHtml(e.message)}</p>`;
+                    }
+                }
+            }
+
+            function reset() {
+                if (state.pollInterval) { clearInterval(state.pollInterval); state.pollInterval = null; }
+                state.selectedRelease = null;
+                state.selectedM3uName = null;
+
+                if (els.artistInput) els.artistInput.value = '';
+                if (els.artistResults) { els.artistResults.style.display = 'none'; els.artistResults.innerHTML = ''; }
+                if (els.listSection) els.listSection.style.display = 'none';
+                if (els.list) els.list.innerHTML = '';
+                if (els.listHeading) els.listHeading.textContent = '';
+                if (els.tracklistSection) els.tracklistSection.style.display = 'none';
+                if (els.tracklist) els.tracklist.innerHTML = '';
+                if (els.tracklistHeading) els.tracklistHeading.textContent = '';
+                if (els.existingWarning) { els.existingWarning.style.display = 'none'; els.existingWarning.textContent = ''; }
+                if (els.trackLegend) { els.trackLegend.style.display = 'none'; els.trackLegend.textContent = ''; }
+                if (els.progress) { els.progress.style.display = 'none'; els.progress.innerHTML = ''; }
+                if (els.downloadBtn) { els.downloadBtn.disabled = false; els.downloadBtn.textContent = 'Download Album'; }
+                if (els.makeM3u) els.makeM3u.checked = false;
+                if (els.m3uHint) { els.m3uHint.style.display = 'none'; els.m3uHint.textContent = ''; }
+                setResetVisible(false);
+
+                containerEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                if (els.artistInput) {
+                    els.artistInput.focus({ preventScroll: true });
+                    state.selectedArtist = null;
+                } else if (artist) {
+                    // Pinned artist, no search box to fall back on: hop straight
+                    // back to their album list rather than showing a dead end.
+                    state.selectedArtist = { mbid: artist.mbid, name: artist.name };
+                    selectArtist(state.selectedArtist, null);
+                } else {
+                    state.selectedArtist = null;
+                }
+            }
+
+            if (els.artistSearchBtn) els.artistSearchBtn.addEventListener('click', searchArtist);
+            if (els.artistInput) els.artistInput.addEventListener('keydown', e => { if (e.key === 'Enter') searchArtist(); });
+            if (els.downloadBtn) els.downloadBtn.addEventListener('click', downloadAlbum);
+            if (els.resetBtn) els.resetBtn.addEventListener('click', reset);
+
+            const handle = {
+                el: containerEl,
+                hasSelection() {
+                    return !!(state.selectedRelease
+                        || (state.selectedArtist && !artist)
+                        || (els.artistInput && els.artistInput.value.trim())
+                        || (els.artistResults && els.artistResults.innerHTML.trim()));
+                },
+                setArtist(mbid, name) {
+                    return selectArtist({ mbid, name }, null);
+                },
+                searchFor(name) {
+                    if (!els.artistInput) return;
+                    els.artistInput.value = name;
+                    return searchArtist();
+                },
+                async openAlbum(opts) {
+                    // opts: { artistName, albumTitle, artistMbid?, releaseMbid? }
+                    if (!opts.artistName || !opts.albumTitle) return;
+                    if (els.artistInput) els.artistInput.value = opts.artistName;
+                    state.selectedArtist = null;
+                    state.selectedRelease = null;
+                    state.selectedM3uName = null;
+                    if (state.pollInterval) { clearInterval(state.pollInterval); state.pollInterval = null; }
+                    if (els.downloadBtn) { els.downloadBtn.disabled = false; els.downloadBtn.textContent = 'Download Album'; }
+                    if (els.tracklistSection) els.tracklistSection.style.display = 'none';
+                    if (els.progress) els.progress.style.display = 'none';
+                    setResetVisible(false);
+
+                    if (opts.artistMbid && opts.releaseMbid) {
+                        // Fast path: caller already resolved MBIDs (e.g. a MusicBrainz URL paste)
+                        state.selectedArtist = { mbid: opts.artistMbid, name: opts.artistName };
+                        if (els.artistResults) {
+                            els.artistResults.style.display = '';
+                            els.artistResults.innerHTML = '';
+                            const btn = document.createElement('button');
+                            btn.className = 'album-artist-btn selected';
+                            btn.innerHTML = `<span class="album-artist-name">${escapeHtml(opts.artistName)}</span>`;
+                            btn.addEventListener('click', () => selectArtist(state.selectedArtist, btn));
+                            els.artistResults.appendChild(btn);
+                        }
+                        if (els.listSection) els.listSection.style.display = 'block';
+                        if (els.listHeading) els.listHeading.textContent = `Albums by ${opts.artistName}`;
+                        if (els.list) els.list.innerHTML = '<p class="bulk-intro-text">Loading albums…</p>';
+                        await loadAlbums(state.selectedArtist, opts.releaseMbid);
+                    } else {
+                        // Slow path: look up the artist, then fuzzy-match the album title
+                        if (els.artistResults) {
+                            els.artistResults.style.display = '';
+                            els.artistResults.innerHTML = '<p class="bulk-intro-text">Searching for artist…</p>';
+                        }
+                        try {
+                            const artistResp = await apiFetch(`/api/albums/search-artist?q=${encodeURIComponent(opts.artistName)}`);
+                            if (!artistResp.ok) throw new Error('Artist search failed');
+                            const artistData = await artistResp.json();
+                            const artists = artistData.artists || [];
+                            if (!artists.length) {
+                                if (els.artistResults) els.artistResults.innerHTML = '<p class="bulk-intro-text">No matching artist found on MusicBrainz.</p>';
+                                return;
+                            }
+                            const bestArtist = artists[0];
+                            state.selectedArtist = bestArtist;
+                            if (els.artistResults) {
+                                els.artistResults.innerHTML = '';
+                                for (const a of artists) {
+                                    const btn = document.createElement('button');
+                                    btn.className = 'album-artist-btn';
+                                    if (a.mbid === bestArtist.mbid) btn.classList.add('selected');
+                                    btn.innerHTML = `<span class="album-artist-name">${escapeHtml(a.name)}</span>`
+                                        + (a.disambiguation ? ` <span class="album-artist-disambig">${escapeHtml(a.disambiguation)}</span>` : '');
+                                    btn.addEventListener('click', () => selectArtist(a, btn));
+                                    els.artistResults.appendChild(btn);
+                                }
+                            }
+                            if (els.listSection) els.listSection.style.display = 'block';
+                            if (els.listHeading) els.listHeading.textContent = `Albums by ${bestArtist.name}`;
+                            if (els.list) els.list.innerHTML = '<p class="bulk-intro-text">Loading albums…</p>';
+
+                            const albums = await loadAlbums(bestArtist) || [];
+                            if (!albums.length) return;
+
+                            const matchedAlbum = findMatchingAlbum(albums, opts.albumTitle);
+                            if (matchedAlbum) {
+                                containerEl.querySelectorAll('.album-list-btn').forEach(b => b.classList.remove('selected'));
+                                const matchedBtn = Array.from(els.list?.querySelectorAll('.album-list-btn') || [])
+                                    .find(b => b.querySelector('.album-list-title')?.textContent === matchedAlbum.title);
+                                await selectAlbum(matchedAlbum, matchedBtn);
+                            } else {
+                                showToast(`Album "${opts.albumTitle}" not found in MusicBrainz. Pick one manually.`, true);
+                            }
+                        } catch (e) {
+                            if (els.artistResults) els.artistResults.innerHTML = `<p class="bulk-intro-text error-text">Failed: ${escapeHtml(e.message)}</p>`;
+                        }
+                    }
+                },
+                reset,
+                destroy() {
+                    if (state.pollInterval) clearInterval(state.pollInterval);
+                    containerEl.innerHTML = '';
+                },
+            };
+
+            if (state.selectedArtist) selectArtist(state.selectedArtist, null);
+
+            return handle;
+        }
+
+        // -------------------------------------------------------------------
+        // One-off album browsing (Artists tab, "browse without following") and
+        // the Tracks-tab handoff into it.
+        // -------------------------------------------------------------------
+
+        // The one-off browser is the chooser's third option ("Download an Album").
+        // It has no search box of its own: the artist has already been picked
+        // upstairs, so a second search box would just be asking the same question
+        // twice. The Tracks-tab handoff drives it through openAlbum() instead.
+
+        let oneOffAlbumBrowserHandle = null;
+
+        function ensureOneOffAlbumBrowser() {
+            if (oneOffAlbumBrowserHandle) return oneOffAlbumBrowserHandle;
+            const mountEl = document.getElementById('artistOneOffBrowserMount');
+            if (!mountEl) return null;
+            oneOffAlbumBrowserHandle = mountAlbumBrowser(mountEl, { showArtistSearch: false });
+            return oneOffAlbumBrowserHandle;
+        }
+
+        function showOneOffAlbumSection(artistName) {
+            hideArtistModePanels();
+            const panel = document.getElementById('artistOneOffPanel');
+            if (panel) panel.style.display = 'block';
+            const nameEl = document.getElementById('artistOneOffName');
+            if (nameEl) nameEl.textContent = artistName ? `Albums by ${artistName}` : 'Download an album';
+            return ensureOneOffAlbumBrowser();
+        }
+
+        // -------------------------------------------------------------------
+        // Bulk Import's copy of the same browser. The Albums tab is gone, so
+        // its artist/release browsing lives here as well as on Artists; one
+        // component, mounted twice, rather than two things to keep in step.
+        // -------------------------------------------------------------------
+
+        let bulkAlbumBrowserHandle = null;
+
+        function ensureBulkAlbumBrowser() {
+            if (bulkAlbumBrowserHandle) return bulkAlbumBrowserHandle;
+            const mountEl = document.getElementById('bulkAlbumBrowserMount');
+            if (!mountEl) return null;
+            bulkAlbumBrowserHandle = mountAlbumBrowser(mountEl, { showArtistSearch: true });
+            return bulkAlbumBrowserHandle;
+        }
+
+        document.getElementById('bulkAlbumBrowseToggleBtn')?.addEventListener('click', () => {
+            const section = document.getElementById('bulkAlbumBrowseSection');
+            const toggleBtn = document.getElementById('bulkAlbumBrowseToggleBtn');
+            if (!section || !toggleBtn) return;
+            const visible = section.style.display !== 'none';
+            if (visible) {
+                section.style.display = 'none';
+                toggleBtn.textContent = "+ Browse an artist's albums";
+            } else {
+                section.style.display = 'block';
+                toggleBtn.textContent = "− Browse an artist's albums";
+                ensureBulkAlbumBrowser();
+            }
+        });
 
         function albumHandoffArtist() {
             const query = lastCompletedSearchQuery.trim();
@@ -4238,584 +4876,38 @@
         }
 
         function primeAlbumSearchFromResults() {
-            const input = document.getElementById('albumArtistInput');
-            const resultsEl = document.getElementById('albumArtistResults');
-            if (!input || currentTab !== 'albums') return;
+            if (currentTab !== 'artists') return;
+
+            const artistName = albumHandoffArtist();
+            if (!artistName) return;
 
             // Album work is deliberately sticky. Returning to a search or selected
-            // release must never be replaced just because Results still has context.
-            const alreadyInProgress = albumSelectedArtist
-                || albumSelectedRelease
-                || input.value.trim()
-                || resultsEl?.innerHTML.trim();
-            if (alreadyInProgress) return;
-
-            const artist = albumHandoffArtist();
-            if (!artist) return;
-            input.value = artist;
-            searchAlbumArtist();
-        }
-
-        function setAlbumResetVisible(visible) {
-            const resetBtn = document.getElementById('albumResetBtn');
-            if (!resetBtn) return;
-            resetBtn.classList.toggle('show', !!visible);
-        }
-
-        function resetAlbumFormAndScrollTop() {
-            const input = document.getElementById('albumArtistInput');
-            const resultsEl = document.getElementById('albumArtistResults');
-            const listSection = document.getElementById('albumListSection');
-            const listEl = document.getElementById('albumList');
-            const listHeading = document.getElementById('albumListHeading');
-            const tracklistSection = document.getElementById('albumTracklistSection');
-            const tracklistEl = document.getElementById('albumTracklist');
-            const tracklistHeading = document.getElementById('albumTracklistHeading');
-            const warningEl = document.getElementById('albumExistingWarning');
-            const legendEl = document.getElementById('albumTrackLegend');
-            const progressEl = document.getElementById('albumProgress');
-            const downloadBtn = document.getElementById('albumDownloadBtn');
-            const makeM3u = document.getElementById('albumMakeM3u');
-            const m3uHintEl = document.getElementById('albumM3uHint');
-
-            if (albumPollInterval) { clearInterval(albumPollInterval); albumPollInterval = null; }
-            albumSelectedArtist = null;
-            albumSelectedRelease = null;
-
-            if (input) input.value = '';
-            if (resultsEl) {
-                resultsEl.style.display = 'none';
-                resultsEl.innerHTML = '';
-            }
-            if (listSection) listSection.style.display = 'none';
-            if (listEl) listEl.innerHTML = '';
-            if (listHeading) listHeading.textContent = '';
-            if (tracklistSection) tracklistSection.style.display = 'none';
-            if (tracklistEl) tracklistEl.innerHTML = '';
-            if (tracklistHeading) tracklistHeading.textContent = '';
-            if (warningEl) { warningEl.style.display = 'none'; warningEl.textContent = ''; }
-            if (legendEl) { legendEl.style.display = 'none'; legendEl.textContent = ''; }
-            if (progressEl) { progressEl.style.display = 'none'; progressEl.innerHTML = ''; }
-            if (downloadBtn) { downloadBtn.disabled = false; downloadBtn.textContent = 'Download Album'; }
-            albumSelectedM3uName = null;
-            if (makeM3u) makeM3u.checked = false;
-            if (m3uHintEl) { m3uHintEl.style.display = 'none'; m3uHintEl.textContent = ''; }
-
-            setAlbumResetVisible(false);
-
-            const albumsTab = document.getElementById('albumsTabContainer');
-            if (albumsTab) albumsTab.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            if (input) input.focus({ preventScroll: true });
-        }
-
-        // -------------------------------------------------------------------
-        // Open album from search results (clickable album name / suggestion chip)
-        // -------------------------------------------------------------------
-
-        function findMatchingAlbum(albums, searchTitle) {
-            if (!searchTitle || !albums.length) return null;
-            function normalise(s) {
-                return s.toLowerCase()
-                    .replace(/\s*\(.*?\)\s*/g, ' ')
-                    .replace(/\s*\[.*?\]\s*/g, ' ')
-                    .replace(/[^\w\s]/g, '')
-                    .replace(/\s+/g, ' ')
-                    .trim();
-            }
-            const norm = normalise(searchTitle);
-            // Exact case-insensitive
-            for (const a of albums) if (a.title.toLowerCase() === searchTitle.toLowerCase()) return a;
-            // Normalised
-            for (const a of albums) if (normalise(a.title) === norm) return a;
-            // Containment (handles "Album" vs "Album (Deluxe)")
-            for (const a of albums) {
-                const na = normalise(a.title);
-                if (na && norm && (na.includes(norm) || norm.includes(na))) return a;
-            }
-            return null;
+            // release must never be replaced just because Tracks still has context.
+            // The album browser lost its own search box to the chooser, so the
+            // handoff now pre-fills the chooser's artist box instead. Only when it
+            // is empty and nothing is mid-flight; inheriting context is a courtesy,
+            // not a licence to type over what somebody is already doing.
+            const input = document.getElementById('artistSearchInput');
+            if (!input || input.value.trim()) return;
+            if (document.getElementById('artistModeChooser')?.style.display !== 'none') return;
+            if (oneOffAlbumBrowserHandle && oneOffAlbumBrowserHandle.hasSelection()) return;
+            input.value = artistName;
         }
 
         async function openAlbumFromSearch(opts) {
             // opts: { artistName, albumTitle, artistMbid?, releaseMbid? }
             if (!opts.artistName || !opts.albumTitle) return;
 
-            // Switch to Albums tab
-            const albumsTabBtn = document.querySelector('[data-tab="albums"]');
-            if (albumsTabBtn) albumsTabBtn.click();
-
-            // Set the artist name in the input for visual context
-            const input = document.getElementById('albumArtistInput');
-            if (input) input.value = opts.artistName;
-
-            const resultsEl = document.getElementById('albumArtistResults');
-            const listSection = document.getElementById('albumListSection');
-            const listEl = document.getElementById('albumList');
-            const headingEl = document.getElementById('albumListHeading');
-            const tracklistSection = document.getElementById('albumTracklistSection');
-            const progressEl = document.getElementById('albumProgress');
-
-            // Reset state
-            albumSelectedArtist = null;
-            albumSelectedRelease = null;
-            albumSelectedM3uName = null;
-            if (albumPollInterval) { clearInterval(albumPollInterval); albumPollInterval = null; }
-            const downloadBtn = document.getElementById('albumDownloadBtn');
-            if (downloadBtn) { downloadBtn.disabled = false; downloadBtn.textContent = 'Download Album'; }
-            if (tracklistSection) tracklistSection.style.display = 'none';
-            if (progressEl) progressEl.style.display = 'none';
-            setAlbumResetVisible(false);
-
-            if (opts.artistMbid && opts.releaseMbid) {
-                // Fast path: backend already resolved MBIDs
-                albumSelectedArtist = { mbid: opts.artistMbid, name: opts.artistName };
-
-                // Show artist as selected
-                if (resultsEl) {
-                    resultsEl.style.display = '';
-                    resultsEl.innerHTML = '';
-                    const btn = document.createElement('button');
-                    btn.className = 'album-artist-btn selected';
-                    btn.innerHTML = `<span class="album-artist-name">${escapeHtml(opts.artistName)}</span>`;
-                    btn.addEventListener('click', () => selectAlbumArtist(albumSelectedArtist, btn));
-                    resultsEl.appendChild(btn);
-                }
-
-                // Load album list, then auto-select the matching one
-                if (listSection) listSection.style.display = 'block';
-                if (headingEl) headingEl.textContent = `Albums by ${opts.artistName}`;
-                if (listEl) listEl.innerHTML = '<p class="bulk-intro-text">Loading albums\u2026</p>';
-
-                try {
-                    const resp = await apiFetch(`/api/albums/artist/${encodeURIComponent(opts.artistMbid)}/albums`);
-                    if (!resp.ok) throw new Error('Failed to load albums');
-                    const data = await resp.json();
-                    const albums = data.albums || [];
-                    if (!albums.length) {
-                        if (listEl) listEl.innerHTML = '<p class="bulk-intro-text">No albums found.</p>';
-                        return;
-                    }
-                    if (listEl) {
-                        listEl.innerHTML = '';
-                        let matchedBtn = null;
-                        for (const album of albums) {
-                            const abtn = document.createElement('button');
-                            abtn.className = 'album-list-btn';
-                            if (album.release_mbid === opts.releaseMbid) {
-                                abtn.classList.add('selected');
-                                matchedBtn = abtn;
-                            }
-                            abtn.innerHTML = `<span class="album-list-title">${escapeHtml(album.title)}</span>`
-                                + (album.year ? ` <span class="album-list-year">${escapeHtml(album.year)}</span>` : '');
-                            abtn.addEventListener('click', () => selectAlbum(album, abtn));
-                            listEl.appendChild(abtn);
-                        }
-                    }
-                    // Auto-select the album to load its tracklist
-                    const target = albums.find(a => a.release_mbid === opts.releaseMbid);
-                    if (target) {
-                        await selectAlbum(target, listEl?.querySelector('.album-list-btn.selected'));
-                    }
-                } catch (e) {
-                    if (listEl) listEl.innerHTML = `<p class="bulk-intro-text error-text">Failed: ${escapeHtml(e.message)}</p>`;
-                }
-
-            } else {
-                // Slow path: need to look up artist and find the album
-                if (resultsEl) {
-                    resultsEl.style.display = '';
-                    resultsEl.innerHTML = '<p class="bulk-intro-text">Searching for artist\u2026</p>';
-                }
-
-                try {
-                    const artistResp = await apiFetch(`/api/albums/search-artist?q=${encodeURIComponent(opts.artistName)}`);
-                    if (!artistResp.ok) throw new Error('Artist search failed');
-                    const artistData = await artistResp.json();
-                    const artists = artistData.artists || [];
-
-                    if (!artists.length) {
-                        if (resultsEl) resultsEl.innerHTML = '<p class="bulk-intro-text">No matching artist found on MusicBrainz.</p>';
-                        return;
-                    }
-
-                    const bestArtist = artists[0];
-                    albumSelectedArtist = bestArtist;
-
-                    // Render artist buttons with the best one pre-selected
-                    if (resultsEl) {
-                        resultsEl.innerHTML = '';
-                        for (const a of artists) {
-                            const btn = document.createElement('button');
-                            btn.className = 'album-artist-btn';
-                            if (a.mbid === bestArtist.mbid) btn.classList.add('selected');
-                            btn.innerHTML = `<span class="album-artist-name">${escapeHtml(a.name)}</span>`
-                                + (a.disambiguation ? ` <span class="album-artist-disambig">${escapeHtml(a.disambiguation)}</span>` : '');
-                            btn.addEventListener('click', () => selectAlbumArtist(a, btn));
-                            resultsEl.appendChild(btn);
-                        }
-                    }
-
-                    // Load albums
-                    if (listSection) listSection.style.display = 'block';
-                    if (headingEl) headingEl.textContent = `Albums by ${bestArtist.name}`;
-                    if (listEl) listEl.innerHTML = '<p class="bulk-intro-text">Loading albums\u2026</p>';
-
-                    const albumsResp = await apiFetch(`/api/albums/artist/${encodeURIComponent(bestArtist.mbid)}/albums`);
-                    if (!albumsResp.ok) throw new Error('Failed to load albums');
-                    const albumsData = await albumsResp.json();
-                    const albums = albumsData.albums || [];
-
-                    if (!albums.length) {
-                        if (listEl) listEl.innerHTML = '<p class="bulk-intro-text">No albums found for this artist.</p>';
-                        return;
-                    }
-
-                    // Fuzzy-match the album title
-                    const matchedAlbum = findMatchingAlbum(albums, opts.albumTitle);
-
-                    if (listEl) {
-                        listEl.innerHTML = '';
-                        for (const album of albums) {
-                            const abtn = document.createElement('button');
-                            abtn.className = 'album-list-btn';
-                            if (matchedAlbum && album.release_mbid === matchedAlbum.release_mbid) {
-                                abtn.classList.add('selected');
-                            }
-                            abtn.innerHTML = `<span class="album-list-title">${escapeHtml(album.title)}</span>`
-                                + (album.year ? ` <span class="album-list-year">${escapeHtml(album.year)}</span>` : '');
-                            abtn.addEventListener('click', () => selectAlbum(album, abtn));
-                            listEl.appendChild(abtn);
-                        }
-                    }
-
-                    if (matchedAlbum) {
-                        await selectAlbum(matchedAlbum, listEl?.querySelector('.album-list-btn.selected'));
-                    } else {
-                        showToast(`Album "${opts.albumTitle}" not found in MusicBrainz. Pick one manually.`, true);
-                    }
-                } catch (e) {
-                    if (resultsEl) resultsEl.innerHTML = `<p class="bulk-intro-text error-text">Failed: ${escapeHtml(e.message)}</p>`;
-                }
-            }
+            // Switch to the Artists tab and pop the one-off browser open; this
+            // handoff never assumes you want to follow the artist, just download
+            // one album.
+            const artistsTabBtn = document.querySelector('[data-tab="artists"]');
+            if (artistsTabBtn) artistsTabBtn.click();
+            const handle = showOneOffAlbumSection(opts.artistName);
+            if (!handle) return;
+            await handle.openAlbum(opts);
+            document.getElementById('artistOneOffPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-
-        async function _readApiErrorDetail(resp) {
-            // FastAPI puts errors in {detail: "..."}. Fall back to the status line if
-            // the body is empty / not JSON.
-            try {
-                const data = await resp.json();
-                if (data && data.detail) return String(data.detail);
-            } catch {}
-            return `HTTP ${resp.status}`;
-        }
-
-        function _renderAlbumRetryError(containerEl, message, onRetry, asListItem = false) {
-            if (!containerEl) return;
-            const wrap = document.createElement(asListItem ? 'li' : 'p');
-            if (!asListItem) wrap.className = 'bulk-intro-text error-text';
-            else wrap.className = 'album-track-item album-track-error';
-            wrap.textContent = message + ' ';
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'album-retry-btn';
-            btn.textContent = 'Retry';
-            btn.addEventListener('click', () => { onRetry(); });
-            wrap.appendChild(btn);
-            containerEl.innerHTML = '';
-            containerEl.appendChild(wrap);
-        }
-
-        async function searchAlbumArtist() {
-            const input = document.getElementById('albumArtistInput');
-            const resultsEl = document.getElementById('albumArtistResults');
-            const listSection = document.getElementById('albumListSection');
-            const tracklistSection = document.getElementById('albumTracklistSection');
-            const progressEl = document.getElementById('albumProgress');
-            const q = input ? input.value.trim() : '';
-            if (!q) return;
-
-            resultsEl.innerHTML = '<p class="bulk-intro-text">Searching\u2026</p>';
-            // Let CSS control layout mode (flex/grid); just remove the inline "display:none".
-            resultsEl.style.display = '';
-            if (listSection) listSection.style.display = 'none';
-            if (tracklistSection) tracklistSection.style.display = 'none';
-            if (progressEl) progressEl.style.display = 'none';
-            setAlbumResetVisible(false);
-            albumSelectedArtist = null;
-            albumSelectedRelease = null;
-            albumSelectedM3uName = null;
-            // Reset download button and any in-flight poll from a previous download
-            if (albumPollInterval) { clearInterval(albumPollInterval); albumPollInterval = null; }
-            const downloadBtn = document.getElementById('albumDownloadBtn');
-            if (downloadBtn) { downloadBtn.disabled = false; downloadBtn.textContent = 'Download Album'; }
-
-            try {
-                const resp = await apiFetch(`/api/albums/search-artist?q=${encodeURIComponent(q)}`);
-                if (!resp.ok) {
-                    const detail = await _readApiErrorDetail(resp);
-                    _renderAlbumRetryError(resultsEl, `Search failed: ${detail}`, searchAlbumArtist);
-                    return;
-                }
-                const data = await resp.json();
-                const artists = data.artists || [];
-                if (!artists.length) {
-                    resultsEl.innerHTML = '<p class="bulk-intro-text">No artists found.</p>';
-                    return;
-                }
-                resultsEl.innerHTML = '';
-                for (const a of artists) {
-                    const btn = document.createElement('button');
-                    btn.className = 'album-artist-btn';
-                    btn.innerHTML = `<span class="album-artist-name">${escapeHtml(a.name)}</span>`
-                        + (a.disambiguation ? ` <span class="album-artist-disambig">${escapeHtml(a.disambiguation)}</span>` : '');
-                    btn.addEventListener('click', () => selectAlbumArtist(a, btn));
-                    resultsEl.appendChild(btn);
-                }
-            } catch (e) {
-                _renderAlbumRetryError(resultsEl, `Search failed: ${e.message}`, searchAlbumArtist);
-            }
-        }
-
-        async function selectAlbumArtist(artist, btn) {
-            albumSelectedArtist = artist;
-            albumSelectedRelease = null;
-            albumSelectedM3uName = null;
-            document.querySelectorAll('.album-artist-btn').forEach(b => b.classList.remove('selected'));
-            if (btn) btn.classList.add('selected');
-
-            const listSection = document.getElementById('albumListSection');
-            const listEl = document.getElementById('albumList');
-            const headingEl = document.getElementById('albumListHeading');
-            const tracklistSection = document.getElementById('albumTracklistSection');
-            if (listSection) listSection.style.display = 'block';
-            if (tracklistSection) tracklistSection.style.display = 'none';
-            setAlbumResetVisible(false);
-            if (headingEl) headingEl.textContent = `Albums by ${artist.name}`;
-            if (listEl) listEl.innerHTML = '<p class="bulk-intro-text">Loading albums\u2026</p>';
-
-            try {
-                const resp = await apiFetch(`/api/albums/artist/${encodeURIComponent(artist.mbid)}/albums`);
-                if (!resp.ok) {
-                    const detail = await _readApiErrorDetail(resp);
-                    _renderAlbumRetryError(listEl, `Failed to load albums: ${detail}`, () => selectAlbumArtist(artist, btn));
-                    return;
-                }
-                const data = await resp.json();
-                const albums = data.albums || [];
-                if (!listEl) return;
-                if (!albums.length) {
-                    listEl.innerHTML = '<p class="bulk-intro-text">No albums found.</p>';
-                    return;
-                }
-                listEl.innerHTML = '';
-                for (const album of albums) {
-                    const albumBtn = document.createElement('button');
-                    albumBtn.className = 'album-list-btn';
-                    albumBtn.innerHTML = `<span class="album-list-title">${escapeHtml(album.title)}</span>`
-                        + (album.year ? ` <span class="album-list-year">${escapeHtml(album.year)}</span>` : '');
-                    albumBtn.addEventListener('click', () => selectAlbum(album, albumBtn));
-                    listEl.appendChild(albumBtn);
-                }
-            } catch (e) {
-                _renderAlbumRetryError(listEl, `Failed to load albums: ${e.message}`, () => selectAlbumArtist(artist, btn));
-            }
-        }
-
-        async function selectAlbum(album, btn) {
-            albumSelectedRelease = album;
-            document.querySelectorAll('.album-list-btn').forEach(b => b.classList.remove('selected'));
-            if (btn) btn.classList.add('selected');
-
-            const tracklistSection = document.getElementById('albumTracklistSection');
-            const tracklistEl = document.getElementById('albumTracklist');
-            const headingEl = document.getElementById('albumTracklistHeading');
-            const warningEl = document.getElementById('albumExistingWarning');
-            const legendEl = document.getElementById('albumTrackLegend');
-            const downloadBtn = document.getElementById('albumDownloadBtn');
-            const makeM3u = document.getElementById('albumMakeM3u');
-            const m3uHintEl = document.getElementById('albumM3uHint');
-            // Reset button text whenever a different album is selected
-            if (downloadBtn) { downloadBtn.disabled = false; downloadBtn.textContent = 'Download Album'; }
-            setAlbumResetVisible(false);
-            if (warningEl) { warningEl.style.display = 'none'; warningEl.textContent = ''; }
-            if (legendEl) { legendEl.style.display = 'none'; legendEl.textContent = ''; }
-            albumSelectedM3uName = null;
-            if (makeM3u) makeM3u.checked = false;
-            if (m3uHintEl) { m3uHintEl.style.display = 'none'; m3uHintEl.textContent = ''; }
-            if (tracklistSection) tracklistSection.style.display = 'block';
-            if (headingEl) headingEl.textContent = `${album.title}${album.year ? ' (' + album.year + ')' : ''}`;
-            if (tracklistEl) tracklistEl.innerHTML = '<li>Loading\u2026</li>';
-            if (downloadBtn) downloadBtn.disabled = true;
-
-            try {
-                const resp = await apiFetch(`/api/albums/release/${encodeURIComponent(album.release_mbid)}/tracks`);
-                if (!resp.ok) {
-                    const detail = await _readApiErrorDetail(resp);
-                    _renderAlbumRetryError(tracklistEl, `Failed to load tracklist: ${detail}`, () => selectAlbum(album, btn), true);
-                    return;
-                }
-                const data = await resp.json();
-                const tracks = data.tracks || [];
-                if (!tracklistEl) return;
-                if (!tracks.length) {
-                    tracklistEl.innerHTML = '<li>No tracks found.</li>';
-                    return;
-                }
-                tracklistEl.innerHTML = '';
-                for (const t of tracks) {
-                    const li = document.createElement('li');
-                    li.className = 'album-track-item';
-                    li.textContent = t.title;
-                    tracklistEl.appendChild(li);
-                }
-                if (albumSelectedArtist && warningEl) {
-                    try {
-                        const params = new URLSearchParams({
-                            artist: albumSelectedArtist.name,
-                            album_title: album.title,
-                        });
-                        const statusResp = await apiFetch(
-                            `/api/albums/release/${encodeURIComponent(album.release_mbid)}/missing?${params.toString()}`
-                        );
-                        if (statusResp.ok) {
-                            const statusData = await statusResp.json();
-                            const existing = Number(statusData.existing_count || 0);
-                            const missing = Number(statusData.missing_count || 0);
-                            const total = Number(statusData.total_tracks || tracks.length || 0);
-
-                            if (Array.isArray(statusData.tracks) && statusData.tracks.length === tracks.length) {
-                                const liEls = tracklistEl.querySelectorAll('li');
-                                statusData.tracks.forEach((st, idx) => {
-                                    const li = liEls[idx];
-                                    if (!li) return;
-                                    li.classList.remove('album-track-existing', 'album-track-missing');
-                                    li.classList.add(st.exists ? 'album-track-existing' : 'album-track-missing');
-                                });
-                            }
-
-                            if (legendEl && existing > 0) {
-                                legendEl.style.display = 'block';
-                                legendEl.innerHTML = `<span class="missing">Green</span> = missing (will queue) &nbsp;·&nbsp; <span class="existing">dim</span> = already on disk`;
-                            }
-
-                            if (existing > 0) {
-                                warningEl.style.display = 'block';
-                                if (missing <= 0) {
-                                    warningEl.textContent = `Album already exists in ${statusData.album_dir} (${existing}/${total} tracks). Download will queue nothing.`;
-                                } else {
-                                    warningEl.textContent = `${existing}/${total} track(s) already exist in ${statusData.album_dir}. Only ${missing} missing track(s) will be queued.`;
-                                }
-                            }
-
-                            const m3uFiles = Array.isArray(statusData.existing_m3u_files) ? statusData.existing_m3u_files : [];
-                            if (statusData.has_existing_m3u && m3uFiles.length > 0) {
-                                albumSelectedM3uName = m3uFiles[0];
-                                if (makeM3u) makeM3u.checked = true;
-                                if (m3uHintEl) {
-                                    m3uHintEl.style.display = 'block';
-                                    m3uHintEl.textContent = `Existing M3U found (${albumSelectedM3uName}) - this will be updated.`;
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        // Non-fatal; user can still download.
-                    }
-                }
-                if (downloadBtn) { downloadBtn.disabled = false; downloadBtn.textContent = 'Download Album'; }
-            } catch (e) {
-                _renderAlbumRetryError(tracklistEl, `Failed to load tracklist: ${e.message}`, () => selectAlbum(album, btn), true);
-            }
-        }
-
-        async function downloadAlbum() {
-            if (!albumSelectedArtist || !albumSelectedRelease) return;
-            const downloadBtn = document.getElementById('albumDownloadBtn');
-            const progressEl = document.getElementById('albumProgress');
-            const makeM3u = document.getElementById('albumMakeM3u')?.checked || false;
-            setAlbumResetVisible(false);
-
-            if (downloadBtn) { downloadBtn.disabled = true; downloadBtn.textContent = 'Queuing\u2026'; }
-
-            try {
-                const resp = await apiFetch('/api/albums/download', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        artist: albumSelectedArtist.name,
-                        album_title: albumSelectedRelease.title,
-                        release_mbid: albumSelectedRelease.release_mbid,
-                        make_m3u: makeM3u,
-                        m3u_name: makeM3u ? (albumSelectedM3uName || null) : null,
-                        convert_to_flac: convertToFlacCheckbox.checked,
-                    }),
-                });
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Download failed');
-                }
-                const data = await resp.json();
-                if (progressEl) {
-                    progressEl.style.display = 'block';
-                    const warningLine = data.warning
-                        ? `<p class="settings-hint-sm" style="margin:0 0 8px;">${escapeHtml(data.warning)}</p>`
-                        : '';
-                    progressEl.innerHTML =
-                        `${warningLine}<p class="settings-hint-sm" style="margin:0 0 8px;">Saving to: <code>${escapeHtml(data.album_dir)}</code></p>`;
-                }
-
-                if (!data.import_id) {
-                    if (downloadBtn) { downloadBtn.disabled = true; downloadBtn.textContent = 'Already Complete'; }
-                    setAlbumResetVisible(true);
-                    return;
-                }
-
-                // Reuse bulk import polling + display
-                if (albumPollInterval) clearInterval(albumPollInterval);
-                const albumDirHint = `<p class="settings-hint-sm" style="margin:0 0 8px;">Saving to: <code>${escapeHtml(data.album_dir)}</code></p>`;
-                albumPollInterval = setInterval(async () => {
-                    try {
-                        const statusResp = await apiFetch(`/api/bulk-import/${data.import_id}/status`);
-                        if (!statusResp.ok) return;
-                        const statusData = await statusResp.json();
-                        if (progressEl) progressEl.innerHTML = albumDirHint + renderAlbumProgress(statusData);
-                        if (statusData.complete) {
-                            clearInterval(albumPollInterval);
-                            albumPollInterval = null;
-                            if (downloadBtn) { downloadBtn.disabled = true; downloadBtn.textContent = 'Downloaded'; }
-                            setAlbumResetVisible(true);
-                        }
-                    } catch (e) { /* transient, keep polling */ }
-                }, 2000);
-
-            } catch (e) {
-                if (downloadBtn) { downloadBtn.disabled = false; downloadBtn.textContent = 'Download Album'; }
-                if (progressEl) {
-                    progressEl.style.display = 'block';
-                    progressEl.innerHTML = `<p class="error-text">Error: ${escapeHtml(e.message)}</p>`;
-                }
-            }
-        }
-
-        function renderAlbumProgress(data) {
-            const done = data.completed || 0;
-            const total = data.total_tracks || 0;
-            const failed = data.failed || 0;
-            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-            const statusText = data.complete
-                ? `Done: ${done}/${total} tracks${failed ? `, ${failed} failed` : ''}`
-                : `Downloading: ${done}/${total} tracks\u2026`;
-            return `<div class="bulk-progress-bar-container"><div class="bulk-progress-bar" style="width:${pct}%"></div></div>`
-                + `<p class="bulk-intro-text">${escapeHtml(statusText)}</p>`;
-        }
-
-        // Wire up album tab buttons
-        const albumArtistSearchBtn = document.getElementById('albumArtistSearchBtn');
-        const albumArtistInput = document.getElementById('albumArtistInput');
-        const albumDownloadBtn = document.getElementById('albumDownloadBtn');
-        const albumResetBtn = document.getElementById('albumResetBtn');
-        if (albumArtistSearchBtn) albumArtistSearchBtn.addEventListener('click', searchAlbumArtist);
-        if (albumArtistInput) albumArtistInput.addEventListener('keydown', e => { if (e.key === 'Enter') searchAlbumArtist(); });
-        if (albumDownloadBtn) albumDownloadBtn.addEventListener('click', downloadAlbum);
-        if (albumResetBtn) albumResetBtn.addEventListener('click', resetAlbumFormAndScrollTop);
 
         let downloadablePage = 1;
 
@@ -5135,6 +5227,11 @@
                 return;
             }
 
+            if (action === 'toggle-artist-albums') {
+                openArtistAlbumPanel(btn.dataset.artistId || '');
+                return;
+            }
+
             if (action === 'delete-watched-artist') {
                 deleteWatchedArtist(
                     btn.dataset.artistId || '',
@@ -5166,6 +5263,287 @@
                 localStorage.setItem('mg_quality_keep_unknown', qualityFilterKeepUnknown.checked ? '1' : '0');
                 applyQualityFilter();
             });
+        }
+
+        // =============================================================
+        // Album name / URL routing (Bulk Import as the general acquisition
+        // input). Three album-shaped things share one confirmation panel:
+        //   - Spotify/Apple album URLs, via resolve-album-url (confidence gate)
+        //   - MusicBrainz search-release results (artist optional; soundtracks,
+        //     compilations etc. are first-class, see "Trainspotting" test case)
+        //   - The candidate a user picks from either of the above needs its
+        //     release_mbid resolved before /api/albums/download will take it.
+        // All three end up at queueAlbumAndShowProgress(), which is the only
+        // place that actually calls the download endpoint, so there is exactly
+        // one code path doing the queueing bit.
+        // =============================================================
+
+        function hideAlbumMatchPanel() {
+            if (!albumMatchPanel) return;
+            albumMatchPanel.style.display = 'none';
+            albumMatchPanel.innerHTML = '';
+        }
+
+        // A search-release / resolve-album-url candidate: {title, artist, year,
+        // release_group_mbid, release_mbid, primary_type, secondary_types, score}.
+        // release_mbid is null by design for search-release results (resolving
+        // one costs a rate-limited MusicBrainz request per candidate); it's
+        // usually present for resolve-album-url's single best match.
+        function _albumCandidateTypeLabel(c) {
+            const parts = [c.primary_type, ...(Array.isArray(c.secondary_types) ? c.secondary_types : [])].filter(Boolean);
+            return parts.join(' · ');
+        }
+
+        function renderAlbumCandidates(candidates, headerText) {
+            if (!albumMatchPanel) return;
+            albumMatchPanel.style.display = 'block';
+            albumMatchPanel.innerHTML = '';
+
+            const heading = document.createElement('p');
+            heading.className = 'bulk-intro-text';
+            heading.textContent = headerText;
+            albumMatchPanel.appendChild(heading);
+
+            const list = document.createElement('div');
+            list.className = 'album-list';
+            for (const c of candidates) {
+                const title = c.title || 'Unknown album';
+                const typeLabel = _albumCandidateTypeLabel(c);
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'album-list-btn';
+                btn.innerHTML = `<span class="album-list-title">${escapeHtml(title)}</span>`
+                    + (c.artist ? ` <span class="album-artist-disambig">${escapeHtml(c.artist)}</span>` : '')
+                    + (c.year ? ` <span class="album-list-year">${escapeHtml(String(c.year))}</span>` : '')
+                    + (typeLabel ? ` <span class="album-list-year">(${escapeHtml(typeLabel)})</span>` : '');
+                btn.addEventListener('click', () => resolveAndQueueCandidate(c, btn));
+                list.appendChild(btn);
+            }
+            albumMatchPanel.appendChild(list);
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'btn btn-ghost';
+            cancelBtn.textContent = 'None of these';
+            cancelBtn.addEventListener('click', hideAlbumMatchPanel);
+            albumMatchPanel.appendChild(cancelBtn);
+        }
+
+        // fields: {artist, album (or album_title), release_mbid}. Shows what's
+        // about to be queued and requires an explicit click either way; the
+        // confidence gate isn't a licence to skip showing the match, it just
+        // decides whether the user also has to pick from alternatives first.
+        function renderAlbumConfirmCard(fields, headerText) {
+            if (!albumMatchPanel) return;
+            albumMatchPanel.style.display = 'block';
+            albumMatchPanel.innerHTML = '';
+
+            const wrap = document.createElement('div');
+            wrap.className = 'album-existing-warning';
+
+            const p = document.createElement('p');
+            p.style.margin = '0 0 8px';
+            p.textContent = headerText;
+            wrap.appendChild(p);
+
+            if (!fields.release_mbid) {
+                const warn = document.createElement('p');
+                warn.style.margin = '0';
+                warn.textContent = "MusicBrainz didn't settle on a specific release for this one just now; try again in a moment.";
+                wrap.appendChild(warn);
+                albumMatchPanel.appendChild(wrap);
+                return;
+            }
+
+            const btnRow = document.createElement('div');
+            btnRow.style.display = 'flex';
+            btnRow.style.gap = '8px';
+            btnRow.style.marginTop = '4px';
+
+            const queueBtn = document.createElement('button');
+            queueBtn.type = 'button';
+            queueBtn.className = 'btn btn-primary';
+            queueBtn.textContent = 'Queue Album';
+            queueBtn.addEventListener('click', () => queueAlbumAndShowProgress(fields, queueBtn));
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'btn btn-ghost';
+            cancelBtn.textContent = 'Not this one';
+            cancelBtn.addEventListener('click', hideAlbumMatchPanel);
+
+            btnRow.appendChild(queueBtn);
+            btnRow.appendChild(cancelBtn);
+            wrap.appendChild(btnRow);
+            albumMatchPanel.appendChild(wrap);
+        }
+
+        // A candidate from search-release (release_mbid always null) or from
+        // resolve-album-url's `candidates` list (usually null too, same reason).
+        // Either way, resolve-release-group is the bridge to a real release_mbid
+        // before /api/albums/download will take it.
+        async function resolveAndQueueCandidate(candidate, btnEl) {
+            if (candidate.release_mbid) {
+                renderAlbumConfirmCard(
+                    { artist: candidate.artist, album: candidate.title, release_mbid: candidate.release_mbid },
+                    `Queue: ${candidate.artist ? candidate.artist + ' – ' : ''}${candidate.title}?`
+                );
+                return;
+            }
+            if (!candidate.release_group_mbid) {
+                showToast('Not enough information to queue this album.', true);
+                return;
+            }
+            if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Resolving…'; }
+            try {
+                const resp = await apiFetch('/api/albums/resolve-release-group', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ release_group_mbid: candidate.release_group_mbid }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(data.detail || 'Could not resolve that release');
+                renderAlbumConfirmCard(
+                    { artist: data.artist || candidate.artist, album: data.album_title || candidate.title, release_mbid: data.release_mbid },
+                    `Queue: ${data.artist || candidate.artist} – ${data.album_title || candidate.title}?`
+                );
+            } catch (e) {
+                showToast(e.message, true);
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Retry'; }
+            }
+        }
+
+        // The one place that actually calls POST /api/albums/download for
+        // everything routed through this panel (album URLs, search-release
+        // picks). fields: {artist, album, release_mbid}.
+        async function queueAlbumAndShowProgress(fields, btnEl) {
+            if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Queuing…'; }
+            const makeM3u = createPlaylistCheckbox.checked;
+            try {
+                const resp = await apiFetch('/api/albums/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        artist: fields.artist,
+                        album_title: fields.album,
+                        release_mbid: fields.release_mbid,
+                        make_m3u: makeM3u,
+                        m3u_name: makeM3u ? (playlistNameInput.value.trim() || null) : null,
+                        convert_to_flac: convertToFlacCheckbox.checked,
+                    }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(data.detail || 'Failed to queue album');
+
+                const label = `${fields.artist} - ${fields.album}`;
+                if (!data.import_id) {
+                    showToast(data.already_queued ? `"${label}" is already queued` : `"${label}" is already complete, nothing to fetch`);
+                } else {
+                    const queued = data.queued_count ?? 0;
+                    showToast(`Queued ${queued} track${queued === 1 ? '' : 's'} from "${label}"`);
+                }
+                hideAlbumMatchPanel();
+                spotifyUrlInput.value = '';
+            } catch (e) {
+                showToast(e.message, true);
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Queue Album'; }
+            }
+        }
+
+        // Spotify/Apple ALBUM url -> resolve-album-url -> confidence gate.
+        // recognised:false falls through to the ordinary playlist path silently
+        // (it means "not actually a Spotify/Apple album url", not an error).
+        async function fetchAlbumUrl(url) {
+            spotifyError.style.display = 'none';
+            spotifyError.style.color = '';
+            hideAlbumMatchPanel();
+            fetchSpotifyBtn.disabled = true;
+            fetchSpotifyBtn.textContent = 'Looking up album…';
+            try {
+                const resp = await apiFetch('/api/albums/resolve-album-url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url }),
+                });
+                if (resp.status === 404) {
+                    spotifyError.textContent = 'Album URL matching is not available on this server yet.';
+                    spotifyError.style.display = 'block';
+                    return;
+                }
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(data.detail || 'Could not resolve that album URL');
+
+                if (!data.recognised) {
+                    // Not actually a Spotify/Apple album url after all (or the
+                    // service call fell over); ordinary playlist path, same url.
+                    await doPlaylistFetch(url, false);
+                    return;
+                }
+
+                if (data.confident && data.match) {
+                    renderAlbumConfirmCard(
+                        { artist: data.match.artist, album: data.match.title, release_mbid: data.match.release_mbid },
+                        `Matched: ${data.match.artist} – ${data.match.title}`
+                    );
+                } else if (Array.isArray(data.candidates) && data.candidates.length) {
+                    renderAlbumCandidates(data.candidates, `Not confident which album that is. Pick one:`);
+                } else {
+                    spotifyError.textContent = `Couldn't confidently match that to a MusicBrainz album (scraped as "${data.artist || '?'} - ${data.album || '?'}"). Try typing the album name in this box instead.`;
+                    spotifyError.style.display = 'block';
+                }
+            } catch (e) {
+                spotifyError.textContent = e.message;
+                spotifyError.style.display = 'block';
+            } finally {
+                fetchSpotifyBtn.disabled = false;
+                fetchSpotifyBtn.textContent = 'Fetch';
+            }
+        }
+
+        // Plain text, no URL: search MusicBrainz release-groups by name. "Artist
+        // - Album" splits on the same dash convention as the bulk track list;
+        // bare text with no separator searches by album title alone, on purpose
+        // (an artist is not required, see search_release_groups' docstring).
+        async function searchReleaseByName(query) {
+            let artist = '';
+            let album = query;
+            const dashMatch = query.match(/^(.+?)\s+[-–—]\s+(.+)$/);
+            if (dashMatch) {
+                artist = dashMatch[1].trim();
+                album = dashMatch[2].trim();
+            }
+
+            spotifyError.style.display = 'none';
+            spotifyError.style.color = '';
+            hideAlbumMatchPanel();
+            fetchSpotifyBtn.disabled = true;
+            fetchSpotifyBtn.textContent = 'Searching…';
+            try {
+                const params = new URLSearchParams({ q: album });
+                if (artist) params.set('artist', artist);
+                const resp = await apiFetch(`/api/albums/search-release?${params.toString()}`);
+                if (resp.status === 404) {
+                    spotifyError.textContent = 'Album search is not available on this server yet.';
+                    spotifyError.style.display = 'block';
+                    return;
+                }
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(data.detail || 'Album search failed');
+
+                const releases = data.releases || [];
+                if (!releases.length) {
+                    spotifyError.textContent = `No albums found matching "${query}". Paste it into the song list below to search it as a track instead.`;
+                    spotifyError.style.display = 'block';
+                    return;
+                }
+                renderAlbumCandidates(releases, `Found ${releases.length} album${releases.length === 1 ? '' : 's'} matching "${query}":`);
+            } catch (e) {
+                spotifyError.textContent = e.message;
+                spotifyError.style.display = 'block';
+            } finally {
+                fetchSpotifyBtn.disabled = false;
+                fetchSpotifyBtn.textContent = 'Fetch';
+            }
         }
 
         // MusicBrainz release URL -> straight into the album download pipeline.
@@ -5220,43 +5598,15 @@
                 spotifyError.style.display = 'block';
             } finally {
                 fetchSpotifyBtn.disabled = false;
-                fetchSpotifyBtn.textContent = 'Fetch Playlist';
+                fetchSpotifyBtn.textContent = 'Fetch';
             }
         }
 
-        // Spotify playlist/album fetch handler
-        async function fetchSpotifyPlaylist() {
-            const url = spotifyUrlInput.value.trim();
-            if (!url) {
-                spotifyError.textContent = 'Please enter a playlist URL';
-                spotifyError.style.display = 'block';
-                return;
-            }
-
-            // URL validation - Spotify playlists/albums, Amazon Music playlists, Apple Music, YouTube/YT Music playlists, SoundCloud sets/likes, ListenBrainz, Tidal/Monochrome, Beatport
-            const isSpotify = url.match(/^https?:\/\/open\.spotify\.com\/(playlist|album)\//);
-            const isAmazon = url.match(/^https?:\/\/music\.amazon\.[a-z.]+\/(user-playlists|playlists)\//);
-            const isApple = url.match(/^https?:\/\/music\.apple\.com\/(?:[a-z]{2}|library)\/(playlist|album)\//i);
-            const isYouTube = url.match(/^https?:\/\/(www\.|music\.)?youtube\.com\/(playlist|watch)\?[^"]*list=/i);
-            const isSoundCloud = url.match(/^https?:\/\/soundcloud\.com\/[^/]+\/(sets\/[^/?]+|likes)/i);
-            const isListenBrainz = url.match(/^https?:\/\/listenbrainz\.org\/(playlist|user)\//i) || url.match(/^[a-zA-Z0-9_-]+$/);
-            const isTidal = url.match(/^https?:\/\/tidal\.com\/(?:browse\/)?playlist\//i);
-            const isMonochrome = url.match(/^https?:\/\/(?:www\.)?(?:monochrome\.tf|monochrome\.samidy\.com)\/playlist\//i);
-            const isBeatport = url.match(/^https?:\/\/(?:www\.)?beatport\.com\/(top-100|genre\/[^/]+\/\d+\/top-100|chart\/[^/]+\/\d+)/i);
-            // MusicBrainz release/release-group URLs carry the MBID already, so they
-            // skip the track-list textarea entirely and go straight to the proper
-            // album pipeline: Albums/Artist/Album/, cover art, the works.
-            const isMusicBrainz = url.match(/^https?:\/\/(?:beta\.)?musicbrainz\.org\/(release|release-group)\/[0-9a-f-]{36}/i);
-            if (isMusicBrainz) {
-                await fetchMusicBrainzRelease(url);
-                return;
-            }
-            if (!isSpotify && !isAmazon && !isApple && !isYouTube && !isSoundCloud && !isListenBrainz && !isTidal && !isMonochrome && !isBeatport) {
-                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, SoundCloud sets/likes, ListenBrainz, Tidal, Monochrome, MusicBrainz release, or Beatport link.';
-                spotifyError.style.display = 'block';
-                return;
-            }
-
+        // The ordinary playlist scrape (/api/fetch-playlist), factored out of
+        // fetchSpotifyPlaylist so both the normal routing path and the "turned
+        // out not to be an album after all" fallback from fetchAlbumUrl can
+        // call it without duplicating the button-state dance.
+        async function doPlaylistFetch(url, isAmazon) {
             spotifyError.style.display = 'none';
             fetchSpotifyBtn.disabled = true;
             fetchSpotifyBtn.textContent = isAmazon ? 'Scraping...' : 'Fetching...';
@@ -5265,6 +5615,7 @@
             // is large or private, the server falls back to a headless browser
             // which takes longer. Nudge the button text after a few seconds
             // so the user knows we haven't ghosted them.
+            const isSpotify = /^https?:\/\/open\.spotify\.com\//.test(url);
             const slowHints = [];
             if (isSpotify) {
                 slowHints.push(setTimeout(() => {
@@ -5329,14 +5680,88 @@
                 } else {
                     throw new Error('No tracks found in playlist');
                 }
+                return true;
             } catch (error) {
                 spotifyError.textContent = error.message;
                 spotifyError.style.color = 'var(--error)';
                 spotifyError.style.display = 'block';
+                return false;
             } finally {
                 slowHints.forEach(clearTimeout);
                 fetchSpotifyBtn.disabled = false;
-                fetchSpotifyBtn.textContent = 'Fetch Playlist';
+                fetchSpotifyBtn.textContent = 'Fetch';
+            }
+        }
+
+        // Single input, works out what it was given: playlist URL, MusicBrainz
+        // release URL, Spotify/Apple album URL, or plain text to search
+        // MusicBrainz for by name. This is the whole point of unifying Bulk
+        // Import; nobody should have to pick from a dropdown before they've
+        // even typed anything.
+        async function fetchSpotifyPlaylist() {
+            const url = spotifyUrlInput.value.trim();
+            if (!url) {
+                spotifyError.textContent = 'Please enter a URL, or an album name to search';
+                spotifyError.style.display = 'block';
+                return;
+            }
+
+            // URL validation - Spotify playlists/albums, Amazon Music playlists, Apple Music, YouTube/YT Music playlists, SoundCloud sets/likes, ListenBrainz, Tidal/Monochrome, Beatport
+            const isSpotifyAlbum = url.match(/^https?:\/\/open\.spotify\.com\/album\//);
+            const isSpotify = isSpotifyAlbum || url.match(/^https?:\/\/open\.spotify\.com\/playlist\//);
+            const isAmazon = url.match(/^https?:\/\/music\.amazon\.[a-z.]+\/(user-playlists|playlists)\//);
+            const isAppleAlbum = url.match(/^https?:\/\/music\.apple\.com\/(?:[a-z]{2}|library)\/album\//i);
+            const isApple = isAppleAlbum || url.match(/^https?:\/\/music\.apple\.com\/(?:[a-z]{2}|library)\/playlist\//i);
+            const isYouTube = url.match(/^https?:\/\/(www\.|music\.)?youtube\.com\/(playlist|watch)\?[^"]*list=/i);
+            const isSoundCloud = url.match(/^https?:\/\/soundcloud\.com\/[^/]+\/(sets\/[^/?]+|likes)/i);
+            // The bare "^[a-zA-Z0-9_-]+$" alternative is a bare ListenBrainz
+            // username (no URL at all) - existing behaviour. It happens to also
+            // match a one-word album title ("Trainspotting"), which is exactly
+            // the ambiguity handled below: try ListenBrainz first, and only if
+            // that comes back empty does it get treated as an album search.
+            const isListenBrainzUrl = url.match(/^https?:\/\/listenbrainz\.org\/(playlist|user)\//i);
+            const isBareWord = url.match(/^[a-zA-Z0-9_-]+$/);
+            const isListenBrainz = isListenBrainzUrl || isBareWord;
+            const isTidal = url.match(/^https?:\/\/tidal\.com\/(?:browse\/)?playlist\//i);
+            const isMonochrome = url.match(/^https?:\/\/(?:www\.)?(?:monochrome\.tf|monochrome\.samidy\.com)\/playlist\//i);
+            const isBeatport = url.match(/^https?:\/\/(?:www\.)?beatport\.com\/(top-100|genre\/[^/]+\/\d+\/top-100|chart\/[^/]+\/\d+)/i);
+            // MusicBrainz release/release-group URLs carry the MBID already, so they
+            // skip the track-list textarea entirely and go straight to the proper
+            // album pipeline: Albums/Artist/Album/, cover art, the works.
+            const isMusicBrainz = url.match(/^https?:\/\/(?:beta\.)?musicbrainz\.org\/(release|release-group)\/[0-9a-f-]{36}/i);
+            const looksLikeUrl = /^https?:\/\//i.test(url);
+
+            if (isMusicBrainz) {
+                await fetchMusicBrainzRelease(url);
+                return;
+            }
+            // Spotify/Apple ALBUM url: resolve-album-url first (confidence gate),
+            // NOT the ordinary playlist scrape, or the whole album flattens into
+            // a track list and loses its folder/artwork/.albuminfo/track numbers.
+            if (isSpotifyAlbum || isAppleAlbum) {
+                await fetchAlbumUrl(url);
+                return;
+            }
+            if (!isSpotify && !isAmazon && !isApple && !isYouTube && !isSoundCloud && !isListenBrainz && !isTidal && !isMonochrome && !isBeatport) {
+                if (!looksLikeUrl) {
+                    // No scheme at all, and not a bare ListenBrainz-shaped word:
+                    // this is somebody typing an album (or "Artist - Album") name.
+                    await searchReleaseByName(url);
+                    return;
+                }
+                spotifyError.textContent = 'Unsupported URL. Paste a Spotify, YouTube, Apple Music, Amazon Music, SoundCloud sets/likes, ListenBrainz, Tidal, Monochrome, MusicBrainz release, or Beatport link, or type an artist/album name to search.';
+                spotifyError.style.display = 'block';
+                return;
+            }
+
+            const ok = await doPlaylistFetch(url, isAmazon);
+            if (!ok && isBareWord && !isListenBrainzUrl) {
+                // The bare word didn't resolve as a ListenBrainz username (blame
+                // ListenBrainz for having such relaxed rules on those); it is
+                // far more likely to be a one-word album title, so have a go at
+                // that instead, quietly, rather than leaving the user staring
+                // at a ListenBrainz error for an album search.
+                await searchReleaseByName(url);
             }
         }
 
@@ -6682,6 +7107,7 @@
         let selectedArtistName = null;
         let artistRefreshPending = new Map(); // artist_id -> {stage, startedAt}
         let artistRefreshPollInterval = null;
+        let watchedArtistsById = new Map(); // artist_id -> full row, so the Albums panel can look up mbid/auto_add_albums
 
         function startArtistRefreshPolling() {
             if (artistRefreshPollInterval) return;
@@ -6712,10 +7138,17 @@
                     resultsEl.innerHTML = '<div style="font-size:12px;color:var(--text-secondary);">No artists found on MusicBrainz.</div>';
                     return;
                 }
-                // Exact match or top 3
-                const candidates = data.results[0].name.toLowerCase() === q.toLowerCase()
-                    ? [data.results[0]]
-                    : data.results.slice(0, 3);
+                // Collapse to a single candidate only when exactly one artist owns
+                // the name. Plenty of names are shared: four different acts answer
+                // to "Raye", and quietly picking whichever MusicBrainz listed first
+                // hands you an anonymous feature credit instead of the singer you
+                // meant. When the name is contested, show the field and let the
+                // disambiguation text do its job.
+                const qLower = q.toLowerCase();
+                const exactMatches = data.results.filter(a => (a.name || '').toLowerCase() === qLower);
+                const candidates = exactMatches.length === 1
+                    ? exactMatches
+                    : data.results.slice(0, 5);
                 resultsEl.innerHTML = candidates.map(a => `
                     <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;margin-bottom:4px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;">
                         <div style="flex:1;">
@@ -6738,7 +7171,252 @@
             const today = new Date().toISOString().slice(0, 10);
             document.getElementById('artistFromDate').value = today;
             document.getElementById('artistSearchResults').style.display = 'none';
-            document.getElementById('artistAddForm').style.display = 'block';
+
+            // Picking the artist no longer commits you to anything. Ask what they
+            // are actually here for: singles, albums, or one album and out.
+            hideArtistModePanels();
+            const chooserName = document.getElementById('artistChooserName');
+            if (chooserName) chooserName.textContent = name;
+            const chooser = document.getElementById('artistModeChooser');
+            if (chooser) chooser.style.display = 'block';
+        }
+
+        // Everything the chooser can reveal, so switching mode never leaves two
+        // panels arguing over the same bit of screen.
+        function hideArtistModePanels() {
+            for (const id of ['artistModeChooser', 'artistAddForm',
+                              'artistAlbumsFollowPanel', 'artistOneOffPanel']) {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            }
+            const status = document.getElementById('artistAddStatus');
+            if (status) status.style.display = 'none';
+        }
+
+        // Back to a blank slate: no artist selected, no panel open, nothing half-done.
+        function resetArtistChooser() {
+            hideArtistModePanels();
+            selectedArtistMbid = null;
+            selectedArtistName = null;
+            const results = document.getElementById('artistSearchResults');
+            if (results) { results.style.display = 'none'; results.innerHTML = ''; }
+            const input = document.getElementById('artistSearchInput');
+            if (input) input.value = '';
+        }
+
+        function chooseArtistMode(mode) {
+            if (!selectedArtistMbid) return;
+            hideArtistModePanels();
+            if (mode === 'singles') {
+                const panel = document.getElementById('artistAddForm');
+                if (panel) panel.style.display = 'block';
+                const addBtn = document.getElementById('addArtistBtn');
+                if (addBtn) addBtn.disabled = false;
+            } else if (mode === 'albums') {
+                const panel = document.getElementById('artistAlbumsFollowPanel');
+                if (panel) panel.style.display = 'block';
+                const nameEl = document.getElementById('artistAlbumsFollowName');
+                if (nameEl) nameEl.textContent = selectedArtistName;
+                const toggle = document.getElementById('artistFollowAlbumsToggle');
+                if (toggle) toggle.checked = false;
+                const progress = document.getElementById('artistAlbumBatchProgress');
+                if (progress) { progress.style.display = 'none'; progress.textContent = ''; }
+                const batchBtn = document.getElementById('artistAlbumBatchBtn');
+                if (batchBtn) batchBtn.disabled = false;
+                renderAlbumChecklist(selectedArtistMbid, selectedArtistName);
+            } else if (mode === 'oneoff') {
+                const handle = showOneOffAlbumSection(selectedArtistName);
+                if (handle) handle.setArtist(selectedArtistMbid, selectedArtistName);
+            }
+        }
+
+        // =====================================================================
+        // Follow for Albums: the whole discography, tickable
+        // =====================================================================
+
+        let artistChecklistAlbums = [];
+
+        function updateAlbumChecklistCount() {
+            const countEl = document.getElementById('artistAlbumChecklistCount');
+            if (!countEl) return;
+            const ticked = document.querySelectorAll('#artistAlbumChecklist input[type="checkbox"]:checked').length;
+            const total = artistChecklistAlbums.length;
+            countEl.textContent = ticked
+                ? `${ticked} of ${total} selected`
+                : `${total} album${total === 1 ? '' : 's'}`;
+        }
+
+        async function renderAlbumChecklist(mbid, name) {
+            const listEl = document.getElementById('artistAlbumChecklist');
+            if (!listEl) return;
+            artistChecklistAlbums = [];
+            listEl.innerHTML = '<p class="bulk-intro-text">Loading albums from MusicBrainz…</p>';
+            updateAlbumChecklistCount();
+            try {
+                const res = await apiFetch(
+                    `/api/albums/artist/${encodeURIComponent(mbid)}/albums?artist_name=${encodeURIComponent(name || '')}`
+                );
+                if (!res.ok) {
+                    let detail = `HTTP ${res.status}`;
+                    try { detail = (await res.json()).detail || detail; } catch (_) { /* not JSON, keep the status */ }
+                    renderAlbumChecklistError(listEl, detail, mbid, name);
+                    return;
+                }
+                const data = await res.json();
+                artistChecklistAlbums = data.albums || [];
+                if (!artistChecklistAlbums.length) {
+                    listEl.innerHTML = '<p class="bulk-intro-text">No studio albums found for this artist.</p>';
+                    updateAlbumChecklistCount();
+                    return;
+                }
+                listEl.innerHTML = '';
+                artistChecklistAlbums.forEach((album, idx) => {
+                    const row = document.createElement('div');
+                    row.className = 'album-checklist-row' + (album.on_disk ? ' on-disk' : '');
+                    const cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.dataset.albumIndex = String(idx);
+                    cb.addEventListener('change', updateAlbumChecklistCount);
+                    const title = document.createElement('span');
+                    title.className = 'album-checklist-title';
+                    title.textContent = album.title || '(untitled)';
+                    // Clicking the title ticks the box; the tracklist preview still
+                    // lives in the one-off browser for anyone who wants the detail.
+                    title.addEventListener('click', () => { cb.checked = !cb.checked; updateAlbumChecklistCount(); });
+                    row.appendChild(cb);
+                    row.appendChild(title);
+                    if (album.year) {
+                        const year = document.createElement('span');
+                        year.className = 'album-checklist-year';
+                        year.textContent = album.year;
+                        row.appendChild(year);
+                    }
+                    if (album.on_disk) {
+                        const have = document.createElement('span');
+                        have.className = 'album-checklist-have';
+                        have.textContent = 'already have it';
+                        row.appendChild(have);
+                    }
+                    listEl.appendChild(row);
+                });
+                updateAlbumChecklistCount();
+            } catch (e) {
+                renderAlbumChecklistError(listEl, e.message, mbid, name);
+            }
+        }
+
+        // MusicBrainz has its off days; offer a retry rather than a dead end.
+        function renderAlbumChecklistError(listEl, detail, mbid, name) {
+            listEl.innerHTML = '';
+            const msg = document.createElement('p');
+            msg.className = 'bulk-intro-text error-text';
+            msg.textContent = `Failed to load albums: ${detail}`;
+            const retry = document.createElement('button');
+            retry.className = 'btn btn-ghost';
+            retry.type = 'button';
+            retry.textContent = 'Retry';
+            retry.addEventListener('click', () => renderAlbumChecklist(mbid, name));
+            listEl.appendChild(msg);
+            listEl.appendChild(retry);
+            updateAlbumChecklistCount();
+        }
+
+        async function followArtistForAlbums() {
+            if (!selectedArtistMbid) return;
+            const followFuture = document.getElementById('artistFollowAlbumsToggle')?.checked;
+            const progressEl = document.getElementById('artistAlbumBatchProgress');
+            const batchBtn = document.getElementById('artistAlbumBatchBtn');
+            // Same checkbox every other album download reads, so albums all behave
+            // the same way regardless of which door you came in through.
+            const convertToFlac = document.getElementById('convertToFlac')?.checked ?? false;
+
+            const picked = Array.from(
+                document.querySelectorAll('#artistAlbumChecklist input[type="checkbox"]:checked')
+            ).map(cb => artistChecklistAlbums[parseInt(cb.dataset.albumIndex, 10)]).filter(Boolean);
+
+            if (!picked.length && !followFuture) {
+                showToast('Tick some albums, or switch on future albums. Otherwise there is nothing to do.', true);
+                return;
+            }
+
+            if (batchBtn) batchBtn.disabled = true;
+            if (progressEl) { progressEl.style.display = 'block'; progressEl.textContent = 'Working…'; }
+
+            // Only create a follow when future albums were actually asked for.
+            // Ticking a few albums with the toggle off is just shopping, and it
+            // would be rude to sign them up to a watch list for it.
+            let watchArtistId = null;
+            if (followFuture) {
+                try {
+                    const res = await apiFetch('/api/watched-artists', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            mbid: selectedArtistMbid,
+                            name: selectedArtistName,
+                            from_date: new Date().toISOString().slice(0, 10),
+                            refresh_interval_hours: 24,
+                            convert_to_flac: convertToFlac,
+                            auto_add_albums: true,
+                            watch_singles: false,
+                        })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.detail || 'Failed to follow artist');
+                    watchArtistId = data.id;
+                    if (data.warning) showToast(data.warning, true);
+                } catch (e) {
+                    if (progressEl) progressEl.textContent = `Could not follow artist: ${e.message}`;
+                    if (batchBtn) batchBtn.disabled = false;
+                    return;
+                }
+            }
+
+            // Queue the ticked albums one at a time. MusicBrainz allows a request a
+            // second, so firing them all at once just gets us politely throttled.
+            let queued = 0;
+            const failures = [];
+            for (let i = 0; i < picked.length; i++) {
+                const album = picked[i];
+                if (progressEl) progressEl.textContent = `Queueing ${i + 1} of ${picked.length}: ${album.title}…`;
+                try {
+                    const res = await apiFetch('/api/albums/download', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            artist: selectedArtistName,
+                            album_title: album.title,
+                            release_mbid: album.release_mbid,
+                            release_group_mbid: album.release_group_mbid || '',
+                            convert_to_flac: convertToFlac,
+                            watch_artist_id: watchArtistId || undefined,
+                        })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.detail || 'Queue failed');
+                    queued++;
+                } catch (e) {
+                    // One duff release should not abandon the other six.
+                    failures.push(`${album.title}: ${e.message}`);
+                }
+            }
+
+            let summary = picked.length
+                ? `Queued ${queued} of ${picked.length} album${picked.length === 1 ? '' : 's'}.`
+                : '';
+            if (followFuture) {
+                summary += `${summary ? ' ' : ''}Now following ${selectedArtistName} for new albums.`;
+            }
+            if (failures.length) summary += ` ${failures.length} failed: ${failures.join('; ')}`;
+            if (progressEl) progressEl.textContent = summary;
+            showToast(summary, failures.length > 0);
+
+            if (followFuture) {
+                loadWatchedArtists();
+                resetArtistChooser();
+            } else if (batchBtn) {
+                batchBtn.disabled = false;
+            }
         }
 
         async function addWatchedArtist() {
@@ -6763,6 +7441,7 @@
                         from_date: fromDate,
                         refresh_interval_hours: intervalHours,
                         convert_to_flac: convertToFlac,
+                        watch_singles: true,
                     })
                 });
                 const data = await res.json();
@@ -6908,6 +7587,14 @@
             const badge = UPGRADE_SOURCE_BADGES[item.found_source] || item.found_source.toUpperCase().slice(0, 4);
             const tier = upgradeTierLabel(item.found_tier);
             const qual = escapeHtml(item.found_quality || tier);
+            const output = escapeHtml(item.upgrade_output_label || 'Keep source format');
+            const sourceDescription = `${qual} source`;
+            const outputDescription = item.upgrade_conversion_enabled
+                ? `${output} output`
+                : 'kept in source format';
+            const outputTitle = item.upgrade_conversion_enabled
+                ? `MusicGrabber will convert this candidate and store ${output}. The source-quality label describes the download before conversion.`
+                : 'Conversion is off, so MusicGrabber will keep the downloaded source format.';
             const conf = item.found_confidence != null ? Math.round(item.found_confidence * 100) + '%' : '';
             const verifiedBadge = item.found_verified
                 ? '<span class="upgrade-verified" title="Quality confirmed by the source">verified</span>'
@@ -6922,7 +7609,9 @@
             cell.innerHTML = `
                 <span class="upgrade-arrow">&rarr;</span>
                 <span class="source-badge ${item.found_source}">${badge}</span>
-                <span class="upgrade-quality-new">${qual}</span>
+                <span class="upgrade-quality-new">${sourceDescription}</span>
+                <span class="upgrade-conversion-arrow" aria-hidden="true">&rarr;</span>
+                <span class="upgrade-output-label" title="${escapeAttr(outputTitle)}">${outputDescription}</span>
                 ${conf ? `<span class="upgrade-conf" title="Match confidence">${conf}</span>` : ''}
                 ${verifiedBadge}
                 ${previewBtn}
@@ -7327,9 +8016,13 @@
             if (!artists || artists.length === 0) {
                 stopArtistRefreshPolling();
                 listEl.innerHTML = '<div class="empty-state" style="padding: 1.5rem 0;"><div class="empty-state-icon"><i class="fa-solid fa-heart-circle-plus"></i></div><p>No artists followed yet</p></div>';
+                const albumPanel = document.getElementById('artistAlbumPanel');
+                if (albumPanel) albumPanel.style.display = 'none';
                 return;
             }
             let anyRunning = false;
+            watchedArtistsById = new Map(artists.map(a => [a.id, a]));
+            const singlesOnlyMode = !!(serverConfig && serverConfig.singles_only_mode);
             listEl.innerHTML = artists.map(artist => {
                 // Reconcile the optimistic "pending" flag against backend state.
                 // Once the backend reports the refresh as running it's authoritative,
@@ -7347,6 +8040,8 @@
                 if (isRunning) anyRunning = true;
                 const isError = artist.refresh_state === 'error';
                 const isPaused = !artist.enabled;
+                // Older rows predate the column; absent means singles, as it always did.
+                const watchesSingles = artist.watch_singles === undefined || !!artist.watch_singles;
                 const intervalLabel = artist.refresh_interval_hours >= 720 ? 'monthly'
                     : artist.refresh_interval_hours >= 168 ? 'weekly'
                     : artist.refresh_interval_hours >= 24 ? 'daily'
@@ -7374,13 +8069,25 @@
                         <span><i class="fa-brands fa-creative-commons-sampling"></i></span>
                         <span class="watched-card-name">${escapeHtml(artist.name)}</span>
                         ${stageHtml}
+                        ${watchesSingles ? '<span class="watched-card-mode">Singles</span>' : ''}
+                        ${artist.auto_add_albums ? '<span class="watched-card-mode">Albums</span>' : ''}
                         ${isPaused ? '<span class="watched-card-paused">Paused</span>' : ''}
                     </div>
                     <div class="watched-card-meta">
-                        ${artist.tracked_count || 0} singles tracked &middot; ${artist.downloaded_count || 0} downloaded &middot; ${intervalLabel} &middot; ${lastChecked} &middot; From: ${artist.from_date}
+                        ${watchesSingles
+                            ? `${artist.tracked_count || 0} singles tracked &middot; ${artist.downloaded_count || 0} downloaded &middot; `
+                            : 'Albums only &middot; '}${intervalLabel} &middot; ${lastChecked}${watchesSingles ? ` &middot; From: ${artist.from_date}` : ''}
                     </div>
                     ${isError ? `<div class="watched-card-refresh-error"><i class="fa-solid fa-circle-exclamation"></i><span>${escapeHtml(artist.refresh_error || 'Refresh failed')}</span></div>` : ''}
                     <div class="watched-card-settings">
+                        <label class="watched-card-toggle" title="Follow this artist's new singles. Switch off to keep them as an albums-only follow.">
+                            Singles
+                            <div class="toggle-switch">
+                                <input type="checkbox" ${watchesSingles ? 'checked' : ''}
+                                    onchange="updateArtistSingles('${artist.id}', this.checked)">
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
                         <label class="watched-card-toggle" title="Choose whether new singles keep their source format or are converted">
                             ${conversionChoiceLabel(artist.convert_to_flac)}
                             <div class="toggle-switch">
@@ -7414,6 +8121,9 @@
                             data-action="toggle-artist-track-list"
                             data-artist-id="${escapeAttr(artist.id)}"
                             data-artist-name="${escapeAttr(artist.name)}">Tracks</button>
+                        ${singlesOnlyMode ? '' : `<button class="watched-action-btn" type="button"
+                            data-action="toggle-artist-albums"
+                            data-artist-id="${escapeAttr(artist.id)}">Albums</button>`}
                         <button class="watched-action-btn watched-action-pause" type="button"
                             data-action="toggle-watched-artist"
                             data-artist-id="${escapeAttr(artist.id)}"
@@ -7481,6 +8191,26 @@
                 showToast('Failed to update format setting', true);
                 loadWatchedArtists();
             }
+        }
+
+        async function updateArtistSingles(artistId, watchSingles) {
+            try {
+                const res = await apiFetch(`/api/watched-artists/${artistId}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ watch_singles: watchSingles })
+                });
+                // The server refuses to leave an artist following nothing at all,
+                // so surface that rather than silently bouncing the toggle back.
+                if (!res.ok) {
+                    let detail = 'Failed to update singles following';
+                    try { detail = (await res.json()).detail || detail; } catch (_) { /* keep the default */ }
+                    showToast(detail, true);
+                }
+            } catch (e) {
+                showToast('Failed to update singles following', true);
+            }
+            loadWatchedArtists();
         }
 
         async function updateArtistInterval(artistId, hours) {
@@ -7671,13 +8401,125 @@
             if (e.key === 'Enter') searchArtist();
         });
         document.getElementById('addArtistBtn').addEventListener('click', addWatchedArtist);
-        document.getElementById('cancelArtistBtn').addEventListener('click', () => {
-            document.getElementById('artistAddForm').style.display = 'none';
-            document.getElementById('artistSearchResults').style.display = 'none';
-            selectedArtistMbid = null;
-            selectedArtistName = null;
-        });
         document.getElementById('refreshAllArtistsBtn').addEventListener('click', refreshAllArtists);
+
+        // The three-way chooser. Cancel on any panel goes back to a clean slate
+        // rather than to the previous panel; half-open forms are nobody's friend.
+        document.querySelectorAll('#artistModeChooser [data-artist-mode]').forEach(btn => {
+            btn.addEventListener('click', () => chooseArtistMode(btn.dataset.artistMode));
+        });
+        for (const id of ['cancelArtistBtn', 'cancelArtistChooserBtn',
+                          'cancelArtistAlbumsBtn', 'cancelArtistOneOffBtn']) {
+            document.getElementById(id)?.addEventListener('click', resetArtistChooser);
+        }
+
+        document.getElementById('artistAlbumBatchBtn')?.addEventListener('click', followArtistForAlbums);
+        document.getElementById('artistAlbumSelectAllBtn')?.addEventListener('click', () => {
+            document.querySelectorAll('#artistAlbumChecklist input[type="checkbox"]')
+                .forEach(cb => { cb.checked = true; });
+            updateAlbumChecklistCount();
+        });
+        document.getElementById('artistAlbumSelectNoneBtn')?.addEventListener('click', () => {
+            document.querySelectorAll('#artistAlbumChecklist input[type="checkbox"]')
+                .forEach(cb => { cb.checked = false; });
+            updateAlbumChecklistCount();
+        });
+
+        // -----------------------------------------------------------------------
+        // Per-artist album panel: one shared mount, re-targeted to whichever
+        // followed artist's "Albums" button was last tapped. Backs onto the
+        // shared album browser from the "Shared album browser" section above.
+        // -----------------------------------------------------------------------
+
+        let artistAlbumBrowserHandle = null;
+
+        function openArtistAlbumPanel(artistId) {
+            const artist = watchedArtistsById.get(artistId);
+            const panel = document.getElementById('artistAlbumPanel');
+            const heading = document.getElementById('artistAlbumPanelHeading');
+            const autoAddToggle = document.getElementById('artistAutoAddToggle');
+            const mountEl = document.getElementById('artistAlbumBrowserMount');
+            if (!artist || !panel || !mountEl) return;
+
+            panel.style.display = 'block';
+            panel.dataset.artistId = artistId;
+            if (heading) heading.textContent = `Albums by ${artist.name}`;
+            // auto_add_albums may not exist yet on this deployment; default unchecked.
+            if (autoAddToggle) autoAddToggle.checked = !!artist.auto_add_albums;
+
+            loadArtistKnownAlbums(artistId);
+
+            if (artistAlbumBrowserHandle) {
+                artistAlbumBrowserHandle.setArtist(artist.mbid, artist.name);
+            } else {
+                artistAlbumBrowserHandle = mountAlbumBrowser(mountEl, {
+                    artist: { mbid: artist.mbid, name: artist.name },
+                    showArtistSearch: false,
+                    onQueued: () => {
+                        const pid = document.getElementById('artistAlbumPanel')?.dataset.artistId;
+                        if (pid) loadArtistKnownAlbums(pid);
+                    },
+                });
+            }
+
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        async function loadArtistKnownAlbums(artistId) {
+            const el = document.getElementById('artistKnownAlbums');
+            if (!el) return;
+            el.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            try {
+                const res = await apiFetch(`/api/watched-artists/${artistId}/albums`);
+                if (!res.ok) {
+                    // Not landed on this deployment yet (or a genuine error) - degrade
+                    // quietly rather than spamming the console, the browser below still works.
+                    el.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);padding:4px 0;">Album status tracking isn’t available yet.</p>';
+                    return;
+                }
+                const data = await res.json();
+                const albums = data.albums || [];
+                if (!albums.length) {
+                    el.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);padding:4px 0;">No albums seen yet.</p>';
+                    return;
+                }
+                const statusLabel = { seen: 'Seen', queued: 'Queued', failed: 'Failed' };
+                el.innerHTML = albums.map(a => `
+                    <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;">
+                        <span style="flex:1;">${escapeHtml(a.title)}${a.year ? ` <span style="color:var(--text-secondary);">(${escapeHtml(String(a.year))})</span>` : ''}</span>
+                        ${a.on_disk ? '<i class="fa-solid fa-check" style="color:var(--success);" title="On disk"></i>' : ''}
+                        <span style="color:var(--text-secondary);">${escapeHtml(statusLabel[a.status] || a.status || '')}</span>
+                    </div>
+                `).join('');
+            } catch (e) {
+                el.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);padding:4px 0;">Album status tracking isn’t available yet.</p>';
+            }
+        }
+
+        document.getElementById('artistAlbumPanelCloseBtn')?.addEventListener('click', () => {
+            const panel = document.getElementById('artistAlbumPanel');
+            if (panel) panel.style.display = 'none';
+        });
+
+        document.getElementById('artistAutoAddToggle')?.addEventListener('change', async (e) => {
+            const panel = document.getElementById('artistAlbumPanel');
+            const artistId = panel?.dataset.artistId;
+            if (!artistId) return;
+            const checked = e.target.checked;
+            try {
+                await apiFetch(`/api/watched-artists/${artistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ auto_add_albums: checked }),
+                });
+                showToast(checked
+                    ? 'New albums will be added automatically from now on (the back catalogue is left alone)'
+                    : 'Automatic album adding switched off');
+            } catch (err) {
+                showToast('Failed to update album setting', true);
+                e.target.checked = !checked;
+            }
+        });
 
         // =============================================================================
         // Statistics Dashboard
@@ -9146,17 +9988,31 @@
                 changePwSection.style.display = (serverConfig && serverConfig.users_exist) ? '' : 'none';
             }
 
-            // Singles-only mode hides the Albums tab. If the user was sitting on it,
-            // bounce them back to Results so they're not staring at an empty page.
-            const albumsTabBtn = document.getElementById('albumsTabBtn');
-            if (albumsTabBtn) {
-                const singlesOnly = !!(serverConfig && serverConfig.singles_only_mode);
-                albumsTabBtn.style.display = singlesOnly ? 'none' : '';
-                if (singlesOnly && albumsTabBtn.classList.contains('active')) {
-                    const resultsTabBtn = document.querySelector('.tab[data-tab="results"]');
-                    if (resultsTabBtn) resultsTabBtn.click();
+            // Singles-only mode used to hide the whole Albums tab; now that album
+            // browsing lives inside Artists (alongside singles-following, which
+            // singles-only mode should NOT hide), just tuck away the album bits:
+            // the one-off browser and, per card, the per-artist album panel.
+            const singlesOnlyMode = !!(serverConfig && serverConfig.singles_only_mode);
+            // Two of the three chooser options are album work, so they go; "Follow
+            // for Singles" stays, which leaves the chooser a slightly lonely but
+            // perfectly functional one-button affair.
+            document.querySelectorAll('#artistModeChooser [data-artist-mode]').forEach(btn => {
+                if (btn.dataset.artistMode !== 'singles') {
+                    btn.style.display = singlesOnlyMode ? 'none' : '';
+                }
+            });
+            if (singlesOnlyMode) {
+                for (const id of ['artistAlbumsFollowPanel', 'artistOneOffPanel']) {
+                    const el = document.getElementById(id);
+                    if (el) el.style.display = 'none';
                 }
             }
+            const artistAlbumPanel = document.getElementById('artistAlbumPanel');
+            if (singlesOnlyMode && artistAlbumPanel) artistAlbumPanel.style.display = 'none';
+            // Bulk Import hosts the same browser, so it hides on the same terms;
+            // otherwise singles-only mode is just a suggestion with a side door.
+            const bulkAlbumBrowseWrap = document.getElementById('bulkAlbumBrowseWrap');
+            if (bulkAlbumBrowseWrap) bulkAlbumBrowseWrap.style.display = singlesOnlyMode ? 'none' : '';
         }
 
         document.getElementById('userInfoToggle')?.addEventListener('click', () => {

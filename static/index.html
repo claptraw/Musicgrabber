@@ -130,7 +130,7 @@
             </div>
         </header>
 
-        <div class="search-box">
+        <div class="search-box" id="singleTrackSearch">
             <input
                 type="text"
                 class="search-input"
@@ -198,7 +198,7 @@
         <div class="tabs">
             <button class="tab active" data-tab="results">Tracks</button>
             <button class="tab" data-tab="bulk">Bulk Import</button>
-            <button class="tab peon-hide" data-tab="albums" id="albumsTabBtn">Albums</button>
+            <button class="tab" data-tab="artists" id="artistsTabBtn">Artists</button>
             <button class="tab" data-tab="watched">Watched</button>
             <button class="tab" data-tab="queue">Queue</button>
             <button class="tab peon-hide" data-tab="stats">Stats</button>
@@ -247,27 +247,40 @@
                         <input
                             type="text"
                             id="spotifyUrlInput"
-                            placeholder="Playlist, album, or MusicBrainz release URL"
+                            placeholder="Playlist/album URL, MusicBrainz link, or an album name to search"
                             class="bulk-url-input"
                         >
                         <button
                             id="fetchSpotifyBtn"
                             class="btn btn-primary input-action-btn bulk-fetch-btn"
                         >
-                            Fetch Playlist
+                            Fetch
                         </button>
                     </div>
                     <div id="spotifyError" style="display: none;" class="form-error"></div>
+                    <div id="albumMatchPanel" style="display: none;" class="album-match-panel"></div>
                     <div class="bulk-services-row">
-                        <span id="playlistServicesHint" class="bulk-services-hint">Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz, MusicBrainz (release URLs download as proper albums)</span>
+                        <span id="playlistServicesHint" class="bulk-services-hint">Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz, MusicBrainz (release URLs and Spotify/Apple Music album URLs download as proper albums). No URL? Type an artist and album name (e.g. "Portishead - Dummy") or just an album name to search MusicBrainz.</span>
                         <span
                             id="playlistServicesTooltip"
-                            title="Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz, MusicBrainz (release URLs download as proper albums)"
+                            title="Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz, MusicBrainz (release URLs and Spotify/Apple Music album URLs download as proper albums). No URL? Type an artist and album name (e.g. Portishead - Dummy) or just an album name to search MusicBrainz. YouTube, Amazon, Beatport and Monochrome album URLs aren't supported yet, only playlists."
                             class="info-badge"
                         >i</span>
                     </div>
                     <div class="bulk-services-note">
                         Large Spotify playlists may take a few seconds to load. YouTube playlists are unlimited.
+                    </div>
+                    <!-- The old Albums tab's artist browsing, rehoused. Same
+                         component the Artists tab uses, tucked away until asked
+                         for so the paste-a-list crowd never has to look at it. -->
+                    <div class="section-with-top-margin" id="bulkAlbumBrowseWrap">
+                        <button type="button" id="bulkAlbumBrowseToggleBtn" class="lb-toggle-btn">+ Browse an artist's albums</button>
+                        <div id="bulkAlbumBrowseSection" style="display: none;">
+                            <div class="album-search-note">
+                                Album mode uses best-effort single-track matching, not full release mirroring. It will try to source each track intelligently, but it may not produce a perfect 1:1 album copy. For exact album hunting, use Lidarr (with Usenet/torrents) or Soulseek.
+                            </div>
+                            <div id="bulkAlbumBrowserMount"></div>
+                        </div>
                     </div>
                 </div>
                 <div class="bulk-textarea-wrap">
@@ -314,50 +327,147 @@
             <div id="bulkResults" class="results"></div>
         </div>
 
-        <div id="albumsTabContainer" class="tab-panel">
+        <div id="artistsTabContainer" class="tab-panel">
             <div class="bulk-intro">
-                <p class="bulk-intro-text">Search for an artist, pick an album, preview the tracklist, and download the whole thing in one go. Files land in your Albums folder.</p>
+                <p class="bulk-intro-text">Find an artist, then pick what you want from them: their singles as they land, their albums, or just one album right now.</p>
             </div>
 
-            <div class="search-box">
-                <input type="text" id="albumArtistInput" class="search-input" placeholder="Search for an artist…" autocomplete="off">
-                <button id="albumArtistSearchBtn" class="btn btn-primary search-btn">Search</button>
+            <div class="queue-header">
+                <h2 class="queue-section-heading">Followed Artists</h2>
+                <button class="btn accent-btn" id="refreshAllArtistsBtn">Check All Now</button>
             </div>
-            <div class="album-search-note">
-                Album mode uses best-effort single-track matching, not full release mirroring. It will try to source each track intelligently, but it may not produce a perfect 1:1 album copy. For exact album hunting, use Lidarr (with Usenet/torrents) or Soulseek.
-            </div>
-
-            <div id="albumArtistResults" class="album-artist-results" style="display:none;"></div>
-
-            <div id="albumListSection" style="display:none;">
-                <h3 class="album-section-heading" id="albumListHeading"></h3>
-                <div id="albumList" class="album-list"></div>
-            </div>
-
-            <div id="albumTracklistSection" style="display:none;">
-                <h3 class="album-section-heading" id="albumTracklistHeading"></h3>
-                <div id="albumExistingWarning" class="album-existing-warning" style="display:none;"></div>
-                <div id="albumTrackLegend" class="album-track-legend" style="display:none;"></div>
-                <ol id="albumTracklist" class="album-tracklist"></ol>
-                <div class="bulk-playlist-row" style="margin-top: 12px;">
-                    <input type="checkbox" id="albumMakeM3u">
-                    <label for="albumMakeM3u">Generate M3U playlist</label>
+            <div class="watched-add-panel">
+                <p class="watched-panel-text">
+                    Search MusicBrainz for an artist, then choose what to do with them.
+                </p>
+                <div class="watched-url-row input-action">
+                    <input
+                        type="text"
+                        id="artistSearchInput"
+                        placeholder="Artist name..."
+                        class="panel-text-input"
+                    >
+                    <button
+                        id="searchArtistBtn"
+                        class="btn btn-primary input-action-btn panel-action-btn"
+                    >Find Artist</button>
                 </div>
-                <div id="albumM3uHint" class="album-m3u-hint" style="display:none;"></div>
-                <button id="albumDownloadBtn" class="btn btn-primary btn-lg btn-block bulk-import-btn" style="margin-top: 12px;">
-                    Download Album
-                </button>
-                <button id="albumResetBtn" class="btn btn-ghost album-reset-btn" type="button">
-                    Search Another Album
-                </button>
+                <div id="artistSearchResults" style="display: none;" class="artist-search-results"></div>
+
+                <!-- Step 2: artist picked, now what do you actually want from them? -->
+                <div id="artistModeChooser" style="display: none;" class="artist-add-panel">
+                    <div id="artistChooserName" class="artist-selected-name"></div>
+                    <div class="artist-mode-row">
+                        <button type="button" class="btn btn-primary artist-mode-btn" data-artist-mode="singles">
+                            <span class="artist-mode-title">Follow for Singles</span>
+                            <span class="artist-mode-sub">New singles download automatically as they're released</span>
+                        </button>
+                        <button type="button" class="btn btn-primary artist-mode-btn" data-artist-mode="albums">
+                            <span class="artist-mode-title">Follow for Albums</span>
+                            <span class="artist-mode-sub">Pick albums to grab now, and optionally future ones too</span>
+                        </button>
+                        <button type="button" class="btn btn-primary artist-mode-btn" data-artist-mode="oneoff">
+                            <span class="artist-mode-title">Download an Album</span>
+                            <span class="artist-mode-sub">Just this once, nothing followed, nothing remembered</span>
+                        </button>
+                    </div>
+                    <button class="btn btn-ghost artist-cancel-btn" id="cancelArtistChooserBtn">Cancel</button>
+                </div>
+
+                <!-- Mode 1: singles. Unchanged behaviour, just no longer the only way in. -->
+                <div id="artistAddForm" style="display: none;" class="artist-add-panel">
+                    <div id="selectedArtistName" class="artist-selected-name"></div>
+                    <div class="watched-controls-row">
+                        <label class="watched-control-label">
+                            Download singles from:
+                            <input type="date" id="artistFromDate" class="artist-date-input">
+                        </label>
+                        <label class="watched-control-label">
+                            Check:
+                            <select id="artistIntervalSelect" class="watched-select">
+                                <option value="24" selected>Daily</option>
+                                <option value="168">Weekly</option>
+                                <option value="720">Monthly</option>
+                            </select>
+                        </label>
+                        <label class="watched-control-label" title="Convert new singles to the selected audio format">
+                            <span id="artistFlacLabel">Keep source</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="artistConvertToFlac">
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+                    </div>
+                    <button
+                        id="addArtistBtn"
+                        class="btn btn-primary artist-add-btn"
+                    >Watch Artist</button>
+                    <button class="btn btn-ghost artist-cancel-btn" id="cancelArtistBtn">Cancel</button>
+                </div>
+
+                <!-- Mode 2: albums. Tick what you want now, opt in to what turns up later. -->
+                <div id="artistAlbumsFollowPanel" style="display: none;" class="artist-add-panel">
+                    <div id="artistAlbumsFollowName" class="artist-selected-name"></div>
+                    <div class="album-search-note">
+                        Album mode uses best-effort single-track matching, not full release mirroring. It will try to source each track intelligently, but it may not produce a perfect 1:1 album copy. For exact album hunting, use Lidarr (with Usenet/torrents) or Soulseek.
+                    </div>
+                    <label class="watched-control-label" title="Switching this on does NOT fetch the back catalogue; it only picks up albums that appear from now on, same idea as the singles from-date. Leave it off and nothing is followed, you just get whatever you tick below.">
+                        Automatically download future albums
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="artistFollowAlbumsToggle">
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
+                    <div class="artist-album-checklist-header">
+                        <span id="artistAlbumChecklistCount" class="artist-album-count"></span>
+                        <button type="button" class="btn btn-ghost" id="artistAlbumSelectAllBtn">Select all</button>
+                        <button type="button" class="btn btn-ghost" id="artistAlbumSelectNoneBtn">Select none</button>
+                    </div>
+                    <div id="artistAlbumChecklist" class="album-checklist"></div>
+                    <div id="artistAlbumBatchProgress" style="display: none;" class="watched-status-box"></div>
+                    <button
+                        id="artistAlbumBatchBtn"
+                        class="btn btn-primary artist-add-btn"
+                    >Download selected</button>
+                    <button class="btn btn-ghost artist-cancel-btn" id="cancelArtistAlbumsBtn">Cancel</button>
+                </div>
+
+                <!-- Mode 3: one album, no strings attached. -->
+                <div id="artistOneOffPanel" style="display: none;" class="artist-add-panel">
+                    <div id="artistOneOffName" class="artist-selected-name"></div>
+                    <div class="album-search-note">
+                        Album mode uses best-effort single-track matching, not full release mirroring. It will try to source each track intelligently, but it may not produce a perfect 1:1 album copy. For exact album hunting, use Lidarr (with Usenet/torrents) or Soulseek.
+                    </div>
+                    <div id="artistOneOffBrowserMount"></div>
+                    <button class="btn btn-ghost artist-cancel-btn" id="cancelArtistOneOffBtn">Cancel</button>
+                </div>
+
+                <div id="artistAddStatus" style="display: none;" class="watched-status-box"></div>
+            </div>
+            <div id="watchedArtistList" class="results"></div>
+
+            <!-- Per-artist album browser, populated when "Albums" is tapped on a followed artist card above -->
+            <div id="artistAlbumPanel" class="section-with-top-margin" style="display:none;">
+                <div class="queue-header">
+                    <h2 class="queue-section-heading" id="artistAlbumPanelHeading">Albums</h2>
+                    <button class="btn btn-ghost" id="artistAlbumPanelCloseBtn" type="button">Close</button>
+                </div>
+                <label class="watched-control-label" title="Switching this on does NOT fetch the back catalogue; it only picks up albums that appear from now on, same idea as the singles from-date above.">
+                    Automatically add new albums
+                    <div class="toggle-switch">
+                        <input type="checkbox" id="artistAutoAddToggle">
+                        <span class="toggle-slider"></span>
+                    </div>
+                </label>
+                <div id="artistKnownAlbums" class="results"></div>
+                <div id="artistAlbumBrowserMount"></div>
             </div>
 
-            <div id="albumProgress" style="display:none;"></div>
         </div>
 
         <div id="watchedTabContainer" class="tab-panel">
             <div class="queue-header">
-                <h2 class="queue-section-heading">Watched Playlists / <a href="#watchedArtists" title="Jump to Watched Artists">Watched Artists &#8595;</a> / <a href="#watchedUpgrades" title="Jump to Watched Upgrades">Watched Upgrades &#8595;</a><span class="peon-hide"> / <a href="#audioAudit" title="Jump to Audio Provenance Audit">Audio Audit &#8595;</a></span></h2>
+                <h2 class="queue-section-heading">Watched Playlists / <a href="#watchedUpgrades" title="Jump to Watched Upgrades">Watched Upgrades &#8595;</a><span class="peon-hide"> / <a href="#audioAudit" title="Jump to Audio Provenance Audit">Audio Audit &#8595;</a></span></h2>
                 <button class="btn accent-btn" id="refreshAllWatchedBtn">Check All Now</button>
             </div>
             <div class="watched-add-panel">
@@ -478,60 +588,7 @@
                 <div id="orphansResult" style="display:none;"></div>
             </div>
 
-            <!-- Watched Artists section -->
-            <div id="watchedArtists" class="queue-header section-with-top-margin">
-                <h2 class="queue-section-heading">Watched Artists</h2>
-                <button class="btn accent-btn" id="refreshAllArtistsBtn">Check All Now</button>
-            </div>
-            <div class="watched-add-panel">
-                <p class="watched-panel-text">
-                    Follow an artist on MusicBrainz and new singles will be downloaded automatically as they're released.
-                </p>
-                <div class="watched-url-row input-action">
-                    <input
-                        type="text"
-                        id="artistSearchInput"
-                        placeholder="Artist name..."
-                        class="panel-text-input"
-                    >
-                    <button
-                        id="searchArtistBtn"
-                        class="btn btn-primary input-action-btn panel-action-btn"
-                    >Find Artist</button>
-                </div>
-                <div id="artistSearchResults" style="display: none;" class="artist-search-results"></div>
-                <div id="artistAddForm" style="display: none;" class="artist-add-panel">
-                    <div id="selectedArtistName" class="artist-selected-name"></div>
-                    <div class="watched-controls-row">
-                        <label class="watched-control-label">
-                            Download singles from:
-                            <input type="date" id="artistFromDate" class="artist-date-input">
-                        </label>
-                        <label class="watched-control-label">
-                            Check:
-                            <select id="artistIntervalSelect" class="watched-select">
-                                <option value="24" selected>Daily</option>
-                                <option value="168">Weekly</option>
-                                <option value="720">Monthly</option>
-                            </select>
-                        </label>
-                        <label class="watched-control-label" title="Convert new singles to the selected audio format">
-                            <span id="artistFlacLabel">Keep source</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="artistConvertToFlac">
-                                <span class="toggle-slider"></span>
-                            </div>
-                        </label>
-                    </div>
-                    <button
-                        id="addArtistBtn"
-                        class="btn btn-primary artist-add-btn"
-                    >Watch Artist</button>
-                    <button class="btn btn-ghost artist-cancel-btn" id="cancelArtistBtn">Cancel</button>
-                </div>
-                <div id="artistAddStatus" style="display: none;" class="watched-status-box"></div>
-            </div>
-            <div id="watchedArtistList" class="results"></div>
+            <!-- Watched Artists has moved to the Artists tab. -->
 
             <!-- Watched Upgrades section -->
             <div id="watchedUpgrades" class="queue-header section-with-top-margin">
@@ -543,7 +600,7 @@
             </div>
             <div class="watched-add-panel">
                 <p class="watched-panel-text">
-                    Files MusicGrabber downloaded that are sitting below the quality you currently download at. Hover a proposed upgrade to preview it before you commit. Your Albums are never touched, only Singles and playlist tracks.
+                    Files MusicGrabber downloaded that are sitting below the quality you currently download at. Each proposal shows the downloaded source quality, then the format MusicGrabber will actually store after conversion. A lossless source converted to Opus, MP3, or AAC remains a lossy output. Hover a proposed upgrade to preview it before you commit. Your Albums are never touched, only Singles and playlist tracks.
                 </p>
                 <p id="upgradesDisabledNote" class="watched-schedule-info" style="display: none;">
                     Track Upgrades are switched off. Turn them on in Settings, then run a scan, to see candidates here.
@@ -925,7 +982,7 @@
                             <input type="checkbox" id="settingSinglesOnlyMode">
                             <span class="toggle-slider"></span>
                         </div>
-                        <span class="settings-hint settings-hint-full">Hides the Albums tab for everyone. Handy when you're feeding Navidrome with singles only and don't want family members poking at the album browser. Reload required.</span>
+                        <span class="settings-hint settings-hint-full">Hides album browsing for everyone (the Artists tab still follows artists and grabs singles). Handy when you're feeding Navidrome with singles only and don't want family members poking at the album browser. Reload required.</span>
                     </label>
                 </div>
                 <div class="settings-form settings-form-top">
@@ -988,7 +1045,7 @@
                         <div id="customAlbumsSubdirRow" style="display:none;" class="custom-subdir-row">
                             <input type="text" id="customAlbumsSubdirInput" placeholder="Subfolder name (e.g. Albums)" class="settings-input-path-text">
                         </div>
-                        <span class="settings-hint-sm">Folder for album downloads from the Albums tab. Files are organised as <code>Albums/Artist/Album/Track.flac</code>.</span>
+                        <span class="settings-hint-sm">Folder for album downloads from the album browser (Artists tab). Files are organised as <code>Albums/Artist/Album/Track.flac</code>.</span>
                         <span id="albumsPathPreview" class="settings-path-preview"></span>
                     </div>
                     <div class="settings-row">

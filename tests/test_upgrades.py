@@ -20,6 +20,7 @@ import upgrades
 from upgrades import (
     tier_of,
     target_tier,
+    upgrade_output_profile,
     probe_file,
     _kbps_to_tier,
     _setting_to_kbps,
@@ -125,6 +126,38 @@ def test_target_tier_opus_320(monkeypatch):
     _patch_settings(monkeypatch, {"default_convert_to_flac": False, "audio_format": "opus",
                                   "opus_bitrate": "320k"})
     assert target_tier() == TIER_LOSSY_320
+
+
+def test_upgrade_output_profile_makes_lossy_conversion_explicit(monkeypatch):
+    _patch_settings(monkeypatch, {"default_convert_to_flac": True,
+                                  "audio_format": "opus", "opus_bitrate": "256k"})
+    assert upgrade_output_profile() == {
+        "upgrade_conversion_enabled": True,
+        "upgrade_output_format": "opus",
+        "upgrade_output_label": "Opus 256 kbps",
+    }
+
+
+def test_upgrade_output_profile_describes_mp3_vbr(monkeypatch):
+    _patch_settings(monkeypatch, {"default_convert_to_flac": True,
+                                  "audio_format": "mp3", "mp3_bitrate": "v2"})
+    assert upgrade_output_profile()["upgrade_output_label"] == "MP3 V2 (~190 kbps)"
+
+
+def test_upgrade_output_profile_distinguishes_lossy_aac_from_alac(monkeypatch):
+    _patch_settings(monkeypatch, {"default_convert_to_flac": True,
+                                  "audio_format": "alac", "alac_bitrate": "192k"})
+    assert upgrade_output_profile()["upgrade_output_label"] == "AAC 192 kbps (.m4a)"
+
+
+def test_upgrade_output_profile_says_when_conversion_is_off(monkeypatch):
+    _patch_settings(monkeypatch, {"default_convert_to_flac": False,
+                                  "audio_format": "opus", "opus_bitrate": "256k"})
+    assert upgrade_output_profile() == {
+        "upgrade_conversion_enabled": False,
+        "upgrade_output_format": None,
+        "upgrade_output_label": "Keep source format",
+    }
 
 
 def test_below_target_flagging(monkeypatch):

@@ -1,23 +1,23 @@
 """
-MusicGrabber - zvu4no.org Source
+MusicGrabber - zvu4no Source
 
 Russian MP3 portal with server-rendered search pages and direct MP3 links.
 No auth required. Search results include artist, title, duration, optional
-thumbnail, and a data.zvu4no.org download URL.
+thumbnail, and a data.zvu4it.org download URL.
 """
 
 import hashlib
 import html
 import re
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
 from constants import TIMEOUT_ZVU4NO_DOWNLOAD, TIMEOUT_ZVU4NO_SEARCH
 from youtube import score_search_result_with_breakdown, parse_duration
 
-_BASE_URL = "https://zvu4no.org"
+_BASE_URL = "https://zvu4it.org"
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
     "Referer": _BASE_URL + "/",
@@ -28,11 +28,17 @@ _RE_ARTIST = re.compile(r'<div class="artist-name">\s*<a [^>]*>(.*?)</a>\s*</div
 _RE_TITLE = re.compile(r'<div class="track-name">(.*?)</div>', re.DOTALL)
 _RE_DUR = re.compile(r'<div class="time-text">(.*?)</div>', re.DOTALL)
 # Domain-agnostic: the site rebranded from zvu4no.org to zvu4it.org under our
-# feet (zvu4no.org still redirects there), so we match whatever CDN host is
-# serving on the day rather than hardcoding one that'll just flip again.
+# feet, so match whichever CDN host serves the links rather than duplicating
+# the current hostname here.
 _RE_HREF = re.compile(r'<a class="mp3" href="(//data\.[a-z0-9.-]+/download-track/[^"]+\.mp3)"', re.DOTALL)
 _RE_IMG = re.compile(r'<img src="(//img\.[a-z0-9.-]+/[^"]+)"', re.DOTALL)
 _RE_TAGS = re.compile(r"<[^>]+>")
+
+
+def is_zvu4no_url(url: str | None) -> bool:
+    """Return whether a URL belongs to the provider's current hostname."""
+    hostname = (urlsplit(url).hostname or "").lower() if url else ""
+    return hostname == "zvu4it.org" or hostname.endswith(".zvu4it.org")
 
 
 def _clean_text(value: str) -> str:
@@ -53,7 +59,7 @@ def _duration_to_secs(dur: str) -> int:
 
 
 def search_zvu4no(query: str, limit: int) -> list[dict]:
-    """Search zvu4no.org and return normalised result dicts."""
+    """Search the current zvu4no host and return normalised result dicts."""
     try:
         url = f"{_BASE_URL}/tracks/{quote(query)}"
         resp = httpx.get(url, headers=_HEADERS, timeout=TIMEOUT_ZVU4NO_SEARCH, follow_redirects=True)

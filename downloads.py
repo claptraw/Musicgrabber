@@ -42,6 +42,7 @@ from constants import (
     SELECTED_RESULT_DURATION_TOLERANCE, SELECTED_RESULT_MIN_SHORTFALL_SECS,
     SILENCE_DETECT_DURATION, SILENCE_DETECT_NOISE,
     SILENCE_DETECT_MIN_START, SILENCE_DETECT_MAX_END_FRAC,
+    SEARCH_SLOT_WAIT_AUTOMATED,
 )
 from coverart import fetch_cover_art, get_album_art_context, ensure_album_cover_files, cache_cover_art, _fetch_caa_cover
 from db import db_conn, log_match_mismatch, get_album_track_lock, complete_album_track_lock
@@ -71,7 +72,7 @@ from utils import (
     artist_credits_match,
 )
 from monochrome import download_monochrome_track
-from zvu4no import download_zvu4no_track
+from zvu4no import download_zvu4no_track, is_zvu4no_url
 from freemp3cloud import download_freemp3cloud_track
 from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, _strip_cookies_args,
@@ -815,7 +816,10 @@ def _find_alternate_search_candidate(
         from search import search_all, log_ranked_results
         from matching import compute_match_confidence
 
-        results = search_all(query, limit=12, sources=search_sources)[0]
+        # Background work with a download riding on it: queue for a busy source
+        # rather than returning empty-handed and failing the job over a collision.
+        results = search_all(query, limit=12, sources=search_sources,
+                             slot_wait=SEARCH_SLOT_WAIT_AUTOMATED)[0]
         log_ranked_results("Alternate candidate search", query, results)
         gate = bool(expected_artist or expected_title)
         for cand in results:
@@ -4704,7 +4708,7 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
     instead of the normal Singles/Artist layout  -  used by album downloads.
     """
     is_soundcloud  = source_url and "soundcloud.com" in source_url
-    is_zvu4no      = source_url and "zvu4no.org" in source_url
+    is_zvu4no      = is_zvu4no_url(source_url)
     is_freemp3cloud = source_url and "meln.top" in source_url
     is_monochrome  = source_url and source_url.startswith("monochrome://")
     is_url_source  = bool(source_url)
@@ -5103,7 +5107,18 @@ def process_download(job_id: str, video_id: str, convert_to_flac: bool = True, s
                 if alternate:
                     alt_id = alternate.get("video_id")
                     alt_source_url = alternate.get("source_url")
-                    print(f"Retrying with alternate source after duration mismatch: {alternate.get('source', 'youtube')} {alt_id}")
+                    alt_source = alternate.get("source", "youtube")
+                    print(f"Retrying with alternate source after duration mismatch: {alt_source} {alt_id}")
+                    # Re-point the job at whoever we're actually asking now. Skip
+                    # this and the finished download wears the badge and URL of
+                    # the take we just threw in the bin, which makes for a card
+                    # that confidently contradicts the file sitting next to it.
+                    _update_job(
+                        job_id,
+                        source=alt_source,
+                        video_id=alt_id,
+                        source_url=alt_source_url,
+                    )
                     return process_download(
                         job_id,
                         alt_id,

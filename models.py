@@ -260,6 +260,8 @@ class WatchedArtistRequest(BaseModel):
     from_date: str  # YYYY-MM-DD
     refresh_interval_hours: float = 24
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+    auto_add_albums: bool = False  # Seeds current albums as already-seen; only later arrivals get queued
+    watch_singles: bool = True  # Off for an albums-only follow, so no singles get hoovered up
     _validate_mbid = field_validator("mbid")(_validate_mbid)
 
 class WatchedArtistUpdate(BaseModel):
@@ -267,6 +269,8 @@ class WatchedArtistUpdate(BaseModel):
     refresh_interval_hours: Optional[float] = None
     convert_to_flac: Optional[bool] = None
     from_date: Optional[str] = None
+    auto_add_albums: Optional[bool] = None
+    watch_singles: Optional[bool] = None
 
 class AlbumDownloadRequest(BaseModel):
     artist: str
@@ -275,7 +279,17 @@ class AlbumDownloadRequest(BaseModel):
     make_m3u: bool = False
     m3u_name: Optional[str] = None
     convert_to_flac: bool = DEFAULT_CONVERT_TO_FLAC
+    # Set when the grab came from a followed artist's album list, so the album is
+    # recorded as already dealt with and auto-add doesn't cheerfully queue it again.
+    watch_artist_id: Optional[str] = None
+    release_group_mbid: Optional[str] = None
     _validate_release_mbid = field_validator("release_mbid")(_validate_mbid)
+
+
+class ReleaseGroupResolveRequest(BaseModel):
+    """Turn a chosen release-group into a concrete release, ready to download."""
+    release_group_mbid: str
+    _validate_release_group_mbid = field_validator("release_group_mbid")(_validate_mbid)
 
 
 class RetryMissingTrackRequest(BaseModel):

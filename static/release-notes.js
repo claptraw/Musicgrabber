@@ -11,12 +11,94 @@ const RELEASE_NOTES = {
         title: "What's New in v4.0.0",
         sections: [
             {
+                heading: "A new Artists tab, and the Albums tab has retired",
+                items: [
+                    "The tab bar is now Tracks, Bulk Import, Artists, Watched, Queue, Stats, Settings. Albums was a way of finding things rather than a place, so its artist browsing, duplicate checks and album downloading have moved into Bulk Import and the new Artists tab rather than going anywhere.",
+                    "Watched Artists has moved into Artists, with everything it did before intact: the same artist picker, the same \"watch future singles from this date\", the same intervals and controls.",
+                    "Watched is now just Watched Playlists and Watched Upgrades, plus the Audio Provenance Audit. Searching for one track and grabbing it is exactly as quick as it was; that bit was never the problem.",
+                ]
+            },
+            {
+                heading: "Find the artist, then decide what you want",
+                items: [
+                    "Picking an artist now offers you three things rather than assuming one: Follow for Singles, Follow for Albums, or Download an Album with no strings attached.",
+                    "Follow for Albums lays out the whole discography with tick boxes, so you can queue five records in one go instead of picking one, waiting, going back and picking the next. Albums already in your library are marked as such, so you cannot accidentally download your own collection back to yourself.",
+                    "Singles and albums are independent, so you can follow an artist for one, the other, or both. An albums-only follow leaves their singles well alone, which for a prolific artist is the difference between a few albums and four hundred B-sides.",
+                    "Every artist you already follow carries on watching singles exactly as before. Nothing was quietly unfollowed.",
+                ]
+            },
+            {
+                heading: "Artists can collect new albums on their own",
+                items: [
+                    "Following for albums includes an opt-in \"automatically download future albums\"; leave it off and you simply get whatever you ticked.",
+                    "Switching it on does not download the back catalogue. Everything already released is quietly marked as seen, and only albums that appear afterwards get picked up. A toggle that might start a fortnight of downloading is a toggle nobody would dare tick.",
+                    "Live albums, compilations, soundtracks, DJ mixes, demos and remix collections are filtered out, using the same rules the singles watcher already applies. Remasters, reissues and deluxe editions are left in on purpose, since they are as often the thing you wanted as they are noise.",
+                    "Albums you tick by hand are recorded as dealt with, so the automatic side never queues them a second time.",
+                ]
+            },
+            {
+                heading: "Bulk Import now takes almost anything",
+                items: [
+                    "One box that works out what you gave it: playlist URLs, pasted \"Artist - Title\" lists and MusicBrainz links all behave as before, and Spotify and Apple Music album URLs now work too.",
+                    "Anything recognised as an album goes through the album pipeline, so it arrives in Albums/Artist/Album/ with artwork, track numbers and an .albuminfo sidecar, rather than being flattened into a heap of unrelated singles.",
+                    "You can also just type a name. Album search no longer needs an artist first, so \"Trainspotting\" or \"Now That's What I Call Music 42\" work fine, and results are labelled Soundtrack, Compilation or Live so you can tell what you are looking at.",
+                    "Matching a streaming album to MusicBrainz is fuzzy work, and getting it wrong costs you a whole wrong album rather than one wrong track. Uncertain matches stop and ask which one you meant, and even a confident match shows you what is about to be queued first.",
+                    "YouTube, Amazon, Beatport and Monochrome album URLs are not supported yet, and say so plainly rather than half-working.",
+                ]
+            },
+            {
                 heading: "Monochrome lossless downloads work again",
                 items: [
                     "Monochrome put its playback behind a Cloudflare Turnstile check, which quietly locked MusicGrabber out and left the Qobuz routes unable to help.",
                     "There is now an optional fallback that opens a brief Chrome session, completes the same check a visitor gets, and asks for one authorised audio resource. Only that small request happens in the browser; the audio downloads normally afterwards, and protected lossless files are decrypted and remuxed to a clean FLAC before anything else sees them.",
                     "It is a last resort, not a habit: the browser is never launched for previews, only one session runs at a time, and it takes a few tens of seconds per track. You can turn it off in Settings under Monochrome if you would rather it never started Chrome at all.",
                     "The container image is larger as a result, since it now ships a browser for this on top of the one used for Spotify.",
+                ]
+            },
+            {
+                heading: "Searches wait their turn instead of giving up",
+                items: [
+                    "Each source allows one search at a time. That queue existed but was never used: anything arriving while a source was busy got an instant refusal, which to a bulk import looks exactly like \"nobody has this track\", and the track was then written off for good.",
+                    "Searches now queue politely. Six simultaneous searches for the same source used to leave five with nothing; they now all come back with results, one after the other.",
+                    "\"Busy\" is also now told apart from \"nothing found\", so a track is never marked missing over a search that never actually happened. Searching a single source that is genuinely busy says so and asks you to try again shortly, rather than reporting a server error.",
+                ]
+            },
+            {
+                heading: "Stuck imports get picked back up, or properly buried",
+                items: [
+                    "An import whose worker died left a row claiming to be processing forever. One test instance had 36 of them, the oldest dating from January, and between them they were quietly making searches fail.",
+                    "Imports now have a heartbeat. One that goes quiet for an hour is resumed where it left off, and restarts are handled at boot rather than after an hour of nothing happening.",
+                    "It knows when to stop, too: three revivals maximum, nothing older than a week is resurrected, and nothing is resumed for a watched playlist you have already deleted.",
+                ]
+            },
+            {
+                heading: "Albums now arrive as albums",
+                items: [
+                    "RAYE has two albums that both end on a track called \"Fin.\". Downloading the 2023 one, MusicGrabber searched for the track by name, got two results it could not tell apart, picked the wrong one and filed it as track 15 with every appearance of a job well done.",
+                    "Album downloads now match the release as a whole first and take each track from that one album, so a track can only come from the record you asked for. Anything it cannot place, and any album not carried by the lossless sources, falls back to the old per-track search exactly as before.",
+                    "A 17-track album that previously came back with 4 tracks now comes back with 17.",
+                ]
+            },
+            {
+                heading: "A source having a moment no longer loses you the track",
+                items: [
+                    "Queueing two albums at once made them race each other, and the loser was told \"busy\" by every source at the same instant. That looked exactly like \"nobody has this track\", and a track marked failed never got another look.",
+                    "Empty searches now get three attempts with a widening pause between them, so a momentary collision costs a few seconds rather than thirteen tracks. Something nobody genuinely has still fails, it just takes three goes to say so.",
+                ]
+            },
+            {
+                heading: "Download cards stop crediting the wrong source",
+                items: [
+                    "A track could show a YouTube badge and link while the file on disk was a Monochrome FLAC. The YouTube copy had been rejected for being the wrong length, quietly re-fetched from Monochrome, and the card never caught up.",
+                    "The \"Duration\" line on those cards was how long the job took, not how long the track is, which sitting under \"Stored\" and \"Original\" was needlessly alarming. It now says \"Took\".",
+                ]
+            },
+            {
+                heading: "Artist search no longer loses artists who use capitals",
+                items: [
+                    "Searching \"Raye\" gave you one result, and it was the wrong one: an anonymous feature credit on a Dead Prez record. RAYE the English singer was there all along, scoring higher than any of them, but spelling herself in capitals pushed her to fourth and the picker only ever showed the first.",
+                    "Relevance now leads, with capitalisation used only to break ties. Where several artists genuinely share a name, as four do with \"Raye\" and three with \"Adele\", you now see them all with the text that tells them apart.",
+                    "Artists with an unambiguous name, Radiohead and the like, still resolve straight to one result and one click.",
                 ]
             },
             {

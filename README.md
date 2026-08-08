@@ -16,21 +16,22 @@ It has since grown well past that brief. Watched Playlists and Watched Artists k
 MusicGrabber is intentionally narrow. It is **not**:
 
 - **A full music manager** (not Lidarr, not a replacement for Navidrome/Jellyfin)
-- **An album-discography automation tool** (Watched Artists monitors for new singles only; it does not grab back-catalogues but can pull individual albums)
+- **A back-catalogue hoover** (followed artists can opt in to collecting new albums as they are released, but nothing ever retro-downloads a discography; switching that on marks everything already out as seen)
 - **A streaming server/player** (it acquires files; it does not serve or stream your library)
 - **A DJ/pro-audio workflow tool** (no Atmos/spatial-audio specialist pipeline)
 - **A custom library templating engine** (no advanced token-based naming/structure rules)
 
 ## Features
 
-- **Multi-source search:** YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek searched in parallel; relevance-ranked results with source badges and score explanations, plus a separate audio-quality tier where the provider declares one
+- **Multi-source search:** the Tracks tab searches YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek in parallel; relevance-ranked results include source badges and score explanations, plus a separate audio-quality tier where the provider declares one. The single-song search collapses when you leave Tracks, keeping the other workspaces focused on their own jobs
 - **Live search progress:** results stream in as each source answers, with live status for completed, slow, parked, or unavailable sources; repeated timeouts automatically bench an unhealthy source until a background probe clears it
 - **Monochrome/Qobuz source:** searches the Tidal catalogue via hifi-api metadata, then resolves matching Qobuz FLAC streams by ISRC. Public Qobuz routes are tried first; if they fail, an optional SeleniumBase browser session can complete Monochrome's Turnstile check and use its authorised direct playback. Enabled by default and configurable in Search Sources
 - **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
-- **Watched Artists:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles only: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Tracks already on disk are recognised immediately. Per-artist check interval, Keep source/Convert to control, pause/resume, missing and track list panels
+- **Artists tab:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles come first: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Albums sit underneath for browsing and picking off individually, with an optional "automatically add new albums" toggle that marks everything already released as seen, so ticking it never starts a back-catalogue download. Tracks already on disk are recognised immediately. Per-artist check interval, Keep source/Convert to control, pause/resume, missing and track list panels. You can also browse any artist's albums without following them at all
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
 - **Playlist housekeeping:** find audio left behind by mirror-mode playlist removals and move it safely into Singles; optionally stamp watched-playlist names into audio Comment tags for macOS Music smart playlists
-- **Album mode:** browse MusicBrainz artists, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Search results can also jump straight to the matching album when MusicBrainz can identify it
+- **Album mode:** browse MusicBrainz artists from either the Artists tab or Bulk Import, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Search results can also jump straight to the matching album when MusicBrainz can identify it
+- **Bulk Import takes almost anything:** playlist URLs, pasted `Artist - Title` lists, MusicBrainz release links, Spotify and Apple Music album URLs, or simply an album name typed in. Anything recognised as an album is routed through the album pipeline rather than flattened into loose singles. Album search does not need an artist first, so soundtracks and various-artists compilations work; uncertain matches ask which release you meant instead of guessing. YouTube, Amazon, Beatport, and Monochrome album URLs are not supported yet
 - **Auto-album routing for singles:** optional setting to file single-track downloads into artist/album folders when MusicBrainz resolves an album, either under Singles or the Albums directory
 - **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches enabled sources in parallel and grabs the best result for each. It can also create a playlist and route files into the Playlists directory or a custom watched-playlist folder
 - **Similar artist discovery:** hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
@@ -40,7 +41,9 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Track upgrades:** opt-in library scanner re-probes and hashes MusicGrabber files
   on the configured interval, flags files below your quality tier, follows tagged
   files moved inside the library, and revalidates the original immediately before
-  any safe, recoverable replacement
+  any safe, recoverable replacement. Proposals distinguish the quality of the
+  downloaded source from the configured stored output, so a lossless source headed
+  for Opus, MP3, or AAC is clearly labelled as a lossy converted result
 - **Audio Provenance Audit:** a separate read-only scan of the complete configured
   music directory, including Albums and historical files. It distinguishes the
   stored format from recorded acquisition history, explains every classification,
@@ -352,7 +355,7 @@ Settings are stored in the database and persist across container restarts.
 | `AUTO_ALBUM_SINGLES` | `false` | If MusicBrainz finds album context for a single, move it into `Artist/Album/` automatically |
 | `AUTO_ALBUM_SINGLES_USE_ALBUMS_DIR` | `false` | Put auto-routed singles under the Albums directory instead of under Singles |
 | `PLAYLIST_ALBUM_AS_NAME` | `false` | Tag playlist-routed tracks as one compilation using the playlist name as the album |
-| `SINGLES_ONLY_MODE` | `false` | Hide the Albums tab while keeping single-track auto-album routing available |
+| `SINGLES_ONLY_MODE` | `false` | Hide the album browsing surfaces (Artists and Bulk Import) while keeping single-track auto-album routing available |
 | `FILE_PERMISSIONS` | `666` | File mode applied after downloads. `777` is available for stubborn NAS/share setups |
 | `SKIP_DUPES` | `true` | Skip downloads when a matching local file is already found |
 | `NAVIDROME_DUPE_CHECK` | `true` | Use Navidrome/Subsonic as part of duplicate detection when Navidrome is configured |
@@ -1068,8 +1071,9 @@ music.yourdomain.com {
 |--------|----------|-------------|
 | `GET` | `/api/watched-artists/search` | Search MusicBrainz for an artist (`?q=Artist+Name`); returns up to 5 candidates |
 | `GET` | `/api/watched-artists` | List all watched artists with track counts |
-| `POST` | `/api/watched-artists` | Add an artist to watch (`{mbid, name, from_date, refresh_interval_hours, convert_to_flac}`) |
-| `PUT` | `/api/watched-artists/{id}` | Update artist settings (`enabled`, `refresh_interval_hours`, `convert_to_flac`, `from_date`) |
+| `POST` | `/api/watched-artists` | Add an artist to watch (`{mbid, name, from_date, refresh_interval_hours, convert_to_flac, auto_add_albums}`) |
+| `PUT` | `/api/watched-artists/{id}` | Update artist settings (`enabled`, `refresh_interval_hours`, `convert_to_flac`, `from_date`, `auto_add_albums`) |
+| `GET` | `/api/watched-artists/{id}/albums` | List known albums for a followed artist with status (`seen`, `queued`, `failed`) and whether each is already on disk |
 | `DELETE` | `/api/watched-artists/{id}` | Stop watching an artist (downloaded tracks kept) |
 | `POST` | `/api/watched-artists/{id}/refresh` | Manually trigger a singles check for one artist |
 | `GET` | `/api/watched-artists/{id}/tracks` | List all tracked singles with per-track status |
@@ -1115,6 +1119,9 @@ These endpoints are unavailable to peon accounts. All filters are optional:
 | `GET` | `/api/albums/dirs/{artist}` | List album folders within an artist directory |
 | `GET` | `/api/albums/dirs/{artist}/{album}/info` | Read `.albuminfo` sidecar and return MB tracklist |
 | `POST` | `/api/albums/resolve-url` | Resolve a MusicBrainz release or release-group URL to artist/title/MBID for the album pipeline |
+| `GET` | `/api/albums/search-release` | Search MusicBrainz for an album by name (`?q=Album+Name`, optional `&artist=`). No artist required, so soundtracks and various-artists releases work. `release_mbid` comes back null; resolve the chosen one below |
+| `POST` | `/api/albums/resolve-release-group` | Turn a chosen `release_group_mbid` into concrete album download fields |
+| `POST` | `/api/albums/resolve-album-url` | Identify a Spotify or Apple Music album URL and fuzzy-match it to MusicBrainz, with a confidence gate (`confident: false` means ask the user which candidate they meant) |
 | `POST` | `/api/albums/download` | Queue a full album for download with MusicBrainz routing |
 
 ### Trash Bin
