@@ -548,7 +548,7 @@ environment:
 
 ### Soulseek Integration (Optional)
 
-MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled, search results from YouTube and Soulseek are shown together, ranked by relevance. Soulseek's declared codec and bitrate contribute to that rank and also feed the separate minimum-quality filter, so a good FLAC match still receives its due without pretending audio quality and title relevance are the same measurement.
+MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled, search results from YouTube and Soulseek are shown together, ranked by relevance. Soulseek's declared codec and bitrate contribute to that rank and also feed the separate minimum-quality filter, so a good FLAC match still receives its due without pretending audio quality and title relevance are the same measurement. The artist inferred from the shared file path is kept separate from the Soulseek peer name: the peer remains visible as the source of the download, but does not end up credited in the tags or awarded an unexpected folder in your library.
 
 Soulseek is disabled by default. Turn it on in Settings under Search Sources, or set `SOURCE_SOULSEEK_ENABLED=true`. Entering credentials alone does not enable it.
 

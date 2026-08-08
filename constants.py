@@ -33,7 +33,13 @@ SEARCH_ALL_DEADLINE = int(os.getenv("SEARCH_ALL_DEADLINE", "30"))  # Multi-sourc
 # would much rather wait than lose a track for good. Both sit comfortably inside
 # SEARCH_ALL_DEADLINE, since a source that spends the whole deadline queueing
 # would be reported as timed out and contribute nothing anyway.
-SEARCH_SLOT_WAIT_INTERACTIVE = float(os.getenv("SEARCH_SLOT_WAIT_INTERACTIVE", "5"))
+# Measured rather than guessed: a YouTube search takes ~2.5s on an idle box but
+# 5 to 7s under any real load, so the original 5s was almost exactly one search
+# long and amounted to a coin toss. A wait has to comfortably outlast the search
+# in front of it or it may as well not be a wait at all. Results a few seconds
+# late beat an error every time; the user only ever waits when something else is
+# genuinely running.
+SEARCH_SLOT_WAIT_INTERACTIVE = float(os.getenv("SEARCH_SLOT_WAIT_INTERACTIVE", "15"))
 SEARCH_SLOT_WAIT_AUTOMATED = float(os.getenv("SEARCH_SLOT_WAIT_AUTOMATED", "15"))
 TIMEOUT_YTDLP_DOWNLOAD = int(os.getenv("TIMEOUT_YTDLP_DOWNLOAD", "300"))  # Downloading a track (5 minutes)
 TIMEOUT_YTDLP_PREVIEW = 15       # Getting preview URL

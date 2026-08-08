@@ -139,7 +139,11 @@ def test_search_stream_event_sequence(api, base_url):
     assert announced.issubset(reported), f"sources without a status: {announced - reported}"
     for e in events:
         if e["type"] == "source":
-            assert e["status"] in {"done", "timeout", "skipped", "error"}
+            # "busy" is a terminal status in its own right: the source was still
+            # occupied when we ran out of patience, so we never got to ask it
+            # anything. Deliberately not folded in with "error", because the two
+            # mean very different things to whoever is reading the stream.
+            assert e["status"] in {"done", "timeout", "skipped", "error", "busy"}
 
 
 @pytest.mark.slow

@@ -24,6 +24,26 @@ def test_search_result_contract_names_the_rank_as_relevance():
     assert "quality_score" not in payload
 
 
+def test_browser_projection_keeps_soulseek_artist_separate_from_peer():
+    payload = search.project_search_result({
+        "video_id": "slskd_deadbeef",
+        "title": "Ignorance",
+        "artist": "Paramore",
+        "channel": "2jqll9htuy62asp1wu",
+        "duration": "3:39",
+        "thumbnail": "",
+        "source": "soulseek",
+        "quality": "FLAC",
+        "relevance_score": 300,
+        "slskd_username": "2jqll9htuy62asp1wu",
+        "slskd_filename": r"@@kvkwm\Music\Paramore\Brand New Eyes\2. Ignorance.flac",
+        "slskd_size": 40_000_000,
+    })
+
+    assert payload["artist"] == "Paramore"
+    assert payload["channel"] == payload["slskd_username"] == "2jqll9htuy62asp1wu"
+
+
 def test_source_search_slot_rejects_overlap_and_recovers(monkeypatch):
     started = threading.Event()
     release = threading.Event()

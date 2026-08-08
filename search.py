@@ -392,6 +392,35 @@ def quality_tier_of_result(result: dict) -> int:
     return TIER_UNKNOWN
 
 
+def project_search_result(item: dict) -> dict:
+    """Project a raw source result into the browser/API result contract.
+
+    Keeping this beside the source normalisation makes it usable by both the
+    blocking and streaming endpoints without importing ``app`` (which starts
+    schedulers as a module side effect).  In particular, do not discard an
+    explicit artist: for Soulseek, ``channel`` is the peer sharing the file,
+    not the performer.
+    """
+    return {
+        "video_id": item["video_id"],
+        "title": item["title"],
+        "artist": item.get("artist"),
+        "channel": item["channel"],
+        "duration": item["duration"],
+        "thumbnail": item["thumbnail"],
+        "is_playlist": item.get("is_playlist", False),
+        "video_count": item.get("video_count"),
+        "source": item["source"],
+        "source_url": item.get("source_url"),
+        "quality": item["quality"],
+        "relevance_score": item["relevance_score"],
+        "quality_tier": item.get("quality_tier", quality_tier_of_result(item)),
+        "slskd_username": item["slskd_username"],
+        "slskd_filename": item["slskd_filename"],
+        "slskd_size": item.get("slskd_size") or item.get("size"),
+    }
+
+
 def _stamp_quality_tiers(results: list[dict]) -> None:
     """Add quality_tier to each result in place, for the UI's quality filter."""
     for result in results:

@@ -56,6 +56,14 @@ const RELEASE_NOTES = {
                 ]
             },
             {
+                heading: "Soulseek tracks are credited to the artist, not the stranger",
+                items: [
+                    "A Paramore track was arriving tagged as being by \"2jqll9htuy62asp1wu\", and filed in the library under that name too.",
+                    "The artist was sitting in the file's own path the whole time; the search results simply dropped it before reaching the browser, which then fell back to the name of whoever was sharing the file. Results now carry both, so you can see who you are downloading from without them being credited as the artist.",
+                    "Retrying an older, wrongly-tagged job will not bring it back either; an artist that is just a Soulseek username is now refused outright.",
+                ]
+            },
+            {
                 heading: "Soulseek results show up again",
                 items: [
                     "Reported by Syrius-consulting: slskd ran the search, found hundreds of files, reported it complete, and MusicGrabber showed nothing at all.",

@@ -3810,6 +3810,16 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         # If artist/title not provided, extract from filename
         if not artist or not title:
             artist, title = extract_track_info_from_path(filename)
+        # Belt and braces: an artist that is simply the name of the peer sharing
+        # the file is not an artist, it is an accident. The API used to hand the
+        # username over as the artist, so retries of older jobs (and anything
+        # else that gets this wrong) would otherwise still tag Paramore's back
+        # catalogue as being by "2jqll9htuy62asp1wu" and file it accordingly.
+        if artist and username and artist.strip().casefold() == username.strip().casefold():
+            path_artist, _path_title = extract_track_info_from_path(filename)
+            if path_artist and path_artist != "Unknown":
+                print(f"slskd: ignoring uploader name as artist, using '{path_artist}' from the path")
+                artist = path_artist
         if forced_track_title:
             title = forced_track_title
 

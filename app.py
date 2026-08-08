@@ -68,7 +68,7 @@ from youtube import (
 )
 from search import (
     search_source, search_all, _search_all_events, get_available_sources,
-    clear_automated_search_cache, SOURCE_REGISTRY, quality_tier_of_result,
+    clear_automated_search_cache, SOURCE_REGISTRY, project_search_result,
     SourceSearchBusy,
 )
 import servicecheck
@@ -1774,26 +1774,13 @@ def search(request: SearchRequest, http_request: Request):
         else:
             raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
 
-        final_results = []
-        for item in raw_results[:request.limit]:
-            final_results.append(SearchResult(
-                video_id=item["video_id"],
-                title=item["title"],
-                artist=None,
-                channel=item["channel"],
-                duration=item["duration"],
-                thumbnail=item["thumbnail"],
-                is_playlist=item.get("is_playlist", False),
-                video_count=item.get("video_count"),
-                source=item["source"],
-                source_url=item.get("source_url"),
-                quality=item["quality"],
-                relevance_score=item["relevance_score"],
-                quality_tier=item.get("quality_tier", quality_tier_of_result(item)),
-                slskd_username=item["slskd_username"],
-                slskd_filename=item["slskd_filename"],
-                slskd_size=item.get("slskd_size") or item.get("size"),
-            ))
+        # One projection for both the blocking and streaming search endpoints.
+        # These were duplicated, which is exactly how an artist fix could have
+        # landed in one response path and silently missed the other.
+        final_results = [
+            SearchResult(**project_search_result(item))
+            for item in raw_results[:request.limit]
+        ]
 
         search_token = None
         try:
@@ -1839,32 +1826,6 @@ def search(request: SearchRequest, http_request: Request):
         raise HTTPException(status_code=500, detail="Search failed")
 
 
-def _search_result_payload(item: dict) -> dict:
-    """Project a raw source result dict to the same shape /api/search returns.
-
-    Keeps the streaming endpoint and the blocking one emitting identical result
-    objects so the frontend renderer doesn't care which path fed it.
-    """
-    return {
-        "video_id": item["video_id"],
-        "title": item["title"],
-        "artist": None,
-        "channel": item["channel"],
-        "duration": item["duration"],
-        "thumbnail": item["thumbnail"],
-        "is_playlist": item.get("is_playlist", False),
-        "video_count": item.get("video_count"),
-        "source": item["source"],
-        "source_url": item.get("source_url"),
-        "quality": item["quality"],
-        "relevance_score": item["relevance_score"],
-        "quality_tier": item.get("quality_tier", quality_tier_of_result(item)),
-        "slskd_username": item["slskd_username"],
-        "slskd_filename": item["slskd_filename"],
-        "slskd_size": item.get("slskd_size") or item.get("size"),
-    }
-
-
 @app.post("/api/search/stream")
 def search_stream(request: SearchRequest, http_request: Request):
     """Live multi-source search: NDJSON stream, one event per line.
@@ -1900,7 +1861,7 @@ def search_stream(request: SearchRequest, http_request: Request):
                 slot_wait=SEARCH_SLOT_WAIT_INTERACTIVE,
             ):
                 if ev["type"] == "source" and ev["status"] == "done":
-                    ev = {**ev, "results": [_search_result_payload(r) for r in ev["results"]]}
+                    ev = {**ev, "results": [project_search_result(r) for r in ev["results"]]}
                 elif ev["type"] == "done":
                     search_token = None
                     try:

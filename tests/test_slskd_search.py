@@ -164,3 +164,79 @@ def test_an_empty_response_list_is_still_just_empty(slskd_ready, capsys):
 
     assert slskd.search_slskd("Nobody - Nothing") == []
     assert "slskd search error" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Artist attribution
+#
+# Second report from Syrius-consulting: a Soulseek download is tagged with the
+# *username of the person sharing it* rather than the artist, and then filed
+# under that username in the library. The screenshot said it all:
+#
+#   2jqll9htuy62asp1wu - Ignorance
+#   soulseek://2jqll9htuy62asp1wu/@@kvkwm\Music\Paramore\Brand New Eyes\2. Ignorance.flac
+#
+# Paramore is right there in the path. slskd works it out correctly; the loss
+# happens later, where the API projects results for the browser and hardcodes
+# artist to None, leaving the frontend to fall back to `channel`, which for
+# Soulseek is the username. Longstanding, not a v4 regression: it was simply
+# unreachable while slskd search itself was broken.
+# ---------------------------------------------------------------------------
+
+def test_the_artist_is_read_from_the_path_not_the_uploader():
+    """The reported path, verbatim."""
+    artist, title = slskd.extract_track_info_from_path(
+        r"@@kvkwm\Music\Paramore\Brand New Eyes\2. Ignorance.flac"
+    )
+
+    assert artist == "Paramore"
+    assert title == "Ignorance"
+
+
+def test_search_results_carry_the_real_artist_separately_from_the_username(slskd_ready):
+    """slskd keeps them apart; whoever consumes this must not conflate them."""
+    hit = _flac_hit(r"@@kvkwm\Music\Paramore\Brand New Eyes\2. Ignorance.flac")
+    hit["username"] = "2jqll9htuy62asp1wu"
+    slskd_ready([hit])
+
+    results = slskd.search_slskd("Paramore - Ignorance")
+
+    assert results, "no results to check"
+    assert results[0]["artist"] == "Paramore"
+    assert results[0]["channel"] == "2jqll9htuy62asp1wu"
+    assert results[0]["artist"] != results[0]["channel"]
+
+
+def test_the_uploader_name_is_never_accepted_as_the_artist(monkeypatch):
+    """Guard for retried jobs and any other caller that gets this wrong.
+
+    Passing the peer's username in as the artist must not survive; the path
+    knows better and should win.
+    """
+    import downloads
+
+    seen = {}
+    monkeypatch.setattr(downloads, "_get_job_album_context", lambda _j: {})
+    monkeypatch.setattr(downloads, "_get_album_track_tag_context", lambda _j: (None, None))
+    monkeypatch.setattr(downloads, "ensure_album_cover_files", lambda *a, **k: None)
+    monkeypatch.setattr(downloads, "get_album_art_context", lambda *a, **k: (None, None))
+
+    def _capture(job_id, **fields):
+        seen.update(fields)
+        # Stop the download dead once the artist has been settled; everything
+        # after this point is network and filesystem, and not what we are here for.
+        if "artist" in fields:
+            raise RuntimeError("stop here")
+
+    monkeypatch.setattr(downloads, "_update_job", _capture)
+
+    downloads.process_slskd_download(
+        job_id="job1",
+        username="2jqll9htuy62asp1wu",
+        filename=r"@@kvkwm\Music\Paramore\Brand New Eyes\2. Ignorance.flac",
+        artist="2jqll9htuy62asp1wu",
+        title="Ignorance",
+    )
+
+    assert seen.get("artist") == "Paramore", f"artist ended up as {seen.get('artist')!r}"
+    assert seen.get("uploader") == "2jqll9htuy62asp1wu", "the peer is still recorded, just not as the artist"
