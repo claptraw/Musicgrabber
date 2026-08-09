@@ -3070,10 +3070,27 @@ h1 {
     cursor: pointer;
 }
 
-.header-lossy-warning {
+/* One label doing two jobs: what the toggle will do, and whether that is a
+   downgrade. Never let it wrap; "Convert to Opus" split across two lines was
+   what started all this. */
+.header-format-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.header-format-text .header-lossy-icon {
+    display: none;
+}
+
+.header-format-text.is-lossy {
     color: var(--warning);
     font-weight: 700;
-    white-space: nowrap;
+}
+
+.header-format-text.is-lossy .header-lossy-icon {
+    display: inline;
 }
 
 .theme-toggle-btn {

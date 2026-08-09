@@ -811,8 +811,10 @@
         }
 
         function updateConversionLabels() {
-            const headerLabel = document.getElementById('headerFormatLabel');
-            if (headerLabel) headerLabel.textContent = conversionChoiceLabel(convertAudioCheckbox.checked);
+            // Text only; the warning triangle is a sibling element and would not
+            // survive being written over.
+            const headerText = document.getElementById('headerFormatText');
+            if (headerText) headerText.textContent = conversionChoiceLabel(convertAudioCheckbox.checked);
 
             const watchedLabel = document.getElementById('watchedFormatLabel');
             if (watchedLabel && watchedConvertAudio) {
@@ -853,8 +855,9 @@
 
             const headerControl = document.querySelector('.header-format-label');
             const headerWouldDowngrade = convertAudioCheckbox?.checked && conversionTargetIsLossy();
-            const headerWarning = document.getElementById('headerLossyWarning');
-            if (headerWarning) headerWarning.style.display = headerWouldDowngrade ? 'inline' : 'none';
+            // The label itself does the warning: amber, bold, and wearing a triangle.
+            // A separate badge simply would not fit next to everything else up there.
+            document.getElementById('headerFormatLabel')?.classList.toggle('is-lossy', !!headerWouldDowngrade);
             if (headerControl) {
                 headerControl.title = headerWouldDowngrade
                     ? message
