@@ -1174,3 +1174,96 @@ def test_staging_dir_name_is_excluded_from_library_scans():
     """A hidden working folder inside the music root must not show up as library."""
     from constants import EXCLUDED_SCAN_DIR_NAMES, STAGING_DIR_NAME
     assert STAGING_DIR_NAME in EXCLUDED_SCAN_DIR_NAMES
+
+
+def _tagged_flac(path, **tags):
+    """A real, if brief, FLAC. Mocked tag readers cannot catch a clobbering bug."""
+    import subprocess
+    from mutagen.flac import FLAC
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=0.1", str(path)],
+        check=True,
+    )
+    audio = FLAC(str(path))
+    for key, value in tags.items():
+        audio[key] = value
+    audio.save()
+    return path
+
+
+def test_auto_route_single_does_not_overwrite_the_files_own_track_number(tmp_path, monkeypatch):
+    """The 2026-08-09 bug: a correct "2 of 14" came out the other side as "15 of 16".
+
+    The main tagging pass already respects existing tags; routing into the album
+    folder then retagged straight from MusicBrainz and undid it.
+    """
+    downloads = _import_downloads_or_skip()
+    from mutagen.flac import FLAC
+
+    monkeypatch.setattr(downloads, "_update_job", lambda *a, **k: None)
+    monkeypatch.setattr(downloads, "set_file_permissions", lambda *a, **k: None)
+    monkeypatch.setattr(downloads, "get_singles_dir", lambda user_id=None: tmp_path / "Singles")
+    monkeypatch.setattr(downloads, "get_albums_dir", lambda user_id=None: tmp_path / "Albums")
+    monkeypatch.setattr(
+        downloads, "get_setting_bool",
+        lambda key, default=False, user_id=None: {
+            "auto_album_singles": True,
+            "auto_album_singles_use_albums_dir": False,
+            "organise_by_artist": False,
+        }.get(key, default),
+    )
+
+    source_dir = tmp_path / "Singles" / "Paramore"
+    source_dir.mkdir(parents=True)
+    audio_file = _tagged_flac(
+        source_dir / "Ignorance.flac",
+        ARTIST="Paramore", TITLE="Ignorance",
+        ALBUM="Brand New Eyes (Deluxe Edition)",
+        TRACKNUMBER="2", TRACKTOTAL="14",
+    )
+
+    routed = downloads._auto_route_single_to_album(
+        audio_file, "Paramore", "Ignorance",
+        # MusicBrainz, having found the track on a radio promo compilation
+        {"album": "Brand New Eyes", "album_artist": "Paramore",
+         "track_number": 15, "track_total": 16},
+        "job-id", None,
+    )
+
+    assert routed.exists()
+    tags = FLAC(str(routed))
+    assert tags["TRACKNUMBER"] == ["2"], "the file's own track number must survive routing"
+    assert tags.get("TRACKTOTAL") == ["14"]
+
+
+def test_auto_route_single_still_fills_in_a_missing_track_number(tmp_path, monkeypatch):
+    """Respecting existing tags must not mean refusing to tag an untagged file."""
+    downloads = _import_downloads_or_skip()
+    from mutagen.flac import FLAC
+
+    monkeypatch.setattr(downloads, "_update_job", lambda *a, **k: None)
+    monkeypatch.setattr(downloads, "set_file_permissions", lambda *a, **k: None)
+    monkeypatch.setattr(downloads, "get_singles_dir", lambda user_id=None: tmp_path / "Singles")
+    monkeypatch.setattr(downloads, "get_albums_dir", lambda user_id=None: tmp_path / "Albums")
+    monkeypatch.setattr(
+        downloads, "get_setting_bool",
+        lambda key, default=False, user_id=None: {
+            "auto_album_singles": True,
+            "auto_album_singles_use_albums_dir": False,
+            "organise_by_artist": False,
+        }.get(key, default),
+    )
+
+    source_dir = tmp_path / "Singles" / "Paramore"
+    source_dir.mkdir(parents=True)
+    audio_file = _tagged_flac(source_dir / "Ignorance.flac", ARTIST="Paramore", TITLE="Ignorance")
+
+    routed = downloads._auto_route_single_to_album(
+        audio_file, "Paramore", "Ignorance",
+        {"album": "brand new eyes", "album_artist": "Paramore",
+         "track_number": 2, "track_total": 11},
+        "job-id", None,
+    )
+
+    assert FLAC(str(routed))["TRACKNUMBER"] == ["2"]

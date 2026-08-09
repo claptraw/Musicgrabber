@@ -745,6 +745,37 @@ def _score_recording(recording: dict, expected_artist: str, expected_title: str)
     return score
 
 
+# Secondary types that disqualify a release from deciding what album a track
+# belongs to. Scoring already penalises these, but a penalty only helps when
+# there is something better to lose to: max() over a single dreadful candidate
+# still returns the dreadful candidate. "Promo Only: Mainstream Radio, January
+# 2010" scored -20 and was picked anyway, purely because it was the only release
+# MusicBrainz knew about for that recording, and a Paramore single duly acquired
+# a track number from a radio promo compilation.
+_POOR_ALBUM_CONTEXT_SECONDARY = {
+    "compilation", "live", "remix", "soundtrack",
+    "dj-mix", "mixtape/street", "demo", "interview",
+}
+
+
+def _release_group_is_poor_album_context(rg: dict) -> bool:
+    """True when a release group should not be trusted for album name or track position.
+
+    Deliberately categorical rather than a score threshold: "is this a compilation"
+    is a fact MusicBrainz already tells us, whereas "is -8 bad enough" is a number
+    somebody has to keep re-tuning every time the scorer changes.
+    """
+    secondary = [t.lower() for t in (rg.get("secondary-types") or rg.get("secondarytypes") or [])]
+    if any(t in _POOR_ALBUM_CONTEXT_SECONDARY for t in secondary):
+        return True
+    for ac in rg.get("artist-credit") or []:
+        if isinstance(ac, dict):
+            name = (ac.get("name") or (ac.get("artist") or {}).get("name") or "").lower()
+            if "various" in name:
+                return True
+    return False
+
+
 def _score_release_group(rg: dict, expected_artist: str) -> int:
     """Score a MusicBrainz release group for use as the canonical album.
 
@@ -839,7 +870,12 @@ def _extract_recording_metadata(recording: dict, expected_artist: str = "") -> d
     artist_for_scoring = metadata["artist"] or expected_artist
 
     # Extract album from release groups  -  prefer studio albums by the actual artist
-    releasegroups = recording.get("releasegroups", [])
+    # Same rule as the by-id lookup: a compilation is not an album this track
+    # belongs to, it is somewhere the track happens to also appear.
+    releasegroups = [
+        rg for rg in (recording.get("releasegroups", []) or [])
+        if not _release_group_is_poor_album_context(rg)
+    ]
     if releasegroups:
         album_rg = max(releasegroups, key=lambda rg: _score_release_group(rg, artist_for_scoring))
         metadata["album"] = album_rg.get("title")
@@ -963,22 +999,38 @@ def _lookup_musicbrainz_by_id(recording_id: str, expected_artist: str = "") -> O
 
         release = max(releases, key=_release_score)
         result = {}
-        result["release_mbid"] = release.get("id")
 
-        date_str = release.get("date", "")
-        if date_str:
-            year_match = re.match(r'(\d{4})', date_str)
-            if year_match:
-                result["year"] = year_match.group(1)
+        # A recording that MusicBrainz only knows from a compilation gives us a
+        # correct artist and title and a thoroughly misleading album. Take the
+        # former and leave the latter: no album name, no track position, no
+        # release id for cover art. Blank beats confidently wrong, because a blank
+        # album tag is obviously missing whereas a wrong one gets believed.
+        rg_for_context = dict(release.get("release-group") or {})
+        if not rg_for_context.get("artist-credit"):
+            rg_for_context["artist-credit"] = release.get("artist-credit") or []
+        if _release_group_is_poor_album_context(rg_for_context):
+            print(
+                f"MB: ignoring album context from {release.get('title')!r} "
+                f"(secondary types {rg_for_context.get('secondary-types')}); "
+                "keeping artist/title only"
+            )
+        else:
+            result["release_mbid"] = release.get("id")
 
-        if release.get("title"):
-            result["album"] = release["title"]
+            date_str = release.get("date", "")
+            if date_str:
+                year_match = re.match(r'(\d{4})', date_str)
+                if year_match:
+                    result["year"] = year_match.group(1)
 
-        # Track position within the release
-        track_num, track_total = _extract_track_position(release)
-        if track_num:
-            result["track_number"] = track_num
-            result["track_total"] = track_total
+            if release.get("title"):
+                result["album"] = release["title"]
+
+            # Track position within the release
+            track_num, track_total = _extract_track_position(release)
+            if track_num:
+                result["track_number"] = track_num
+                result["track_total"] = track_total
 
         # Recording-level length (ms) is on the top-level recording object
         length_ms = data.get("length")
@@ -1537,6 +1589,31 @@ def read_artist_title(file_path: Path) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _split_track_field(raw) -> tuple[object, object]:
+    """Split a "2/14"-style track field into its number and total.
+
+    Returns (number, total), total being None when the field is a plain number.
+    """
+    if raw is None:
+        return None, None
+    text = str(raw).strip()
+    if not text:
+        return None, None
+    if "/" in text:
+        number, _, total = text.partition("/")
+        return number.strip(), total.strip()
+    return text, None
+
+
+def _positive_int_or_none(value) -> int | None:
+    """Track positions are counting numbers; anything else is not worth keeping."""
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def read_existing_track_number(file_path: Path) -> tuple[int | None, int | None]:
     """Read existing track number and total from an audio file's tags.
 
@@ -1553,12 +1630,8 @@ def read_existing_track_number(file_path: Path) -> tuple[int | None, int | None]
         elif suffix == ".mp3":
             from mutagen.easyid3 import EasyID3
             audio = EasyID3(str(file_path))
-            raw = (audio.get("tracknumber", [None]) or [None])[0]
-            if raw and "/" in str(raw):
-                parts = str(raw).split("/", 1)
-                tn, tt = parts[0], parts[1]
-            else:
-                tn, tt = raw, None
+            tn = (audio.get("tracknumber", [None]) or [None])[0]
+            tt = None
         elif suffix in (".m4a", ".mp4"):
             from mutagen.mp4 import MP4
             audio = MP4(str(file_path))
@@ -1575,10 +1648,18 @@ def read_existing_track_number(file_path: Path) -> tuple[int | None, int | None]
         else:
             return None, None
 
-        tn_int = int(tn) if tn else None
-        tt_int = int(tt) if tt else None
-        return (tn_int if tn_int and tn_int > 0 else None,
-                tt_int if tt_int and tt_int > 0 else None)
+        # "2/14" is legal in a Vorbis comment just as it is in ID3, and plenty of
+        # rippers write it that way. This used to be unpacked for MP3 only, so a
+        # FLAC saying "02/11" hit int("02/11"), raised, and was reported as having
+        # no track number at all, at which point a MusicBrainz guess walked in and
+        # took its place. Losing the perfectly readable TRACKTOTAL on the way out
+        # was the insult after the injury.
+        tn, tn_total = _split_track_field(tn)
+        if tt in (None, ""):
+            tt = tn_total
+
+        # Converted separately: one unparseable field should not discard the other.
+        return _positive_int_or_none(tn), _positive_int_or_none(tt)
     except Exception:
         return None, None
 

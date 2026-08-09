@@ -65,6 +65,13 @@ const RELEASE_NOTES = {
                 ]
             },
             {
+                heading: "Track numbers stop coming from radio promo compilations",
+                items: [
+                    "A correctly tagged \"track 2 of 14\" was arriving in your library as track 15 of 16. Files that already carry their own track number now keep it; MusicGrabber only fills in what is genuinely missing.",
+                    "The cause underneath: when a recording is only known to MusicBrainz from a compilation, that compilation was being used to decide the album and track position. Compilations, live albums, soundtracks, DJ mixes and Various Artists releases are now refused for that purpose. The artist and title still come through; the album is simply left blank rather than confidently wrong.",
+                ]
+            },
+            {
                 heading: "Convert to now names the format it actually uses",
                 items: [
                     "The old switch was called convert_to_flac even when the selected target was Opus, MP3, or ALAC. It is now convert_audio from the browser all the way down to the database columns, which are renamed on first boot with your settings intact. The old name is still accepted from API clients, still returned in responses, and DEFAULT_CONVERT_TO_FLAC still works in your compose file.",

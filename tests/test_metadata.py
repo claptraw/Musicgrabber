@@ -555,3 +555,189 @@ def test_fetch_release_summary_propagates_unavailable(monkeypatch):
     _patch_httpx(monkeypatch, metadata, [_FakeResp(503), _FakeResp(503), _FakeResp(503)])
     with pytest.raises(metadata.MusicBrainzUnavailable):
         metadata.fetch_release_summary("release", "rel-1")
+
+
+# ---------------------------------------------------------------------------
+# Compilations must not decide what album a track belongs to.
+#
+# Real case, 2026-08-09: a Paramore "Ignorance" download was fingerprinted to a
+# recording whose only MusicBrainz release was "Promo Only: Mainstream Radio,
+# January 2010". The scorer rated it -20 and picked it anyway, because max() over
+# one candidate returns that candidate however much it is disliked.
+# ---------------------------------------------------------------------------
+
+def test_compilation_release_group_is_refused_as_album_context():
+    metadata = _import_metadata_or_skip()
+    rg = {"primary-type": "Album", "secondary-types": ["Compilation"],
+          "title": "Promo Only: Mainstream Radio, January 2010"}
+    assert metadata._release_group_is_poor_album_context(rg) is True
+
+
+def test_various_artists_release_group_is_refused_as_album_context():
+    metadata = _import_metadata_or_skip()
+    rg = {"primary-type": "Album", "artist-credit": [{"name": "Various Artists"}]}
+    assert metadata._release_group_is_poor_album_context(rg) is True
+
+
+@pytest.mark.parametrize("secondary", ["Live", "Soundtrack", "Remix", "DJ-mix", "Demo"])
+def test_other_non_canonical_secondary_types_are_refused(secondary):
+    metadata = _import_metadata_or_skip()
+    assert metadata._release_group_is_poor_album_context(
+        {"primary-type": "Album", "secondary-types": [secondary]}) is True
+
+
+def test_a_plain_studio_album_is_perfectly_good_album_context():
+    metadata = _import_metadata_or_skip()
+    rg = {"primary-type": "Album", "secondary-types": [], "title": "Brand New Eyes",
+          "artist-credit": [{"name": "Paramore"}]}
+    assert metadata._release_group_is_poor_album_context(rg) is False
+
+
+def test_by_id_lookup_drops_album_context_when_only_a_compilation_is_known(monkeypatch):
+    """Artist and title survive; album, year, track position and cover art do not."""
+    metadata = _import_metadata_or_skip()
+    _patch_httpx(monkeypatch, metadata, [_FakeResp(200, {
+        "length": 205000,
+        "releases": [{
+            "id": "rel-promo",
+            "title": "Promo Only: Mainstream Radio, January 2010",
+            "date": "2009-12-15",
+            "release-group": {"primary-type": "Album", "secondary-types": ["Compilation"],
+                              "title": "Promo Only: Mainstream Radio, January 2010"},
+            "artist-credit": [{"name": "Various Artists"}],
+            "media": [{"position": 1, "tracks": [{"number": "8", "title": "Ignorance"}],
+                       "track-count": 20}],
+        }],
+    })])
+
+    result = metadata._lookup_musicbrainz_by_id("rec-1", "Paramore") or {}
+
+    assert "album" not in result, "a radio promo compilation is not this track's album"
+    assert "track_number" not in result, "and it certainly does not set the track number"
+    assert "track_total" not in result
+    assert "release_mbid" not in result, "cover art would come from the compilation too"
+    # The genuinely useful part of the lookup still comes back.
+    assert result.get("expected_duration_secs") == 205.0
+
+
+def test_by_id_lookup_still_uses_a_real_album_when_there_is_one(monkeypatch):
+    """The guard must not throw away good album context along with the bad."""
+    metadata = _import_metadata_or_skip()
+    _patch_httpx(monkeypatch, metadata, [_FakeResp(200, {
+        "length": 205000,
+        "releases": [{
+            "id": "rel-bne",
+            "title": "brand new eyes",
+            "date": "2009-09-29",
+            "release-group": {"primary-type": "Album", "secondary-types": [],
+                              "title": "brand new eyes"},
+            "artist-credit": [{"name": "Paramore"}],
+            "media": [{"position": 1, "tracks": [{"number": "2", "title": "Ignorance"}],
+                       "track-count": 11}],
+        }],
+    })])
+
+    result = metadata._lookup_musicbrainz_by_id("rec-1", "Paramore") or {}
+
+    assert result.get("album") == "brand new eyes"
+    assert result.get("track_number") == 2
+    assert result.get("track_total") == 11
+    assert result.get("release_mbid") == "rel-bne"
+
+
+def test_acoustid_recording_album_skips_compilation_release_groups():
+    metadata = _import_metadata_or_skip()
+    recording = {
+        "id": "rec-1", "title": "Ignorance",
+        "artists": [{"name": "Paramore"}],
+        "releasegroups": [
+            {"title": "Promo Only: Mainstream Radio, January 2010",
+             "type": "Album", "secondary-types": ["Compilation"]},
+            {"title": "brand new eyes", "type": "Album", "secondary-types": [],
+             "artist-credit": [{"name": "Paramore"}]},
+        ],
+    }
+
+    assert metadata._extract_recording_metadata(recording, "Paramore")["album"] == "brand new eyes"
+
+
+def test_acoustid_recording_album_is_blank_when_every_option_is_a_compilation():
+    metadata = _import_metadata_or_skip()
+    recording = {
+        "id": "rec-1", "title": "Ignorance",
+        "artists": [{"name": "Paramore"}],
+        "releasegroups": [
+            {"title": "Promo Only: Mainstream Radio, January 2010",
+             "type": "Album", "secondary-types": ["Compilation"]},
+        ],
+    }
+
+    assert metadata._extract_recording_metadata(recording, "Paramore")["album"] is None
+
+
+# ---------------------------------------------------------------------------
+# "2/14" in a Vorbis comment. Legal, common, and until 2026-08-09 it made
+# MusicGrabber conclude the file had no track number at all, which is precisely
+# when a MusicBrainz guess steps in and gets it wrong.
+# ---------------------------------------------------------------------------
+
+def _flac_with(tmp_path, name="t.flac", **tags):
+    import subprocess
+    from mutagen.flac import FLAC
+    path = tmp_path / name
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=0.1", str(path)],
+        check=True,
+    )
+    audio = FLAC(str(path))
+    for key, value in tags.items():
+        audio[key] = value
+    audio.save()
+    return path
+
+
+def test_slash_form_track_number_is_read_from_a_flac(tmp_path):
+    metadata = _import_metadata_or_skip()
+    path = _flac_with(tmp_path, TRACKNUMBER="02/11")
+    assert metadata.read_existing_track_number(path) == (2, 11)
+
+
+def test_plain_track_number_and_separate_total_still_work(tmp_path):
+    metadata = _import_metadata_or_skip()
+    path = _flac_with(tmp_path, TRACKNUMBER="2", TRACKTOTAL="14")
+    assert metadata.read_existing_track_number(path) == (2, 14)
+
+
+def test_an_explicit_total_beats_the_one_baked_into_the_slash(tmp_path):
+    metadata = _import_metadata_or_skip()
+    path = _flac_with(tmp_path, TRACKNUMBER="2/11", TRACKTOTAL="14")
+    assert metadata.read_existing_track_number(path) == (2, 14)
+
+
+def test_an_unparseable_track_number_does_not_discard_a_good_total(tmp_path):
+    """Vinyl writes "A1"; that is no reason to forget the album has 14 tracks."""
+    metadata = _import_metadata_or_skip()
+    path = _flac_with(tmp_path, TRACKNUMBER="A1", TRACKTOTAL="14")
+    assert metadata.read_existing_track_number(path) == (None, 14)
+
+
+def test_a_file_with_no_track_tags_reports_nothing(tmp_path):
+    metadata = _import_metadata_or_skip()
+    path = _flac_with(tmp_path, ARTIST="Paramore")
+    assert metadata.read_existing_track_number(path) == (None, None)
+
+
+def test_zero_and_negative_track_numbers_are_ignored(tmp_path):
+    metadata = _import_metadata_or_skip()
+    assert metadata.read_existing_track_number(_flac_with(tmp_path, "z.flac", TRACKNUMBER="0")) == (None, None)
+    assert metadata.read_existing_track_number(_flac_with(tmp_path, "n.flac", TRACKNUMBER="-3")) == (None, None)
+
+
+def test_split_track_field_handles_the_shapes_that_turn_up():
+    metadata = _import_metadata_or_skip()
+    assert metadata._split_track_field("02/11") == ("02", "11")
+    assert metadata._split_track_field("7") == ("7", None)
+    assert metadata._split_track_field(" 3 / 12 ") == ("3", "12")
+    assert metadata._split_track_field(None) == (None, None)
+    assert metadata._split_track_field("") == (None, None)

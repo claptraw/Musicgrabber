@@ -2172,8 +2172,11 @@ def _auto_route_playlist_to_album(
         _move_completed_file(old_lrc, new_lrc)
         set_file_permissions(new_lrc)
 
-    track_number = mb_metadata.get("track_number")
-    track_total  = mb_metadata.get("track_total")
+    # Whatever the file already says about its position wins, exactly as it did
+    # when the main tagging pass ran. Reaching for mb_metadata directly here used
+    # to undo that: a Soulseek FLAC arriving with a correct "2 of 14" was retagged
+    # as track 15 on the way into its album folder.
+    track_number, track_total = _resolve_track_number(new_path, None, None, mb_metadata)
     if track_number or track_total:
         apply_metadata_to_file(
             new_path, artist, title, album,
@@ -2242,9 +2245,10 @@ def _auto_route_single_to_album(
         _move_completed_file(old_lrc, new_lrc)
         set_file_permissions(new_lrc)
 
-    # Retag with track number/total if MB provided them  -  nicer than leaving them blank
-    track_number = mb_metadata.get("track_number")
-    track_total  = mb_metadata.get("track_total")
+    # Fill in the track position only where the file has nothing to say, same rule
+    # as the main tagging pass. Taking mb_metadata at face value here was how a
+    # source file's honest "2 of 14" became "15 of 16" on the trip into the folder.
+    track_number, track_total = _resolve_track_number(new_path, None, None, mb_metadata)
     if track_number or track_total:
         apply_metadata_to_file(
             new_path, artist, title, album,
