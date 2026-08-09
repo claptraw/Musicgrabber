@@ -4,6 +4,8 @@ MusicGrabber - Soulseek/slskd Integration
 Authentication, search, download, and quality parsing.
 """
 
+import errno
+import os
 import re
 import shutil
 import time
@@ -17,9 +19,13 @@ from constants import (
     TIMEOUT_HTTP_REQUEST, TIMEOUT_SLSKD_API, TIMEOUT_SLSKD_SEARCH,
     TIMEOUT_SLSKD_DOWNLOAD, SLSKD_MAX_RESULTS, SLSKD_MIN_QUALITY_SCORE,
     SLSKD_REQUIRE_FREE_SLOT, SLSKD_MATCH_CONFIDENCE_FLOOR,
+    SLSKD_HASH_CHUNK_BYTES, SLSKD_PRUNE_MAX_DEPTH, SLSKD_ARTIST_MATCH_FLOOR,
 )
 from settings import get_setting, get_setting_bool
-from matching import score_track_against_filename, parse_query
+from matching import (
+    score_track_against_filename, parse_query,
+    normalise_string, is_junk_artist, similarity, split_path_segments,
+)
 
 
 # slskd auth token cache, keyed by (url, user) so different users
@@ -109,6 +115,24 @@ def parse_slskd_quality(file_info: dict) -> tuple[str, int]:
         return ("Unknown", 30)
 
 
+def _display_bitrate(file_info: dict) -> Optional[int]:
+    """Bitrate in kbps for the search card.
+
+    slskd declares one for MP3s and keeps quiet for FLAC, so where it stays quiet
+    we work it out from size and duration. That's the real average bitrate rather
+    than a nominal one, which for lossless is the more honest number anyway.
+    """
+    declared = file_info.get("bitRate")
+    if isinstance(declared, (int, float)) and declared > 0:
+        return int(declared)
+
+    size = file_info.get("size")
+    length = file_info.get("length")
+    if isinstance(size, (int, float)) and isinstance(length, (int, float)) and size > 0 and length > 0:
+        return int(size * 8 / length / 1000)
+    return None
+
+
 def normalize_slskd_path(path: str) -> str:
     """Normalise slskd paths for matching"""
     return path.replace("\\", "/").strip()
@@ -143,6 +167,122 @@ def _completed_equivalent_paths(path: Path, download_roots: list[Path]) -> list[
             except TypeError:
                 continue
     return candidates
+
+
+def _sha256_of(path: Path) -> str:
+    """SHA-256 of a file, read in chunks so a 24-bit FLAC doesn't live in RAM."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(SLSKD_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_copy(source: Path, dest: Path) -> tuple[bool, str]:
+    """Confirm a copy arrived intact. Size first (cheap), then SHA-256 (certain)."""
+    try:
+        source_size = source.stat().st_size
+        dest_size = dest.stat().st_size
+    except OSError as e:
+        return False, f"could not stat both files ({e})"
+
+    if source_size != dest_size:
+        return False, f"size mismatch, {source_size} vs {dest_size} bytes"
+
+    try:
+        if _sha256_of(source) != _sha256_of(dest):
+            return False, "SHA-256 mismatch"
+    except OSError as e:
+        return False, f"could not hash both files ({e})"
+
+    return True, ""
+
+
+def _inside_roots(path: Path, roots: list[Path]) -> bool:
+    """True only if path sits strictly *inside* one of the download roots.
+
+    The roots themselves come back False, which is the whole point: we are about
+    to delete empty directories, and deleting somebody's downloads folder because
+    it happened to be empty would be a memorable bug.
+    """
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            if resolved.relative_to(root.resolve()).parts:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def prune_empty_dirs(start: Path, roots: list[Path]) -> None:
+    """Sweep up folders left empty by a move, walking upwards until something is in the way."""
+    current = start
+    for _ in range(SLSKD_PRUNE_MAX_DEPTH):
+        if not _inside_roots(current, roots):
+            return
+        try:
+            if any(current.iterdir()):
+                return
+            current.rmdir()
+        except OSError:
+            return
+        print(f"slskd: Tidied away empty folder {current}")
+        current = current.parent
+
+
+def deliver_slskd_file(source: Path, dest: Path, download_roots: list[Path] | None = None) -> Path:
+    """Bring a completed slskd download into MusicGrabber's staging directory.
+
+    Copies by default, leaving slskd's own copy alone to keep sharing back to
+    the network. With ``slskd_move_completed`` on it moves instead:
+
+    * same mount: a plain rename, which is atomic and instant. Nothing is copied,
+      so there is nothing to verify and no source left to delete.
+    * across mounts: copy, verify by size and SHA-256, then delete. Note that
+      separate Docker bind mounts count as separate here even when they sit on
+      one disk, because rename(2) says EXDEV and rename(2) gets the last word. If
+      verification fails the source stays exactly where it was and the dubious
+      copy is binned, so the retry has something to retry with.
+    * source deleted but not deletable (read-only mount, permissions): the file
+      is already safely delivered, so we grumble into the log and carry on
+      rather than failing a download over housekeeping.
+    """
+    roots = download_roots or []
+
+    if not get_setting_bool("slskd_move_completed", False):
+        shutil.copy2(source, dest)
+        print(f"slskd: Copied {source} to {dest}")
+        return dest
+
+    try:
+        os.replace(source, dest)
+        print(f"slskd: Moved {source} to {dest}")
+        prune_empty_dirs(source.parent, roots)
+        return dest
+    except OSError as e:
+        # EXDEV is the expected one (separate mounts); anything else still gets
+        # the long way round, because copy2 will raise properly if it is fatal.
+        if e.errno != errno.EXDEV:
+            print(f"slskd: Rename refused ({e}), falling back to copy and verify")
+
+    shutil.copy2(source, dest)
+    verified, reason = verify_copy(source, dest)
+    if not verified:
+        dest.unlink(missing_ok=True)
+        raise Exception(f"slskd move failed verification ({reason}); source left where it was")
+
+    try:
+        source.unlink()
+        print(f"slskd: Moved {source} to {dest} (copied, verified by size and SHA-256, source removed)")
+        prune_empty_dirs(source.parent, roots)
+    except OSError as e:
+        print(f"slskd: Copied {source} to {dest} but could not remove the source: {e}")
+
+    return dest
 
 
 def should_retry_slskd_error(error_message: str) -> bool:
@@ -190,39 +330,287 @@ def _normalise_transfer_state(state: object) -> str:
     return str(state or "")
 
 
+# Folder names that describe how somebody organises their disk rather than who
+# made the music. Soulseek is full of them: "music/FLAC/P/Paramore/..." is three
+# segments of filing cabinet before you reach an actual artist.
+_CONTAINER_SEGMENTS = frozenset({
+    "music", "musique", "musik", "musica", "muzyka", "muziek", "my music", "media", "audio",
+    "album", "albums", "single", "singles", "ep", "eps", "compilation", "compilations",
+    "anthologies", "anthology", "discography", "discographie", "discographies",
+    "collection", "collections", "library", "itunes", "itunes music", "archive", "archives",
+    "shared", "share", "sharing", "shared music", "downloads", "download",
+    "soulseek", "soulseek downloads", "complete", "incomplete", "sorted", "unsorted",
+    "new", "misc", "other", "various", "stuff", "rips", "rip", "incoming", "assorted",
+    "flac", "mp3", "wav", "ape", "aac", "ogg", "opus", "lossless", "lossy", "hi res", "hires",
+    "cd", "cds", "vinyl", "web", "main", "instrumental", "root", "home", "public",
+    "temp", "tmp", "upload", "uploads", "folder", "files", "torrents", "tracker", "music pack",
+})
+
+# Words that give a folder away as somebody's stash rather than a name, wherever
+# they appear in it: "Foobar Rips", "FLAC Archive", "PMEDiA Music Pack 032 of 2023".
+_CONTAINER_WORDS = frozenset({
+    "rips", "pack", "packs", "discography", "discographie", "discographies",
+    "downloads", "uploads", "collection", "collections", "tracker", "torrents",
+    "bootlegs", "archive", "archives", "pirated", "pirate", "warez", "seedbox",
+})
+
+_DISC_FOLDER_RE = re.compile(r'^(cd|disc|disk|vol|volume)\s*\d*$')
+_BARE_YEAR_RE = re.compile(r'^(19|20)\d{2}$')
+_YEAR_RE = re.compile(r'(?<!\d)((?:19|20)\d{2})(?!\d)')
+_AUDIO_EXT_RE = re.compile(r'\.(flac|mp3|m4a|aac|ogg|opus|wav|wma|ape|alac)$', re.IGNORECASE)
+# Optional leading disc number, so "1-02 Ignorance" and "02.14 Ignorance" give up
+# the track rather than handing back a title that still starts with a number.
+_TRACK_PREFIX_RE = re.compile(r'^(?:\d{1,2}[\s.\-_]+)?(\d{1,3})[\s.\-_]+')
+_ARTIST_PREFIX_RE = re.compile(r'^(.{2,}?)\s*[-–—]\s+(.+)$')
+_CLOSERS = {")": "(", "]": "[", "}": "{"}
+
+
+def _tidy_edges(text: str) -> str:
+    """Trim leading and trailing rubbish, sparing brackets that still have a partner.
+
+    A blunt strip turns "Brand New Eyes (deluxe version)" into "...(deluxe version"
+    the moment anything else is removed from the front, which looks like a bug
+    because it is one.
+    """
+    text = text.strip(" -–—_.,")
+    openers = {value: key for key, value in _CLOSERS.items()}
+    while text and text[0] in openers and text.count(text[0]) > text.count(openers[text[0]]):
+        text = text[1:].strip(" -–—_.,")
+    while text and text[-1] in _CLOSERS and text.count(text[-1]) > text.count(_CLOSERS[text[-1]]):
+        text = text[:-1].strip(" -–—_.,")
+    return text
+
+
+def _plausible_name(text: str) -> bool:
+    """Reject candidates with no letters in them: "09-22" is a date, not a band."""
+    return sum(character.isalpha() for character in text) >= 2
+
+
+def _underscores_to_spaces(text: str) -> str:
+    """Some rippers use underscores where the rest of us use spaces.
+
+    Only when there isn't a real space in sight, so "Blue_Monday (12 inch)" keeps
+    whatever its owner meant by that.
+    """
+    return text.replace("_", " ") if "_" in text and " " not in text else text
+
+
+# Trailing decoration people staple onto album folders. An album genuinely called
+# "FLAC" would be a bold artistic choice and we are prepared to take that risk.
+_FORMAT_TOKENS = frozenset({
+    "flac", "mp3", "wav", "alac", "ape", "aac", "m4a", "ogg", "opus",
+    "lossless", "16bit", "24bit",
+})
+
+
+def _strip_format_suffix(text: str) -> str:
+    """Drop a trailing "- FLAC" or "[MP3]" from an album name."""
+    for _ in range(3):
+        match = re.search(r'[\s\-–—]+[\[\(]?([A-Za-z0-9]+)[\]\)]?\s*$', text)
+        if not match or normalise_string(match.group(1)) not in _FORMAT_TOKENS:
+            return text
+        remainder = text[:match.start()].strip()
+        if not remainder:
+            return text
+        text = remainder
+    return text
+
+
+def _name_variants(name: str) -> list[str]:
+    """A folder called "Paramore - Hayley Williams" holds two names. Offer both."""
+    variants = [name]
+    for part in re.split(r'\s+[-–—]\s+', name):
+        part = part.strip()
+        if part and part not in variants:
+            variants.append(part)
+    return variants
+
+
+def _looks_like_container(segment: str, *, allow_bare_year: bool = False) -> bool:
+    """True when a folder name is filing, not a name worth showing anyone.
+
+    ``allow_bare_year`` is for album folders, where "1989" is a hopeless artist
+    but a perfectly good Taylor Swift record.
+    """
+    if not segment or segment.startswith("@@"):
+        return True
+    if _AUDIO_EXT_RE.search(segment):
+        return True
+    norm = normalise_string(segment)
+    # Two characters or fewer covers the alphabetical buckets: "P", "A-C", "#".
+    if len(norm) < 3 and not norm.isdigit():
+        return True
+    return bool(
+        norm in _CONTAINER_SEGMENTS
+        or _CONTAINER_WORDS & set(norm.split())
+        or is_junk_artist(segment)
+        or _DISC_FOLDER_RE.match(norm)
+        or (not allow_bare_year and _BARE_YEAR_RE.match(norm))
+    )
+
+
+def _split_year(text: str) -> tuple[str, Optional[int]]:
+    """Pull a release year out of a folder name and hand back what is left.
+
+    Handles "(2009)", "[2009]", "2009 - Album" and the trailing "Album 2009".
+    If removing it would leave nothing behind the year *is* the name, so Taylor
+    Swift's "1989" and Dr Dre's "2001" keep their titles and lose their years.
+    """
+    match = _YEAR_RE.search(text)
+    if not match:
+        return text.strip(), None
+
+    cleaned = _YEAR_RE.sub("", text, count=1)
+    cleaned = re.sub(r'[\[\(\{]\s*[\]\)\}]', ' ', cleaned)  # empty brackets left behind
+    cleaned = _tidy_edges(re.sub(r'\s{2,}', ' ', cleaned))
+    if not cleaned:
+        return text.strip(), None
+    return cleaned, int(match.group(1))
+
+
+def _split_artist_prefix(text: str) -> tuple[Optional[str], str]:
+    """Split an "Artist - Title" name, forgiving the stray dashes people leave in."""
+    match = _ARTIST_PREFIX_RE.match(text)
+    if not match:
+        return None, text.strip()
+    left = match.group(1).strip(" -–—_.")
+    right = match.group(2).strip(" -–—_.")
+    if not left or not right:
+        return None, text.strip()
+    return left, right
+
+
+def parse_slskd_path(filepath: str, query_artist: str | None = None) -> dict:
+    """Pull artist, album, year, track number and title out of a Soulseek path.
+
+    Soulseek folder layouts are a free-for-all: some people file by artist, some
+    by format, some by first letter, some by whatever their ripper called the
+    folder that Tuesday. Position alone gets the artist right about one time in
+    five, so when the search has told us who we are looking for, we go and look
+    for them; position is only the fallback.
+    """
+    empty = {"artist": "", "album": "", "year": None, "track_number": None, "title": ""}
+    segments = split_path_segments(filepath)
+    if not segments:
+        return empty
+
+    folders, basename = segments[:-1], segments[-1]
+
+    title = _underscores_to_spaces(_AUDIO_EXT_RE.sub("", basename) or basename)
+    track_number = None
+    track_match = _TRACK_PREFIX_RE.match(title)
+    if track_match:
+        track_number = int(track_match.group(1))
+        title = title[track_match.end():]
+    basename_artist, title = _split_artist_prefix(title.strip())
+
+    # The album folder is the nearest parent that isn't a "CD2"-style subfolder.
+    album_folder, album_index = "", None
+    for index in range(len(folders) - 1, -1, -1):
+        if _DISC_FOLDER_RE.match(normalise_string(folders[index])):
+            continue
+        album_folder, album_index = folders[index], index
+        break
+
+    album, year, album_artist = "", None, None
+    if album_folder and not _looks_like_container(album_folder, allow_bare_year=True):
+        album, year = _split_year(_underscores_to_spaces(album_folder))
+        album_artist, album = _split_artist_prefix(album)
+        album = _tidy_edges(_strip_format_suffix(album))
+    else:
+        album_index = None  # a container folder has no artist sitting above it
+
+    # A file dropped straight into the artist's own folder has no album, whatever
+    # the folder is called. Only when nothing sensible sits above it, mind: a
+    # self-titled record under "Paramore/Paramore" is a real album.
+    if album and query_artist and similarity(normalise_string(album), normalise_string(query_artist)) >= SLSKD_ARTIST_MATCH_FLOOR:
+        parent_is_a_name = (
+            album_index is not None and album_index > 0
+            and not _looks_like_container(folders[album_index - 1])
+        )
+        if not parent_is_a_name:
+            album, year, album_artist = "", None, None
+
+    # Some rippers stamp the entire path into the filename. If the title still opens
+    # with the album we just worked out, that is filing, not part of the song's name.
+    if album:
+        without_album = re.sub(
+            r'^' + re.escape(album) + r'\s*[-–—_.]*\s*', "", title, count=1, flags=re.IGNORECASE
+        )
+        if without_album and without_album != title:
+            title = without_album
+            track_match = _TRACK_PREFIX_RE.match(title)
+            if track_match:
+                track_number = track_number or int(track_match.group(1))
+                title = title[track_match.end():].strip()
+
+    # Everything that could plausibly be a name, best structural guess first.
+    candidates: list[str] = []
+    if album_index is not None and album_index > 0:
+        parent = folders[album_index - 1]
+        if not _looks_like_container(parent):
+            candidates.append(parent)
+    for name in (album_artist, basename_artist):
+        if name and not is_junk_artist(name) and _plausible_name(name) and name not in candidates:
+            candidates.append(name)
+    for index in range(len(folders) - 1, -1, -1):
+        # The album folder is the album, not the artist, even when it is the only
+        # thing in the path that looks like a name.
+        if index == album_index or _looks_like_container(folders[index]):
+            continue
+        if folders[index] not in candidates:
+            candidates.append(folders[index])
+
+    artist = ""
+    if query_artist:
+        # Believe the segment that agrees with the search over the one that merely
+        # sits in the right place. This is what rescues "music/P/Paramore/Albums"
+        # from being filed under "P", and it costs nothing when the path is sane.
+        target = normalise_string(query_artist)
+        best, best_score = "", 0.0
+        for candidate in candidates:
+            for variant in _name_variants(candidate):
+                score = similarity(normalise_string(variant), target)
+                if score > best_score:
+                    best, best_score = variant, score
+        if best and best_score >= SLSKD_ARTIST_MATCH_FLOOR:
+            artist = best
+
+    if not artist and candidates:
+        artist = candidates[0]
+    if not artist and query_artist:
+        # Nothing in the path owns up to an artist, so fall back to what was asked
+        # for. The match percentage on the card is the honesty check here.
+        artist = query_artist
+
+    # "02-paramore-ignorance.flac": no spaces around the dash, so the usual split
+    # leaves the artist glued to the title. Only unglue it when the leading chunk
+    # is the artist we just worked out, otherwise Jay-Z loses half his name.
+    if artist and not basename_artist:
+        lead, separator, rest = title.partition("-")
+        if separator and rest.strip(" -–—_.") and similarity(normalise_string(lead), normalise_string(artist)) >= SLSKD_ARTIST_MATCH_FLOOR:
+            title = rest.strip(" -–—_.")
+
+    return {
+        # Tidied because a folder called "paramore_" should not put a stray
+        # underscore on the end of somebody's name in the results list.
+        "artist": _tidy_edges(artist),
+        "album": album.strip(),
+        "year": year,
+        "track_number": track_number,
+        "title": title.strip() or basename,
+    }
+
+
 def extract_track_info_from_path(filepath: str) -> tuple[str, str]:
     """
     Extract artist and title from a Soulseek file path.
-    Tries common patterns like 'Artist/Album/## - Title.ext'
+    Tries common patterns like 'Artist/Album/## - Title.ext'.
+
+    Kept as the two-value shape the download path expects, "Unknown" and all.
     """
-    # Get just the filename
-    filename = filepath.split("\\")[-1]
-    # Remove extension
-    name = re.sub(r'\.[^.]+$', '', filename)
-    # Remove track number prefix like "01 - " or "01. "
-    name = re.sub(r'^\d+[\s.\-]+', '', name)
-
-    # Try to extract artist from path
-    parts = filepath.replace("\\", "/").split("/")
-    artist = "Unknown"
-
-    # Look for artist in path (usually 2-3 levels up from file)
-    for i, part in enumerate(parts):
-        # Skip common folder names
-        if part.lower() in ["music", "main", "albums", "singles", "anthologies", "instrumental", "@@*"]:
-            continue
-        if part.startswith("@@"):
-            continue
-        if re.match(r'^\[\d{4}\]', part):  # Album folder like [1976] Arrival
-            continue
-        if re.match(r'^cd\d*$', part.lower()):  # CD1, CD2, etc.
-            continue
-        # First real folder name is likely the artist
-        if i > 0 and not part.startswith("["):
-            artist = part
-            break
-
-    return artist, name
+    parsed = parse_slskd_path(filepath)
+    return parsed["artist"] or "Unknown", parsed["title"]
 
 
 def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[dict]:
@@ -338,7 +726,9 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                         skipped_quality += 1
                         continue
 
-                    artist, title = extract_track_info_from_path(filepath)
+                    parsed = parse_slskd_path(filepath, query_artist=query_artist)
+                    artist = parsed["artist"] or "Unknown"
+                    title = parsed["title"]
 
                     # Dedupe by artist+title+quality
                     track_key = f"{artist.lower()}|{title.lower()}|{quality_label}"
@@ -406,10 +796,17 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                         "id": "slskd_" + hashlib.md5(f"{username}|{filepath}".encode()).hexdigest()[:12],
                         "title": title,
                         "artist": artist,
+                        "album": parsed["album"],
+                        "year": parsed["year"],
                         "channel": username,  # Show username as "channel"
                         "quality": quality_label,
                         "relevance_score": relevance_score,
                         "score_breakdown": score_breakdown,
+                        # 0.0-1.0 from the path scorer. The card shows it as a
+                        # percentage so a hopeful match can't pass itself off as
+                        # a certainty just because it landed at the top.
+                        "match_confidence": round(confidence, 3),
+                        "bitrate": _display_bitrate(file_info),
                         "source": "soulseek",
                         "duration": str(file_info.get("length", 0)),
                         "size": file_info.get("size", 0),
@@ -662,9 +1059,7 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                 for path_option in path_options:
                     if path_option.exists():
                         dest_path = dest_dir / source_filename
-                        shutil.copy2(path_option, dest_path)
-                        print(f"slskd: Copied {path_option} to {dest_path}")
-                        return dest_path
+                        return deliver_slskd_file(path_option, dest_path, slskd_download_dirs)
 
             # If not found, search recursively in the username folder
             for slskd_dir in slskd_download_dirs:
@@ -673,9 +1068,8 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                     for found_file in user_dir.rglob(source_filename):
                         if found_file.is_file():
                             dest_path = dest_dir / source_filename
-                            shutil.copy2(found_file, dest_path)
-                            print(f"slskd: Found and copied {found_file} to {dest_path}")
-                            return dest_path
+                            print(f"slskd: Found {found_file}")
+                            return deliver_slskd_file(found_file, dest_path, slskd_download_dirs)
 
             # Some slskd installs group completed downloads by remote folder or
             # album rather than by Soulseek username. Fall back to the whole
@@ -685,9 +1079,8 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                     for found_file in slskd_dir.rglob(source_filename):
                         if found_file.is_file():
                             dest_path = dest_dir / source_filename
-                            shutil.copy2(found_file, dest_path)
-                            print(f"slskd: Found and copied {found_file} to {dest_path}")
-                            return dest_path
+                            print(f"slskd: Found {found_file}")
+                            return deliver_slskd_file(found_file, dest_path, slskd_download_dirs)
 
             # List what's actually there for debugging
             for slskd_dir in slskd_download_dirs:

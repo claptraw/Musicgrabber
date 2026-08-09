@@ -65,6 +65,59 @@ const RELEASE_NOTES = {
                 ]
             },
             {
+                heading: "You can choose when singles watching starts",
+                items: [
+                    "Following an artist for albums only still quietly stored a start date: the day you followed them. Switch Singles on later and that forgotten date decided how much of their back catalogue arrived, with nothing in the interface offering to change it.",
+                    "Flipping the Singles toggle now asks which date to watch from, defaulting to today. Nothing is saved until you confirm, so cancelling really does leave everything exactly as it was.",
+                    "Once singles are on, the date sits on the card as an editable field. Wind it back to pick up last year's releases, or push it forward for a quieter life.",
+                ]
+            },
+            {
+                heading: "YouTube downloads that used to fail for no visible reason",
+                items: [
+                    "The container now ships a JavaScript runtime (deno), which yt-dlp needs to talk to YouTube properly. Without it YouTube hands back a shortened list of formats, and a perfectly available track fails with \"format manifest unavailable for this request\".",
+                    "Michael Jackson's Thriller failed that way every time, which is how it got spotted. It downloads now.",
+                    "YouTube throttling is a separate matter and still very much itself; searches occasionally come back with nothing. No runtime fixes that.",
+                ]
+            },
+            {
+                heading: "EPs count as records now",
+                items: [
+                    "Clicking \"Haunted House\" on a Knife Party search result used to insist MusicBrainz had never heard of it. MusicBrainz had; the album list was only ever asking for things typed \"Album\", and Haunted House is an EP, as is nearly everything Knife Party has released.",
+                    "Their whole discography therefore came back as one record, and you were invited to pick the right album from a list of one. Artists who release EPs for a living came off worst.",
+                    "Artist album lists now include EPs, tagged as such so you can tell them apart. Knife Party goes from one entry to six. Compilations, live albums, soundtracks, DJ mixes and remix records are still kept out, EPs included.",
+                    "Singles are still left out on purpose: a prolific artist's list would otherwise become a hundred one-track entries standing between you and the actual records.",
+                    "If you follow an artist with \"automatically add new albums\" switched on, their EPs now count as new music. Fair warning: the first check after upgrading also spots the EPs they had already released, and will queue them.",
+                ]
+            },
+            {
+                heading: "Soulseek results now tell you what they are",
+                items: [
+                    "Every Soulseek result now shows the artist, the album and its year, the file size, the bitrate, the album cover, and a match percentage telling you how closely the shared file matches what you searched for.",
+                    "Almost all of it was already in the search response and being thrown away. Cover art is the one genuine addition, looked up once per album rather than once per result, so twenty results from the same record cost one lookup.",
+                    "The bitrate on a lossless file is worked out from its size and duration rather than taken on trust. A \"24bit/96kHz\" FLAC quietly running at 900 kbps is an upscale, and now you can see that before you download it.",
+                    "Only Soulseek shows a match percentage, because only Soulseek has a real number to put there.",
+                ]
+            },
+            {
+                heading: "Artists in Soulseek results are read properly, not guessed",
+                items: [
+                    "A search for \"paramore - ignorance\" used to credit four of its top five results to \"Musique\", \"FLAC Archive\", \"02 - Ignorance.flac\" and \"P\": a language, a format, a filename and an alphabetical bucket.",
+                    "Everyone files their music differently, so MusicGrabber now uses the fact that you already told it who you wanted, and goes looking for them in the path rather than guessing from position. All five now say Paramore.",
+                    "The same pass reads the album, year and track number, coping with \"Artist - Album\", \"[2009] Album\", \"CD1\" subfolders and underscores-instead-of-spaces. Albums that are just a year, like Taylor Swift's 1989, keep their names.",
+                    "Related searches no longer offer to find you more music by \"2jqll9htuy62asp1wu\".",
+                ]
+            },
+            {
+                heading: "Soulseek downloads can move instead of copy",
+                items: [
+                    "New opt-in toggle under Settings, Soulseek: \"Move completed downloads\". Off by default, so nothing changes unless you want it to.",
+                    "Leaving it off keeps today's behaviour: the file is copied and slskd's own copy stays put, so you carry on sharing it back to the network. Turning it on saves you keeping two copies of everything.",
+                    "Moving is instant when both live on the same mount. Across mounts it copies, checks the result by size and SHA-256, and only then deletes the original. If that check fails the original stays exactly where it was, so nothing is lost.",
+                    "Folders left empty are tidied up afterwards, stopping the moment anything else is in them.",
+                ]
+            },
+            {
                 heading: "Track numbers stop coming from radio promo compilations",
                 items: [
                     "A correctly tagged \"track 2 of 14\" was arriving in your library as track 15 of 16. Files that already carry their own track number now keep it; MusicGrabber only fills in what is genuinely missing.",

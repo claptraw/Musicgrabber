@@ -20,6 +20,15 @@ RUN ARCH=$(dpkg --print-architecture) && \
         -o /usr/local/bin/yt-dlp && \
     chmod a+rx /usr/local/bin/yt-dlp
 
+# yt-dlp needs a JavaScript runtime to solve YouTube's player challenges. Without
+# one it still works, sort of, but YouTube hands back a reduced format list and
+# perfectly available tracks fail with "requested format is not available".
+# yt-dlp enables deno and only deno by default, so deno it is; having it on PATH
+# is the entire configuration. The official bin image is a single static binary
+# built for both our architectures, which beats unzipping release archives per
+# arch. 92MB on a 2.2GB image, and yt-dlp has deprecated going without.
+COPY --from=denoland/deno:bin-2.9.5 /deno /usr/local/bin/deno
+
 # Install Python dependencies
 RUN pip install --no-cache-dir \
     fastapi~=0.128.0 \

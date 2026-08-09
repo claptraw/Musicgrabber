@@ -1309,6 +1309,14 @@
                         <input type="text" id="settingSlskdDownloads" placeholder="/downloads">
                         <span class="settings-hint-sm">The path slskd writes completed downloads to, as seen from MusicGrabber's container. This is usually a Docker volume mount, not the host path and not necessarily slskd's <code>/downloads</code> path.</span>
                     </div>
+                    <label class="settings-label settings-label-wrap">
+                        <span>Move completed downloads</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingSlskdMoveCompleted">
+                            <span class="toggle-slider"></span>
+                        </div>
+                        <span class="settings-hint settings-hint-full">Off by default: MusicGrabber copies the finished file and leaves slskd's own copy alone. Turn this on to move it instead, which saves keeping two copies but also stops you sharing that file back to Soulseek. Same filesystem is an instant rename; across filesystems the copy is checked by size and SHA-256 before the original is deleted, and if the check fails the original stays put.</span>
+                    </label>
                     <button type="button" class="btn test-btn" id="testSlskdBtn">Test Connection</button>
                     <div id="slskdTestResult" class="test-result"></div>
                 </div>

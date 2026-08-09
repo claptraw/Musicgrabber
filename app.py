@@ -1925,6 +1925,11 @@ def search_slskd_endpoint(request: SearchRequest):
                 slskd_username=r["slskd_username"],
                 slskd_filename=r["slskd_filename"],
                 slskd_size=r.get("slskd_size") or r.get("size"),
+                album=r.get("album") or None,
+                year=r.get("year"),
+                size_bytes=r.get("size") or r.get("slskd_size"),
+                bitrate=r.get("bitrate"),
+                match_confidence=r.get("match_confidence"),
             ))
 
         return {"results": final_results, "slskd_enabled": True}
@@ -1935,17 +1940,24 @@ def search_slskd_endpoint(request: SearchRequest):
 
 
 @app.get("/api/search/artwork")
-def search_artwork(artist: str, title: str):
+def search_artwork(artist: str, title: str = "", album: str = ""):
     """Return a cover art URL for display in search results.
 
-    Tries iTunes then Deezer. Returns the remote URL so the browser loads
-    it directly; no image bytes are proxied through MusicGrabber.
+    Pass ``album`` for a per-album cover; Soulseek results carry one parsed out
+    of the shared file's path, so a page of results costs one lookup per album
+    rather than one per row. Falls back to the track lookup when there is no
+    album. Tries iTunes then Deezer, and the result is cached, so the second
+    result from the same album is free.
+
+    Returns the remote URL so the browser loads it directly; no image bytes are
+    proxied through MusicGrabber.
     """
     artist = (artist or "").strip()
     title = (title or "").strip()
-    if not artist or not title:
+    album = (album or "").strip()
+    if not artist or not (album or title):
         return {"url": None}
-    url = fetch_cover_art_url(artist, title)
+    url = fetch_cover_art_url(artist, album or title)
     return {"url": url}
 
 

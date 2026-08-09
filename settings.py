@@ -226,6 +226,9 @@ SETTINGS_SCHEMA = {
     "slskd_user": {"type": "str", "default": "", "env": "SLSKD_USER"},
     "slskd_pass": {"type": "str", "default": "", "env": "SLSKD_PASS", "sensitive": True},
     "slskd_downloads_path": {"type": "str", "default": "", "env": "SLSKD_DOWNLOADS_PATH"},
+    # Off by default: taking the file out of slskd's completed folder also takes it
+    # out of what you share back to Soulseek, which is a decision for the user, not us.
+    "slskd_move_completed": {"type": "bool", "default": False, "env": "SLSKD_MOVE_COMPLETED"},
     # Navidrome
     "navidrome_url": {"type": "str", "default": "", "env": "NAVIDROME_URL"},
     "navidrome_user": {"type": "str", "default": "", "env": "NAVIDROME_USER"},

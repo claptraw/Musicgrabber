@@ -418,6 +418,14 @@ def project_search_result(item: dict) -> dict:
         "slskd_username": item["slskd_username"],
         "slskd_filename": item["slskd_filename"],
         "slskd_size": item.get("slskd_size") or item.get("size"),
+        # Detail the card shows when the source bothered to tell us. Soulseek
+        # supplies size and bitrate per file and a match confidence per path;
+        # every other source leaves these None and the card simply omits them.
+        "album": item.get("album") or None,
+        "year": item.get("year"),
+        "size_bytes": item.get("size") or item.get("slskd_size"),
+        "bitrate": item.get("bitrate"),
+        "match_confidence": item.get("match_confidence"),
     }
 
 

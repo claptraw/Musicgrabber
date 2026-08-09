@@ -173,6 +173,9 @@ AUTOMATED_SEARCH_CACHE_TTL_SECONDS = 900  # Reuse identical bulk/watch searches 
 AUTOMATED_SEARCH_CACHE_MAX_ENTRIES = 500 # Bound the in-memory cache on large libraries
 SLSKD_MIN_QUALITY_SCORE = 50     # Minimum quality score to include result
 SLSKD_MATCH_CONFIDENCE_FLOOR = float(os.getenv("SLSKD_MATCH_CONFIDENCE_FLOOR", "0.55"))  # 0.0-1.0; reject worse than this
+SLSKD_ARTIST_MATCH_FLOOR = 0.85  # How closely a path segment must resemble the searched artist to be believed
+SLSKD_HASH_CHUNK_BYTES = 1024 * 1024  # Read size when verifying a cross-filesystem move
+SLSKD_PRUNE_MAX_DEPTH = 6        # How far up to sweep empty folders after a move, before we stop being helpful
 # Cross-source fallback (source_offline_fallback): a swapped-in candidate must clear
 # this confidence bar so we don't "rescue" a dead source by grabbing the wrong song.
 # Stricter than the slskd floor on purpose; a silent fail beats a confident wrong track.

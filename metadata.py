@@ -2278,10 +2278,18 @@ def fetch_artist_singles(mbid: str) -> list[dict]:
 
 
 def fetch_artist_albums(mbid: str) -> list[dict]:
-    """Fetch studio albums for an artist from MusicBrainz.
+    """Fetch studio albums and EPs for an artist from MusicBrainz.
 
-    Returns [{title, year, release_mbid}, ...] sorted by year ascending.
+    Returns [{title, year, release_mbid, release_group_mbid, primary_type}, ...]
+    sorted by year ascending.
     Filters out compilations, live albums, soundtracks and other non-studio releases.
+
+    EPs count. Ask MusicBrainz for `type=album` alone and Knife Party's entire
+    discography comes back as one record, because Haunted House, Rage Valley and
+    the rest are all typed EP; whole genres would look like they had never
+    released anything. Singles stay out, or a prolific artist's list becomes a
+    hundred one-track entries you have to scroll past.
+
     Paginates automatically; sleeps 1 second between pages to respect rate limits.
     Raises MusicBrainzUnavailable when MB is unreachable on the very first page
     (so the UI can show a retry prompt). If MB dies partway through pagination
@@ -2304,7 +2312,7 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
     while True:
         params = {
             "artist": mbid,
-            "type": "album",
+            "type": "album|ep",
             "limit": limit,
             "offset": offset,
             "inc": "release-groups",
@@ -2364,6 +2372,9 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
                     # before?" wants this one, not release_mbid, or a tidied-up
                     # 1974 reissue date turns a familiar album into breaking news.
                     "release_group_mbid": rg_id,
+                    # "Album" or "EP", so the list can say which is which rather
+                    # than leaving you to guess why there are suddenly six of them.
+                    "primary_type": rg.get("primary-type") or "",
                 })
 
         offset += len(releases)

@@ -1682,6 +1682,7 @@
                         if (!renderedOnce) renderResults(accumulator); // shows the empty state
                         renderDuplicateNotice(ev.duplicate_notice);
                         showRelatedSuggestions(accumulator, albumSuggestion);
+                        fetchAlbumArtwork(accumulator, searchToken);
                         finishSearchProgress();
                         break;
                     case 'error':
@@ -1735,6 +1736,7 @@
             if (artworkParsed) {
                 fetchAndApplyArtwork(artworkParsed.artist, artworkParsed.title, searchToken);
             }
+            fetchAlbumArtwork(data.results, searchToken);
         }
 
         // ----- Live search progress panel -----
@@ -1968,22 +1970,90 @@
                 const titleMatch = resultTitle.includes(normTitle) || normTitle.includes(resultTitle);
 
                 if (artistMatch && titleMatch) {
-                    const img = document.createElement('img');
-                    img.className = 'result-thumb has-artwork';
-                    img.src = artworkUrl;
-                    img.alt = '';
-                    img.loading = 'lazy';
-                    thumb.replaceWith(img);
+                    // Marked as the query-level guess so a per-album cover, which
+                    // knows more, is allowed to overrule it later.
+                    thumb.replaceWith(_artworkImage(artworkUrl, 'is-query-art'));
                 }
             });
+        }
+
+        function _artworkImage(url, extraClass) {
+            const img = document.createElement('img');
+            img.className = `result-thumb has-artwork${extraClass ? ' ' + extraClass : ''}`;
+            img.src = url;
+            img.alt = '';
+            img.loading = 'lazy';
+            return img;
+        }
+
+        // ----- Per-album cover art -----
+        // slskd has no idea what a cover is, but the shared file's own path usually
+        // names the album, so one lookup covers every result from the same record.
+        // Cached for the session: search the same album twice and it costs nothing.
+        const ALBUM_ARTWORK_MAX_LOOKUPS = 8;
+        const albumArtworkCache = new Map();
+
+        function albumArtworkKey(artist, album) {
+            return `${(artist || '').toLowerCase().trim()}|${(album || '').toLowerCase().trim()}`;
+        }
+
+        function applyCachedAlbumArtwork() {
+            resultsTab.querySelectorAll('.result-item').forEach(item => {
+                const result = lastResults[parseInt(item.dataset.index)];
+                if (!result || !result.artist || !result.album) return;
+
+                const url = albumArtworkCache.get(albumArtworkKey(result.artist, result.album));
+                if (!url) return;
+
+                const thumb = item.querySelector('.result-thumb');
+                if (!thumb) return;
+                // Fill blanks, and overrule the query-level guess, but never touch a
+                // thumbnail the source itself provided.
+                if (thumb.tagName === 'IMG' && !thumb.classList.contains('is-query-art')) return;
+                thumb.replaceWith(_artworkImage(url));
+            });
+        }
+
+        async function fetchAlbumArtwork(results, searchToken) {
+            const wanted = new Map();
+            (results || []).forEach(r => {
+                if (!r.artist || !r.album || r.thumbnail) return;
+                const key = albumArtworkKey(r.artist, r.album);
+                if (albumArtworkCache.has(key) || wanted.has(key)) return;
+                wanted.set(key, { artist: r.artist, album: r.album });
+            });
+            if (!wanted.size) return;
+
+            const lookups = [...wanted.entries()].slice(0, ALBUM_ARTWORK_MAX_LOOKUPS);
+            await Promise.all(lookups.map(async ([key, { artist, album }]) => {
+                try {
+                    const resp = await apiFetch(
+                        `/api/search/artwork?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`
+                    );
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    if (data.url) albumArtworkCache.set(key, data.url);
+                } catch (e) {
+                    // Covers are decoration; a missing one never fails a search
+                }
+            }));
+
+            if (searchToken === currentSearchToken) applyCachedAlbumArtwork();
         }
 
         // Show related search suggestions based on artists, plus album suggestion if available
         function showRelatedSuggestions(results, albumSuggestion) {
             if (!results || results.length === 0) return;
 
-            // Extract unique artists/channels
-            const artists = [...new Set(results.map(r => r.channel))].slice(0, 5);
+            // Extract unique artists, falling back to the uploader only where there is
+            // no artist at all. Soulseek usernames make for hopeless search suggestions:
+            // nobody has ever wanted to see more tracks by "2jqll9htuy62asp1wu".
+            const artists = [...new Set(
+                results
+                    .map(r => (r.source === 'soulseek' ? r.artist : (r.artist || r.channel)))
+                    .map(name => (name || '').trim())
+                    .filter(Boolean)
+            )].slice(0, 5);
 
             if (artists.length === 0 && !albumSuggestion) return;
 
@@ -2424,22 +2494,51 @@
 
         function formatResultMeta(result) {
             const parts = [];
-            if (result.artist) {
-                if (result.channel && result.channel !== result.artist) {
-                    parts.push(`${escapeHtml(result.artist)} • ${escapeHtml(result.channel)}`);
-                } else {
-                    parts.push(escapeHtml(result.artist));
-                }
-            } else {
-                parts.push(escapeHtml(result.channel || ''));
+            const artist = (result.artist || '').trim();
+            const uploader = (result.channel || '').trim();
+
+            // For Soulseek the "channel" is whichever stranger happens to be sharing
+            // the file, not the performer, so it goes down with the badges instead of
+            // sitting up here impersonating an artist.
+            if (result.source === 'soulseek') {
+                if (artist) parts.push(escapeHtml(artist));
+            } else if (artist) {
+                parts.push(uploader && uploader !== artist
+                    ? `${escapeHtml(artist)} • ${escapeHtml(uploader)}`
+                    : escapeHtml(artist));
+            } else if (uploader) {
+                parts.push(escapeHtml(uploader));
             }
+
             // Show album if known - clickable to open in the Artists tab's album browser
             if (result.album) {
-                const albumArtist = escapeAttr(result.artist || result.channel || '');
+                const albumArtist = escapeAttr(artist || uploader);
                 const albumTitle = escapeAttr(result.album);
-                parts.push(`<span class="album-link" data-artist="${albumArtist}" data-album="${albumTitle}" title="View album in Artists tab">${escapeHtml(result.album)}</span>`);
+                const year = result.year ? ` <span class="result-year">(${escapeHtml(String(result.year))})</span>` : '';
+                parts.push(`<span class="album-link" data-artist="${albumArtist}" data-album="${albumTitle}" title="View album in Artists tab">${escapeHtml(result.album)}</span>${year}`);
             }
-            return parts.join(' • ');
+            return parts.filter(Boolean).join(' • ');
+        }
+
+        function formatFileSize(bytes) {
+            if (!bytes || bytes <= 0) return '';
+            const mb = bytes / (1024 * 1024);
+            return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`;
+        }
+
+        // Soulseek results carry a real 0-1 confidence from the path scorer, so the
+        // number means something. Colour it, because "62%" and "97%" deserve rather
+        // different levels of enthusiasm.
+        function matchStrengthClass(confidence) {
+            if (confidence >= 0.9) return 'match-strong';
+            if (confidence >= 0.75) return 'match-fair';
+            return 'match-weak';
+        }
+
+        function renderMatchBadge(result) {
+            if (typeof result.match_confidence !== 'number') return '';
+            const percent = Math.round(result.match_confidence * 100);
+            return `<div class="result-match ${matchStrengthClass(result.match_confidence)}" title="How closely this file's path matches what you searched for">${percent}%<span class="result-match-caption">match</span></div>`;
         }
 
         function renderResults(results) {
@@ -2479,8 +2578,12 @@
                             <span class="source-badge ${safeSource}">${getSourceBadge(r.source)}</span>
                             ${r.quality ? `<span class="quality-badge ${getQualityBadgeClass(r.quality)}">${formatQualityLabel(r.quality)}</span>` : ''}
                             ${r.duration ? `<span class="result-duration">${r.duration}</span>` : ''}
+                            ${r.bitrate ? `<span class="result-detail">${Number(r.bitrate)} kbps</span>` : ''}
+                            ${r.size_bytes ? `<span class="result-detail">${formatFileSize(r.size_bytes)}</span>` : ''}
+                            ${r.source === 'soulseek' && r.channel ? `<span class="result-uploader" title="The Soulseek user sharing this file">via ${escapeHtml(r.channel)}</span>` : ''}
                         </div>
                     </div>
+                    ${renderMatchBadge(r)}
                     <div class="mobile-actions">
                         ${r.source !== 'soulseek' ? `<button class="preview-btn" data-video-id="${safeVideoId}" data-index="${index}" title="Preview">Preview &#9654;</button>` : ''}
                         <button class="explore-btn" data-artist="${escapeAttr(r.artist || r.channel)}" title="Find similar artists via ListenBrainz">~ Similar</button>
@@ -2490,6 +2593,7 @@
             }).join('');
 
             applyQualityFilter();
+            applyCachedAlbumArtwork();
 
             // Add click and hover handlers
             resultsTab.querySelectorAll('.result-item').forEach(item => {
@@ -4492,8 +4596,12 @@
                             albumBtn.classList.add('selected');
                             preselectBtn = albumBtn;
                         }
+                        // EPs sit in this list alongside albums, so say so; some
+                        // artists are basically all EPs and an untagged list of
+                        // six identical-looking entries helps nobody.
                         albumBtn.innerHTML = `<span class="album-list-title">${escapeHtml(album.title)}</span>`
-                            + (album.year ? ` <span class="album-list-year">${escapeHtml(album.year)}</span>` : '');
+                            + (album.year ? ` <span class="album-list-year">${escapeHtml(album.year)}</span>` : '')
+                            + (album.primary_type === 'EP' ? ' <span class="album-list-year">(EP)</span>' : '');
                         albumBtn.addEventListener('click', () => selectAlbum(album, albumBtn));
                         els.list.appendChild(albumBtn);
                     }
@@ -8121,18 +8229,24 @@
                     <div class="watched-card-meta">
                         ${watchesSingles
                             ? `${artist.tracked_count || 0} singles tracked &middot; ${artist.downloaded_count || 0} downloaded &middot; `
-                            : 'Albums only &middot; '}${intervalLabel} &middot; ${lastChecked}${watchesSingles ? ` &middot; From: ${artist.from_date}` : ''}
+                            : 'Albums only &middot; '}${intervalLabel} &middot; ${lastChecked}
                     </div>
                     ${isError ? `<div class="watched-card-refresh-error"><i class="fa-solid fa-circle-exclamation"></i><span>${escapeHtml(artist.refresh_error || 'Refresh failed')}</span></div>` : ''}
                     <div class="watched-card-settings">
                         <label class="watched-card-toggle" title="Follow this artist's new singles. Switch off to keep them as an albums-only follow.">
                             Singles
                             <div class="toggle-switch">
-                                <input type="checkbox" ${watchesSingles ? 'checked' : ''}
+                                <input type="checkbox" id="artist-singles-toggle-${artist.id}" ${watchesSingles ? 'checked' : ''}
                                     onchange="updateArtistSingles('${artist.id}', this.checked)">
                                 <span class="toggle-slider"></span>
                             </div>
                         </label>
+                        ${watchesSingles ? `
+                        <label class="watched-card-toggle" title="Singles released before this date are ignored. Move it back to pick up older releases, forward to quieten things down.">
+                            From:
+                            <input type="date" class="watched-card-date" value="${escapeAttr(artist.from_date || '')}"
+                                onchange="updateArtistFromDate('${artist.id}', this.value)">
+                        </label>` : ''}
                         <label class="watched-card-toggle" title="Choose whether new singles keep their source format or are converted">
                             ${conversionChoiceLabel(artist.convert_audio)}
                             <div class="toggle-switch">
@@ -8154,6 +8268,7 @@
                             </select>
                         </label>
                     </div>
+                    <div id="artist-singles-start-${artist.id}" class="watched-singles-start" style="display:none;"></div>
                     <div class="watched-card-actions">
                         <button class="watched-action-btn" type="button"
                             data-action="refresh-watched-artist"
@@ -8238,12 +8353,68 @@
             }
         }
 
-        async function updateArtistSingles(artistId, watchSingles) {
+        // Switching singles ON needs a date before it does anything, because the
+        // stored from_date on an albums-only follow is simply the day you followed
+        // them, which could be a year of singles ago. Ask first, send nothing until
+        // asked; switching OFF is harmless and goes straight through.
+        function updateArtistSingles(artistId, watchSingles) {
+            const panel = document.getElementById(`artist-singles-start-${artistId}`);
+            if (!watchSingles || !panel) return _sendArtistSingles(artistId, watchSingles);
+
+            const today = new Date().toISOString().slice(0, 10);
+            panel.style.display = 'block';
+            panel.innerHTML = `
+                <span class="watched-singles-start-label">Watch singles released from:</span>
+                <input type="date" class="watched-card-date" id="artist-singles-from-${artistId}" value="${today}">
+                <button class="watched-action-btn" type="button"
+                    onclick="confirmArtistSingles('${artistId}')">Start watching</button>
+                <button class="watched-action-btn" type="button"
+                    onclick="cancelArtistSingles('${artistId}')">Cancel</button>`;
+            document.getElementById(`artist-singles-from-${artistId}`)?.focus();
+        }
+
+        function cancelArtistSingles(artistId) {
+            const panel = document.getElementById(`artist-singles-start-${artistId}`);
+            if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+            // Put the toggle back where it was, since nothing was actually saved.
+            const toggle = document.getElementById(`artist-singles-toggle-${artistId}`);
+            if (toggle) toggle.checked = false;
+        }
+
+        function confirmArtistSingles(artistId) {
+            const input = document.getElementById(`artist-singles-from-${artistId}`);
+            const fromDate = input ? input.value : '';
+            if (!fromDate) {
+                showToast('Pick a date first, otherwise there is nothing to start from.', true);
+                return;
+            }
+            return _sendArtistSingles(artistId, true, fromDate);
+        }
+
+        async function updateArtistFromDate(artistId, fromDate) {
+            if (!fromDate) return;
             try {
                 const res = await apiFetch(`/api/watched-artists/${artistId}`, {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ watch_singles: watchSingles })
+                    body: JSON.stringify({ from_date: fromDate })
+                });
+                if (!res.ok) throw new Error('rejected');
+                showToast(`Now watching singles released from ${fromDate}`);
+            } catch (e) {
+                showToast('Failed to update the singles start date', true);
+            }
+            loadWatchedArtists();
+        }
+
+        async function _sendArtistSingles(artistId, watchSingles, fromDate) {
+            try {
+                const payload = { watch_singles: watchSingles };
+                if (fromDate) payload.from_date = fromDate;
+                const res = await apiFetch(`/api/watched-artists/${artistId}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
                 });
                 // The server refuses to leave an artist following nothing at all,
                 // so surface that rather than silently bouncing the toggle back.
@@ -8902,6 +9073,7 @@
             'slskd_user': 'settingSlskdUser',
             'slskd_pass': 'settingSlskdPass',
             'slskd_downloads_path': 'settingSlskdDownloads',
+            'slskd_move_completed': 'settingSlskdMoveCompleted',
             'navidrome_url': 'settingNavidromeUrl',
             'navidrome_user': 'settingNavidromeUser',
             'navidrome_pass': 'settingNavidromePass',

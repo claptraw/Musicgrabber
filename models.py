@@ -3,6 +3,7 @@ MusicGrabber - Pydantic Request/Response Models
 """
 
 import re
+from datetime import date as _date
 from typing import Optional
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 from constants import DEFAULT_CONVERT_AUDIO, MAX_SEARCH_QUERY_LENGTH
@@ -25,6 +26,19 @@ def _convert_audio_field(default=DEFAULT_CONVERT_AUDIO, *, prefix=""):
 def _validate_mbid(v: str | None) -> str | None:
     if v and not _UUID_RE.match(v):
         raise ValueError("Invalid MBID format (expected UUID)")
+    return v
+
+
+def _validate_from_date(v: str | None) -> str | None:
+    """A from_date is compared against MusicBrainz release dates as a plain string,
+    so anything that is not a real ISO date sorts somewhere daft and quietly filters
+    out either everything or nothing. Better to refuse it at the door."""
+    if v is None:
+        return v
+    try:
+        _date.fromisoformat(v)
+    except ValueError:
+        raise ValueError("Invalid from_date (expected YYYY-MM-DD)")
     return v
 
 
@@ -161,6 +175,7 @@ class SettingsUpdate(BaseModel):
     slskd_user: Optional[str] = None
     slskd_pass: Optional[str] = None
     slskd_downloads_path: Optional[str] = None
+    slskd_move_completed: Optional[bool] = None
     # Duplicate checking
     skip_dupes: Optional[bool] = None
     navidrome_dupe_check: Optional[bool] = None
@@ -218,6 +233,10 @@ class SearchResult(BaseModel):
     slskd_filename: Optional[str] = None
     slskd_size: Optional[int] = None
     album: Optional[str] = None
+    year: Optional[int] = None
+    size_bytes: Optional[int] = None  # File size where the source declares one
+    bitrate: Optional[int] = None     # kbps, declared or worked out from size/duration
+    match_confidence: Optional[float] = None  # 0.0-1.0, Soulseek path scoring only
 
 class BlacklistRequest(BaseModel):
     """Report a bad track / block an uploader."""
@@ -283,6 +302,7 @@ class WatchedArtistUpdate(BaseModel):
     from_date: Optional[str] = None
     auto_add_albums: Optional[bool] = None
     watch_singles: Optional[bool] = None
+    _validate_from_date = field_validator("from_date")(_validate_from_date)
 
 class AlbumDownloadRequest(BaseModel):
     artist: str
