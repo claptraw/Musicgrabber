@@ -17,10 +17,15 @@ from constants import (
     BULK_IMPORT_SEARCH_DELAY,
     BULK_IMPORT_SEARCH_RETRY_DELAY,
     BULK_IMPORT_SEARCH_RETRY_MAX_DELAY,
-    PRIORITY_SOURCE_BOOST,
 )
 from db import db_conn, upsert_album_track_lock
-from downloads import process_download, process_slskd_download, create_bulk_playlist
+from downloads import process_acquisition_cycle, create_bulk_playlist
+from acquisition import (
+    begin_acquisition_cycle,
+    ensure_acquisition_target,
+    finish_acquisition_cycle,
+    rank_automatic_candidates,
+)
 from notifications import send_notification
 from search import search_all_cached, log_ranked_results
 from settings import get_setting_int
@@ -101,6 +106,31 @@ def _cancel_imports_with_conn(
                       SELECT id FROM jobs WHERE status = 'cancelled'
                   ))
               )""",
+        import_ids,
+    )
+    conn.execute(
+        f"""UPDATE acquisition_attempts
+            SET status = 'cancelled', error = 'Cancelled before download started',
+                completed_at = datetime('now')
+            WHERE status = 'attempting'
+              AND job_id IN (
+                  SELECT bit.job_id FROM bulk_import_tracks bit
+                  JOIN jobs j ON j.id = bit.job_id
+                  WHERE bit.import_id IN ({placeholders})
+                    AND j.status = 'cancelled'
+              )""",
+        import_ids,
+    )
+    conn.execute(
+        f"""UPDATE acquisition_targets
+            SET status = 'cancelled', last_error = 'Cancelled before download started',
+                updated_at = datetime('now')
+            WHERE id IN (
+                SELECT acquisition_target_id FROM bulk_import_tracks
+                WHERE import_id IN ({placeholders})
+                  AND status = 'cancelled'
+                  AND acquisition_target_id IS NOT NULL
+            )""",
         import_ids,
     )
     active = conn.execute(
@@ -222,24 +252,6 @@ def _candidate_channel_matches_expected_artist(candidate: dict, expected_artist:
     return any(channel_norm == f"{expected_norm}{suffix}" for suffix in compact_suffixes)
 
 
-def apply_priority_source_boost(results: list, priority_source: Optional[str]) -> list:
-    """Re-rank search results so the user-chosen source wins close calls.
-
-    Adds PRIORITY_SOURCE_BOOST to the relevance_score of any result whose
-    source matches priority_source, then re-sorts descending. Mutates the
-    list in place and also returns it for convenience.
-    No-op when priority_source is empty/None or results is empty.
-    """
-    if not (priority_source and results):
-        return results
-    target = priority_source.strip().lower()
-    for r in results:
-        if (r.get("source") or "").lower() == target:
-            r["relevance_score"] = (r.get("relevance_score") or 0) + PRIORITY_SOURCE_BOOST
-    results.sort(key=lambda r: r.get("relevance_score") or 0, reverse=True)
-    return results
-
-
 def clean_bulk_import_line(line: str) -> str:
     """Clean a line from bulk import text
 
@@ -289,9 +301,8 @@ def start_bulk_import_for_tracks(
 ) -> str:
     """Create a bulk import job from a list of (artist, title) tuples.
 
-    priority_source, when set, applies a large quality-score bonus to results
-    from that source during selection, so the user's preferred indexer wins
-    nearly every close call (see PRIORITY_SOURCE_BOOST).
+    priority_source, when set, breaks ties inside the same quality tier. It does
+    not promote a lossy source ahead of a confident allowed lossless result.
 
     track_isrcs, when provided, is a per-track list aligned by index with
     tracks; the matching ISRC is stored against each row so the worker can try
@@ -327,9 +338,45 @@ def start_bulk_import_for_tracks(
                 if track_isrcs and line_num - 1 < len(track_isrcs)
                 else None
             )
+            track_hash = hash_track(artist, song)
+            if watch_playlist_id:
+                owner_type = "watched_playlist"
+                owner_key = f"{watch_playlist_id}:{track_hash}"
+            elif watch_artist_id:
+                owner_type = "watched_artist"
+                owner_key = f"{watch_artist_id}:{track_hash}"
+            elif override_dir:
+                owner_type = "album"
+                owner_key = f"{import_id}:{line_num}"
+            else:
+                owner_type = "bulk_import"
+                owner_key = f"{import_id}:{line_num}"
+            target_id = ensure_acquisition_target(
+                owner_type=owner_type,
+                owner_key=owner_key,
+                mode="automatic",
+                artist=artist,
+                title=song,
+                user_id=user_id,
+                allowed_sources=preferred_sources or "all",
+                priority_source=_priority,
+                convert_audio=convert_audio,
+                isrc=_isrc,
+                destination={
+                    "watch_playlist_id": watch_playlist_id,
+                    "watch_artist_id": watch_artist_id,
+                    "use_playlists_dir": bool(use_playlists_dir),
+                    "custom_subdir": custom_subdir,
+                    "override_dir": override_dir,
+                    "album_release_mbid": album_release_mbid,
+                },
+                conn=conn,
+            )
             conn.execute(
-                "INSERT INTO bulk_import_tracks (import_id, line_num, artist, song, status, isrc) VALUES (?, ?, ?, ?, 'pending', ?)",
-                (import_id, line_num, artist, song, _isrc)
+                """INSERT INTO bulk_import_tracks
+                   (import_id, line_num, artist, song, status, isrc, acquisition_target_id)
+                   VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
+                (import_id, line_num, artist, song, _isrc, target_id)
             )
 
         conn.commit()
@@ -339,7 +386,11 @@ def start_bulk_import_for_tracks(
     return import_id
 
 
-def _resolve_album_up_front(import_id: str, override_dir: str) -> dict[int, dict]:
+def _resolve_album_up_front(
+    import_id: str,
+    override_dir: str,
+    allowed_sources: list[str] | None = None,
+) -> dict[int, dict]:
     """Pin an album import's tracks to a single release before the loop starts.
 
     Searching for each track on its own is how "Fin." off the 2023 album ends up
@@ -350,6 +401,11 @@ def _resolve_album_up_front(import_id: str, override_dir: str) -> dict[int, dict
     Returns {bulk_import_tracks.id: result} for whatever matched. Anything absent
     takes the ordinary per-track route, so a complete miss costs only the lookup.
     """
+    # Album resolution is a Monochrome capability. A strict source selection
+    # must apply before this shortcut as well as during the ordinary search.
+    if allowed_sources is not None and "monochrome" not in allowed_sources:
+        return {}
+
     try:
         with db_conn() as conn:
             rows = conn.execute(
@@ -419,8 +475,8 @@ def process_bulk_import_worker(import_id: str):
             None if _preferred_sources_raw == "all"
             else [s.strip() for s in _preferred_sources_raw.split(",") if s.strip()]
         )
-        # priority_source is a single source ID that gets a relevance_score bonus
-        # applied below, so it wins close calls against other sources.
+        # priority_source is a same-quality tie-breaker. It never promotes a
+        # lower-quality candidate ahead of an allowed confident lossless one.
         try:
             _priority_source = import_row["priority_source"]
         except (IndexError, KeyError):
@@ -450,7 +506,9 @@ def process_bulk_import_worker(import_id: str):
     # picking tracks off individually. Empty dict is a perfectly normal answer.
     album_picks: dict[int, dict] = {}
     if override_dir and album_release_mbid:
-        album_picks = _resolve_album_up_front(import_id, override_dir)
+        album_picks = _resolve_album_up_front(
+            import_id, override_dir, preferred_sources_list
+        )
 
     try:
         while True:
@@ -480,9 +538,50 @@ def process_bulk_import_worker(import_id: str):
             track_id = track["id"]
             artist = track["artist"]
             song = track["song"]
+            target_id = track.get("acquisition_target_id")
+            if not target_id:
+                track_hash = hash_track(artist, song)
+                if watch_playlist_id:
+                    owner_type = "watched_playlist"
+                    owner_key = f"{watch_playlist_id}:{track_hash}"
+                elif watch_artist_id:
+                    owner_type = "watched_artist"
+                    owner_key = f"{watch_artist_id}:{track_hash}"
+                elif override_dir:
+                    owner_type = "album"
+                    owner_key = f"{import_id}:{track.get('line_num') or track_id}"
+                else:
+                    owner_type = "bulk_import"
+                    owner_key = f"{import_id}:{track.get('line_num') or track_id}"
+                target_id = ensure_acquisition_target(
+                    owner_type=owner_type,
+                    owner_key=owner_key,
+                    mode="automatic",
+                    artist=artist,
+                    title=song,
+                    user_id=user_id,
+                    allowed_sources=_preferred_sources_raw,
+                    priority_source=priority_source,
+                    convert_audio=convert_audio,
+                    isrc=track.get("isrc"),
+                    destination={
+                        "watch_playlist_id": watch_playlist_id,
+                        "watch_artist_id": watch_artist_id,
+                        "use_playlists_dir": use_playlists_dir,
+                        "custom_subdir": custom_subdir,
+                        "override_dir": override_dir,
+                        "album_release_mbid": album_release_mbid,
+                    },
+                )
+            acquisition_cycle = begin_acquisition_cycle(target_id)
 
             with db_conn() as conn:
-                conn.execute("UPDATE bulk_import_tracks SET status = 'searching' WHERE id = ?", (track_id,))
+                conn.execute(
+                    """UPDATE bulk_import_tracks
+                       SET status = 'searching', acquisition_target_id = ?, acquisition_cycle = ?
+                       WHERE id = ?""",
+                    (target_id, acquisition_cycle, track_id),
+                )
                 conn.commit()
 
             # Search preferred (or all) sources in parallel, ranked by relevance score
@@ -500,7 +599,14 @@ def process_bulk_import_worker(import_id: str):
                 # the free-text search and its filters entirely. A miss (or no ISRC)
                 # leaves best_match None and the normal free-text leg runs below.
                 isrc = (track.get("isrc") or "").strip()
-                if not best_match and isrc:
+                if (
+                    not best_match
+                    and isrc
+                    and (
+                        preferred_sources_list is None
+                        or "monochrome" in preferred_sources_list
+                    )
+                ):
                     from monochrome import resolve_by_isrc
                     best_match = resolve_by_isrc(isrc, artist, song)
 
@@ -523,6 +629,7 @@ def process_bulk_import_worker(import_id: str):
                             sources=preferred_sources_list,
                             include_soulseek=True,
                             status_out=search_status,
+                            return_all_source_results=True,
                         )
                         if search_results or attempt >= BULK_IMPORT_SEARCH_ATTEMPTS:
                             break
@@ -537,9 +644,16 @@ def process_bulk_import_worker(import_id: str):
                         )
                         time.sleep(pause)
 
-                    # Apply the priority-source boost before logging so the ranked log
-                    # reflects what the worker will actually pick.
-                    search_results = apply_priority_source_boost(search_results, priority_source)
+                    # Automatic acquisition is quality-led. Identity is gated
+                    # first; only then do lossless candidates lead progressively
+                    # worse lossy tiers. A preferred source breaks ties inside a
+                    # tier instead of vaulting a lossy result over lossless.
+                    search_results, rejected_results = rank_automatic_candidates(
+                        search_results,
+                        artist or "",
+                        song or "",
+                        priority_source=priority_source,
+                    )
 
                     log_ranked_results(f"Bulk import {import_id}", search_query, search_results)
 
@@ -554,7 +668,10 @@ def process_bulk_import_worker(import_id: str):
                             unreachable = ", ".join(sorted(set(stuck) | set(stalled)))
                             failure_reason = f"Sources never answered after {BULK_IMPORT_SEARCH_ATTEMPTS} attempts: {unreachable}"
                         else:
-                            failure_reason = "No results found"
+                            failure_reason = (
+                                "No candidate passed the recording match gate"
+                                if rejected_results else "No results found"
+                            )
                         with db_conn() as conn:
                             conn.execute(
                                 "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
@@ -565,6 +682,7 @@ def process_bulk_import_worker(import_id: str):
                                 (import_id,)
                             )
                             conn.commit()
+                        finish_acquisition_cycle(target_id, "failed", failure_reason)
                         time.sleep(base_delay)
                         continue
 
@@ -594,6 +712,9 @@ def process_bulk_import_worker(import_id: str):
                                 f"Album import {import_id}: no strict artist match for "
                                 f"'{artist} - {song}', skipping track"
                             )
+                            finish_acquisition_cycle(
+                                target_id, "failed", "No strict artist match found"
+                            )
                             time.sleep(base_delay)
                             continue
                     elif (watch_playlist_id or watch_artist_id) and artist:
@@ -614,15 +735,19 @@ def process_bulk_import_worker(import_id: str):
                                 f"refusing top result '{top_title}' by {top_channel}"
                             )
                             with db_conn() as conn:
+                                no_match_error = (
+                                    f"No artist match (top result was '{top_title}' by {top_channel})"
+                                )
                                 conn.execute(
                                     "UPDATE bulk_import_tracks SET status = 'failed', error = ? WHERE id = ?",
-                                    (f"No artist match (top result was '{top_title}' by {top_channel})", track_id)
+                                    (no_match_error, track_id)
                                 )
                                 conn.execute(
                                     "UPDATE bulk_imports SET searched = searched + 1, failed = failed + 1, progress_at = datetime('now') WHERE id = ?",
                                     (import_id,)
                                 )
                                 conn.commit()
+                            finish_acquisition_cycle(target_id, "failed", no_match_error)
                             time.sleep(base_delay)
                             continue
 
@@ -639,6 +764,9 @@ def process_bulk_import_worker(import_id: str):
                             ("Cancelled before download started", track_id),
                         )
                         conn.commit()
+                        finish_acquisition_cycle(
+                            target_id, "cancelled", "Cancelled before download started"
+                        )
                         break
 
                 video_id = best_match["video_id"]
@@ -662,26 +790,28 @@ def process_bulk_import_worker(import_id: str):
                         conn.execute(
                             """INSERT INTO jobs
                                (id, video_id, title, artist, status, download_type, playlist_name, source,
-                                slskd_username, slskd_filename, slskd_size, source_url, convert_audio, user_id)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                slskd_username, slskd_filename, slskd_size, source_url, convert_audio, user_id,
+                                acquisition_target_id, acquisition_cycle)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             (
                                 job_id, video_id, song, artist, "queued", "single",
                                 import_id if create_playlist else None,
                                 source, slskd_username, slskd_filename, slskd_size,
-                                source_url, int(convert_audio), user_id,
+                                source_url, int(convert_audio), user_id, target_id,
+                                acquisition_cycle,
                             )
                         )
                     elif create_playlist:
                         conn.execute(
-                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name, source, source_url, convert_audio, user_id) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (job_id, video_id, song, artist, "queued", "single", import_id, source, source_url, int(convert_audio), user_id)
+                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, playlist_name, source, source_url, convert_audio, user_id, acquisition_target_id, acquisition_cycle) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (job_id, video_id, song, artist, "queued", "single", import_id, source, source_url, int(convert_audio), user_id, target_id, acquisition_cycle)
                         )
                     else:
                         conn.execute(
-                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, source_url, convert_audio, user_id) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (job_id, video_id, song, artist, "queued", "single", source, source_url, int(convert_audio), user_id)
+                            "INSERT INTO jobs (id, video_id, title, artist, status, download_type, source, source_url, convert_audio, user_id, acquisition_target_id, acquisition_cycle) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (job_id, video_id, song, artist, "queued", "single", source, source_url, int(convert_audio), user_id, target_id, acquisition_cycle)
                         )
 
                     conn.execute(
@@ -751,31 +881,29 @@ def process_bulk_import_worker(import_id: str):
                     upsert_album_track_lock(
                         album_release_mbid, _album_name_lock, _album_artist_lock, song, job_id
                     )
-                if source == "soulseek":
-                    download_future = _get_download_pool().submit(
-                        process_slskd_download,
-                        job_id,
-                        slskd_username,
-                        slskd_filename,
-                        artist,
-                        song,
-                        convert_audio,
-                        user_id=user_id,
-                        override_dir=override_dir,
-                        playlist_name=_pname,
-                        use_playlists_dir=use_playlists_dir,
-                        custom_subdir=custom_subdir,
-                        slskd_size=slskd_size,
-                    )
-                else:
-                    download_future = _get_download_pool().submit(process_download, job_id, video_id, convert_audio,
-                                          source_url, _pname, use_playlists_dir,
-                                          user_id=user_id, override_dir=override_dir,
-                                          skip_dupe_check=_skip_dupes, custom_subdir=custom_subdir,
-                                          fallback_allowed_sources=(
-                                              set(preferred_sources_list)
-                                              if preferred_sources_list is not None else None
-                                          ))
+                download_future = _get_download_pool().submit(
+                    process_acquisition_cycle,
+                    job_id,
+                    best_match,
+                    artist,
+                    song,
+                    convert_audio,
+                    target_id=target_id,
+                    cycle=acquisition_cycle,
+                    automatic=True,
+                    candidate_pool=search_results,
+                    allowed_sources=(
+                        set(preferred_sources_list)
+                        if preferred_sources_list is not None else None
+                    ),
+                    priority_source=priority_source,
+                    playlist_name=_pname,
+                    use_playlists_dir=use_playlists_dir,
+                    user_id=user_id,
+                    override_dir=override_dir,
+                    skip_dupe_check=_skip_dupes,
+                    custom_subdir=custom_subdir,
+                )
 
                 # One import owns at most one active file. This gives cancellation
                 # a precise contract: the current future may finish; nothing after
@@ -832,6 +960,13 @@ def process_bulk_import_worker(import_id: str):
                     print(
                         f"Bulk import {import_id}: failed to record failure for track "
                         f"{track_id} ({e}): {bookkeeping_error}"
+                    )
+                try:
+                    finish_acquisition_cycle(target_id, "failed", str(e))
+                except Exception as ledger_error:
+                    print(
+                        f"Bulk import {import_id}: failed to close acquisition target "
+                        f"{target_id}: {ledger_error}"
                     )
 
             # Standard delay between searches

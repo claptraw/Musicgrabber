@@ -74,11 +74,17 @@ from search import (
 import servicecheck
 from slskd import slskd_enabled, search_slskd
 from downloads import (
-    process_download, process_playlist_download, process_slskd_download,
+    process_acquisition_cycle, process_download, process_playlist_download,
+    process_slskd_download,
     rebuild_watched_playlist_m3u,
     trigger_navidrome_scan, trigger_jellyfin_scan,
     check_navidrome_duplicate, check_lidarr_duplicate,
     get_job_source_allowlist,
+)
+from acquisition import (
+    attach_job_to_acquisition,
+    begin_acquisition_cycle,
+    ensure_acquisition_target,
 )
 from bulk_import import (
     clean_bulk_import_line,
@@ -2133,6 +2139,41 @@ def download(body: DownloadRequest, http_request: Request):
             )
         conn.commit()
 
+    acquisition_target_id = None
+    acquisition_cycle = None
+    selected_candidate = None
+    if body.download_type != "playlist":
+        acquisition_target_id = ensure_acquisition_target(
+            owner_type="manual",
+            owner_key=job_id,
+            mode="manual",
+            artist=artist or "",
+            title=title,
+            user_id=user_id,
+            allowed_sources={source},
+            priority_source=source,
+            convert_audio=body.convert_audio,
+            destination={
+                "playlist_name": body.playlist_name,
+                "use_playlists_dir": bool(body.use_playlists_dir),
+                "override_dir": override_dir,
+                "album_release_mbid": album_release_mbid,
+            },
+        )
+        acquisition_cycle = begin_acquisition_cycle(acquisition_target_id)
+        attach_job_to_acquisition(job_id, acquisition_target_id, acquisition_cycle)
+        selected_candidate = {
+            "video_id": body.video_id,
+            "title": title,
+            "artist": artist or "",
+            "channel": artist or "",
+            "source": source,
+            "source_url": source_url,
+            "slskd_username": body.slskd_username,
+            "slskd_filename": body.slskd_filename,
+            "slskd_size": body.slskd_size,
+        }
+
     # If this is an album-routed single track, register a lock so any retry
     # can skip dupe check without relying on the transient skip_dupe_check flag.
     if override_dir and album_track_title:
@@ -2143,34 +2184,19 @@ def download(body: DownloadRequest, http_request: Request):
     if body.download_type == "playlist":
         spawn_daemon_thread(process_playlist_download, job_id, body.video_id, title, body.convert_audio, True,
                             user_id=user_id)
-    elif source == "soulseek":
+    else:
         spawn_daemon_thread(
-            process_slskd_download,
+            process_acquisition_cycle,
             job_id,
-            body.slskd_username,
-            body.slskd_filename,
+            selected_candidate,
             artist or "",
             title,
             body.convert_audio,
-            user_id=user_id,
-            override_dir=override_dir,
-            playlist_name=body.playlist_name,
-            use_playlists_dir=body.use_playlists_dir,
-            slskd_size=body.slskd_size,
-        )
-    elif source in URL_BASED_SOURCES:
-        spawn_daemon_thread(
-            process_download, job_id, body.video_id, body.convert_audio,
-            source_url=source_url,
-            playlist_name=body.playlist_name,
-            use_playlists_dir=body.use_playlists_dir,
-            user_id=user_id,
-            override_dir=override_dir,
-            skip_dupe_check=bool(override_dir),
-        )
-    else:
-        spawn_daemon_thread(
-            process_download, job_id, body.video_id, body.convert_audio,
+            target_id=acquisition_target_id,
+            cycle=acquisition_cycle,
+            automatic=False,
+            allowed_sources={source},
+            priority_source=source,
             playlist_name=body.playlist_name,
             use_playlists_dir=body.use_playlists_dir,
             user_id=user_id,
@@ -2212,6 +2238,66 @@ def _expose_conversion_intent(row: dict) -> dict:
     row["convert_audio"] = convert_audio
     row["convert_to_flac"] = convert_audio
     return row
+
+
+def _attach_acquisition_summaries(conn, jobs: list[dict]) -> None:
+    """Attach durable retry history without turning the Queue query into N+1 SQL."""
+    target_ids = sorted({
+        job.get("acquisition_target_id") for job in jobs
+        if job.get("acquisition_target_id")
+    })
+    if not target_ids:
+        return
+    placeholders = ",".join("?" * len(target_ids))
+    target_rows = conn.execute(
+        f"""SELECT id, mode, cycle_count, attempt_count, status,
+                   last_attempt_at, last_error
+            FROM acquisition_targets WHERE id IN ({placeholders})""",
+        target_ids,
+    ).fetchall()
+    targets = {row["id"]: dict(row) for row in target_rows}
+    attempt_rows = conn.execute(
+        f"""SELECT target_id, cycle_number, sequence, source, candidate_id,
+                   candidate_title, candidate_artist, candidate_quality,
+                   status, error, started_at, completed_at
+            FROM (
+                SELECT target_id, cycle_number, sequence, source, candidate_id,
+                       candidate_title, candidate_artist, candidate_quality,
+                       status, error, started_at, completed_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY target_id
+                           ORDER BY cycle_number DESC, sequence DESC
+                       ) AS recent_rank
+                FROM acquisition_attempts
+                WHERE target_id IN ({placeholders})
+            )
+            WHERE recent_rank <= 20
+            ORDER BY target_id, cycle_number, sequence""",
+        target_ids,
+    ).fetchall()
+    histories: dict[str, list[dict]] = {}
+    for row in attempt_rows:
+        history = histories.setdefault(row["target_id"], [])
+        history.append(dict(row))
+    for job in jobs:
+        target = targets.get(job.get("acquisition_target_id"))
+        if not target:
+            continue
+        history = histories.get(target["id"], [])
+        job["acquisition_mode"] = target["mode"]
+        job["acquisition_cycle_count"] = int(target["cycle_count"] or 0)
+        job["acquisition_attempt_count"] = int(target["attempt_count"] or 0)
+        job["acquisition_status"] = target["status"]
+        job["acquisition_last_attempt_at"] = _ensure_utc_suffix(target["last_attempt_at"])
+        job["acquisition_last_error"] = target["last_error"]
+        job["acquisition_attempts"] = [
+            {
+                **attempt,
+                "started_at": _ensure_utc_suffix(attempt.get("started_at")),
+                "completed_at": _ensure_utc_suffix(attempt.get("completed_at")),
+            }
+            for attempt in history
+        ]
 
 
 @app.get("/api/jobs")
@@ -2277,6 +2363,8 @@ def get_jobs(limit: int = 20, http_request: Request = None):
             )
             conn.commit()
 
+        _attach_acquisition_summaries(conn, jobs)
+
     return {"jobs": jobs}
 
 
@@ -2338,6 +2426,9 @@ def get_job(job_id: str, http_request: Request):
         job['source_history'] = []
     if not job['source_history'] and job.get('source'):
         job['source_history'] = [job['source']]
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        _attach_acquisition_summaries(conn, [job])
     return job
 
 
@@ -3261,9 +3352,31 @@ def bulk_import_async(body: AsyncBulkImportRequest, http_request: Request):
 
         # Insert all tracks
         for track in tracks_to_import:
+            target_id = ensure_acquisition_target(
+                owner_type="bulk_import",
+                owner_key=f"{import_id}:{track['line_num']}",
+                mode="automatic",
+                artist=track["artist"],
+                title=track["song"],
+                user_id=user_id,
+                allowed_sources=_preferred_sources,
+                priority_source=_priority_source,
+                convert_audio=body.convert_audio,
+                destination={
+                    "create_playlist": bool(body.create_playlist),
+                    "playlist_name": _playlist_name,
+                    "use_playlists_dir": bool(body.use_playlists_dir),
+                },
+                conn=conn,
+            )
             conn.execute(
-                "INSERT INTO bulk_import_tracks (import_id, line_num, artist, song, status) VALUES (?, ?, ?, ?, 'pending')",
-                (import_id, track["line_num"], track["artist"], track["song"])
+                """INSERT INTO bulk_import_tracks
+                   (import_id, line_num, artist, song, status, acquisition_target_id)
+                   VALUES (?, ?, ?, ?, 'pending', ?)""",
+                (
+                    import_id, track["line_num"], track["artist"],
+                    track["song"], target_id,
+                )
             )
 
         conn.commit()
@@ -4056,7 +4169,8 @@ def queue_watched_playlist_track_candidate(
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"""SELECT id, name, convert_audio, use_playlists_dir, custom_subdir, preferred_sources
+            f"""SELECT id, name, convert_audio, use_playlists_dir, custom_subdir,
+                       preferred_sources, priority_source
                 FROM watched_playlists
                 WHERE id = ? AND {_scope_frag}""",
             (playlist_id, *_scope_params)
@@ -4080,11 +4194,29 @@ def queue_watched_playlist_track_candidate(
         else:
             source_url = f"https://www.youtube.com/watch?v={request.video_id}"
 
+        target_id = ensure_acquisition_target(
+            owner_type="watched_playlist",
+            owner_key=f"{playlist_id}:{track_hash}",
+            mode="automatic",
+            artist=artist,
+            title=title,
+            user_id=user_id,
+            allowed_sources=playlist["preferred_sources"] or "all",
+            priority_source=playlist["priority_source"],
+            convert_audio=bool(playlist["convert_audio"]),
+            destination={
+                "watch_playlist_id": playlist_id,
+                "use_playlists_dir": bool(playlist["use_playlists_dir"]),
+                "custom_subdir": playlist["custom_subdir"],
+            },
+            conn=conn,
+        )
+
         conn.execute(
             """INSERT INTO jobs
                (id, video_id, title, artist, status, download_type, source, slskd_username, slskd_filename,
-                slskd_size, convert_audio, source_url, user_id)
-               VALUES (?, ?, ?, ?, 'queued', 'single', ?, ?, ?, ?, ?, ?, ?)""",
+                slskd_size, convert_audio, source_url, user_id, acquisition_target_id)
+               VALUES (?, ?, ?, ?, 'queued', 'single', ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 job_id,
                 request.video_id,
@@ -4097,6 +4229,7 @@ def queue_watched_playlist_track_candidate(
                 int(bool(playlist["convert_audio"])),
                 source_url,
                 user_id,
+                target_id,
             ),
         )
         conn.execute(
@@ -4105,47 +4238,42 @@ def queue_watched_playlist_track_candidate(
         )
         conn.commit()
 
+    acquisition_cycle = begin_acquisition_cycle(target_id)
+    attach_job_to_acquisition(job_id, target_id, acquisition_cycle)
+
     convert_audio = bool(playlist["convert_audio"])
     custom_subdir = (playlist["custom_subdir"] or "").strip() or None
     playlist_name = playlist["name"] if (playlist["use_playlists_dir"] or custom_subdir) else None
     use_playlists_dir = bool(playlist["use_playlists_dir"])
 
-    if source == "soulseek":
-        spawn_daemon_thread(
-            process_slskd_download,
-            job_id,
-            request.slskd_username,
-            request.slskd_filename,
-            artist,
-            title,
-            convert_audio,
-            user_id=user_id,
-            playlist_name=playlist_name,
-            use_playlists_dir=use_playlists_dir,
-            custom_subdir=custom_subdir,
-            slskd_size=request.slskd_size,
-        )
-    else:
-        spawn_daemon_thread(
-            process_download,
-            job_id,
-            request.video_id,
-            convert_audio,
-            source_url=source_url,
-            playlist_name=playlist_name,
-            use_playlists_dir=use_playlists_dir,
-            user_id=user_id,
-            custom_subdir=custom_subdir,
-            fallback_allowed_sources=(
-                None
-                if (playlist["preferred_sources"] or "all") == "all"
-                else {
-                    source_id.strip().lower()
-                    for source_id in playlist["preferred_sources"].split(",")
-                    if source_id.strip()
-                }
-            ),
-        )
+    selected_candidate = {
+        "video_id": request.video_id,
+        "title": title,
+        "artist": artist,
+        "channel": artist,
+        "source": source,
+        "source_url": source_url,
+        "slskd_username": request.slskd_username,
+        "slskd_filename": request.slskd_filename,
+        "slskd_size": request.slskd_size,
+    }
+    spawn_daemon_thread(
+        process_acquisition_cycle,
+        job_id,
+        selected_candidate,
+        artist,
+        title,
+        convert_audio,
+        target_id=target_id,
+        cycle=acquisition_cycle,
+        automatic=False,
+        allowed_sources={source},
+        priority_source=source,
+        playlist_name=playlist_name,
+        use_playlists_dir=use_playlists_dir,
+        user_id=user_id,
+        custom_subdir=custom_subdir,
+    )
 
     return {"job_id": job_id, "status": "queued", "message": f"Queued {artist} - {title}"}
 

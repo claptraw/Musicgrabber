@@ -734,7 +734,8 @@ def _search_all_events(
 
 def search_all(query: str, limit: int, sources: list[str] | None = None,
                include_soulseek: bool = False, slot_wait: float = 0.0,
-               status_out: dict | None = None) -> tuple[list[dict], dict | None]:
+               status_out: dict | None = None,
+               return_all_source_results: bool = False) -> tuple[list[dict], dict | None]:
     """Search enabled sources in parallel, merge by relevance score.
 
     Thin blocking consumer of _search_all_events: it drains the progress events
@@ -769,11 +770,15 @@ def search_all(query: str, limit: int, sources: list[str] | None = None,
         status_out["busy"] = busy
         status_out["timeout"] = timed_out
     all_results.sort(key=lambda x: x["relevance_score"], reverse=True)
-    return all_results[:limit], album_suggestion
+    return (
+        all_results if return_all_source_results else all_results[:limit],
+        album_suggestion,
+    )
 
 
 def _automated_search_cache_key(query: str, limit: int, sources: list[str] | None,
-                                include_soulseek: bool) -> tuple:
+                                include_soulseek: bool,
+                                return_all_source_results: bool = False) -> tuple:
     """Build a key that changes when the usable source selection changes."""
     active = _enabled_sources(include_soulseek=include_soulseek)
     requested = None
@@ -787,7 +792,10 @@ def _automated_search_cache_key(query: str, limit: int, sources: list[str] | Non
     usable = tuple(sorted(
         name for name in active if servicecheck.is_source_available(name)
     ))
-    return ((query or "").strip().casefold(), int(limit), requested, usable, bool(include_soulseek))
+    return (
+        (query or "").strip().casefold(), int(limit), requested, usable,
+        bool(include_soulseek), bool(return_all_source_results),
+    )
 
 
 def clear_automated_search_cache() -> None:
@@ -799,7 +807,8 @@ def clear_automated_search_cache() -> None:
 def search_all_cached(query: str, limit: int, sources: list[str] | None = None,
                       include_soulseek: bool = False,
                       slot_wait: float = SEARCH_SLOT_WAIT_AUTOMATED,
-                      status_out: dict | None = None) -> tuple[list[dict], dict | None]:
+                      status_out: dict | None = None,
+                      return_all_source_results: bool = False) -> tuple[list[dict], dict | None]:
     """Search for an automated flow, reusing a recent identical result safely.
 
     Deep copies are returned and stored because bulk priority boosting mutates
@@ -810,7 +819,9 @@ def search_all_cached(query: str, limit: int, sources: list[str] | None = None,
     watching a bulk import, and waiting a few seconds is enormously preferable to
     marking a track failed forever over a collision that lasted no time at all.
     """
-    key = _automated_search_cache_key(query, limit, sources, include_soulseek)
+    key = _automated_search_cache_key(
+        query, limit, sources, include_soulseek, return_all_source_results
+    )
     now = time.time()
     with _AUTOMATED_SEARCH_CACHE_LOCK:
         expired = [
@@ -830,7 +841,8 @@ def search_all_cached(query: str, limit: int, sources: list[str] | None = None,
 
     results, album_suggestion = search_all(
         query, limit, sources=sources, include_soulseek=include_soulseek,
-        slot_wait=slot_wait, status_out=status_out
+        slot_wait=slot_wait, status_out=status_out,
+        return_all_source_results=return_all_source_results,
     )
     # An empty search is often a provider having a brief wobble. Caching that
     # would turn a momentary miss into fifteen minutes of determined failure.

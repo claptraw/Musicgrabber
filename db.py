@@ -996,6 +996,80 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_search_decisions_job ON search_decisions(job_id)"
         )
 
+        # Acquisition ledger - one durable target survives the individual Queue
+        # jobs created by later watched-playlist/artist refresh cycles. Historical
+        # imports are deliberately not backfilled: creating rows is lazy, otherwise
+        # an upgrade could wake thousands of old failures and start downloading.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS acquisition_targets (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            owner_type TEXT NOT NULL,
+            owner_key TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'automatic',
+            artist TEXT,
+            title TEXT,
+            isrc TEXT,
+            allowed_sources TEXT DEFAULT 'all',
+            priority_source TEXT,
+            convert_audio INTEGER DEFAULT 0,
+            destination_json TEXT,
+            cycle_count INTEGER DEFAULT 0,
+            attempt_count INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'pending',
+            last_attempt_at TIMESTAMP,
+            last_error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            UNIQUE(owner_type, owner_key)
+        )
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS acquisition_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_id TEXT NOT NULL,
+            cycle_number INTEGER NOT NULL,
+            job_id TEXT,
+            sequence INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            candidate_id TEXT,
+            candidate_title TEXT,
+            candidate_artist TEXT,
+            candidate_quality TEXT,
+            status TEXT NOT NULL DEFAULT 'attempting',
+            error TEXT,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            FOREIGN KEY(target_id) REFERENCES acquisition_targets(id) ON DELETE CASCADE,
+            UNIQUE(target_id, cycle_number, sequence)
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_acquisition_attempts_target "
+            "ON acquisition_attempts(target_id, cycle_number, sequence)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_acquisition_attempts_job "
+            "ON acquisition_attempts(job_id)"
+        )
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN acquisition_target_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN acquisition_cycle INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_import_tracks ADD COLUMN acquisition_target_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_import_tracks ADD COLUMN acquisition_cycle INTEGER")
+        except sqlite3.OperationalError:
+            pass
+
         # Album track locks  -  records which artist/title combinations are actively
         # being processed for album downloads.  Persists across failures so retries
         # still bypass dupe check.  Cleared only on success or by the stale monitor.
@@ -1599,6 +1673,25 @@ def cleanup_stale_jobs():
         )
         if cursor.rowcount > 0:
             print(f"Cleaned up {cursor.rowcount} stale job(s)")
+            conn.execute(
+                """UPDATE acquisition_attempts
+                   SET status = 'failed', error = 'Timed out (no progress)',
+                       completed_at = datetime('now')
+                   WHERE status = 'attempting'
+                     AND job_id IN (
+                         SELECT id FROM jobs
+                         WHERE status = 'failed' AND error = 'Timed out (no progress)'
+                     )"""
+            )
+            conn.execute(
+                """UPDATE acquisition_targets
+                   SET status = 'failed', last_error = 'Timed out (no progress)',
+                       updated_at = datetime('now')
+                   WHERE id IN (
+                       SELECT DISTINCT target_id FROM acquisition_attempts
+                       WHERE status = 'failed' AND error = 'Timed out (no progress)'
+                   )"""
+            )
 
         # Evict album track locks that never reached completed status  -  these are
         # orphans from crashed workers or abandoned imports.  24-hour threshold gives
@@ -1687,12 +1780,33 @@ def cleanup_stale_bulk_imports(orphaned: bool = False) -> tuple[int, int]:
                    WHERE import_id = ? AND status IN ('pending', 'searching')""",
                 (import_id,)
             )
+            conn.execute(
+                """UPDATE acquisition_targets
+                   SET status = 'failed', last_error = ?, updated_at = datetime('now')
+                   WHERE id IN (
+                       SELECT acquisition_target_id FROM bulk_import_tracks
+                       WHERE import_id = ? AND acquisition_target_id IS NOT NULL
+                   )""",
+                (reason, import_id),
+            )
         for import_id in resume_ids:
             # A track caught mid-search is not failed, just interrupted. Put it
             # back in the queue rather than punishing it for our crash.
             conn.execute(
                 "UPDATE bulk_import_tracks SET status = 'pending' WHERE import_id = ? AND status = 'searching'",
                 (import_id,)
+            )
+            conn.execute(
+                """UPDATE acquisition_targets
+                   SET status = 'failed',
+                       last_error = 'Worker interrupted; starting a fresh bounded cycle',
+                       updated_at = datetime('now')
+                   WHERE id IN (
+                       SELECT acquisition_target_id FROM bulk_import_tracks
+                       WHERE import_id = ? AND status = 'pending'
+                         AND acquisition_target_id IS NOT NULL
+                   )""",
+                (import_id,),
             )
             conn.execute(
                 """UPDATE bulk_imports

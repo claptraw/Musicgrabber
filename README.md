@@ -33,7 +33,7 @@ MusicGrabber is intentionally narrow. It is **not**:
 - **Album mode:** browse MusicBrainz artists from either the Artists tab or Bulk Import, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Equivalent folders and numbered/fuzzy track names inside the configured Albums tree are reused rather than downloaded again. Multi-disc and Various Artists groups choose the most complete official release and keep the canonical release-group credit/title
 - **Bulk Import takes almost anything:** playlist URLs, pasted `Artist - Title` lists, MusicBrainz release links, Spotify and Apple Music album URLs, or simply an album name typed in. Anything recognised as an album is routed through the album pipeline rather than flattened into loose singles. Album search does not need an artist first, so soundtracks and various-artists compilations work; uncertain matches ask which release you meant instead of guessing. YouTube, Amazon, Beatport, and Monochrome album URLs are not supported yet
 - **Auto-album routing for singles:** optional setting to file single-track downloads into artist/album folders when MusicBrainz resolves an album, either under Singles or the Albums directory
-- **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches enabled sources in parallel and grabs the best result for each. It can also create a playlist and route files into the Playlists directory or a custom watched-playlist folder. Cancel stops untouched work, lets the one active file finish, and keeps completed files and Queue history
+- **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches enabled sources in parallel, rejects weak recording matches, then walks confident candidates from lossless towards progressively worse lossy formats. A preferred source breaks ties inside the same quality tier; an allowed lossless result still comes first. It can also create a playlist and route files into the Playlists directory or a custom watched-playlist folder. Cancel stops untouched work, lets the one active file finish, and keeps completed files and Queue history
 - **Similar artist discovery:** hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
 - **Apprise notifications:** one URL covers Gotify, ntfy, Discord, Pushover, Slack, and about 50 others. Also supports Telegram webhook and SMTP email
 - **Navidrome/Lidarr duplicate heads-up:** searches warn when a track is already known to either library, including when a playlist says `Primary Artist, Guest` but the library quite reasonably files it under `Primary Artist`; Navidrome can also prevent the duplicate download and reuse the existing path for playlist routing
@@ -687,9 +687,20 @@ Automatically monitor Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, T
 4. New tracks are queued for download, searching only the selected sources for the best quality available
 5. If "Generate M3U" is enabled, a `.m3u` file is created and updated on every refresh as new tracks are downloaded
 
+Automatic Bulk, Watch, Artist, and Album tracks use a persistent acquisition
+ledger. Each owning refresh opens one bounded cycle through the currently
+healthy allowed sources, tries confident lossless candidates before lossy ones,
+and records every source attempt with its time and error. If the complete cycle
+fails, the next scheduled refresh may open a fresh cycle in case availability
+has changed. The earlier Queue rows and attempt history remain in place. Manual
+single-track result selections are different by design: MusicGrabber honours the
+chosen service and does not silently swap it for another one; Soulseek may try
+another peer for the same recording before admitting defeat.
+
 Each watched playlist can also:
 - Use Append or Mirror sync for its M3U
 - Limit allowed sources, useful when a SoundCloud set must stay on SoundCloud. The selection remains strict during automatic fallback and manual job retry; if every selected source is disabled or unavailable, the track fails instead of wandering off to another provider
+- Choose a preferred source as a same-quality tie-breaker. It never moves a lossy result ahead of an allowed, confident lossless candidate; if lossless sources are disabled or excluded, acquisition naturally starts at the best remaining lossy tier
 - Route downloads into the standard Playlists directory or a custom subfolder under your music root
 - Show missing tracks, candidate search results, and manual retry controls when the automatic match is not good enough
 
@@ -775,7 +786,8 @@ Backstreet Boys – I Want It That Way
 
 The app will:
 - Search enabled sources for each song automatically
-- Queue downloads for the best matches
+- Reject uncertain recording matches, then queue candidates from the best known quality downwards
+- Keep the selected preferred source as a same-tier tie-breaker rather than treating it as a hidden one-source allowlist
 - Show success/failure summary
 - Offer **Cancel**, which lets the active file finish and cancels everything untouched without deleting Queue rows
 - Optionally create a playlist and route files into Playlists or a custom watched-playlist folder
@@ -785,7 +797,7 @@ Supports various dash formats: `-`, `–`, `--`
 ### Queue Management
 
 - **View progress:** see queued, in-progress, completed, and failed jobs
-- **Job details:** click completed/failed jobs to see source, timestamps, download duration, and audio quality
+- **Job details:** click completed/failed jobs to see source, timestamps, download duration, audio quality, numbered acquisition cycles, source attempts, and the last error from each leg
 - **Play:** completed downloads have a play/stop button for instant in-browser preview
 - **Re-download:** re-queue any completed or failed download (overwrites existing file)
 - **Report bad tracks:** flag wrong tracks, ContentID dodges, or poor quality from the queue. Blacklisted videos are excluded from future searches
@@ -1008,9 +1020,9 @@ music.yourdomain.com {
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/download` | Queue download (`{"video_id": "...", "title": "...", "source": "youtube/soundcloud/zvu4no/freemp3cloud/monochrome/soulseek", "download_type": "single/playlist"}`). The Tracks UI also returns its valid `search_token` and numeric `selected_duration_secs`; together they enable manual-result completeness checking |
-| `GET` | `/api/jobs` | List recent jobs (includes `metadata_source` and `source_history` provenance) |
+| `GET` | `/api/jobs` | List recent jobs, including metadata provenance plus persistent acquisition cycle/attempt summaries and the latest 20 attempt records for linked tracks |
 | `GET` | `/api/jobs/downloadable` | Paginated list of completed jobs available to save to device (`?page=1&per_page=50`) |
-| `GET` | `/api/jobs/{id}` | Get job status (includes `metadata_source` and `source_history`) |
+| `GET` | `/api/jobs/{id}` | Get job status, metadata/source provenance, and persistent acquisition attempt history |
 | `GET` | `/api/jobs/{id}/download` | Download the audio file to browser (completed jobs only; use bearer auth, a short-lived `download_token`, or `X-API-Key`) |
 | `GET` | `/api/jobs/{id}/stream` | Stream audio file for in-browser playback (completed jobs only) |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |

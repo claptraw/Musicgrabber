@@ -49,7 +49,8 @@ def test_alternate_search_rejects_source_outside_allowlist(monkeypatch):
     waits = []
 
     def fake_search_all(query, limit, sources=None, include_soulseek=False,
-                        slot_wait=0.0, status_out=None):
+                        slot_wait=0.0, status_out=None,
+                        return_all_source_results=False):
         calls.append(sources)
         waits.append(slot_wait)
         # Defensive regression guard: even if a search provider misbehaves and

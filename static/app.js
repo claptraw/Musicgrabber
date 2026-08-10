@@ -3120,13 +3120,24 @@
                 const elapsedHtml = isActive
                     ? `<span class="job-elapsed-wrap">for <span class="job-elapsed" data-start="${escapeAttr(job.created_at || '')}">${formatElapsedSeconds(secondsSince(job.created_at))}</span></span>`
                     : '';
-                const sourceJourney = Array.isArray(job.source_history)
-                    ? job.source_history.filter(Boolean)
+                const acquisitionAttempts = Array.isArray(job.acquisition_attempts)
+                    ? job.acquisition_attempts.filter(a => a && a.source)
                     : [];
+                const sourceJourney = acquisitionAttempts.length
+                    ? acquisitionAttempts.map(a => a.source)
+                    : (Array.isArray(job.source_history) ? job.source_history.filter(Boolean) : []);
                 const journeyHtml = sourceJourney.length > 1
                     ? sourceJourney.map((source, index) =>
                         `${index ? '<span class="job-journey-arrow">→</span>' : ''}<span class="source-badge ${escapeHtml(source)}">${getSourceBadge(source)}</span>`
                     ).join('')
+                    : '';
+                const attemptHistoryHtml = acquisitionAttempts.length
+                    ? acquisitionAttempts.slice(-8).map(attempt => `
+                        <div class="job-details-row">
+                            <span class="job-details-label">Cycle ${escapeHtml(String(attempt.cycle_number || '?'))}:</span>
+                            <span class="source-badge ${escapeHtml(attempt.source || '')}">${getSourceBadge(attempt.source || '')}</span>
+                            ${escapeHtml(attempt.status || '')}${attempt.error ? ` — ${escapeHtml(attempt.error)}` : ''}
+                        </div>`).join('')
                     : '';
                 return `
                 <div class="job-item ${hasDetails ? 'has-details' : ''} ${isExpanded ? 'expanded' : ''}" data-job-id="${escapeHtml(job.id || '')}" ${hasDetails ? 'onclick="toggleJobDetails(this)"' : ''}>
@@ -3145,6 +3156,8 @@
                             ${job.error && job.error.startsWith('Already exists') ? `<div class="job-details-row"><span class="job-details-label">Path:</span> <span class="job-details-url">${escapeHtml(job.error.replace(/^Already exists(?: in [^:]+)?:\s*/, '').replace(/ \(added to playlist\)$/, ''))}</span></div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Source:</span> ${escapeHtml(sourceLabel)}</div>
                             ${journeyHtml ? `<div class="job-details-row job-journey"><span class="job-details-label">Journey:</span> ${journeyHtml}</div>` : ''}
+                            ${job.acquisition_attempt_count ? `<div class="job-details-row"><span class="job-details-label">Acquisition:</span> ${escapeHtml(String(job.acquisition_cycle_count || 0))} cycle${Number(job.acquisition_cycle_count || 0) === 1 ? '' : 's'} · ${escapeHtml(String(job.acquisition_attempt_count))} source attempt${Number(job.acquisition_attempt_count) === 1 ? '' : 's'}${job.acquisition_last_attempt_at ? ` · last ${formatTime(job.acquisition_last_attempt_at)}` : ''}</div>` : ''}
+                            ${attemptHistoryHtml}
                             ${job.metadata_source ? `<div class="job-details-row"><span class="job-details-label">Metadata:</span> ${escapeHtml(formatMetadataSource(job.metadata_source))}</div>` : ''}
                             ${sourceUrl ? `<div class="job-details-row"><span class="job-details-label">URL:</span> ${isClickableUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sourceUrl)}</a>` : `<span class="job-details-url">${escapeHtml(sourceUrl)}</span>`}</div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Queued:</span> ${formatTimeFull(job.created_at)}</div>
@@ -4173,7 +4186,6 @@
                 const bulkPriority = document.getElementById('bulkPrioritySource');
                 if (bulkPriority && bulkPriority.value) {
                     requestBody.priority_source = bulkPriority.value;
-                    requestBody.preferred_sources = bulkPriority.value;
                 }
 
                 // Start the async import
@@ -6148,7 +6160,7 @@
                                     ${renderSourceChips(p.id, p.preferred_sources || 'all')}
                                 </div>
                             </label>
-                            <label class="watched-card-toggle" title="Give one source a huge score boost so it wins almost every close call. Useful when you want Soulseek to be primary and YouTube as fallback, for example.">
+                            <label class="watched-card-toggle" title="Break ties in favour of this source within the same quality tier. Allowed lossless results still come before lossy ones.">
                                 Preferred
                                 <select onchange="updateWatchedPlaylistPrioritySource('${p.id}', this.value)" class="watched-card-select" data-priority-source="${escapeAttr(p.priority_source || '')}">
                                     ${renderPrioritySourceOptions(p.priority_source || '')}

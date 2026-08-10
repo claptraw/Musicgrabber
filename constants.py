@@ -150,7 +150,6 @@ BULK_IMPORT_SEARCH_DELAY = 1.0           # Seconds between searches (be courteou
 BULK_IMPORT_SEARCH_ATTEMPTS = 3          # Total tries per track, including the first
 BULK_IMPORT_SEARCH_RETRY_DELAY = 4.0     # First backoff pause in seconds, doubling thereafter
 BULK_IMPORT_SEARCH_RETRY_MAX_DELAY = 30.0  # Ceiling for that doubling; an album shouldn't take all afternoon
-PRIORITY_SOURCE_BOOST = 500              # Quality-score bonus applied to the user-chosen "preferred source" during bulk import / watched playlist refreshes. Big enough to win nearly every close call without nuking the strict-artist-match safety net.
 
 # Playlist creation
 PLAYLIST_WAIT_MAX = 3600         # Max seconds to wait for downloads to complete (1 hour)

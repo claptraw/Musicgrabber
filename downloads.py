@@ -32,7 +32,6 @@ from constants import (
     LOUDNORM_SKIP_DELTA_LU, TIMEOUT_LOUDNORM,
     REPLAYGAIN_REFERENCE_LUFS, REPLAYGAIN_MAX_ALBUM_TRACKS,
     SLSKD_MAX_RETRIES, TIMEOUT_SLSKD_SEARCH,
-    FALLBACK_MATCH_CONFIDENCE_FLOOR,
     PLAYLIST_WAIT_MAX, PLAYLIST_WAIT_INTERVAL,
     MAX_AUDIO_START_OFFSET_SECS,
     MB_DURATION_TOLERANCE,
@@ -74,6 +73,12 @@ from freemp3cloud import download_freemp3cloud_track
 from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, _note_cookie_failure,
     run_ytdlp_with_retries,
+)
+from acquisition import (
+    finish_acquisition_attempt,
+    finish_acquisition_cycle,
+    rank_automatic_candidates,
+    start_acquisition_attempt,
 )
 
 
@@ -806,6 +811,7 @@ def _find_alternate_search_candidate(
     expected_artist: str | None = None,
     expected_title: str | None = None,
     allowed_sources: set[str] | None = None,
+    priority_source: str | None = None,
 ) -> dict | None:
     """Search across sources and return the best untried candidate.
 
@@ -816,11 +822,9 @@ def _find_alternate_search_candidate(
     `allowed_sources` is a strict import or watched-playlist contract. Fallback
     may narrow it as providers fail, but must never widen it.
 
-    When `expected_artist`/`expected_title` are supplied, each candidate must clear
-    FALLBACK_MATCH_CONFIDENCE_FLOOR before we'll hand it back. Results are already
-    score-sorted and the dead source is excluded, so the first candidate that
-    passes is effectively the top pick from the next-best source, and the gate
-    stops us "rescuing" a failed download with a confidently wrong song.
+    Identity is gated before quality ranking, so a lossless wrong recording never
+    beats a confident lossy match. The preferred source only breaks ties within a
+    quality tier.
     """
     if not query.strip():
         return None
@@ -832,16 +836,29 @@ def _find_alternate_search_candidate(
         if not search_sources:
             return None
     try:
-        from search import search_all, log_ranked_results
-        from matching import compute_match_confidence
-
+        from search import SOURCE_REGISTRY, search_all, log_ranked_results
+        if search_sources is None:
+            search_sources = sorted(set(SOURCE_REGISTRY) - exclude_sources)
+            if not search_sources:
+                return None
         # Background work with a download riding on it: queue for a busy source
         # rather than returning empty-handed and failing the job over a collision.
-        results = search_all(query, limit=12, sources=search_sources,
-                             slot_wait=SEARCH_SLOT_WAIT_AUTOMATED)[0]
+        results = search_all(
+            query,
+            limit=12,
+            sources=search_sources,
+            include_soulseek=True,
+            slot_wait=SEARCH_SLOT_WAIT_AUTOMATED,
+            return_all_source_results=True,
+        )[0]
         log_ranked_results("Alternate candidate search", query, results)
-        gate = bool(expected_artist or expected_title)
-        for cand in results:
+        ranked, _rejected = rank_automatic_candidates(
+            results,
+            expected_artist or "",
+            expected_title or "",
+            priority_source=priority_source,
+        )
+        for cand in ranked:
             cand_id = (cand.get("video_id") or "").strip()
             cand_source = (cand.get("source") or "youtube").strip().lower()
             if not cand_id or cand_id in attempted_ids:
@@ -852,24 +869,160 @@ def _find_alternate_search_candidate(
             # list: alternate sources are the last place an allow-list may escape.
             if allowed_sources is not None and cand_source not in allowed_sources:
                 continue
-            if gate:
-                confidence, _breakdown = compute_match_confidence(
-                    expected_artist, expected_title,
-                    cand.get("title") or "",
-                    candidate_artist=cand.get("channel") or cand.get("uploader"),
-                    query=query,
-                )
-                if confidence < FALLBACK_MATCH_CONFIDENCE_FLOOR:
-                    print(
-                        f"Alternate candidate rejected (confidence {confidence:.2f} < "
-                        f"{FALLBACK_MATCH_CONFIDENCE_FLOOR:.2f}): [{cand.get('source')}] "
-                        f"{cand.get('channel') or '?'} - {cand.get('title') or '?'}"
-                    )
-                    continue
             return cand
     except Exception as e:
         print(f"Alternate candidate search failed: {e}")
     return None
+
+
+def process_acquisition_cycle(
+    job_id: str,
+    initial_candidate: dict,
+    expected_artist: str,
+    expected_title: str,
+    convert_audio: bool = True,
+    *,
+    target_id: str,
+    cycle: int,
+    automatic: bool,
+    candidate_pool: list[dict] | None = None,
+    allowed_sources: set[str] | None = None,
+    priority_source: str | None = None,
+    playlist_name: str | None = None,
+    use_playlists_dir: bool = False,
+    user_id: str | None = None,
+    override_dir: str | None = None,
+    skip_dupe_check: bool = False,
+    custom_subdir: str | None = None,
+) -> None:
+    """Run one bounded candidate cycle and persist every source leg.
+
+    Manual selections contain exactly one candidate. Automatic callers may try
+    one candidate from each healthy allowed source, ordered by known quality;
+    Soulseek's own worker may try another peer without leaving Soulseek.
+    """
+    candidate = dict(initial_candidate)
+    available_candidates = [dict(item) for item in (candidate_pool or [])]
+    attempted_ids: set[str] = set()
+    attempted_sources: set[str] = set()
+    last_error = "No candidate succeeded"
+
+    while candidate:
+        if _job_was_cancelled(job_id):
+            finish_acquisition_cycle(target_id, "cancelled", "Cancelled")
+            return
+
+        source = (candidate.get("source") or "youtube").strip().lower()
+        candidate_id = str(candidate.get("video_id") or "").strip()
+        source_url = candidate.get("source_url")
+        slskd_username = candidate.get("slskd_username")
+        slskd_filename = candidate.get("slskd_filename")
+        slskd_size = candidate.get("slskd_size") or candidate.get("size")
+        if source == "soulseek" and not source_url and slskd_username:
+            source_url = f"soulseek://{slskd_username}/{slskd_filename or ''}"
+
+        _update_job(
+            job_id,
+            status="queued",
+            source=source,
+            video_id=candidate_id,
+            source_url=source_url,
+            slskd_username=slskd_username,
+            slskd_filename=slskd_filename,
+            slskd_size=slskd_size,
+            error=None,
+            completed_at=None,
+        )
+        attempt_id = start_acquisition_attempt(target_id, cycle, job_id, candidate)
+
+        try:
+            if source == "soulseek":
+                process_slskd_download(
+                    job_id,
+                    slskd_username,
+                    slskd_filename,
+                    expected_artist,
+                    expected_title,
+                    convert_audio,
+                    user_id=user_id,
+                    override_dir=override_dir,
+                    playlist_name=playlist_name,
+                    use_playlists_dir=use_playlists_dir,
+                    custom_subdir=custom_subdir,
+                    slskd_size=slskd_size,
+                )
+            else:
+                process_download(
+                    job_id,
+                    candidate_id,
+                    convert_audio,
+                    source_url=source_url,
+                    playlist_name=playlist_name,
+                    use_playlists_dir=use_playlists_dir,
+                    attempted_ids={candidate_id} if candidate_id else set(),
+                    user_id=user_id,
+                    override_dir=override_dir,
+                    skip_dupe_check=skip_dupe_check,
+                    custom_subdir=custom_subdir,
+                    fallback_allowed_sources=allowed_sources,
+                    allow_cross_source_fallback=False,
+                )
+        except Exception as exc:
+            _update_job(
+                job_id,
+                status="failed",
+                error=str(exc),
+                progress_stage=None,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+        with db_conn() as conn:
+            row = conn.execute(
+                "SELECT status, error FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        status = row[0] if row else "failed"
+        last_error = (row[1] if row else None) or "Download failed"
+        if status in {"completed", "completed_with_errors"}:
+            finish_acquisition_attempt(attempt_id, "completed")
+            finish_acquisition_cycle(target_id, "completed")
+            return
+        if status == "cancelled":
+            finish_acquisition_attempt(attempt_id, "cancelled", last_error)
+            finish_acquisition_cycle(target_id, "cancelled", last_error)
+            return
+
+        finish_acquisition_attempt(attempt_id, "failed", last_error)
+        attempted_sources.add(source)
+        if candidate_id:
+            attempted_ids.add(candidate_id)
+
+        if not automatic or not get_setting_bool(
+            "source_offline_fallback", True, user_id=user_id
+        ):
+            finish_acquisition_cycle(target_id, "failed", last_error)
+            return
+
+        candidate = next(
+            (
+                item for item in available_candidates
+                if (item.get("source") or "youtube").strip().lower()
+                not in attempted_sources
+                and str(item.get("video_id") or "").strip() not in attempted_ids
+            ),
+            None,
+        )
+        if candidate is None:
+            candidate = _find_alternate_search_candidate(
+                f"{expected_artist} - {expected_title}".strip(" -"),
+                attempted_ids,
+                exclude_sources=attempted_sources,
+                expected_artist=expected_artist,
+                expected_title=expected_title,
+                allowed_sources=allowed_sources,
+                priority_source=priority_source,
+            )
+
+    finish_acquisition_cycle(target_id, "failed", last_error)
 
 
 def trigger_navidrome_scan(user_id: str | None = None):
@@ -4343,7 +4496,8 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                                  source_label: str = "",
                                  download_fn=None,
                                  fallback_exclude_sources: set[str] | None = None,
-                                 fallback_allowed_sources: set[str] | None = None):
+                                 fallback_allowed_sources: set[str] | None = None,
+                                 allow_cross_source_fallback: bool = False):
     """Download a direct MP3 source, no yt-dlp required.
 
     The download_url is captured at search time. artist_hint and title_hint come
@@ -4375,6 +4529,8 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         `exclude_source` drops a whole platform from the running, used when that
         source is offline rather than just serving one bad track.
         """
+        if not allow_cross_source_fallback:
+            return False
         if len(attempted_ids) >= _AUDIO_RESEARCH_MAX_ALTERNATES + 1:
             return False
 
@@ -4426,6 +4582,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             custom_subdir=custom_subdir,
             fallback_exclude_sources=excluded,
             fallback_allowed_sources=fallback_allowed_sources,
+            allow_cross_source_fallback=allow_cross_source_fallback,
         )
         return True
 
@@ -4812,7 +4969,8 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
                      user_id: str | None = None, override_dir: str | None = None,
                      skip_dupe_check: bool = False, custom_subdir: str | None = None,
                      fallback_exclude_sources: set[str] | None = None,
-                     fallback_allowed_sources: set[str] | None = None):
+                     fallback_allowed_sources: set[str] | None = None,
+                     allow_cross_source_fallback: bool = False):
     """Process a download job.
 
     source_url overrides the default YouTube URL construction  -  used for
@@ -4890,6 +5048,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
             download_fn=direct_fn,
             fallback_exclude_sources=fallback_exclude_sources,
             fallback_allowed_sources=fallback_allowed_sources,
+            allow_cross_source_fallback=allow_cross_source_fallback,
         )
         return
 
@@ -5127,6 +5286,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
                     custom_subdir=custom_subdir,
                     fallback_exclude_sources=fallback_exclude_sources,
                     fallback_allowed_sources=fallback_allowed_sources,
+                    allow_cross_source_fallback=allow_cross_source_fallback,
                 )
 
             _note_blacklist_entry(
@@ -5138,7 +5298,8 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
                 uploader=channel,
             )
 
-            if len(attempted_ids) < _AUDIO_RESEARCH_MAX_ALTERNATES + 1:
+            if (allow_cross_source_fallback
+                    and len(attempted_ids) < _AUDIO_RESEARCH_MAX_ALTERNATES + 1):
                 query = f"{artist} - {title}".strip(" -")
                 alternate = _find_alternate_search_candidate(
                     query, attempted_ids,
@@ -5168,6 +5329,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
                         custom_subdir=custom_subdir,
                         fallback_exclude_sources=fallback_exclude_sources,
                         fallback_allowed_sources=fallback_allowed_sources,
+                        allow_cross_source_fallback=allow_cross_source_fallback,
                     )
 
             raise Exception(
@@ -5225,7 +5387,8 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
         if not dur_ok:
             move_to_trash(audio_file, user_id=user_id)
             print(dur_reason)
-            if len(attempted_ids) < _AUDIO_RESEARCH_MAX_ALTERNATES + 1:
+            if (allow_cross_source_fallback
+                    and len(attempted_ids) < _AUDIO_RESEARCH_MAX_ALTERNATES + 1):
                 query = f"{artist} - {title}".strip(" -")
                 alternate = _find_alternate_search_candidate(
                     query, attempted_ids,
@@ -5262,6 +5425,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
                         custom_subdir=custom_subdir,
                         fallback_exclude_sources=fallback_exclude_sources,
                         fallback_allowed_sources=fallback_allowed_sources,
+                        allow_cross_source_fallback=allow_cross_source_fallback,
                     )
             raise Exception(dur_reason)
 
@@ -5430,7 +5594,8 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
         # outright. Same gate and exclusion logic as the direct-source path; only fires
         # when the user has the setting on and we genuinely know what we were after.
         usable_query = bool(artist) and bool(title) and title != video_id
-        if (usable_query
+        if (allow_cross_source_fallback
+                and usable_query
                 and len(attempted_ids) < _AUDIO_RESEARCH_MAX_ALTERNATES + 1
                 and get_setting_bool("source_offline_fallback", True, user_id=user_id)):
             excluded = set(fallback_exclude_sources or set())
@@ -5473,6 +5638,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
                         custom_subdir=custom_subdir,
                         fallback_exclude_sources=excluded,
                         fallback_allowed_sources=fallback_allowed_sources,
+                        allow_cross_source_fallback=allow_cross_source_fallback,
                     )
 
         _update_job(job_id, status="failed", error=str(e), progress_stage=None, completed_at=datetime.now(timezone.utc).isoformat())
