@@ -9,7 +9,6 @@ import pathlib
 import re
 import shutil
 import sqlite3
-import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -40,7 +39,11 @@ from utils import (
     check_duplicate, sanitize_playlist_name,
 )
 from downloads import check_navidrome_duplicate, check_lidarr_duplicate, _tag_track_comment
-from youtube import _ytdlp_base_args
+from youtube import (
+    _ytdlp_base_args,
+    classify_ytdlp_failure,
+    run_ytdlp_with_retries,
+)
 
 import httpx
 
@@ -937,15 +940,19 @@ def _fetch_soundcloud_playlist(url: str) -> tuple[list[tuple[str, str]], str]:
         "--no-warnings",
         url,
     ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_PLAYLIST)
-    except subprocess.TimeoutExpired:
+    result, timed_out = run_ytdlp_with_retries(
+        cmd,
+        TIMEOUT_YTDLP_PLAYLIST,
+        allow_cookie_fallback=False,
+        operation="SoundCloud playlist metadata lookup",
+    )
+    if timed_out:
         raise HTTPException(status_code=504, detail="Timeout fetching SoundCloud playlist")
 
     # yt-dlp may exit non-zero if individual tracks are geo-restricted, but
     # still return valid playlist JSON on stdout.  Parse first, fail later.
     try:
-        data = json.loads(result.stdout.strip())
+        data = json.loads(result.stdout.strip()) if result is not None else {}
     except (json.JSONDecodeError, ValueError):
         raise HTTPException(status_code=502, detail="Failed to fetch SoundCloud playlist")
 
@@ -1036,25 +1043,32 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             ytdlp_url
         ]
 
-        try:
-            result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_PLAYLIST)
-        except subprocess.TimeoutExpired:
+        result, timed_out = run_ytdlp_with_retries(
+            info_cmd,
+            TIMEOUT_YTDLP_PLAYLIST,
+            operation=f"YouTube playlist metadata lookup for {playlist_id}",
+        )
+        if timed_out:
             raise HTTPException(status_code=504, detail="Timeout fetching YouTube playlist")
 
-        if result.returncode != 0:
+        if result is None or result.returncode != 0:
             # A bad/missing/private playlist is the caller's mistake (404), not an
             # upstream gateway failure (502). yt-dlp tells us which in stderr: a
             # dud or malformed list id makes YouTube's API answer "400 Bad
             # Request", a deleted/private one says so outright. Anything else
             # (timeouts, transient network) stays a 502.
-            stderr_lc = (result.stderr or "").lower()
+            stderr = result.stderr if result is not None else ""
+            stderr_lc = stderr.lower()
             client_error_signs = (
                 "does not exist", "unavailable", "private", "has been removed",
                 "this playlist does not exist or is private",
-                "http error 400", "bad request", "unable to download api page",
+                "http error 400", "bad request",
                 "not a valid url", "incomplete youtube id",
             )
-            if any(s in stderr_lc for s in client_error_signs):
+            if (
+                classify_ytdlp_failure(stderr) == "missing"
+                or any(s in stderr_lc for s in client_error_signs)
+            ):
                 raise HTTPException(status_code=404, detail="YouTube playlist not found (it may have been deleted, made private, or the URL is wrong)")
             raise HTTPException(status_code=502, detail="Failed to fetch YouTube playlist")
 

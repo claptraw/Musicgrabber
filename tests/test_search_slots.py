@@ -24,10 +24,16 @@ import search
 
 
 @pytest.fixture(autouse=True)
-def clean_slots():
-    search._SOURCE_SEARCH_SLOTS.clear()
+def clean_slots(monkeypatch):
+    # Slot tests exercise admission, not the settings database. Pin the default
+    # so a worker from the preceding test cannot still be resolving a live
+    # setting while the fixture resets the registry beneath it.
+    monkeypatch.setattr(search, "get_setting_int", lambda *_a, **_k: 1)
+    with search._SOURCE_SEARCH_SLOTS_LOCK:
+        search._SOURCE_SEARCH_SLOTS.clear()
     yield
-    search._SOURCE_SEARCH_SLOTS.clear()
+    with search._SOURCE_SEARCH_SLOTS_LOCK:
+        search._SOURCE_SEARCH_SLOTS.clear()
 
 
 def _occupy(source, hold):
@@ -106,6 +112,42 @@ def test_waiting_on_one_source_does_not_block_another():
     assert result == ["free"]
     release.set()
     worker.join(timeout=2)
+
+
+def test_configured_limit_allows_two_searches_but_not_three(monkeypatch):
+    monkeypatch.setattr(search, "get_setting_int", lambda *_a, **_k: 2)
+    release = threading.Event()
+    both_started = threading.Event()
+    started_count = 0
+    started_lock = threading.Lock()
+
+    def _slow(_query, _limit):
+        nonlocal started_count
+        with started_lock:
+            started_count += 1
+            if started_count == 2:
+                both_started.set()
+        release.wait(timeout=5)
+        return []
+
+    workers = [
+        threading.Thread(
+            target=search._run_source_search,
+            args=("unit", {"search_fn": _slow}, f"q{idx}", 5),
+            daemon=True,
+        )
+        for idx in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    assert both_started.wait(timeout=2), "two configured searches did not start"
+
+    with pytest.raises(search.SourceSearchBusy):
+        search._run_source_search("unit", {"search_fn": _slow}, "third", 5)
+
+    release.set()
+    for worker in workers:
+        worker.join(timeout=2)
 
 
 # ---------------------------------------------------------------------------

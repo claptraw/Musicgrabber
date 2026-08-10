@@ -17,6 +17,7 @@ import os
 import re
 import tempfile
 import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from constants import AUDIO_EXTENSIONS
@@ -57,6 +58,114 @@ def _normalise_album_match_text(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+_ALBUM_FOLDER_DECORATION = {
+    "album", "ep", "lp", "deluxe", "edition", "expanded", "anniversary",
+    "remaster", "remastered", "reissue", "bonus", "disc", "disk", "cd",
+}
+
+
+def _strip_album_folder_decoration(value: str) -> str:
+    words = _normalise_album_match_text(value).split()
+    while words and (
+        words[-1] in _ALBUM_FOLDER_DECORATION
+        or words[-1].isdigit() and len(words) > 1 and words[-2] in {"disc", "disk", "cd"}
+    ):
+        words.pop()
+    return " ".join(words)
+
+
+def _folder_names_equivalent(expected: str, actual: str, *, album: bool) -> bool:
+    expected_n = _normalise_album_match_text(expected)
+    actual_n = _normalise_album_match_text(actual)
+    if not expected_n or not actual_n:
+        return False
+    if expected_n == actual_n:
+        return True
+    if album and _strip_album_folder_decoration(expected_n) == _strip_album_folder_decoration(actual_n):
+        return True
+    # Punctuation/transliteration differences should not create another copy,
+    # but the threshold stays deliberately high: this is a duplicate check,
+    # not a general "albums vaguely like this" browser.
+    return SequenceMatcher(None, expected_n, actual_n).ratio() >= (0.88 if album else 0.92)
+
+
+def _matching_album_dirs(
+    artist: str,
+    album_title: str,
+    user_id: str | None = None,
+) -> list[Path]:
+    """Equivalent existing album folders, confined to configured Albums."""
+    albums_root = get_albums_dir(user_id=user_id)
+    if not albums_root.exists():
+        return []
+
+    exact_artist = albums_root / sanitize_filename(artist)
+    artist_dirs = []
+    if exact_artist.is_dir():
+        artist_dirs.append(exact_artist)
+    for candidate in albums_root.iterdir():
+        if (
+            candidate.is_dir()
+            and candidate not in artist_dirs
+            and _folder_names_equivalent(artist, candidate.name, album=False)
+        ):
+            artist_dirs.append(candidate)
+
+    exact_album_name = sanitize_filename(album_title)
+    matches = []
+    for artist_dir in artist_dirs:
+        exact_album = artist_dir / exact_album_name
+        if exact_album.is_dir() and exact_album not in matches:
+            matches.append(exact_album)
+        for candidate in artist_dir.iterdir():
+            if (
+                candidate.is_dir()
+                and candidate not in matches
+                and _folder_names_equivalent(album_title, candidate.name, album=True)
+            ):
+                matches.append(candidate)
+    return matches
+
+
+def _album_file_matches_track(file_path: Path, artist: str, title: str) -> bool:
+    wanted = _normalise_album_match_text(title)
+    if not wanted:
+        return False
+    stem = _normalise_album_match_text(file_path.stem)
+    if not stem:
+        return False
+    # Common album filenames start with a track/disc number or, in flat mode,
+    # the artist credit. Remove only those structural prefixes.
+    stem = re.sub(r"^(?:cd\s*)?\d+(?:\s+\d+)?\s+", "", stem)
+    artist_n = _normalise_album_match_text(artist)
+    if artist_n and stem.startswith(f"{artist_n} "):
+        stem = stem[len(artist_n):].strip()
+    if stem == wanted or stem.endswith(f" {wanted}"):
+        return True
+    return (
+        min(len(stem), len(wanted)) >= 5
+        and SequenceMatcher(None, wanted, stem).ratio() >= 0.90
+    )
+
+
+def find_existing_album_track(
+    artist: str,
+    album_title: str,
+    title: str,
+    user_id: str | None = None,
+) -> Path | None:
+    """Find one matching track inside the configured Albums tree only."""
+    for album_dir in _matching_album_dirs(artist, album_title, user_id=user_id):
+        for file_path in album_dir.iterdir():
+            if (
+                file_path.is_file()
+                and file_path.suffix.lower() in AUDIO_EXTENSIONS
+                and _album_file_matches_track(file_path, artist, title)
+            ):
+                return file_path
+    return None
+
+
 def album_on_disk(artist: str, album_title: str, user_id: str | None = None) -> bool:
     """Cheap already-have-it check: does the album folder exist with any audio in it?
 
@@ -64,35 +173,40 @@ def album_on_disk(artist: str, album_title: str, user_id: str | None = None) -> 
     (e.g. GET /api/watched-artists/{id}/albums) where fetching every release's
     tracklist just to render a badge would hammer MB for nothing.
     """
-    album_dir = get_albums_dir(user_id=user_id) / sanitize_filename(artist) / sanitize_filename(album_title)
-    if not album_dir.exists():
-        return False
-    return any(p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS for p in album_dir.iterdir())
+    return any(
+        p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
+        for album_dir in _matching_album_dirs(artist, album_title, user_id=user_id)
+        for p in album_dir.iterdir()
+    )
 
 
 def album_track_status(artist: str, album_title: str, tracks: list[dict], user_id: str | None = None) -> dict:
     """Return existing/missing status for tracklist against the target album directory."""
-    album_dir = get_albums_dir(user_id=user_id) / sanitize_filename(artist) / sanitize_filename(album_title)
-    audio_files = [p for p in album_dir.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS] if album_dir.exists() else []
-    audio_stems = [p.stem for p in audio_files]
+    target_dir = get_albums_dir(user_id=user_id) / sanitize_filename(artist) / sanitize_filename(album_title)
+    matched_dirs = _matching_album_dirs(artist, album_title, user_id=user_id)
+    # Continue an equivalent existing folder rather than creating e.g.
+    # "Lost Souls" beside "Lost Souls EP" and splitting the record in two.
+    album_dir = target_dir if target_dir in matched_dirs or not matched_dirs else matched_dirs[0]
+    audio_files = [
+        p
+        for existing_dir in matched_dirs
+        for p in existing_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
+    ]
 
     track_status = []
     for t in tracks:
         title = (t.get("title") or "").strip()
         stem = _album_track_stem(artist, title, user_id=user_id)
-        exists_exact = any((album_dir / f"{stem}{ext}").exists() for ext in AUDIO_EXTENSIONS)
-        exists_fuzzy = False
-        if not exists_exact:
-            norm_title = _normalise_album_match_text(title)
-            if norm_title:
-                for file_stem in audio_stems:
-                    norm_stem = _normalise_album_match_text(file_stem)
-                    if not norm_stem:
-                        continue
-                    if norm_stem == norm_title or norm_stem.endswith(f" {norm_title}"):
-                        exists_fuzzy = True
-                        break
-        exists = bool(exists_exact or exists_fuzzy)
+        exists_exact = any(
+            (existing_dir / f"{stem}{ext}").exists()
+            for existing_dir in matched_dirs
+            for ext in AUDIO_EXTENSIONS
+        )
+        exists = bool(
+            exists_exact
+            or any(_album_file_matches_track(path, artist, title) for path in audio_files)
+        )
         track_status.append({
             "position": t.get("position"),
             "title": title,
@@ -102,7 +216,10 @@ def album_track_status(artist: str, album_title: str, tracks: list[dict], user_i
 
     existing_tracks = [t for t in track_status if t["exists"]]
     missing_tracks = [t for t in track_status if not t["exists"]]
-    m3u_files = sorted([p.name for p in album_dir.glob("*.m3u") if p.is_file()], key=str.casefold) if album_dir.exists() else []
+    m3u_files = sorted(
+        {p.name for existing_dir in matched_dirs for p in existing_dir.glob("*.m3u") if p.is_file()},
+        key=str.casefold,
+    )
     return {
         "album_dir": album_dir,
         "tracks": track_status,

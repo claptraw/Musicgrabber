@@ -74,10 +74,9 @@ def _queue_download(api, base_url, **kwargs):
     return job_id, data
 
 
-def _cleanup(api, base_url, job_id=None):
+def _cleanup_downloaded_file(api, base_url, job_id=None):
     if job_id:
         api.delete(f"{base_url}/api/jobs/{job_id}/file", timeout=10)
-    api.delete(f"{base_url}/api/jobs/cleanup", timeout=10)
 
 
 @contextmanager
@@ -837,7 +836,7 @@ def test_mark_watched_track_downloaded_rebuilds_m3u_via_bulk_import(monkeypatch)
 def test_queue_single_download_returns_job_id(api, base_url):
     job_id, _ = _queue_download(api, base_url)
     assert job_id
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 def test_queue_single_download_job_is_retrievable(api, base_url):
@@ -845,7 +844,7 @@ def test_queue_single_download_job_is_retrievable(api, base_url):
     r = api.get(f"{base_url}/api/jobs/{job_id}", timeout=10)
     assert r.status_code == 200
     assert r.json()["id"] == job_id
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 def test_queue_single_download_initial_status(api, base_url):
@@ -853,7 +852,7 @@ def test_queue_single_download_initial_status(api, base_url):
     status = api.get(f"{base_url}/api/jobs/{job_id}", timeout=10).json().get("status")
     assert status in (*_TERMINAL, "queued", "downloading"), \
         f"Unexpected initial status: {status}"
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 def test_queue_playlist_routed_download_accepted(api, base_url):
@@ -864,7 +863,7 @@ def test_queue_playlist_routed_download_accepted(api, base_url):
     """
     job_id, _ = _queue_download(api, base_url, playlist_name="Test Playlist", use_playlists_dir=True)
     assert api.get(f"{base_url}/api/jobs/{job_id}", timeout=10).json()["id"] == job_id
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 def test_download_missing_video_id_rejected(api, base_url):
@@ -884,7 +883,7 @@ def test_download_job_shape(api, base_url):
     job = api.get(f"{base_url}/api/jobs/{job_id}", timeout=10).json()
     for key in expected_keys:
         assert key in job, f"Job response missing key: {key}"
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -918,7 +917,7 @@ def test_single_baseline_completes(api, base_url):
     _assert_completed(job)
     assert job.get("override_dir") is None, \
         f"Expected no routing with all settings off, got override_dir={job['override_dir']}"
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 @pytest.mark.slow
@@ -930,7 +929,7 @@ def test_single_album_routing_off_no_override_dir(api, base_url):
     _assert_completed(job)
     assert job.get("override_dir") is None, \
         f"override_dir should be None with routing off, got: {job['override_dir']}"
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 @pytest.mark.slow
@@ -960,7 +959,7 @@ def test_single_album_routing_on_sets_override_dir(api, base_url):
     albums_subdir = settings.get("albums_subdir") or "Albums"
     assert albums_subdir not in od.parts, \
         f"override_dir should NOT be in Albums dir with use_albums_dir=False, got: {od}"
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 @pytest.mark.slow
@@ -983,7 +982,7 @@ def test_single_album_routing_on_albums_dir(api, base_url):
     albums_subdir = settings.get("albums_subdir") or "Albums"
     assert albums_subdir in od.parts, \
         f"Expected override_dir inside Albums dir ({albums_subdir}), got: {od}"
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 @pytest.mark.slow
@@ -993,7 +992,7 @@ def test_single_track_number_completes(api, base_url):
         job_id, _ = _queue_download(api, base_url, convert_to_flac=False)
         job = _wait_for_job(api, base_url, job_id)
     _assert_completed(job)
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 @pytest.mark.slow
@@ -1014,7 +1013,7 @@ def test_playlist_routed_single_album_routing_off(api, base_url):
     _assert_completed(job)
     assert job.get("override_dir") is None, \
         f"override_dir should be None with album routing off, got: {job['override_dir']}"
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 @pytest.mark.slow
@@ -1050,7 +1049,7 @@ def test_playlist_routed_single_album_routing_on(api, base_url):
     albums_subdir = settings.get("albums_subdir") or "Albums"
     assert albums_subdir not in od.parts, \
         f"Playlist-routed track must stay in Playlists/, not Albums/: {od}"
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 @pytest.mark.slow
@@ -1066,7 +1065,7 @@ def test_playlist_routed_single_track_number_completes(api, base_url):
                                     convert_to_flac=False)
         job = _wait_for_job(api, base_url, job_id)
     _assert_completed(job)
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 @pytest.mark.slow
@@ -1095,7 +1094,7 @@ def test_playlist_routed_single_all_settings_on(api, base_url):
     od = pathlib.Path(job["override_dir"])
     assert "Combo Test" in od.parts, \
         f"override_dir should be inside the playlist folder with all settings on, got: {od}"
-    _cleanup(api, base_url, job_id)
+    _cleanup_downloaded_file(api, base_url, job_id)
 
 
 # Two jobs downloading the same track used to share one output directory and

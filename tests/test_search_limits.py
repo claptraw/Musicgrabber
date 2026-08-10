@@ -11,6 +11,17 @@ import search
 from models import SearchResult
 
 
+@pytest.fixture(autouse=True)
+def fixed_search_admission_setting(monkeypatch):
+    """These admission tests do not need the live settings database."""
+    monkeypatch.setattr(search, "get_setting_int", lambda *_a, **_k: 1)
+    with search._SOURCE_SEARCH_SLOTS_LOCK:
+        search._SOURCE_SEARCH_SLOTS.clear()
+    yield
+    with search._SOURCE_SEARCH_SLOTS_LOCK:
+        search._SOURCE_SEARCH_SLOTS.clear()
+
+
 def test_search_result_contract_names_the_rank_as_relevance():
     payload = SearchResult(
         video_id="result-1",
@@ -47,8 +58,6 @@ def test_browser_projection_keeps_soulseek_artist_separate_from_peer():
 def test_source_search_slot_rejects_overlap_and_recovers(monkeypatch):
     started = threading.Event()
     release = threading.Event()
-    search._SOURCE_SEARCH_SLOTS.clear()
-
     def slow_search(_query, _limit):
         started.set()
         release.wait(timeout=5)
@@ -86,7 +95,6 @@ def test_soulseek_empty_retry_can_be_disabled(monkeypatch):
 
 def test_multi_source_run_disables_soulseek_empty_retry(monkeypatch):
     calls = []
-    search._SOURCE_SEARCH_SLOTS.clear()
 
     def fake_soulseek(_query, _limit, retry_empty=True):
         calls.append(retry_empty)

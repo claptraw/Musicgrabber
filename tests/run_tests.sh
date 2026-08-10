@@ -23,6 +23,11 @@ fi
 # it's serving the current code rather than a stale image. e.g.
 #   docker compose up -d --build music-grabber   (or: docker restart music-grabber)
 echo "Reminder: restart the local container first so tests run against current code (docker restart music-grabber)."
+if [ "${MG_ALLOW_HISTORY_DELETION:-}" = "1" ]; then
+    echo "WARNING: Queue-history deletion is enabled. Use this only against a disposable test instance."
+else
+    echo "Safety: Queue-history deletion is blocked; test-created Queue rows will be retained."
+fi
 
 if [ ! -d "$VENV" ]; then
     echo "Creating venv..."
@@ -30,10 +35,18 @@ if [ ! -d "$VENV" ]; then
     "$VENV/bin/pip" install -q pytest requests
     # Project deps needed for unit tests that import the downloads / db / settings
     # modules directly (otherwise those tests silently skip).
-    "$VENV/bin/pip" install -q httpx mutagen bcrypt fastapi pydantic apprise
+    "$VENV/bin/pip" install -q httpx mutagen bcrypt fastapi pydantic apprise pyflakes
+fi
+
+if [ ! -x "$VENV/bin/pyflakes" ]; then
+    "$VENV/bin/pip" install -q pyflakes
 fi
 
 PYTEST="$VENV/bin/pytest"
+PYFLAKES="$VENV/bin/pyflakes"
+
+echo "Running undefined-name/static analysis..."
+"$PYFLAKES" "$SCRIPT_DIR"/../*.py
 
 if [[ "$1" == "--slow" || "$1" == "--all" ]]; then
     shift  # consume our flag so it doesn't reach pytest, which has no idea what --slow means

@@ -75,14 +75,20 @@ def _patch_httpx(monkeypatch, metadata, responses):
     return calls
 
 
-def _release(title, date, rel_id, rg_id, primary_type="Album", secondary=None):
+def _release(
+    title, date, rel_id, rg_id, primary_type="Album", secondary=None,
+    *, status=None, media=None, group_title=None,
+):
     """One release as the MusicBrainz browse endpoint returns it."""
     return {
         "id": rel_id,
         "title": title,
         "date": date,
+        "status": status,
+        "media": media or [],
         "release-group": {
             "id": rg_id,
+            "title": group_title or title,
             "primary-type": primary_type,
             "secondary-types": secondary or [],
         },
@@ -209,4 +215,40 @@ def test_one_entry_per_release_group_even_when_the_ep_was_pressed_twice(monkeypa
     albums = metadata.fetch_artist_albums(KNIFE_PARTY_MBID)
 
     assert len(albums) == 1
-    assert albums[0]["release_mbid"] == "rel-a", "the first release listed should win"
+    assert albums[0]["release_mbid"] == "rel-a", "the earliest equivalent release should win"
+
+
+def test_complete_official_multi_disc_release_beats_earlier_fragment(monkeypatch):
+    metadata = _import_metadata_or_skip()
+    _patch_httpx(monkeypatch, metadata, [_FakeResp(200, {
+        "release-count": 3,
+        "releases": [
+            _release(
+                "The Complete Thing (disc 1)", "1996-01-01", "rel-fragment",
+                "rg-complete", status="Official", media=[{"track-count": 10}],
+                group_title="The Complete Thing",
+            ),
+            _release(
+                "The Complete Thing", "1997-01-01", "rel-complete",
+                "rg-complete", status="Official",
+                media=[{"track-count": 10}, {"track-count": 11}],
+                group_title="The Complete Thing",
+            ),
+            _release(
+                "The Complete Thing", "1995-01-01", "rel-bootleg",
+                "rg-complete", status="Bootleg",
+                media=[{"track-count": 12}, {"track-count": 12}],
+                group_title="The Complete Thing",
+            ),
+        ],
+    })])
+
+    albums = metadata.fetch_artist_albums(KNIFE_PARTY_MBID)
+
+    assert albums == [{
+        "title": "The Complete Thing",
+        "year": "1997",
+        "release_mbid": "rel-complete",
+        "release_group_mbid": "rg-complete",
+        "primary_type": "Album",
+    }]

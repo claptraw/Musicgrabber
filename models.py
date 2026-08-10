@@ -165,6 +165,7 @@ class SettingsUpdate(BaseModel):
     source_health_checks_enabled: Optional[bool] = None
     source_health_check_interval_minutes: Optional[int] = None
     source_health_cooldown_minutes: Optional[int] = None
+    search_concurrency: Optional[int] = Field(default=None, ge=1, le=5)
     # Monochrome (Qobuz / Tidal via hifi-api)
     monochrome_hifi_api_url: Optional[str] = None
     monochrome_qobuz_proxy_url: Optional[str] = None

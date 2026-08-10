@@ -217,6 +217,7 @@ def test_the_uploader_name_is_never_accepted_as_the_artist(monkeypatch):
     import downloads
 
     seen = {}
+    monkeypatch.setattr(downloads, "_job_was_cancelled", lambda _j: False)
     monkeypatch.setattr(downloads, "_get_job_album_context", lambda _j: {})
     monkeypatch.setattr(downloads, "_get_album_track_tag_context", lambda _j: (None, None))
     monkeypatch.setattr(downloads, "ensure_album_cover_files", lambda *a, **k: None)
@@ -313,6 +314,7 @@ def test_slskd_stages_file_then_routes_with_embedded_artist(monkeypatch, tmp_pat
     raw_file.write_bytes(b"audio-shaped test fixture")
     seen = {"job_updates": []}
 
+    monkeypatch.setattr(downloads, "_job_was_cancelled", lambda _j: False)
     monkeypatch.setattr(downloads, "_get_job_album_context", lambda _j: {})
     monkeypatch.setattr(downloads, "_get_album_track_tag_context", lambda _j: (None, None))
     monkeypatch.setattr(downloads, "ensure_album_cover_files", lambda *a, **k: None)

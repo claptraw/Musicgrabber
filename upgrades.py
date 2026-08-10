@@ -32,6 +32,16 @@ from constants import (
     kbps_to_tier as _kbps_to_tier,
     SEARCH_SLOT_WAIT_AUTOMATED,
 )
+
+# These constants have long been part of this module's public import surface;
+# tests and callers import them from ``upgrades`` alongside the tier helpers.
+__all__ = [
+    "TIER_LOSSY_128",
+    "TIER_LOSSY_192",
+    "TIER_LOSSY_256",
+    "TIER_LOSSY_320",
+    "TIER_LOSSLESS",
+]
 from db import db_conn
 from settings import (
     get_setting_bool,

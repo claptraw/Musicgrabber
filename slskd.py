@@ -974,7 +974,7 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                             if requeue_response.status_code not in [200, 201]:
                                 print(f"slskd: Re-queue failed with status {requeue_response.status_code}")
                             else:
-                                print(f"slskd: Re-queued successfully")
+                                print("slskd: Re-queued successfully")
 
                             last_state = ""  # Reset to log new state
                             break  # Continue polling
@@ -995,14 +995,14 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                 # If file disappeared from the queue entirely, it might have been
                 # removed or the user went offline - try re-queuing once
                 if not file_found and last_state and "queue" not in last_state.lower():
-                    print(f"slskd: File no longer in transfer queue, attempting re-queue...")
+                    print("slskd: File no longer in transfer queue, attempting re-queue...")
                     requeue_response = client.post(
                         f"{slskd_url}/api/v0/transfers/downloads/{username}",
                         headers=headers,
                         json=[queue_item]
                     )
                     if requeue_response.status_code in [200, 201]:
-                        print(f"slskd: Re-queued successfully")
+                        print("slskd: Re-queued successfully")
                     last_state = ""
 
             if not download_complete:

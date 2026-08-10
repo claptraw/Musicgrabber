@@ -853,7 +853,12 @@
                                 <span>Cooldown (min)</span>
                                 <input type="number" id="settingSourceHealthCooldown" min="1" max="1440" value="10" class="settings-input-sm">
                             </label>
+                            <label>
+                                <span>Searches per source</span>
+                                <input type="number" id="settingSearchConcurrency" min="1" max="5" value="1" class="settings-input-sm">
+                            </label>
                         </div>
+                        <span class="settings-hint settings-hint-full">Each provider gets this many simultaneous searches across interactive and automatic work. Default 1, maximum 5. Download concurrency remains an internal conservative limit.</span>
                     </label>
                     <label class="settings-label format-selector-wrap">
                         <span>Audio Format</span>
@@ -1063,11 +1068,6 @@
                             </select>
                         </div>
                         <span class="settings-hint-sm">Permissions applied to each downloaded file. 666 is fine for most setups. Use 777 if your NAS or media server refuses to write to files owned by root.</span>
-                    </div>
-                    <div class="settings-row admin-only">
-                        <label for="settingMaxConcurrentDownloads">Concurrent Downloads</label>
-                        <input type="number" id="settingMaxConcurrentDownloads" placeholder="3" value="3" min="1" max="10" class="settings-input-sm">
-                        <span class="settings-hint-sm">Maximum simultaneous downloads for bulk imports and watched playlist refreshes. Higher values are faster but hammer sources harder. Default: 3, max: 10.</span>
                     </div>
                 </div>
             </div>

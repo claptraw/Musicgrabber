@@ -114,10 +114,6 @@ def test_bulk_import_create_returns_id(api, base_url):
     s = api.get(f"{base_url}/api/bulk-import/{import_id}/status", timeout=10)
     assert s.status_code == 200
 
-    # Clean up the jobs created by this import
-    api.delete(f"{base_url}/api/jobs/cleanup", timeout=10)
-
-
 def test_bulk_import_status_shape(api, base_url):
     """Status response should contain all expected fields."""
     r = api.post(
@@ -132,9 +128,6 @@ def test_bulk_import_status_shape(api, base_url):
         assert key in s, f"status response missing key: {key}"
 
     assert s["total_tracks"] == 1, f"expected 1 track, got {s['total_tracks']}"
-
-    api.delete(f"{base_url}/api/jobs/cleanup", timeout=10)
-
 
 def test_bulk_import_multiline_track_count(api, base_url):
     """total_tracks should match the number of submitted lines."""
@@ -152,9 +145,6 @@ def test_bulk_import_multiline_track_count(api, base_url):
         f"expected 3 tracks for 3 input lines, got {s['total_tracks']}"
     )
 
-    api.delete(f"{base_url}/api/jobs/cleanup", timeout=10)
-
-
 def test_bulk_import_bad_format_graceful(api, base_url):
     """Blank lines and malformed entries shouldn't crash the import."""
     songs = "\n\nRadiohead - Creep\n\nThis line has no dash\n\n"
@@ -164,7 +154,6 @@ def test_bulk_import_bad_format_graceful(api, base_url):
         timeout=15,
     )
     assert r.status_code == 200
-    api.delete(f"{base_url}/api/jobs/cleanup", timeout=10)
 
 
 def test_bulk_import_status_404_unknown_id(api, base_url):
@@ -207,6 +196,3 @@ def test_bulk_import_tracks_get_searched(api, base_url):
     assert queued_or_completed >= 1, (
         f"no tracks were queued or completed: {status}"
     )
-
-    # Clean up jobs without waiting for them to finish
-    api.delete(f"{base_url}/api/jobs/cleanup", timeout=10)

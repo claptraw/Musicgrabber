@@ -5,6 +5,8 @@ import queue
 import sqlite3
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
@@ -28,6 +30,7 @@ EXPECTED_KEYS = [
     "source_health_checks_enabled",
     "source_health_check_interval_minutes",
     "source_health_cooldown_minutes",
+    "search_concurrency",
     "monochrome_browser_fallback_enabled",
     "notify_on",
 ]
@@ -56,6 +59,19 @@ def test_fresh_install_keeps_source_format_by_default():
 
 def test_fresh_install_enables_monochrome_browser_fallback():
     assert SETTINGS_SCHEMA["monochrome_browser_fallback_enabled"]["default"] is True
+
+
+def test_search_concurrency_defaults_to_one_and_is_bounded():
+    from models import SettingsUpdate
+    from pydantic import ValidationError
+
+    assert SETTINGS_SCHEMA["search_concurrency"]["default"] == 1
+    assert SettingsUpdate(search_concurrency=1).search_concurrency == 1
+    assert SettingsUpdate(search_concurrency=5).search_concurrency == 5
+    with pytest.raises(ValidationError):
+        SettingsUpdate(search_concurrency=0)
+    with pytest.raises(ValidationError):
+        SettingsUpdate(search_concurrency=6)
 
 
 def _migrate_old_db(old_db, monkeypatch):

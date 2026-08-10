@@ -147,9 +147,9 @@ def test_a_new_earliest_pressing_does_not_make_a_known_album_look_new(fresh_db, 
     """The release-group is the album's identity, not whichever pressing
     MusicBrainz currently thinks came first.
 
-    fetch_artist_albums returns one row per release-group and picks the
-    earliest release to represent it. That representative is not stable: add a
-    freshly catalogued 1997 promo pressing and the release_mbid changes even
+    fetch_artist_albums returns one row per release-group and picks one complete
+    official release to represent it. That representative is not stable: add a
+    newly catalogued more-complete pressing and the release_mbid can change even
     though it is unmistakably the same album. Keying on release_mbid would
     therefore re-queue an entire album on the strength of a MusicBrainz
     housekeeping edit, which is a rotten way to find out your NAS is full.

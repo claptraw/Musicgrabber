@@ -4224,7 +4224,7 @@
         }
 
         function showBulkImportProgress(data) {
-            const searchDone = data.status === 'completed' || data.status === 'error';
+            const searchDone = ['completed', 'cancelled', 'error'].includes(data.status);
             // Show search progress while searching, download progress once searches are done
             const percent = data.total_tracks > 0
                 ? (searchDone
@@ -4238,6 +4238,12 @@
             if (data.rate_limited) {
                 statusText = 'Rate limited - waiting...';
                 statusColor = 'var(--warning)';
+            } else if (data.status === 'cancelling') {
+                statusText = 'Cancelling after current file...';
+                statusColor = 'var(--warning)';
+            } else if (data.status === 'cancelled') {
+                statusText = 'Cancelled';
+                statusColor = 'var(--text-secondary)';
             } else if (data.complete) {
                 statusText = 'Complete';
                 statusColor = 'var(--accent)';
@@ -4253,7 +4259,10 @@
                 <div style="padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                         <div style="font-size: 14px; font-weight: 600;">Import Progress</div>
-                        <div style="font-size: 12px; color: ${statusColor};">${statusText}</div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <div style="font-size: 12px; color: ${statusColor};">${statusText}</div>
+                            ${!isComplete && data.status !== 'cancelling' ? '<button type="button" class="btn btn-ghost" style="padding:4px 8px;font-size:11px;" onclick="cancelBulkImport()">Cancel</button>' : ''}
+                        </div>
                     </div>
 
                     <!-- Progress bar -->
@@ -4300,6 +4309,8 @@
                             } else if (track.status === 'failed') {
                                 icon = 'x';
                                 color = 'var(--error)';
+                            } else if (track.status === 'cancelled') {
+                                icon = '-';
                             } else if (track.status === 'searching') {
                                 icon = '?';
                             }
@@ -4332,10 +4343,28 @@
                 bulkImportBtn.textContent = 'Import & Download All';
                 if (data.status === 'completed') {
                     showToast(`Import complete: ${data.queued} queued, ${data.failed} failed`);
+                } else if (data.status === 'cancelled') {
+                    showToast('Import cancelled. Completed files and Queue history were kept.');
                 }
             } else {
                 bulkImportBtn.disabled = true;
                 bulkImportBtn.textContent = `Processing ${data.searched}/${data.total_tracks}...`;
+            }
+        }
+
+        async function cancelBulkImport() {
+            if (!currentBulkImportId) return;
+            try {
+                const response = await apiFetch(`/api/bulk-import/${currentBulkImportId}/cancel`, {
+                    method: 'POST'
+                });
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Could not cancel import');
+                }
+                showToast('Cancellation requested. The active file may finish.');
+            } catch (error) {
+                showToast(error.message || 'Could not cancel import', true);
             }
         }
 
@@ -5113,7 +5142,7 @@
             clearQueueBtn.disabled = true;
 
             try {
-                const response = await apiFetch('/api/jobs/cleanup', {
+                const response = await apiFetch('/api/jobs/cleanup?confirm=true', {
                     method: 'DELETE'
                 });
 
@@ -9065,6 +9094,7 @@
             'source_health_checks_enabled': 'settingSourceHealthChecks',
             'source_health_check_interval_minutes': 'settingSourceHealthInterval',
             'source_health_cooldown_minutes': 'settingSourceHealthCooldown',
+            'search_concurrency': 'settingSearchConcurrency',
             'monochrome_hifi_api_url': 'settingMonochromeHifiUrl',
             'monochrome_qobuz_proxy_url': 'settingMonochromeQobuzUrl',
             'monochrome_qbdlx_fallback_enabled': 'settingMonochromeQbdlxFallback',
@@ -9098,7 +9128,6 @@
             'spotify_browser_timeout_seconds': 'settingSpotifyBrowserTimeout',
             'spotify_browser_stall_seconds': 'settingSpotifyBrowserStall',
             'file_permissions': 'settingFilePermissions',
-            'max_concurrent_downloads': 'settingMaxConcurrentDownloads',
             'api_key': 'settingApiKey'
         };
 

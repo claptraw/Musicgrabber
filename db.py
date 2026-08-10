@@ -10,6 +10,7 @@ from contextlib import contextmanager
 import queue
 import threading
 import time
+from pathlib import Path
 from constants import (
     DB_PATH,
     DB_BUSY_TIMEOUT_MS,
@@ -224,6 +225,7 @@ def init_db():
             source_url TEXT,
             selected_duration_secs REAL,
             file_deleted INTEGER DEFAULT 0,
+            final_path TEXT,
             metadata_source TEXT,
             override_dir TEXT,
             album_release_mbid TEXT,
@@ -297,6 +299,10 @@ def init_db():
         except sqlite3.OperationalError:
             pass
         try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN final_path TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
             conn.execute("ALTER TABLE jobs ADD COLUMN metadata_source TEXT")
         except sqlite3.OperationalError:
             pass
@@ -349,6 +355,7 @@ def init_db():
             album_release_mbid TEXT,
             album_total_tracks INTEGER,
             rate_limited_until TIMESTAMP,
+            cancel_requested INTEGER DEFAULT 0,
             error TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             -- Bumped every time a track is dealt with. A long import is perfectly
@@ -393,6 +400,10 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE bulk_imports ADD COLUMN album_total_tracks INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE bulk_imports ADD COLUMN cancel_requested INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
         # Album flow carries a per-track ISRC so we can chase the exact studio recording;
@@ -1303,7 +1314,6 @@ def init_db():
         # URLs, and strip the now-dead qdl-api entry from front-runner position.
         if db_version < 7:
             import re as _re7
-            _DEAD_QOBUZ_URLS = {"https://qdl-api.monochrome.tf"}
             _NEW_QOBUZ_LIVE = [
                 "https://qobuz.kennyy.com.br",
                 "https://mono.scavengerfurs.net",
@@ -1748,7 +1758,8 @@ def reconcile_deleted_library_files(batch_size: int = 500) -> tuple[int, int]:
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            """SELECT id, artist, title
+            """SELECT id, artist, title, final_path, override_dir,
+                      album_name, album_track_title, user_id
                FROM jobs
                WHERE status IN ('completed', 'completed_with_errors')
                  AND COALESCE(file_deleted, 0) = 0
@@ -1775,17 +1786,61 @@ def reconcile_deleted_library_files(batch_size: int = 500) -> tuple[int, int]:
     resolved_paths: dict[str, str] = {r["job_id"]: r["resolved_path"] for r in rp_rows}
 
     stale_ids: list[str] = []
+    recovered_paths: list[tuple[str, str]] = []
     for row in rows:
         job_id = row["id"]
+        # New jobs record the exact final file. Once that truth exists, do not
+        # substitute a similarly named file elsewhere in the library: the file
+        # we delivered is either still there or it is not.
+        final_path = (row["final_path"] or "").strip()
+        if final_path:
+            final = Path(final_path)
+            if final.is_absolute() and final.exists():
+                continue
+            stale_ids.append(job_id)
+            continue
+
         # Prefer the stored resolved_path (covers playlist folders).
         rp = resolved_paths.get(job_id)
         if rp:
-            from pathlib import Path as _Path
-            if _Path(rp).is_absolute() and _Path(rp).exists():
+            resolved = Path(rp)
+            if resolved.is_absolute() and resolved.exists():
+                recovered_paths.append((str(resolved), job_id))
                 continue  # File is right where we left it
+
+        # Pre-final_path album jobs need a safe migration bridge. Search only
+        # the configured Albums tree, never the whole music root, and backfill
+        # the exact path as soon as one is found.
+        if row["override_dir"]:
+            try:
+                from albums import find_existing_album_track
+                existing_album_file = find_existing_album_track(
+                    row["artist"],
+                    row["album_name"] or Path(row["override_dir"]).name,
+                    row["album_track_title"] or row["title"],
+                    user_id=row["user_id"],
+                )
+            except Exception:
+                existing_album_file = None
+            if existing_album_file:
+                recovered_paths.append((str(existing_album_file), job_id))
+                continue
         # Fall back to walking Singles layout.
-        if not check_duplicate(row["artist"], row["title"]):
+        existing_single = check_duplicate(
+            row["artist"], row["title"], user_id=row["user_id"]
+        )
+        if existing_single:
+            recovered_paths.append((str(existing_single), job_id))
+        else:
             stale_ids.append(job_id)
+
+    if recovered_paths:
+        with db_conn() as conn:
+            conn.executemany(
+                "UPDATE jobs SET final_path = ? WHERE id = ? AND final_path IS NULL",
+                recovered_paths,
+            )
+            conn.commit()
 
     if not stale_ids:
         return 0, 0

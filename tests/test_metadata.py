@@ -381,6 +381,25 @@ def test_pick_release_from_group_prefers_official_and_earliest():
     assert chosen["id"] == "original"
 
 
+def test_pick_release_from_group_prefers_complete_multi_disc_official_release():
+    metadata = _import_metadata_or_skip()
+    chosen = metadata._pick_release_from_group([
+        {
+            "id": "fragment", "status": "Official", "date": "1996-01-01",
+            "media": [{"track-count": 10}],
+        },
+        {
+            "id": "complete", "status": "Official", "date": "1997-01-01",
+            "media": [{"track-count": 10}, {"track-count": 11}],
+        },
+        {
+            "id": "bootleg", "status": "Bootleg", "date": "1995-01-01",
+            "media": [{"track-count": 20}, {"track-count": 20}],
+        },
+    ])
+    assert chosen["id"] == "complete"
+
+
 def test_pick_release_from_group_does_not_let_vague_dates_win():
     """A bare '1998' string-sorts before '1998-10-12'; it must not win on that."""
     metadata = _import_metadata_or_skip()
@@ -450,6 +469,10 @@ def test_fetch_release_summary_resolves_a_release_group(monkeypatch):
                 {"id": "rel-first", "status": "Official", "date": "1998-10-12"},
             ],
         }),
+        _FakeResp(200, {"releases": [
+            {"id": "rel-late", "status": "Official", "date": "2008-01-01"},
+            {"id": "rel-first", "status": "Official", "date": "1998-10-12"},
+        ]}),
         _FakeResp(200, {  # then the chosen release
             "id": "rel-first",
             "title": "You've Come a Long Way, Baby",
@@ -462,6 +485,74 @@ def test_fetch_release_summary_resolves_a_release_group(monkeypatch):
     summary = metadata.fetch_release_summary("release-group", "rg-1")
     assert summary["release_mbid"] == "rel-first"
     assert summary["artist"] == "Fatboy Slim"
+
+
+def test_release_group_keeps_various_artists_and_complete_tracklist(monkeypatch):
+    metadata = _import_metadata_or_skip()
+    monkeypatch.setattr(metadata, "get_setting_bool", lambda *a, **kw: True)
+    _patch_httpx(monkeypatch, metadata, [
+        _FakeResp(200, {
+            "id": "rg-va",
+            "title": "A Proper Compilation",
+            "artist-credit": [{"name": "Various Artists"}],
+            "releases": [{"id": "disc-one", "status": "Official", "date": "1996"}],
+        }),
+        _FakeResp(200, {"releases": [
+            {
+                "id": "disc-one", "status": "Official", "date": "1996",
+                "media": [{"track-count": 10}],
+            },
+            {
+                "id": "complete", "status": "Official", "date": "1997",
+                "media": [{"track-count": 10}, {"track-count": 11}],
+            },
+        ]}),
+        _FakeResp(200, {
+            "id": "complete",
+            "title": "A Proper Compilation (2 CD)",
+            "date": "1997",
+            "artist-credit": [{"name": "Featured Performer"}],
+            "media": [{"track-count": 10}, {"track-count": 11}],
+        }),
+    ])
+
+    summary = metadata.fetch_release_summary("release-group", "rg-va")
+
+    assert summary == {
+        "artist": "Various Artists",
+        "album_title": "A Proper Compilation",
+        "release_mbid": "complete",
+        "year": "1997",
+        "track_count": 21,
+    }
+
+
+def test_legitimate_disc_word_in_group_title_is_not_stripped(monkeypatch):
+    metadata = _import_metadata_or_skip()
+    monkeypatch.setattr(metadata, "get_setting_bool", lambda *a, **kw: True)
+    _patch_httpx(monkeypatch, metadata, [
+        _FakeResp(200, {
+            "id": "rel-discotheque",
+            "title": "Discothèque",
+            "date": "2020",
+            "artist-credit": [{"name": "Artist"}],
+            "release-group": {"id": "rg-discotheque"},
+            "media": [{"track-count": 9}],
+        }),
+        _FakeResp(200, {
+            "id": "rg-discotheque",
+            "title": "Discothèque",
+            "artist-credit": [{"name": "Artist"}],
+        }),
+        _FakeResp(200, {"releases": [{
+            "id": "rel-discotheque", "status": "Official", "date": "2020",
+            "media": [{"track-count": 9}],
+        }]}),
+    ])
+
+    summary = metadata.fetch_release_summary("release", "rel-discotheque")
+
+    assert summary["album_title"] == "Discothèque"
 
 
 def test_fetch_release_summary_joins_multiple_credited_artists(monkeypatch):

@@ -5,7 +5,6 @@ Single track, playlist, and Soulseek download handlers.
 Library scan triggers and M3U playlist generation.
 """
 
-import contextlib
 import json
 import math
 import re
@@ -27,16 +26,14 @@ from constants import (
     AUDIO_EXTENSIONS,
     MUSIC_DIR,
     STAGING_DIR_NAME,
-    TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_SEARCH, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
+    TIMEOUT_YTDLP_INFO, TIMEOUT_YTDLP_DOWNLOAD, TIMEOUT_YTDLP_PLAYLIST,
     TIMEOUT_FFMPEG_CONVERT, TIMEOUT_HTTP_REQUEST,
     LOUDNORM_TARGET_I, LOUDNORM_TARGET_TP, LOUDNORM_TARGET_LRA,
     LOUDNORM_SKIP_DELTA_LU, TIMEOUT_LOUDNORM,
     REPLAYGAIN_REFERENCE_LUFS, REPLAYGAIN_MAX_ALBUM_TRACKS,
-    YTDLP_403_MAX_RETRIES, YTDLP_403_RETRY_DELAY,
     SLSKD_MAX_RETRIES, TIMEOUT_SLSKD_SEARCH,
     FALLBACK_MATCH_CONFIDENCE_FLOOR,
     PLAYLIST_WAIT_MAX, PLAYLIST_WAIT_INTERVAL,
-    YOUTUBE_SEARCH_MULTIPLIER, YOUTUBE_SEARCH_MIN_FETCH,
     MAX_AUDIO_START_OFFSET_SECS,
     MB_DURATION_TOLERANCE,
     SELECTED_RESULT_DURATION_TOLERANCE, SELECTED_RESULT_MIN_SHORTFALL_SECS,
@@ -75,9 +72,8 @@ from monochrome import download_monochrome_track
 from zvu4no import download_zvu4no_track, is_zvu4no_url
 from freemp3cloud import download_freemp3cloud_track
 from youtube import (
-    _ytdlp_base_args, _is_ytdlp_403, _strip_cookies_args,
-    _should_retry_without_cookies, _sleep_if_botted, _note_bot_block, _note_cookie_failure,
-    parse_youtube_search_results,
+    _ytdlp_base_args, _is_ytdlp_403, _note_cookie_failure,
+    run_ytdlp_with_retries,
 )
 
 
@@ -1507,6 +1503,7 @@ _ALLOWED_JOB_COLS = frozenset({
     "playlist_name", "total_tracks", "completed_tracks", "failed_tracks",
     "skipped_tracks", "m3u_path", "source", "slskd_username", "slskd_filename", "slskd_size",
     "convert_audio", "source_url", "file_deleted", "metadata_source",
+    "final_path",
     "override_dir", "album_release_mbid", "album_name", "album_track_title",
     "album_track_number", "album_track_total", "completed_at", "uploader",
     "audio_quality", "progress_stage", "source_history",
@@ -1559,6 +1556,72 @@ def _update_job(job_id: str, **fields) -> None:
             (*values, job_id),
         )
         conn.commit()
+
+
+def _local_final_path(path: Path | str | None) -> str | None:
+    """Return a stable absolute path only for a file visible on this host."""
+    if not path:
+        return None
+    candidate = Path(path)
+    if not candidate.is_absolute() or not candidate.exists():
+        return None
+    try:
+        return str(candidate.resolve())
+    except OSError:
+        return str(candidate)
+
+
+def _complete_if_existing_album_track(
+    job_id: str,
+    album_ctx: dict,
+    user_id: str | None = None,
+) -> bool:
+    """Skip an album job when its track already exists in configured Albums."""
+    album_artist = (album_ctx.get("album_artist") or "").strip()
+    album_name = (album_ctx.get("album_name") or "").strip()
+    track_title = (album_ctx.get("track_title") or "").strip()
+    if not (album_ctx.get("override_dir") and album_artist and album_name and track_title):
+        return False
+    try:
+        from albums import find_existing_album_track
+        existing = find_existing_album_track(
+            album_artist,
+            album_name,
+            track_title,
+            user_id=user_id,
+        )
+    except Exception as exc:
+        print(f"Album duplicate check failed for {album_artist} - {album_name}: {exc}")
+        return False
+    if not existing:
+        return False
+
+    _update_job(
+        job_id,
+        status="completed",
+        error=f"Already exists in Albums: {_display_path(existing)}",
+        final_path=_local_final_path(existing),
+        progress_stage=None,
+        completed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    _mark_watched_track_downloaded(job_id, resolved_path=existing, skip_mismatch=True)
+    _mark_watched_artist_track_downloaded(job_id, resolved_path=existing)
+    complete_album_track_lock(
+        album_ctx.get("release_mbid"),
+        track_title,
+        album_name,
+    )
+    print(f"Album duplicate: retained existing track {existing}")
+    return True
+
+
+def _job_was_cancelled(job_id: str) -> bool:
+    """True when cancellation won the race before a worker began."""
+    if not job_id:
+        return False
+    with db_conn() as conn:
+        row = conn.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    return bool(row and row[0] == "cancelled")
 
 
 def _normalise_watched_match_text(text: str) -> str:
@@ -2859,62 +2922,13 @@ def _run_ytdlp_with_retries(
     timeout_secs: int,
     has_cookies: bool
 ) -> tuple[subprocess.CompletedProcess | None, bool]:
-    """Run yt-dlp with retry/backoff and optional cookie fallback."""
-    download_result = None
-    download_timed_out = False
-
-    for attempt in range(1 + YTDLP_403_MAX_RETRIES):
-        _sleep_if_botted()
-        try:
-            download_result = subprocess.run(
-                download_cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_secs
-            )
-        except subprocess.TimeoutExpired:
-            download_timed_out = True
-            break
-
-        if download_result.returncode == 0:
-            break
-
-        if _is_ytdlp_403(download_result.stderr) and attempt < YTDLP_403_MAX_RETRIES:
-            print(f"YouTube 403 for {download_cmd[-1]}, retrying (attempt {attempt + 1})")
-            time.sleep(YTDLP_403_RETRY_DELAY * (attempt + 1))
-        else:
-            break
-
-    cookies_may_be_at_fault = has_cookies and download_result and _should_retry_without_cookies(download_result.stderr)
-
-    # Only flag a bot block for actual 403/rate-limit errors  -  format-not-available
-    # is a cookie/manifest issue, not a bot block, and shouldn't trigger the backoff sleep.
-    if download_timed_out or (download_result and _is_ytdlp_403(download_result.stderr)):
-        _note_bot_block()
-
-    if (download_timed_out or (download_result and download_result.returncode != 0)) and has_cookies:
-        if download_timed_out or _should_retry_without_cookies(download_result.stderr):
-            # Retry without cookies  -  if this succeeds, it confirms cookies were the problem.
-            # If it also fails, the video itself is blocked (geo-lock, ContentID, etc.) and
-            # cookies were innocent bystanders  -  don't penalise them.
-            download_cmd_no_cookies = _strip_cookies_args(download_cmd)
-            try:
-                download_result = subprocess.run(
-                    download_cmd_no_cookies,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_secs
-                )
-                download_timed_out = False
-                if download_result.returncode == 0 and cookies_may_be_at_fault:
-                    # Cookieless worked  -  so cookies were actively causing the 403.
-                    # Disable them for a while so they don't break other downloads too.
-                    print("Cookie-related 403 confirmed (cookieless retry succeeded)  -  disabling cookies temporarily")
-                    _note_cookie_failure()
-            except subprocess.TimeoutExpired:
-                download_timed_out = True
-
-    return download_result, download_timed_out
+    """Compatibility wrapper around the shared yt-dlp retry policy."""
+    return run_ytdlp_with_retries(
+        download_cmd,
+        timeout_secs,
+        allow_cookie_fallback=has_cookies,
+        operation=f"yt-dlp download for {download_cmd[-1]}",
+    )
 
 
 def rebuild_album_m3u(album_dir: Path, playlist_name: str | None = None) -> Path | None:
@@ -3445,6 +3459,8 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
     Playlists/PlaylistName/ with 'Artist - Title' naming. Otherwise falls back to Singles.
     """
     try:
+        if _job_was_cancelled(job_id):
+            return
         _update_job(job_id, status="downloading")
 
         # Get playlist information and extract all video IDs
@@ -3457,9 +3473,14 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
             f"https://www.youtube.com/playlist?list={playlist_id}"
         ]
 
-        info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_PLAYLIST)
-        if info_result.returncode != 0:
-            raise Exception("Failed to get playlist info")
+        info_result, info_timed_out = run_ytdlp_with_retries(
+            info_cmd,
+            TIMEOUT_YTDLP_PLAYLIST,
+            operation=f"Playlist metadata lookup for {playlist_id}",
+        )
+        if info_timed_out or info_result is None or info_result.returncode != 0:
+            stderr = info_result.stderr if info_result is not None else ""
+            raise Exception(f"Failed to get playlist info: {_summarise_ytdlp_stderr(stderr)}")
 
         # Parse all videos from playlist
         videos = []
@@ -3514,11 +3535,16 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
                 ]
                 has_cookies = "--cookies" in detail_cmd
 
-                detail_result = subprocess.run(detail_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
-                if detail_result.returncode != 0:
+                detail_result, detail_timed_out = run_ytdlp_with_retries(
+                    detail_cmd,
+                    TIMEOUT_YTDLP_INFO,
+                    operation=f"Playlist track info lookup for {video_id}",
+                )
+                if detail_timed_out or detail_result is None or detail_result.returncode != 0:
+                    stderr = detail_result.stderr if detail_result is not None else ""
                     print(
                         f"Playlist track info lookup failed ({video_id}): "
-                        f"{_summarise_ytdlp_stderr(detail_result.stderr)}"
+                        f"{_summarise_ytdlp_stderr(stderr)}"
                     )
                     failed_tracks += 1
                     continue
@@ -3786,6 +3812,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
             job_id,
             status=final_status,
             error=error_message,
+            final_path=_local_final_path(m3u_path) if downloaded_files else None,
             completed_at=datetime.now(timezone.utc).isoformat()
         )
 
@@ -3822,6 +3849,8 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
 def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_audio: bool = True, user_id: str | None = None, override_dir: str | None = None, playlist_name: str = None, use_playlists_dir: bool = False, custom_subdir: str | None = None, slskd_size: int | None = None):
     """Process a Soulseek download job via slskd"""
+    if _job_was_cancelled(job_id):
+        return
     staging = None
     album_ctx = _get_job_album_context(job_id)
     if not override_dir and album_ctx.get("override_dir"):
@@ -3832,6 +3861,8 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
     album_track_number, album_track_total = _get_album_track_tag_context(job_id)
     album_art_bytes, album_art_mime = get_album_art_context(job_id)
     ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
+    if _complete_if_existing_album_track(job_id, album_ctx, user_id=user_id):
+        return
     try:
         _update_job(job_id, status="downloading", progress_stage="Fetching info")
 
@@ -3990,6 +4021,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 job_id,
                 status="completed",
                 completed_at=datetime.now(timezone.utc).isoformat(),
+                final_path=_local_final_path(existing_file),
                 error=f"Already exists in {source_label}: {_display_path(existing_file)} (added to playlist)"
             )
             real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
@@ -4002,6 +4034,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
                 job_id,
                 status="completed",
                 completed_at=datetime.now(timezone.utc).isoformat(),
+                final_path=_local_final_path(existing_file),
                 error=f"Already exists: {_display_path(existing_file)}"
             )
             _mark_watched_track_downloaded(
@@ -4218,6 +4251,7 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
             job_id,
             status="completed",
             error=None,
+            final_path=_local_final_path(final_file),
             audio_quality=audio_quality,
             metadata_source=metadata_source,
             progress_stage=None,
@@ -4316,6 +4350,8 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
     from the search result and are good enough for duplicate detection and
     filename generation; MusicBrainz will tidy up anything dubious afterwards.
     """
+    if _job_was_cancelled(job_id):
+        return
     artist = artist_hint or "Unknown"
     title = title_hint or "Unknown"
     album_ctx = _get_job_album_context(job_id)
@@ -4411,6 +4447,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                     job_id,
                     status="completed",
                     completed_at=datetime.now(timezone.utc).isoformat(),
+                    final_path=_local_final_path(existing_file),
                     error=f"Already exists in {src}: {_display_path(existing_file)} (added to playlist)"
                 )
                 real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
@@ -4423,6 +4460,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                     job_id,
                     status="completed",
                     completed_at=datetime.now(timezone.utc).isoformat(),
+                    final_path=_local_final_path(existing_file),
                     error=f"Already exists: {_display_path(existing_file)}"
                 )
                 _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None, skip_mismatch=True)
@@ -4674,6 +4712,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             job_id,
             status="completed",
             error=None,
+            final_path=_local_final_path(output_path),
             audio_quality=audio_quality,
             metadata_source=metadata_source,
             progress_stage=None,
@@ -4783,6 +4822,8 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
     override_dir, when set, is an absolute path string used as the download directory
     instead of the normal Singles/Artist layout  -  used by album downloads.
     """
+    if _job_was_cancelled(job_id):
+        return
     is_soundcloud  = source_url and "soundcloud.com" in source_url
     is_zvu4no      = is_zvu4no_url(source_url)
     is_freemp3cloud = source_url and "meln.top" in source_url
@@ -4816,6 +4857,9 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
             except Exception:
                 pass
     ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
+
+    if _complete_if_existing_album_track(job_id, album_ctx, user_id=user_id):
+        return
 
     # Direct stream sources: bypass yt-dlp entirely.
     # artist/title come from the job row (set at queue time from search results).
@@ -4879,14 +4923,20 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
         ]
         has_cookies = "--cookies" in info_cmd
 
-        info_result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_INFO)
-        if info_result.returncode != 0:
-            if not is_url_source and _is_ytdlp_403(info_result.stderr) and has_cookies:
+        info_result, info_timed_out = run_ytdlp_with_retries(
+            info_cmd,
+            TIMEOUT_YTDLP_INFO,
+            allow_cookie_fallback=has_cookies,
+            operation=f"{source_label.title()} track info lookup for {video_id}",
+        )
+        if info_timed_out or info_result is None or info_result.returncode != 0:
+            info_stderr = info_result.stderr if info_result is not None else ""
+            if not is_url_source and _is_ytdlp_403(info_stderr) and has_cookies:
                 _note_cookie_failure()
-            reason_msg = _format_info_lookup_error(source_label, info_result.stderr, has_cookies)
+            reason_msg = _format_info_lookup_error(source_label, info_stderr, has_cookies)
             # Always log the raw stderr so we can diagnose vague "provider
             # rejected the request" messages without asking the user to repro.
-            raw_stderr = (info_result.stderr or "").strip()
+            raw_stderr = info_stderr.strip()
             if raw_stderr:
                 print(f"Job {job_id} info lookup failed ({source_label}:{video_id}): {reason_msg}\n  raw stderr: {raw_stderr[:800]}")
             else:
@@ -4942,6 +4992,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
                     job_id,
                     status="completed",
                     completed_at=datetime.now(timezone.utc).isoformat(),
+                    final_path=_local_final_path(existing_file),
                     error=error_label
                 )
                 real_existing = existing_file if (existing_file.is_absolute() and existing_file.exists()) else None
@@ -4954,6 +5005,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
                     job_id,
                     status="completed",
                     completed_at=datetime.now(timezone.utc).isoformat(),
+                    final_path=_local_final_path(existing_file),
                     error=f"Already exists: {_display_path(existing_file)}"
                 )
                 _mark_watched_track_downloaded(job_id, resolved_path=existing_file if existing_file.is_absolute() and existing_file.exists() else None, skip_mismatch=True)
@@ -5329,6 +5381,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
             job_id,
             status="completed",
             error=None,
+            final_path=_local_final_path(audio_file),
             audio_quality=audio_quality,
             metadata_source=metadata_source,
             progress_stage=None,

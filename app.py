@@ -80,14 +80,19 @@ from downloads import (
     check_navidrome_duplicate, check_lidarr_duplicate,
     get_job_source_allowlist,
 )
-from bulk_import import clean_bulk_import_line, start_bulk_import_for_tracks, process_bulk_import_worker
+from bulk_import import (
+    clean_bulk_import_line,
+    start_bulk_import_for_tracks,
+    process_bulk_import_worker,
+    request_bulk_import_cancellation,
+)
 from watched_playlists import (
     detect_playlist_platform, fetch_playlist_tracks, refresh_watched_playlist,
     fetch_listenbrainz_createdfor, start_scheduler, wake_scheduler,
 )
 from watched_artists import refresh_watched_artist, start_artist_scheduler, wake_artist_scheduler, seed_artist_albums
 from upgrades import (
-    start_upgrade_scheduler, run_scan_all, get_candidates,
+    start_upgrade_scheduler, run_scan_all,
     get_candidates_page, search_candidate, dismiss_candidate,
     perform_upgrade, perform_upgrade_all,
 )
@@ -739,6 +744,8 @@ def update_settings(updates: SettingsUpdate, request: Request):
         # Only allow sensible chmod values; a free-text octal field is a footgun
         if key == "file_permissions" and value not in ("666", "777"):
             raise HTTPException(status_code=400, detail="file_permissions must be 666 or 777")
+        if key == "search_concurrency" and not 1 <= int(value) <= 5:
+            raise HTTPException(status_code=400, detail="search_concurrency must be between 1 and 5")
 
         # Validate cookie format before saving
         if key == "youtube_cookies" and value.strip() and not _has_valid_cookie_entries(value):
@@ -2247,8 +2254,8 @@ def get_jobs(limit: int = 20, http_request: Request = None):
             if (job.get('status') in ('completed', 'completed_with_errors')
                     and not job.get('file_deleted')
                     and job.get('artist') and job.get('title')):
-                rp = resolved_paths.get(job['id'])
-                if rp and _Path(rp).is_absolute() and not _Path(rp).exists():
+                known_path = job.get('final_path') or resolved_paths.get(job['id'])
+                if known_path and _Path(known_path).is_absolute() and not _Path(known_path).exists():
                     job['file_deleted'] = 1
                     stale_ids.append(job['id'])
 
@@ -2367,8 +2374,12 @@ def download_job_file(job_id: str, http_request: Request):
 
     file_path = None
 
-    # Prefer the stored resolved_path (set at download time, works for playlist folders too).
-    if rp_row and rp_row["resolved_path"]:
+    # Prefer the job's authoritative final path, then the older watched-row path.
+    if job.get("final_path"):
+        candidate = Path(job["final_path"])
+        if candidate.is_absolute() and candidate.exists():
+            file_path = candidate
+    if file_path is None and rp_row and rp_row["resolved_path"]:
         candidate = Path(rp_row["resolved_path"])
         if candidate.is_absolute() and candidate.exists():
             file_path = candidate
@@ -2419,7 +2430,13 @@ def stream_job_file(job_id: str, http_request: Request):
 
     from utils import check_duplicate
 
-    file_path = check_duplicate(artist, title, user_id=user_id)
+    file_path = None
+    if job.get("final_path"):
+        candidate = Path(job["final_path"])
+        if candidate.is_absolute() and candidate.exists():
+            file_path = candidate
+    if file_path is None:
+        file_path = check_duplicate(artist, title, user_id=user_id)
     if not file_path or not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
@@ -2452,7 +2469,7 @@ def retry_job(job_id: str, http_request: Request):
 
         # Reset job status
         conn.execute(
-            "UPDATE jobs SET status = ?, error = NULL, completed_at = NULL, file_deleted = 0, "
+            "UPDATE jobs SET status = ?, error = NULL, completed_at = NULL, file_deleted = 0, final_path = NULL, "
             "progress_at = datetime('now') WHERE id = ?",
             ("queued", job_id)
         )
@@ -2589,7 +2606,13 @@ def delete_job_file(job_id: str, http_request: Request):
         raise HTTPException(status_code=400, detail="Job has no artist/title metadata")
 
     from utils import check_duplicate, move_to_trash
-    existing = check_duplicate(artist, title, user_id=user_id)
+    existing = None
+    if job.get("final_path"):
+        candidate = Path(job["final_path"])
+        if candidate.is_absolute() and candidate.exists():
+            existing = candidate
+    if existing is None:
+        existing = check_duplicate(artist, title, user_id=user_id)
     if not existing:
         # File already gone, just mark it and move on
         with db_conn() as conn:
@@ -2708,7 +2731,13 @@ def patch_job_tags(job_id: str, body: PatchTagsRequest, http_request: Request):
     # Resolve the file on disk, same priority order as delete_job_file
     from utils import check_duplicate
     file_path = None
+    if job.get("final_path"):
+        candidate = Path(job["final_path"])
+        if candidate.is_absolute() and candidate.exists():
+            file_path = candidate
     for rp_row in (rp_playlist, rp_artist):
+        if file_path is not None:
+            break
         if rp_row and rp_row["resolved_path"]:
             candidate = Path(rp_row["resolved_path"])
             if candidate.is_absolute() and candidate.exists():
@@ -2762,8 +2791,8 @@ def patch_job_tags(job_id: str, body: PatchTagsRequest, http_request: Request):
     resolved_str = str(new_file_path)
     with db_conn() as conn:
         conn.execute(
-            "UPDATE jobs SET artist = ?, title = ?, album_name = ? WHERE id = ?",
-            (new_artist, new_title, new_album, job_id)
+            "UPDATE jobs SET artist = ?, title = ?, album_name = ?, final_path = ? WHERE id = ?",
+            (new_artist, new_title, new_album, resolved_str, job_id)
         )
         if rp_playlist:
             conn.execute(
@@ -2833,16 +2862,32 @@ def get_job_musicbrainz_guess(job_id: str, artist: str, title: str, http_request
 
 
 @app.delete("/api/jobs/cleanup")
-def cleanup_jobs(http_request: Request, status: Optional[str] = None):
+def cleanup_jobs(
+    http_request: Request,
+    status: Optional[str] = None,
+    confirm: bool = False,
+):
     """Delete completed, failed, or stale jobs.
 
     Admins clear the lot; standard users only clear their own rows.
     Peons get bounced; the UI hides the button but a curious one with dev
-    tools open shouldn't get to nuke anything.
+    tools open shouldn't get to nuke anything. The confirmation query parameter
+    is deliberately enforced by the API as well as the browser prompt: scripts
+    and test suites should not be able to erase Queue history by accident.
     """
     user = getattr(http_request.state, "user", None) or {}
     if user.get("role") == "peon":
         raise HTTPException(status_code=403, detail="Peons cannot clear the queue")
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation required (use ?confirm=true)",
+        )
+    if status not in (None, "both", "completed", "failed", "stale"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid status (use completed, failed, stale, or both)",
+        )
 
     # First, mark any stale jobs as failed so they get cleaned up
     cleanup_stale_jobs()
@@ -2869,7 +2914,7 @@ def cleanup_jobs(http_request: Request, status: Optional[str] = None):
                 f"AND created_at < datetime('now', ? || ' seconds'){scope_clause}",
                 (str(-STALE_JOB_TIMEOUT), *scope_params),
             )
-        else:
+        else:  # Omitted or explicitly "both".
             cursor = conn.execute(
                 f"DELETE FROM jobs WHERE status IN ('completed', 'completed_with_errors', 'failed'){scope_clause}",
                 scope_params,
@@ -3287,7 +3332,7 @@ def get_bulk_import_status(import_id: str, http_request: Request):
         dupe_skipped_count = row[3] or 0
 
     total_failed = import_row["failed"] + download_failed_count
-    search_done = import_row["status"] in ("completed", "error")
+    search_done = import_row["status"] in ("completed", "cancelled", "error")
     all_done = search_done and still_queued_count == 0
 
     return {
@@ -3305,6 +3350,30 @@ def get_bulk_import_status(import_id: str, http_request: Request):
         "recent_tracks": recent_tracks,
         "complete": all_done
     }
+
+
+@app.post("/api/bulk-import/{import_id}/cancel")
+def cancel_bulk_import(import_id: str, http_request: Request):
+    """Cancel untouched import work and retain completed files/Queue rows."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        scope_frag, scope_params = _user_scope(user_id, is_admin)
+        import_row = conn.execute(
+            f"SELECT id, status FROM bulk_imports WHERE id = ? AND {scope_frag}",
+            (import_id, *scope_params),
+        ).fetchone()
+        if not import_row:
+            raise HTTPException(status_code=404, detail="Import not found")
+        if import_row["status"] in ("completed", "cancelled", "error"):
+            return {"import_id": import_id, "status": import_row["status"], "already_finished": True}
+        result = request_bulk_import_cancellation(import_id, conn=conn)
+        status = conn.execute(
+            "SELECT status FROM bulk_imports WHERE id = ?", (import_id,)
+        ).fetchone()[0]
+        conn.commit()
+    return {"import_id": import_id, "status": status, **result}
 
 
 @app.get("/api/bulk-imports")
@@ -3745,13 +3814,24 @@ def delete_watched_playlist(playlist_id: str, http_request: Request):
         if not playlist:
             raise HTTPException(status_code=404, detail="Watched playlist not found")
 
+        # Cancellation and deletion share this transaction. The worker can see
+        # the cancellation flag before the playlist row disappears, so it may
+        # finish its one active file but cannot schedule the untouched tail.
+        cancelled = request_bulk_import_cancellation(
+            watch_playlist_id=playlist_id,
+            conn=conn,
+        )
         # Delete tracks first (FK constraint)
         conn.execute("DELETE FROM watched_playlist_tracks WHERE playlist_id = ?", (playlist_id,))
         conn.execute("DELETE FROM watched_playlists WHERE id = ?", (playlist_id,))
         conn.commit()
 
     wake_scheduler()
-    return {"message": f"Deleted watched playlist '{playlist['name']}'"}
+    return {
+        "message": f"Deleted watched playlist '{playlist['name']}'",
+        "cancelled_imports": cancelled["imports"],
+        "cancelled_jobs": cancelled["jobs"],
+    }
 
 
 @app.get("/api/watched-playlists/{playlist_id}/missing")

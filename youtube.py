@@ -10,10 +10,12 @@ import random
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 from constants import (
     BOT_BACKOFF_MIN_SECONDS, BOT_BACKOFF_MAX_SECONDS,
     COOKIES_FILE, TIMEOUT_YTDLP_SEARCH,
+    YTDLP_403_MAX_RETRIES, YTDLP_403_RETRY_DELAY,
     YOUTUBE_SEARCH_MULTIPLIER, YOUTUBE_SEARCH_MIN_FETCH,
     YTDLP_PLAYER_CLIENT, MIN_SONG_DURATION_SECS,
 )
@@ -210,6 +212,137 @@ def _should_retry_without_cookies(stderr: str) -> bool:
         # Retry without cookies  -  the cookieless manifest is usually saner.
         or "requested format is not available" in lower
     )
+
+
+_YTDLP_DEFINITE_MISSING_SIGNS = (
+    "private video",
+    "private track",
+    "video unavailable",
+    "track unavailable",
+    "has been removed",
+    "no longer available",
+    "http error 404",
+    "http error 410",
+    "not a valid url",
+    "incomplete youtube id",
+)
+
+_YTDLP_TRANSIENT_SIGNS = (
+    "http error 403",
+    "forbidden",
+    "http error 429",
+    "too many requests",
+    "http error 500",
+    "http error 502",
+    "http error 503",
+    "http error 504",
+    "timed out",
+    "timeout",
+    "unable to download webpage",
+    "unable to download api page",
+    "requested format is not available",
+    "format manifest",
+    "connection reset",
+    "remote end closed connection",
+    "remote disconnected",
+    "temporary failure",
+    "network is unreachable",
+)
+
+
+def classify_ytdlp_failure(stderr: str = "", *, timed_out: bool = False) -> str:
+    """Classify a yt-dlp failure as ``transient``, ``missing`` or ``permanent``.
+
+    The distinction is deliberately conservative. A definite private/deleted
+    item is not improved by hammering the provider, while throttling, reduced
+    manifests, gateway failures and network timeouts deserve a few bounded
+    attempts. In particular, ``unable to download API page`` is transient: it
+    describes a failed request, not proof that the requested media is absent.
+    """
+    if timed_out:
+        return "transient"
+    lower = (stderr or "").lower()
+    if any(sign in lower for sign in _YTDLP_DEFINITE_MISSING_SIGNS):
+        return "missing"
+    if _is_ytdlp_403(stderr) or any(sign in lower for sign in _YTDLP_TRANSIENT_SIGNS):
+        return "transient"
+    return "permanent"
+
+
+def run_ytdlp_with_retries(
+    cmd: list[str],
+    timeout_secs: int | float,
+    *,
+    max_retries: int = YTDLP_403_MAX_RETRIES,
+    retry_delay: float = YTDLP_403_RETRY_DELAY,
+    allow_cookie_fallback: bool = True,
+    operation: str = "yt-dlp request",
+) -> tuple[subprocess.CompletedProcess | None, bool]:
+    """Run any yt-dlp metadata/download command with one bounded policy.
+
+    Transient failures retry with a short linear backoff. Definite missing,
+    private or invalid media returns immediately. When cookies were involved
+    and the final failure can plausibly be session-related, one cookieless
+    retry cycle is allowed; success disables the suspect cookies temporarily.
+    Returns ``(result, timed_out)`` so existing download callers retain their
+    useful timeout-specific messages.
+    """
+    retries = max(0, int(max_retries))
+
+    def _run_cycle(run_cmd: list[str]) -> tuple[subprocess.CompletedProcess | None, bool]:
+        last_result = None
+        timed_out = False
+        for attempt in range(retries + 1):
+            _sleep_if_botted()
+            try:
+                last_result = subprocess.run(
+                    run_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_secs,
+                )
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                last_result = None
+                timed_out = True
+
+            if last_result is not None and last_result.returncode == 0:
+                return last_result, False
+
+            stderr = last_result.stderr if last_result is not None else ""
+            failure_kind = classify_ytdlp_failure(stderr, timed_out=timed_out)
+            if failure_kind != "transient" or attempt >= retries:
+                return last_result, timed_out
+
+            if _is_ytdlp_403(stderr):
+                _note_bot_block()
+            pause = max(0.0, float(retry_delay)) * (attempt + 1)
+            print(
+                f"{operation} hit a transient provider failure; retrying "
+                f"({attempt + 2}/{retries + 1}) in {pause:.1f}s"
+            )
+            if pause:
+                time.sleep(pause)
+        return last_result, timed_out
+
+    result, timed_out = _run_cycle(cmd)
+    if result is not None and result.returncode == 0:
+        return result, False
+
+    stderr = result.stderr if result is not None else ""
+    used_cookies = "--cookies" in cmd
+    cookie_candidate = timed_out or _should_retry_without_cookies(stderr)
+    if allow_cookie_fallback and used_cookies and cookie_candidate:
+        cookieless_cmd = _strip_cookies_args(cmd)
+        cookieless_result, cookieless_timed_out = _run_cycle(cookieless_cmd)
+        if cookieless_result is not None and cookieless_result.returncode == 0:
+            print(f"{operation} succeeded without cookies; disabling suspect cookies temporarily")
+            _note_cookie_failure()
+        return cookieless_result, cookieless_timed_out
+
+    if result is not None and _is_ytdlp_403(stderr):
+        _note_bot_block()
+    return result, timed_out
 
 
 def _get_bot_backoff_window() -> tuple[float, float]:
@@ -779,10 +912,14 @@ def search_youtube(query: str, limit: int) -> list[dict]:
             f"ytsearch{fetch_limit}:{query}",
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_SEARCH)
+        result, timed_out = run_ytdlp_with_retries(
+            cmd,
+            TIMEOUT_YTDLP_SEARCH,
+            operation=f"YouTube search for '{query}'",
+        )
 
-        if result.returncode != 0:
-            stderr = result.stderr or ""
+        if timed_out or result is None or result.returncode != 0:
+            stderr = result.stderr if result is not None else ""
             lower = stderr.lower()
 
             def _reason(err_lower: str) -> str:
@@ -807,41 +944,12 @@ def search_youtube(query: str, limit: int) -> list[dict]:
                 return "provider rejected the request"
 
             reason = _reason(lower)
-            # Format errors are a cookie/manifest mismatch, not a bot block.
-            if _is_ytdlp_403(stderr):
-                _note_bot_block()
-
-            used_cookies = "--cookies" in cmd
-            if used_cookies and _should_retry_without_cookies(stderr):
-                cmd_no_cookies = _strip_cookies_args(cmd)
-                try:
-                    result_no_cookies = subprocess.run(
-                        cmd_no_cookies,
-                        capture_output=True,
-                        text=True,
-                        timeout=TIMEOUT_YTDLP_SEARCH,
-                    )
-                except Exception as e:
-                    print(f"YouTube search failed for '{query}': {reason}. Cookieless retry error: {e}")
-                    return []
-
-                if result_no_cookies.returncode == 0:
-                    results = parse_youtube_search_results(result_no_cookies.stdout, query=query)
-                    results.sort(key=lambda x: x["relevance_score"], reverse=True)
-                    if results:
-                        print(f"YouTube search cookieless retry succeeded for '{query}', cookies look stale")
-                        _note_cookie_failure()
-                        return results[:limit]
-                    print(f"YouTube search failed for '{query}': {reason}. Cookieless retry returned no parseable results")
-                    return []
-
-                reason2 = _reason((result_no_cookies.stderr or "").lower())
-                if _is_ytdlp_403(result_no_cookies.stderr):
-                    _note_bot_block()
-                print(f"YouTube search failed for '{query}': {reason}. Cookieless retry failed: {reason2}")
-                return []
-
-            print(f"YouTube search failed for '{query}': {reason}")
+            if timed_out:
+                reason = "provider/network timeout"
+            print(
+                f"YouTube search failed for '{query}': {reason} "
+                f"({classify_ytdlp_failure(stderr, timed_out=timed_out)})"
+            )
             return []
 
         results = parse_youtube_search_results(result.stdout, query=query)

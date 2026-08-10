@@ -488,9 +488,6 @@ def test_qa_full_acquisition_flow(api, base_url):
         except requests.RequestException:
             pass
 
-    try:
-        api.delete(f"{base_url}/api/jobs/cleanup", timeout=15)
-    except requests.RequestException:
-        pass
-
+    # Queue rows are deliberately retained as test history. Never use the
+    # whole-queue cleanup endpoint from a suite aimed at a persistent instance.
 

@@ -1181,8 +1181,6 @@ def verify_recording(acoustid_result: Optional[dict], *,
         return "uncertain"
 
     matched_mbid = acoustid_result.get("recording_id")
-    matched_title = acoustid_result.get("title") or ""
-
     # The user explicitly asked for a variant (live/unplugged/acoustic/...).
     # In that case live-ness is wanted, not a defect: never reject for it.
     user_wants_variant = query_requests_variant(query) if query else False
@@ -2301,7 +2299,8 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
     offset = 0
     limit = 100
     total = None
-    seen_release_groups: set[str] = set()
+    releases_by_group: dict[str, list[dict]] = {}
+    group_metadata: dict[str, dict] = {}
 
     _EXCLUDED_SECONDARY_TYPES = {
         "Compilation", "Live", "Remix", "Soundtrack", "Interview",
@@ -2315,7 +2314,10 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
             "type": "album|ep",
             "limit": limit,
             "offset": offset,
-            "inc": "release-groups",
+            # Media counts let the representative-release policy distinguish a
+            # complete two-disc issue from a one-disc fragment of the same
+            # release group. Status is part of the base release payload.
+            "inc": "release-groups media",
             "fmt": "json",
         }
         try:
@@ -2350,37 +2352,38 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
             secondary_types = rg.get("secondary-types") or []
             if any(t in _EXCLUDED_SECONDARY_TYPES for t in secondary_types):
                 continue
-            # One entry per release group; earliest release wins
-            if rg_id and rg_id in seen_release_groups:
-                continue
-            if rg_id:
-                seen_release_groups.add(rg_id)
-
-            title = release.get("title", "")
-            date = release.get("date") or release.get("first-release-date") or ""
-            year = date[:4] if date else ""
-            release_mbid = release.get("id", "")
-            if title:
-                albums.append({
-                    "title": title,
-                    "year": year,
-                    "release_mbid": release_mbid,
-                    # The release-group is the album's stable identity; the
-                    # release we picked is merely the earliest pressing of it,
-                    # and which pressing wins can change as MusicBrainz gains
-                    # data. Anything remembering "have I seen this album
-                    # before?" wants this one, not release_mbid, or a tidied-up
-                    # 1974 reissue date turns a familiar album into breaking news.
-                    "release_group_mbid": rg_id,
-                    # "Album" or "EP", so the list can say which is which rather
-                    # than leaving you to guess why there are suddenly six of them.
-                    "primary_type": rg.get("primary-type") or "",
-                })
+            # Collect the entire group across every page before choosing. Taking
+            # the first row here silently selected partial releases whenever an
+            # early one-disc issue happened to precede the complete edition.
+            identity = rg_id or f"release:{release.get('id', '')}"
+            releases_by_group.setdefault(identity, []).append(release)
+            group_metadata[identity] = rg
 
         offset += len(releases)
         if offset >= total:
             break
         _time.sleep(1)  # MusicBrainz rate limit: 1 req/sec
+
+    for identity, releases in releases_by_group.items():
+        release = _pick_release_from_group(releases)
+        if not release:
+            continue
+        rg = group_metadata.get(identity) or {}
+        rg_id = rg.get("id", "")
+        # Release-group title is canonical and avoids pressing/disc decoration.
+        title = (rg.get("title") or release.get("title") or "").strip()
+        date = release.get("date") or release.get("first-release-date") or ""
+        if title:
+            albums.append({
+                "title": title,
+                "year": date[:4] if date else "",
+                "release_mbid": release.get("id", ""),
+                # The release-group is the album's stable identity. Anything
+                # remembering "have I seen this album before?" wants this one,
+                # not whichever representative pressing currently wins.
+                "release_group_mbid": rg_id,
+                "primary_type": rg.get("primary-type") or "",
+            })
 
     albums.sort(key=lambda a: a["year"] or "9999")
     return albums
@@ -2463,11 +2466,31 @@ def parse_musicbrainz_release_url(url: str) -> tuple[str, str] | None:
 def _pick_release_from_group(releases: list[dict]) -> dict | None:
     """Choose one release to represent a release group.
 
-    A popular album can have two dozen pressings. We want the one most likely to
-    match what people actually mean: official, earliest, and with a real track
-    count. Country is deliberately ignored; picking a favourite nation is a good
-    way to start an argument and a bad way to choose a tracklist.
+    A popular album can have two dozen pressings. Prefer an official release with
+    the largest complete tracklist/media set, then the earliest pressing. This
+    keeps a two-disc compilation from collapsing into an early one-disc fragment.
+    Country is deliberately ignored; picking a favourite nation is a good way to
+    start an argument and a bad way to choose a tracklist.
     """
+    def _track_count(release: dict) -> int:
+        explicit = release.get("track-count") or release.get("track_count")
+        try:
+            explicit_count = int(explicit or 0)
+        except (TypeError, ValueError):
+            explicit_count = 0
+        media_count = 0
+        for medium in release.get("media") or []:
+            try:
+                media_count += int(
+                    medium.get("track-count")
+                    or medium.get("track_count")
+                    or len(medium.get("tracks") or [])
+                    or 0
+                )
+            except (TypeError, ValueError):
+                continue
+        return max(explicit_count, media_count)
+
     def _score(release: dict) -> tuple:
         official = (release.get("status") or "").lower() == "official"
         # A bare "1998" sorts before "1998-10-12" as a string, which would hand
@@ -2480,10 +2503,55 @@ def _pick_release_from_group(releases: list[dict]) -> dict | None:
             date += "-31"
         elif not date:
             date = "9999-12-31"
-        return (0 if official else 1, date)
+        media_count = len(release.get("media") or [])
+        return (0 if official else 1, -_track_count(release), -media_count, date)
 
     candidates = [r for r in releases if r.get("id")]
     return min(candidates, key=_score) if candidates else None
+
+
+def _release_track_count(release: dict) -> int:
+    """Total tracks across every medium in a full MusicBrainz release."""
+    total = 0
+    for medium in release.get("media") or []:
+        try:
+            total += int(
+                medium.get("track-count")
+                or medium.get("track_count")
+                or len(medium.get("tracks") or [])
+                or 0
+            )
+        except (TypeError, ValueError):
+            continue
+    if total:
+        return total
+    try:
+        return int(release.get("track-count") or release.get("track_count") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _browse_group_releases(group_mbid: str, headers: dict) -> list[dict]:
+    """Fetch release candidates with media counts in one MusicBrainz request."""
+    try:
+        response = _mb_get_with_retry(
+            "https://musicbrainz.org/ws/2/release/",
+            params={
+                "release-group": group_mbid,
+                "inc": "media artist-credits release-groups",
+                "limit": 100,
+                "fmt": "json",
+            },
+            headers=headers,
+            timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
+        )
+        if response.status_code == 200:
+            return response.json().get("releases") or []
+    except Exception as exc:
+        # The group lookup already supplied basic releases, so a browse wobble
+        # is allowed to fall back to those rather than losing the whole album.
+        print(f"MusicBrainz release completeness lookup failed for {group_mbid}: {exc}")
+    return []
 
 
 def fetch_release_summary(kind: str, mbid: str) -> dict | None:
@@ -2497,6 +2565,8 @@ def fetch_release_summary(kind: str, mbid: str) -> dict | None:
         return None
     headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
 
+    group = None
+    requested_group_mbid = mbid if kind == "release-group" else None
     if kind == "release-group":
         response = _mb_get_with_retry(
             f"https://musicbrainz.org/ws/2/release-group/{mbid}",
@@ -2506,7 +2576,10 @@ def fetch_release_summary(kind: str, mbid: str) -> dict | None:
         if response.status_code != 200:
             return None
         group = response.json()
-        release = _pick_release_from_group(group.get("releases") or [])
+        detailed_releases = _browse_group_releases(mbid, headers)
+        release = _pick_release_from_group(
+            detailed_releases or group.get("releases") or []
+        )
         if not release:
             return None
         mbid = release["id"]
@@ -2524,14 +2597,54 @@ def fetch_release_summary(kind: str, mbid: str) -> dict | None:
         return None
     data = response.json()
 
+    # A direct release URL can point at a one-disc fragment whose release-group
+    # represents the complete record. Resolve the group and switch only when a
+    # demonstrably more complete official release exists. If completeness data
+    # is unavailable, preserve the exact release the user pasted.
+    embedded_group = data.get("release-group") or {}
+    group_mbid = requested_group_mbid or embedded_group.get("id")
+    if group is None and group_mbid:
+        try:
+            group_response = _mb_get_with_retry(
+                f"https://musicbrainz.org/ws/2/release-group/{group_mbid}",
+                params={"inc": "releases artist-credits", "fmt": "json"},
+                headers=headers,
+                timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
+            )
+            if group_response.status_code == 200:
+                group = group_response.json()
+        except Exception as exc:
+            print(f"MusicBrainz release-group context lookup failed for {group_mbid}: {exc}")
+
+        candidates = _browse_group_releases(group_mbid, headers)
+        best = _pick_release_from_group(candidates)
+        if (
+            best
+            and best.get("id") != data.get("id")
+            and _release_track_count(best) > _release_track_count(data)
+        ):
+            better_response = _mb_get_with_retry(
+                f"https://musicbrainz.org/ws/2/release/{best['id']}",
+                params={"inc": "artist-credits release-groups media", "fmt": "json"},
+                headers=headers,
+                timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
+            )
+            if better_response.status_code == 200:
+                data = better_response.json()
+
     # Join with "" not " ": MusicBrainz puts the separator in each credit's
     # joinphrase (" & ", " feat. "), so adding our own gives "Underworld &  Iggy Pop".
-    artist = "".join(
+    release_artist = "".join(
         (ac.get("name") or ac.get("artist", {}).get("name", "")) + (ac.get("joinphrase") or "")
         for ac in (data.get("artist-credit") or [])
         if isinstance(ac, dict)
     ).strip()
-    album_title = (data.get("title") or "").strip()
+    group_artist = _join_artist_credit((group or {}).get("artist-credit") or [])
+    artist = group_artist or release_artist
+    # The release-group title is canonical. It removes pressing decoration such
+    # as "(disc 1)" only when MusicBrainz itself says the undecorated group title
+    # is the record's identity; legitimate titles containing "disc" survive.
+    album_title = ((group or {}).get("title") or data.get("title") or "").strip()
     if not artist or not album_title:
         return None
 
@@ -2541,7 +2654,7 @@ def fetch_release_summary(kind: str, mbid: str) -> dict | None:
         year = year_match.group(1)
 
     # Multi-disc releases report a count per medium; the album has the lot.
-    track_count = sum(int(m.get("track-count") or 0) for m in (data.get("media") or []))
+    track_count = _release_track_count(data)
 
     return {
         "artist": artist,
@@ -2599,7 +2712,10 @@ def _resolve_representative_release(release_group_mbid: str, headers: dict) -> s
         group = response.json()
     except Exception:
         return None
-    release = _pick_release_from_group(group.get("releases") or [])
+    detailed_releases = _browse_group_releases(release_group_mbid, headers)
+    release = _pick_release_from_group(
+        detailed_releases or group.get("releases") or []
+    )
     return release.get("id") if release else None
 
 

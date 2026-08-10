@@ -1,5 +1,5 @@
 """
-Job queue tests. Queues a real download and cleans up.
+Job queue tests. Queues real downloads and retains their Queue rows.
 
 The 'live_download' tests are marked slow - they wait for a download to complete.
 Run with: pytest -m "not slow" to skip them.
@@ -42,8 +42,8 @@ def test_jobs_list_shape(api, base_url):
             assert key in job, f"job missing key: {key}"
 
 
-def test_queue_download_and_cleanup(api, base_url):
-    """Queue a download job, verify it's created, then clean it up immediately."""
+def test_queue_download(api, base_url):
+    """Queue a download job and verify that it is created."""
     payload = {
         "video_id": _SHORT_YT_ID,
         "title": "Me at the zoo",
@@ -66,10 +66,6 @@ def test_queue_download_and_cleanup(api, base_url):
     assert d["convert_audio"] is True
     assert bool(d["convert_to_flac"]) is True  # Legacy response field remains compatible.
 
-    # Clean up so we don't leave test jobs in the queue
-    api.delete(f"{base_url}/api/jobs/cleanup", timeout=10)
-
-
 def test_queue_download_duplicate_fields(api, base_url):
     """Response shape should include job_id."""
     payload = {
@@ -83,7 +79,6 @@ def test_queue_download_duplicate_fields(api, base_url):
     assert r.status_code == 200
     d = r.json()
     assert "job_id" in d or "id" in d, "POST /api/download response has no job identifier"
-    api.delete(f"{base_url}/api/jobs/cleanup", timeout=10)
 
 
 @pytest.mark.slow
@@ -113,6 +108,5 @@ def test_live_youtube_download_completes(api, base_url):
         f"download failed: {final.get('error')}"
     )
 
-    # Tidy up the file and job
+    # Tidy up the downloaded file, but retain its Queue history.
     api.delete(f"{base_url}/api/jobs/{job_id}/file", timeout=10)
-    api.delete(f"{base_url}/api/jobs/cleanup", timeout=10)

@@ -266,6 +266,7 @@ SETTINGS_SCHEMA = {
     "source_health_checks_enabled": {"type": "bool", "default": True, "env": "SOURCE_HEALTH_CHECKS_ENABLED"},
     "source_health_check_interval_minutes": {"type": "int", "default": 10, "env": "SOURCE_HEALTH_CHECK_INTERVAL_MINUTES"},
     "source_health_cooldown_minutes": {"type": "int", "default": 10, "env": "SOURCE_HEALTH_COOLDOWN_MINUTES"},
+    "search_concurrency": {"type": "int", "default": 1, "env": "SEARCH_CONCURRENCY"},
     "monochrome_hifi_api_url": {"type": "str", "default": MONOCHROME_HIFI_API_URL, "env": "MONOCHROME_HIFI_API_URL"},
     "monochrome_qobuz_proxy_url": {"type": "str", "default": MONOCHROME_QOBUZ_PROXY_URL, "env": "MONOCHROME_QOBUZ_PROXY_URL"},
     "monochrome_qbdlx_fallback_enabled": {"type": "bool", "default": QBDLX_FALLBACK_ENABLED, "env": "QBDLX_FALLBACK_ENABLED"},

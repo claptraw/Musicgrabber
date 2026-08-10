@@ -44,6 +44,107 @@ def _get_download_pool() -> ThreadPoolExecutor:
     return _download_pool
 
 
+def _cancel_imports_with_conn(
+    conn: sqlite3.Connection,
+    *,
+    import_id: str | None = None,
+    watch_playlist_id: str | None = None,
+) -> dict:
+    """Request cancellation inside the caller's transaction."""
+    if not import_id and not watch_playlist_id:
+        raise ValueError("import_id or watch_playlist_id is required")
+    selector = "id = ?" if import_id else "watch_playlist_id = ?"
+    value = import_id or watch_playlist_id
+    rows = conn.execute(
+        f"""SELECT id FROM bulk_imports
+            WHERE {selector}
+              AND status IN ('pending', 'processing', 'cancelling')""",
+        (value,),
+    ).fetchall()
+    import_ids = [row[0] for row in rows]
+    if not import_ids:
+        return {"imports": 0, "tracks": 0, "jobs": 0, "active": 0}
+
+    placeholders = ",".join("?" * len(import_ids))
+    conn.execute(
+        f"""UPDATE bulk_imports
+            SET cancel_requested = 1,
+                status = 'cancelling',
+                error = 'Cancellation requested; active download may finish',
+                progress_at = datetime('now')
+            WHERE id IN ({placeholders})""",
+        import_ids,
+    )
+
+    # Work that has not started is cancelled immediately. Queue rows remain as
+    # history; only their lifecycle state changes.
+    job_cursor = conn.execute(
+        f"""UPDATE jobs
+            SET status = 'cancelled',
+                error = 'Cancelled before download started',
+                progress_stage = NULL,
+                completed_at = datetime('now')
+            WHERE status = 'queued'
+              AND id IN (
+                  SELECT job_id FROM bulk_import_tracks
+                  WHERE import_id IN ({placeholders}) AND job_id IS NOT NULL
+              )""",
+        import_ids,
+    )
+    track_cursor = conn.execute(
+        f"""UPDATE bulk_import_tracks
+            SET status = 'cancelled', error = 'Cancelled before download started'
+            WHERE import_id IN ({placeholders})
+              AND (
+                  status IN ('pending', 'searching')
+                  OR (status = 'queued' AND job_id IN (
+                      SELECT id FROM jobs WHERE status = 'cancelled'
+                  ))
+              )""",
+        import_ids,
+    )
+    active = conn.execute(
+        f"""SELECT COUNT(*)
+            FROM bulk_import_tracks bit
+            JOIN jobs j ON j.id = bit.job_id
+            WHERE bit.import_id IN ({placeholders}) AND j.status = 'downloading'""",
+        import_ids,
+    ).fetchone()[0]
+    if not active:
+        conn.execute(
+            f"""UPDATE bulk_imports
+                SET status = 'cancelled', completed_at = datetime('now'),
+                    error = 'Cancelled; completed files and Queue history retained'
+                WHERE id IN ({placeholders})""",
+            import_ids,
+        )
+    return {
+        "imports": len(import_ids),
+        "tracks": track_cursor.rowcount,
+        "jobs": job_cursor.rowcount,
+        "active": active,
+    }
+
+
+def request_bulk_import_cancellation(
+    import_id: str | None = None,
+    *,
+    watch_playlist_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> dict:
+    """Cancel untouched import work while allowing the active file to finish."""
+    if conn is not None:
+        return _cancel_imports_with_conn(
+            conn, import_id=import_id, watch_playlist_id=watch_playlist_id
+        )
+    with db_conn() as owned_conn:
+        result = _cancel_imports_with_conn(
+            owned_conn, import_id=import_id, watch_playlist_id=watch_playlist_id
+        )
+        owned_conn.commit()
+        return result
+
+
 def _normalise_candidate_match_text(text: str) -> str:
     """Normalise text for loose artist matching in search candidates."""
     t = re.sub(r"[^a-z0-9]+", " ", (text or "").lower())
@@ -291,6 +392,16 @@ def process_bulk_import_worker(import_id: str):
         import_row = cursor.fetchone()
         if not import_row:
             return
+        if bool(import_row["cancel_requested"]):
+            conn.execute(
+                """UPDATE bulk_imports
+                   SET status = 'cancelled', completed_at = datetime('now'),
+                       error = 'Cancelled; completed files and Queue history retained'
+                   WHERE id = ?""",
+                (import_id,),
+            )
+            conn.commit()
+            return
 
         convert_audio = bool(import_row["convert_audio"])
         create_playlist = bool(import_row["create_playlist"])
@@ -346,11 +457,20 @@ def process_bulk_import_worker(import_id: str):
             # Get next pending track
             with db_conn() as conn:
                 conn.row_factory = sqlite3.Row
+                import_state = conn.execute(
+                    "SELECT cancel_requested FROM bulk_imports WHERE id = ?",
+                    (import_id,),
+                ).fetchone()
+                if not import_state or bool(import_state["cancel_requested"]):
+                    track = None
+                    cancelled = True
+                else:
+                    cancelled = False
                 cursor = conn.execute(
                     "SELECT * FROM bulk_import_tracks WHERE import_id = ? AND status = 'pending' ORDER BY line_num LIMIT 1",
                     (import_id,)
                 )
-                track = cursor.fetchone()
+                track = None if cancelled else cursor.fetchone()
                 # Materialise before releasing connection
                 track = dict(track) if track else None
 
@@ -506,6 +626,21 @@ def process_bulk_import_worker(import_id: str):
                             time.sleep(base_delay)
                             continue
 
+                # Cancellation may arrive while a provider search is running.
+                # Re-check before creating a Queue row or scheduling any bytes.
+                with db_conn() as conn:
+                    cancel_row = conn.execute(
+                        "SELECT cancel_requested FROM bulk_imports WHERE id = ?",
+                        (import_id,),
+                    ).fetchone()
+                    if cancel_row and bool(cancel_row[0]):
+                        conn.execute(
+                            "UPDATE bulk_import_tracks SET status = 'cancelled', error = ? WHERE id = ?",
+                            ("Cancelled before download started", track_id),
+                        )
+                        conn.commit()
+                        break
+
                 video_id = best_match["video_id"]
                 source = best_match.get("source", "youtube")
                 source_url = best_match.get("source_url")
@@ -617,7 +752,7 @@ def process_bulk_import_worker(import_id: str):
                         album_release_mbid, _album_name_lock, _album_artist_lock, song, job_id
                     )
                 if source == "soulseek":
-                    _get_download_pool().submit(
+                    download_future = _get_download_pool().submit(
                         process_slskd_download,
                         job_id,
                         slskd_username,
@@ -633,7 +768,7 @@ def process_bulk_import_worker(import_id: str):
                         slskd_size=slskd_size,
                     )
                 else:
-                    _get_download_pool().submit(process_download, job_id, video_id, convert_audio,
+                    download_future = _get_download_pool().submit(process_download, job_id, video_id, convert_audio,
                                           source_url, _pname, use_playlists_dir,
                                           user_id=user_id, override_dir=override_dir,
                                           skip_dupe_check=_skip_dupes, custom_subdir=custom_subdir,
@@ -641,6 +776,41 @@ def process_bulk_import_worker(import_id: str):
                                               set(preferred_sources_list)
                                               if preferred_sources_list is not None else None
                                           ))
+
+                # One import owns at most one active file. This gives cancellation
+                # a precise contract: the current future may finish; nothing after
+                # it is searched or queued. Other imports and manual jobs can still
+                # use the remaining internal download-pool workers.
+                while not download_future.done():
+                    with db_conn() as conn:
+                        conn.execute(
+                            "UPDATE bulk_imports SET progress_at = datetime('now') WHERE id = ?",
+                            (import_id,),
+                        )
+                        conn.commit()
+                    time.sleep(0.5)
+                download_future.result()
+
+                with db_conn() as conn:
+                    job_state = conn.execute(
+                        "SELECT status, error FROM jobs WHERE id = ?", (job_id,)
+                    ).fetchone()
+                    state = job_state[0] if job_state else "failed"
+                    error = job_state[1] if job_state else "Download job disappeared"
+                    track_state = (
+                        "completed"
+                        if state in ("completed", "completed_with_errors")
+                        else "cancelled" if state == "cancelled" else "failed"
+                    )
+                    conn.execute(
+                        "UPDATE bulk_import_tracks SET status = ?, error = ? WHERE id = ?",
+                        (track_state, error, track_id),
+                    )
+                    conn.execute(
+                        "UPDATE bulk_imports SET progress_at = datetime('now') WHERE id = ?",
+                        (import_id,),
+                    )
+                    conn.commit()
 
             except Exception as e:
                 # Recording the failure must never become the failure. If this
@@ -667,12 +837,19 @@ def process_bulk_import_worker(import_id: str):
             # Standard delay between searches
             time.sleep(base_delay)
 
-        # All tracks processed - mark import as complete
+        # All tracks processed, or cancellation stopped the untouched tail.
         with db_conn() as conn:
             conn.row_factory = sqlite3.Row
+            cancellation = conn.execute(
+                "SELECT cancel_requested FROM bulk_imports WHERE id = ?", (import_id,)
+            ).fetchone()
+            was_cancelled = bool(cancellation and cancellation["cancel_requested"])
             conn.execute(
-                "UPDATE bulk_imports SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (import_id,)
+                """UPDATE bulk_imports
+                   SET status = ?, completed_at = CURRENT_TIMESTAMP,
+                       error = CASE WHEN ? THEN 'Cancelled; completed files and Queue history retained' ELSE error END
+                   WHERE id = ?""",
+                ("cancelled" if was_cancelled else "completed", int(was_cancelled), import_id)
             )
             conn.commit()
 
@@ -696,20 +873,22 @@ def process_bulk_import_worker(import_id: str):
                 create_playlist = bool(final_row["create_playlist"])
                 playlist_name = final_row["playlist_name"]
 
-        # Send notification for bulk import
-        bulk_status = "completed_with_errors" if final_failed > 0 else "completed"
-        send_notification(
-            notification_type="bulk",
-            title=playlist_name or f"Bulk import {import_id}",
-            status=bulk_status,
-            track_count=final_total,
-            failed_count=final_failed,
-            skipped_count=final_skipped,
-            user_id=user_id,
-        )
+        # Send notification for a completed import. Cancellation is an expected
+        # user action, not a failure alert.
+        if not was_cancelled:
+            bulk_status = "completed_with_errors" if final_failed > 0 else "completed"
+            send_notification(
+                notification_type="bulk",
+                title=playlist_name or f"Bulk import {import_id}",
+                status=bulk_status,
+                track_count=final_total,
+                failed_count=final_failed,
+                skipped_count=final_skipped,
+                user_id=user_id,
+            )
 
         # Create playlist if requested
-        if create_playlist and final_queued > 0:
+        if not was_cancelled and create_playlist and final_queued > 0:
             spawn_daemon_thread(
                 create_bulk_playlist,
                 import_id,

@@ -8,7 +8,6 @@ Adding a new source is one function and one registry entry.
 import hashlib
 import json
 import re
-import subprocess
 import threading
 import time
 from collections import OrderedDict
@@ -35,7 +34,7 @@ from constants import (
 )
 from db import get_blacklisted_video_ids, get_blacklisted_uploaders
 from metadata import fetch_mb_expected_duration, search_artist_mbid, lookup_musicbrainz
-from settings import get_setting, get_setting_bool
+from settings import get_setting_bool, get_setting_int
 from monochrome import search_monochrome, monochrome_enabled
 from slskd import slskd_enabled, search_slskd
 from zvu4no import search_zvu4no
@@ -43,8 +42,7 @@ from freemp3cloud import search_freemp3cloud
 import servicecheck
 from youtube import (
     search_youtube, score_search_result_with_breakdown, format_score_breakdown, parse_duration,
-    _normalise_search_text, _parse_query_artist_title, _query_has_variation,
-    _artist_match_strength,
+    _parse_query_artist_title, _query_has_variation, run_ytdlp_with_retries,
 )
 
 # Penalty large enough to push blacklisted uploaders to the bottom of results
@@ -158,9 +156,14 @@ def search_soundcloud(query: str, limit: int) -> list[dict]:
             f"scsearch{fetch_limit}:{query}",
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_YTDLP_SEARCH)
+        result, timed_out = run_ytdlp_with_retries(
+            cmd,
+            TIMEOUT_YTDLP_SEARCH,
+            allow_cookie_fallback=False,
+            operation=f"SoundCloud search for '{query}'",
+        )
 
-        if result.returncode != 0:
+        if timed_out or result is None or result.returncode != 0:
             return []
 
         results = parse_soundcloud_search_results(result.stdout, query=query)
@@ -234,7 +237,7 @@ SEARCH_MAX_PER_SOURCE_BY_SOURCE = {
 
 _AUTOMATED_SEARCH_CACHE: OrderedDict[tuple, tuple[float, list[dict], dict | None]] = OrderedDict()
 _AUTOMATED_SEARCH_CACHE_LOCK = threading.Lock()
-_SOURCE_SEARCH_SLOTS: dict[str, threading.BoundedSemaphore] = {}
+_SOURCE_SEARCH_SLOTS: dict[str, tuple[int, threading.BoundedSemaphore]] = {}
 _SOURCE_SEARCH_SLOTS_LOCK = threading.Lock()
 
 
@@ -248,9 +251,22 @@ class SourceSearchBusy(RuntimeError):
 
 
 def _source_search_slot(source_name: str) -> threading.BoundedSemaphore:
-    """Return the single admission slot shared by every search for a provider."""
+    """Return the bounded admission gate shared by searches for a provider."""
+    try:
+        configured = get_setting_int("search_concurrency", 1)
+    except Exception:
+        configured = 1
+    limit = max(1, min(configured, 5))
     with _SOURCE_SEARCH_SLOTS_LOCK:
-        return _SOURCE_SEARCH_SLOTS.setdefault(source_name, threading.BoundedSemaphore(1))
+        existing = _SOURCE_SEARCH_SLOTS.get(source_name)
+        if existing and existing[0] == limit:
+            return existing[1]
+        # A changed limit gets a fresh gate. In-flight holders finish against
+        # the old object; new searches use the new bound without over-releasing
+        # or mutating a live semaphore's private state.
+        slot = threading.BoundedSemaphore(limit)
+        _SOURCE_SEARCH_SLOTS[source_name] = (limit, slot)
+        return slot
 
 
 def _run_source_search(source_name: str, cfg: dict, query: str, limit: int,

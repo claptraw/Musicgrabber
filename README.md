@@ -24,16 +24,16 @@ MusicGrabber is intentionally narrow. It is **not**:
 ## Features
 
 - **Multi-source search:** the Tracks tab searches YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek in parallel; relevance-ranked results include source badges and score explanations, plus a separate audio-quality tier where the provider declares one. The single-song search collapses when you leave Tracks, keeping the other workspaces focused on their own jobs
-- **Live search progress:** results stream in as each source answers, with live status for completed, slow, parked, or unavailable sources; repeated timeouts automatically bench an unhealthy source until a background probe clears it
+- **Live search progress:** results stream in as each source answers, with live status for completed, slow, parked, or unavailable sources; repeated timeouts automatically bench an unhealthy source until a background probe clears it. yt-dlp searches and metadata lookups share a bounded retry policy for throttling, timeouts, gateway failures, and reduced format manifests, while genuinely private/deleted media fails immediately
 - **Monochrome/Qobuz source:** searches the Tidal catalogue via hifi-api metadata, then resolves matching Qobuz FLAC streams by ISRC. Public Qobuz routes are tried first; if they fail, an optional SeleniumBase browser session can complete Monochrome's Turnstile check and use its authorised direct playback. Enabled by default and configurable in Search Sources
 - **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
 - **Artists tab:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles come first: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Albums sit underneath for browsing and picking off individually, with an optional "automatically add new albums" toggle that marks everything already released as seen, so ticking it never starts a back-catalogue download. Tracks already on disk are recognised immediately. Per-artist check interval, Keep source/Convert to control, pause/resume, missing and track list panels. You can also browse any artist's albums without following them at all
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
 - **Playlist housekeeping:** find audio left behind by mirror-mode playlist removals and move it safely into Singles; optionally stamp watched-playlist names into audio Comment tags for macOS Music smart playlists
-- **Album mode:** browse MusicBrainz artists from either the Artists tab or Bulk Import, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Search results can also jump straight to the matching album when MusicBrainz can identify it
+- **Album mode:** browse MusicBrainz artists from either the Artists tab or Bulk Import, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Equivalent folders and numbered/fuzzy track names inside the configured Albums tree are reused rather than downloaded again. Multi-disc and Various Artists groups choose the most complete official release and keep the canonical release-group credit/title
 - **Bulk Import takes almost anything:** playlist URLs, pasted `Artist - Title` lists, MusicBrainz release links, Spotify and Apple Music album URLs, or simply an album name typed in. Anything recognised as an album is routed through the album pipeline rather than flattened into loose singles. Album search does not need an artist first, so soundtracks and various-artists compilations work; uncertain matches ask which release you meant instead of guessing. YouTube, Amazon, Beatport, and Monochrome album URLs are not supported yet
 - **Auto-album routing for singles:** optional setting to file single-track downloads into artist/album folders when MusicBrainz resolves an album, either under Singles or the Albums directory
-- **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches enabled sources in parallel and grabs the best result for each. It can also create a playlist and route files into the Playlists directory or a custom watched-playlist folder
+- **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches enabled sources in parallel and grabs the best result for each. It can also create a playlist and route files into the Playlists directory or a custom watched-playlist folder. Cancel stops untouched work, lets the one active file finish, and keeps completed files and Queue history
 - **Similar artist discovery:** hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
 - **Apprise notifications:** one URL covers Gotify, ntfy, Discord, Pushover, Slack, and about 50 others. Also supports Telegram webhook and SMTP email
 - **Navidrome/Lidarr duplicate heads-up:** searches warn when a track is already known to either library, including when a playlist says `Primary Artist, Guest` but the library quite reasonably files it under `Primary Artist`; Navidrome can also prevent the duplicate download and reuse the existing path for playlist routing
@@ -298,7 +298,7 @@ The easiest way to configure MusicGrabber is via the **Settings tab** in the UI.
 - **General**: MusicBrainz and Deezer metadata, lyrics fetching, default conversion, minimum bitrate, live-version rejection, and optional loudness normalisation
 - **Audio format**: FLAC, ALAC/AAC-in-M4A, Opus, or MP3, including MP3/Opus/ALAC quality presets
 - **Library layout**: Singles, Playlists, and Albums subfolders, track-number filenames, auto-album routing, playlist album/comment tagging, automatic Music import, singles-only mode, and file permissions
-- **Search sources**: enable/disable YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Soulseek, and Monochrome; configure cross-source fallback and automatic health checks
+- **Search sources**: enable/disable YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Soulseek, and Monochrome; configure cross-source fallback, automatic health checks, and a per-provider search limit from 1–5 (default 1). Download concurrency remains deliberately internal and conservative
 - **Track upgrades**: scan the library for files below the configured quality tier and control the scan interval
 - **Monochrome**: hifi-api URL, Qobuz proxy URL, qbdlx fallback, and browser-authenticated Turnstile fallback
 - **Soulseek (slskd)**: enable toggle, URL, credentials, downloads path
@@ -380,6 +380,7 @@ Settings are stored in the database and persist across container restarts.
 | `SOURCE_HEALTH_CHECKS_ENABLED` | `true` | Hide unhealthy sources until a background probe confirms recovery |
 | `SOURCE_HEALTH_CHECK_INTERVAL_MINUTES` | `10` | Minutes between scheduled source health probes |
 | `SOURCE_HEALTH_COOLDOWN_MINUTES` | `10` | Minimum time a failed source remains parked before it can be probed again |
+| `SEARCH_CONCURRENCY` | `1` | Maximum simultaneous searches admitted per provider, from 1 to 5. This does not increase download concurrency |
 | `MONOCHROME_HIFI_API_URL` | `https://monochrome-api.samidy.com,https://api.monochrome.tf,https://eu-central.monochrome.tf` | hifi-api compatible endpoint(s) used for Tidal metadata/ISRC lookups. Comma or newline separated lists are tried in order |
 | `MONOCHROME_QOBUZ_PROXY_URL` | `https://qdl-api.monochrome.tf` | Qobuz proxy used to resolve direct audio streams |
 | `QBDLX_FALLBACK_ENABLED` | `true` | Try qbdlx's direct Qobuz API after public proxies fail and before launching a browser |
@@ -418,8 +419,8 @@ Settings are stored in the database and persist across container restarts.
 | `LOGIN_LOCKOUT_SECONDS` | `900` | Login lockout duration |
 | `LOGIN_ATTEMPT_WINDOW` | `900` | Window for counting failed logins |
 | `DOWNLOAD_TOKEN_TTL_SECONDS` | `60` | Single-use browser download token lifetime |
-| `MAX_CONCURRENT_DOWNLOADS` | `3` | Number of concurrent download workers |
-| `SEARCH_ALL_DEADLINE` | `30` | Maximum collection time for one multi-source search before slow sources are left behind. Only one live call per provider is admitted, so abandoned calls cannot stack up |
+| `MAX_CONCURRENT_DOWNLOADS` | `3` | Internal bulk/watched download-worker limit. Kept out of the normal Settings UI to discourage accidental provider hammering |
+| `SEARCH_ALL_DEADLINE` | `30` | Maximum collection time for one multi-source search before slow sources are left behind. Per-provider admission is bounded by `SEARCH_CONCURRENCY`, so abandoned calls cannot stack without limit |
 | `MONOCHROME_HIFI_SEARCH_BUDGET` | `15` | Wall-clock budget shared by all hifi-api endpoints and query variants in one Monochrome search |
 | `TIMEOUT_YTDLP_DOWNLOAD` | `300` | Timeout in seconds for yt-dlp to download a single track. Increase for long mixes or slow connections |
 | `TIMEOUT_FFMPEG_CONVERT` | `120` | Timeout in seconds for ffmpeg format conversion. Increase if long tracks are producing broken files |
@@ -776,6 +777,7 @@ The app will:
 - Search enabled sources for each song automatically
 - Queue downloads for the best matches
 - Show success/failure summary
+- Offer **Cancel**, which lets the active file finish and cancels everything untouched without deleting Queue rows
 - Optionally create a playlist and route files into Playlists or a custom watched-playlist folder
 
 Supports various dash formats: `-`, `–`, `--`
@@ -793,7 +795,10 @@ Supports various dash formats: `-`, `–`, `--`
 - **Trash:** move audio files (and lyrics) to `/data/.trash/` instead of permanently deleting them. Trashed files can be played and restored from the Trash Bin section at the bottom of the Queue tab
 - **Trash bin:** lists all trashed files with per-file Play, Restore, and permanent Delete buttons. "Empty Trash" clears the lot (admin only). Files that fail mismatch or duration checks during download also land here automatically
 - **Retry failed:** click retry on individual failed downloads
-- **Clear queue:** remove all remembered jobs with the "Clear Queue" button
+- **Queue history is retained:** completed and failed rows remain available for
+  inspection until someone deliberately uses **Clear Queue**. The browser asks
+  for confirmation and the API independently requires `?confirm=true`, which
+  keeps an enthusiastic script or test run from erasing the lot by accident
 
 ## File Structure
 
@@ -1014,7 +1019,7 @@ music.yourdomain.com {
 | `GET` | `/api/jobs/{id}/musicbrainz-guess` | Get a MusicBrainz tag suggestion for the tag editor (`?artist=...&title=...&offset=0`) |
 | `GET` | `/api/jobs/{id}/score-rationale` | Explain why an automated search picked this result |
 | `DELETE` | `/api/jobs/{id}/file` | Move downloaded file to trash bin (was permanent delete before v2.5.3) |
-| `DELETE` | `/api/jobs/cleanup` | Delete jobs (`?status=completed/failed/both`), admin only |
+| `DELETE` | `/api/jobs/cleanup?confirm=true` | Deliberately delete Queue history (`status=completed/failed/stale/both`; omitted means completed and failed). Admins clear all users' rows, standard users clear their own, and peons cannot clear it |
 
 ### Bulk Import
 
@@ -1022,6 +1027,7 @@ music.yourdomain.com {
 |--------|----------|-------------|
 | `POST` | `/api/bulk-import-async` | Bulk import songs (async, returns immediately) |
 | `GET` | `/api/bulk-import/{id}/status` | Get async bulk import progress |
+| `POST` | `/api/bulk-import/{id}/cancel` | Cancel untouched work; one active file may finish and completed files/Queue rows are retained |
 | `GET` | `/api/bulk-imports` | List recent bulk imports |
 
 ### Playlist Fetching
@@ -1055,7 +1061,7 @@ music.yourdomain.com {
 | `POST` | `/api/watched-playlists/orphans/move` | Move selected orphaned files into the normal Singles layout |
 | `GET` | `/api/watched-playlists/{id}` | Get watched playlist details |
 | `PUT` | `/api/watched-playlists/{id}` | Update watched playlist settings |
-| `DELETE` | `/api/watched-playlists/{id}` | Remove a watched playlist |
+| `DELETE` | `/api/watched-playlists/{id}` | Remove a watched playlist and atomically cancel its active refresh/import; the current file may finish, untouched jobs are cancelled, and Queue history remains |
 | `POST` | `/api/watched-playlists/{id}/refresh` | Check playlist for new tracks |
 | `GET` | `/api/watched-playlists/{id}/missing` | List tracks with no successful download |
 | `GET` | `/api/watched-playlists/{id}/tracks` | List all tracks with per-track status |
