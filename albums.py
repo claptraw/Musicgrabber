@@ -166,18 +166,78 @@ def find_existing_album_track(
     return None
 
 
+def album_audio_file_count(artist: str, album_title: str, user_id: str | None = None) -> int:
+    """Count audio files in equivalent folders inside the configured Albums tree."""
+    return sum(
+        1
+        for album_dir in _matching_album_dirs(artist, album_title, user_id=user_id)
+        for path in album_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS
+    )
+
+
 def album_on_disk(artist: str, album_title: str, user_id: str | None = None) -> bool:
-    """Cheap already-have-it check: does the album folder exist with any audio in it?
+    """Cheap already-have-it check: does the album folder contain any audio?
 
     Unlike album_track_status, this never touches MusicBrainz. Used by list views
     (e.g. GET /api/watched-artists/{id}/albums) where fetching every release's
     tracklist just to render a badge would hammer MB for nothing.
     """
-    return any(
-        p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
-        for album_dir in _matching_album_dirs(artist, album_title, user_id=user_id)
-        for p in album_dir.iterdir()
+    return album_audio_file_count(artist, album_title, user_id=user_id) > 0
+
+
+def watched_album_display_state(
+    raw_status: str | None,
+    import_status: str | None,
+    audio_file_count: int,
+    expected_track_count: int | None,
+) -> dict:
+    """Derive the current album state shown by the followed-artist panel.
+
+    ``watched_artist_albums.status`` records the event that introduced the row:
+    seen, queued, or failed. It was never advanced when the linked bulk import
+    finished, so presenting it as live state left completed albums saying
+    "Queued" forever. Disk contents are authoritative here; the linked import
+    supplies expected size and distinguishes waiting from finished-but-partial.
+    """
+    raw = (raw_status or "seen").strip().lower()
+    current_import = (import_status or "").strip().lower()
+    actual = max(0, int(audio_file_count or 0))
+    try:
+        expected = int(expected_track_count) if expected_track_count is not None else None
+    except (TypeError, ValueError):
+        expected = None
+    if expected is not None and expected <= 0:
+        expected = None
+
+    detail = f"{actual}/{expected} tracks on disk" if expected else (
+        f"{actual} track{'s' if actual != 1 else ''} on disk" if actual else ""
     )
+
+    if expected and actual >= expected:
+        display_status = "complete"
+    elif current_import == "processing":
+        display_status = "downloading"
+    elif current_import == "cancelling":
+        display_status = "cancelling"
+    elif current_import == "pending":
+        display_status = "queued"
+    elif actual:
+        display_status = "incomplete" if expected else "on_disk"
+    elif current_import == "cancelled":
+        display_status = "cancelled"
+    elif current_import in {"completed", "completed_with_errors", "error"}:
+        display_status = "failed"
+    else:
+        display_status = raw
+
+    return {
+        "display_status": display_status,
+        "status_detail": detail,
+        "on_disk": actual > 0,
+        "audio_file_count": actual,
+        "expected_track_count": expected,
+    }
 
 
 def album_track_status(artist: str, album_title: str, tracks: list[dict], user_id: str | None = None) -> dict:

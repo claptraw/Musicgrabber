@@ -109,7 +109,15 @@ from metadata import (
     parse_musicbrainz_release_url, fetch_release_summary, search_release_groups,
 )
 from album_urls import resolve_album_url
-from albums import album_track_status, queue_album_download, album_on_disk, AlbumTracklistUnavailable, _normalise_album_match_text
+from albums import (
+    album_audio_file_count,
+    album_track_status,
+    queue_album_download,
+    album_on_disk,
+    watched_album_display_state,
+    AlbumTracklistUnavailable,
+    _normalise_album_match_text,
+)
 from utils import hash_track, is_valid_youtube_id, iter_library_audio_files, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 from coverart import fetch_cover_art_url
 from notifications import send_test_email
@@ -4820,8 +4828,11 @@ def get_missing_artist_tracks(artist_id: str, http_request: Request):
 
 @app.get("/api/watched-artists/{artist_id}/albums")
 def get_watched_artist_albums(artist_id: str, http_request: Request):
-    """Return the known albums for a watched artist (seen/queued/failed) plus a
-    cheap on-disk check per row. Populated by seeding (on enabling
+    """Return known albums with both historical and current display state.
+
+    ``status`` retains the event that introduced the row (seen/queued/failed),
+    while ``display_status`` combines the linked import with a cheap on-disk
+    count. Populated by seeding (on enabling
     auto_add_albums) and by refreshes once it's on; empty for artists that have
     never had the toggle switched on."""
     user_id = http_request.state.user_id
@@ -4836,9 +4847,13 @@ def get_watched_artist_albums(artist_id: str, http_request: Request):
         if not artist:
             raise HTTPException(status_code=404, detail="Artist not found")
         rows = conn.execute(
-            """SELECT title, year, release_mbid, release_group_mbid, status, queued_at, import_id
-               FROM watched_artist_albums
-               WHERE artist_id = ?
+            """SELECT waa.title, waa.year, waa.release_mbid,
+                      waa.release_group_mbid, waa.status, waa.queued_at,
+                      waa.import_id, bi.status AS import_status,
+                      bi.album_total_tracks AS expected_track_count
+               FROM watched_artist_albums waa
+               LEFT JOIN bulk_imports bi ON bi.id = waa.import_id
+               WHERE waa.artist_id = ?
                ORDER BY year DESC NULLS LAST, title""",
             (artist_id,)
         ).fetchall()
@@ -4847,8 +4862,18 @@ def get_watched_artist_albums(artist_id: str, http_request: Request):
     out = []
     for r in rows:
         d = dict(r)
-        # Cheap folder-existence check only; no MusicBrainz call per row.
-        d["on_disk"] = album_on_disk(artist_name, d["title"], user_id=user_id)
+        # Cheap filesystem count only; no MusicBrainz call per row. The import's
+        # album_total_tracks is the expected full release size, even when that
+        # particular import only had to fetch a missing subset.
+        audio_count = album_audio_file_count(
+            artist_name, d["title"], user_id=user_id
+        )
+        d.update(watched_album_display_state(
+            d.get("status"),
+            d.get("import_status"),
+            audio_count,
+            d.get("expected_track_count"),
+        ))
         out.append(d)
     return {"artist": artist_name, "albums": out}
 

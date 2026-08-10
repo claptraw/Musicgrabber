@@ -8728,12 +8728,26 @@
                     el.innerHTML = '<p style="font-size:12px;color:var(--text-secondary);padding:4px 0;">No albums seen yet.</p>';
                     return;
                 }
-                const statusLabel = { seen: 'Seen', queued: 'Queued', failed: 'Failed' };
+                const statusLabel = {
+                    seen: 'Seen',
+                    queued: 'Queued',
+                    downloading: 'Downloading',
+                    cancelling: 'Cancelling',
+                    complete: 'Complete',
+                    on_disk: 'On disk',
+                    incomplete: 'Incomplete',
+                    cancelled: 'Cancelled',
+                    failed: 'Failed',
+                };
                 el.innerHTML = albums.map(a => `
                     <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;">
                         <span style="flex:1;">${escapeHtml(a.title)}${a.year ? ` <span style="color:var(--text-secondary);">(${escapeHtml(String(a.year))})</span>` : ''}</span>
-                        ${a.on_disk ? '<i class="fa-solid fa-check" style="color:var(--success);" title="On disk"></i>' : ''}
-                        <span style="color:var(--text-secondary);">${escapeHtml(statusLabel[a.status] || a.status || '')}</span>
+                        ${a.display_status === 'complete' || a.display_status === 'on_disk'
+                            ? `<i class="fa-solid fa-check" style="color:var(--success);" title="${escapeHtml(a.status_detail || 'On disk')}"></i>`
+                            : a.display_status === 'incomplete'
+                                ? `<i class="fa-solid fa-triangle-exclamation" style="color:var(--warning);" title="${escapeHtml(a.status_detail || 'Incomplete album')}"></i>`
+                                : ''}
+                        <span title="${escapeHtml(a.status_detail || '')}" style="color:${a.display_status === 'complete' || a.display_status === 'on_disk' ? 'var(--success)' : a.display_status === 'incomplete' || a.display_status === 'failed' ? 'var(--warning)' : 'var(--text-secondary)'};">${escapeHtml(statusLabel[a.display_status] || a.display_status || statusLabel[a.status] || a.status || '')}</span>
                     </div>
                 `).join('');
             } catch (e) {
