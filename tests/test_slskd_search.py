@@ -393,3 +393,105 @@ def test_slskd_stages_file_then_routes_with_embedded_artist(monkeypatch, tmp_pat
     assert seen["routed_artist"] == "Paramore"
     assert seen["cleaned"] == staging
     assert any(update.get("artist") == "Paramore" for update in seen["job_updates"])
+
+
+def test_album_mode_bypasses_soulseek_duplicate_checks(monkeypatch, tmp_path):
+    """Album imports must not turn a fetched file into an ordinary-library dupe."""
+    import downloads
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    raw_file = staging / "Track.flac"
+    raw_file.write_bytes(b"audio-shaped test fixture")
+    reached = []
+
+    monkeypatch.setattr(downloads, "_job_was_cancelled", lambda _j: False)
+    monkeypatch.setattr(
+        downloads,
+        "_get_job_album_context",
+        lambda _j: {
+            "override_dir": str(tmp_path / "Albums" / "Artist" / "Album"),
+            "album_artist": "Artist",
+            "album_name": "Album",
+            "track_title": "Track",
+        },
+    )
+    monkeypatch.setattr(downloads, "_get_album_track_tag_context", lambda _j: (1, 1))
+    monkeypatch.setattr(downloads, "get_album_art_context", lambda *_a, **_k: (None, None))
+    monkeypatch.setattr(downloads, "ensure_album_cover_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        downloads,
+        "_complete_if_existing_album_track",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("album-specific duplicate short-circuit ran")
+        ),
+    )
+    for name in ("check_duplicate", "check_navidrome_duplicate", "check_lidarr_duplicate"):
+        monkeypatch.setattr(
+            downloads,
+            name,
+            lambda *_a, _name=name, **_k: (_ for _ in ()).throw(
+                AssertionError(f"{_name} ran in album mode")
+            ),
+        )
+    monkeypatch.setattr(downloads, "_make_staging_dir", lambda *_a, **_k: staging)
+    monkeypatch.setattr(downloads, "_clear_staging_dir", lambda *_a, **_k: None)
+    monkeypatch.setattr(downloads, "download_from_slskd", lambda *_a, **_k: raw_file)
+    monkeypatch.setattr(downloads, "_validate_audio_integrity", lambda _p: (True, "", 180))
+    monkeypatch.setattr(downloads, "_prefer_slskd_embedded_artist", lambda _p, artist: artist)
+    monkeypatch.setattr(downloads, "_update_job", lambda *_a, **_k: None)
+    monkeypatch.setattr(downloads, "send_notification", lambda **_k: None)
+
+    def stop_after_duplicate_gate(*_args, **_kwargs):
+        reached.append(True)
+        raise RuntimeError("stop after duplicate gate")
+
+    monkeypatch.setattr(downloads, "_playlist_album_tags", stop_after_duplicate_gate)
+
+    downloads.process_slskd_download(
+        "job-1",
+        "peer",
+        "Artist/Album/Track.flac",
+        "Artist",
+        "Track",
+        override_dir=str(tmp_path / "Albums" / "Artist" / "Album"),
+        slskd_size=123,
+        skip_dupe_check=True,
+    )
+
+    assert reached == [True]
+
+
+def test_album_mode_bypasses_preflight_album_duplicate_check(monkeypatch):
+    """The common non-Soulseek path must honour the same album bypass."""
+    import downloads
+
+    monkeypatch.setattr(downloads, "_job_was_cancelled", lambda _j: False)
+    monkeypatch.setattr(
+        downloads,
+        "_get_job_album_context",
+        lambda _j: {"override_dir": "/music/Albums/Artist/Album"},
+    )
+    monkeypatch.setattr(downloads, "_get_album_track_tag_context", lambda _j: (1, 1))
+    monkeypatch.setattr(downloads, "get_album_art_context", lambda *_a, **_k: (None, None))
+    monkeypatch.setattr(downloads, "ensure_album_cover_files", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        downloads,
+        "_complete_if_existing_album_track",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("album-specific duplicate short-circuit ran")
+        ),
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_update_job",
+        lambda *_a, **_k: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        downloads.process_download(
+            "job-1",
+            "abcdefghijk",
+            override_dir="/music/Albums/Artist/Album",
+            skip_dupe_check=True,
+        )

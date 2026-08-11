@@ -881,6 +881,7 @@ Before downloading, checks if the track already exists:
 - One-level-deep artist/album folders created by auto-album routing
 - Optional Navidrome/Subsonic lookup, if configured
 - Skips download and reports as duplicate, while still using the existing path for playlist M3U routing when possible
+- Album acquisitions, including albums discovered through Watched Artists, bypass the ordinary Singles/Navidrome/Lidarr duplicate gate and finish in their selected `Albums/Artist/Album/` folder. Album planning still leaves tracks already present in that exact album folder alone
 
 ## Security
 

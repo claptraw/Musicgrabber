@@ -977,6 +977,7 @@ def process_acquisition_cycle(
                     use_playlists_dir=use_playlists_dir,
                     custom_subdir=custom_subdir,
                     slskd_size=slskd_size,
+                    skip_dupe_check=skip_dupe_check,
                 )
             else:
                 process_download(
@@ -4036,7 +4037,7 @@ def process_playlist_download(job_id: str, playlist_id: str, playlist_name: str,
 
 
 
-def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_audio: bool = True, user_id: str | None = None, override_dir: str | None = None, playlist_name: str = None, use_playlists_dir: bool = False, custom_subdir: str | None = None, slskd_size: int | None = None):
+def process_slskd_download(job_id: str, username: str, filename: str, artist: str, title: str, convert_audio: bool = True, user_id: str | None = None, override_dir: str | None = None, playlist_name: str = None, use_playlists_dir: bool = False, custom_subdir: str | None = None, slskd_size: int | None = None, skip_dupe_check: bool = False):
     """Process a Soulseek download job via slskd"""
     if _job_was_cancelled(job_id):
         return
@@ -4050,7 +4051,9 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
     album_track_number, album_track_total = _get_album_track_tag_context(job_id)
     album_art_bytes, album_art_mime = get_album_art_context(job_id)
     ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
-    if _complete_if_existing_album_track(job_id, album_ctx, user_id=user_id):
+    if not skip_dupe_check and _complete_if_existing_album_track(
+        job_id, album_ctx, user_id=user_id
+    ):
         return
     try:
         _update_job(job_id, status="downloading", progress_stage="Fetching info")
@@ -4196,11 +4199,13 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
         # under that container folder. The staged acquisition is discarded by
         # the finally block if a corrected duplicate already exists.
         _update_job(job_id, progress_stage="Checking for duplicates")
-        existing_file = check_duplicate(artist, title, user_id=user_id)
-        if not existing_file:
-            existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
-        if not existing_file:
-            existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
+        existing_file = None
+        if not skip_dupe_check:
+            existing_file = check_duplicate(artist, title, user_id=user_id)
+            if not existing_file:
+                existing_file = check_navidrome_duplicate(artist, title, user_id=user_id)
+            if not existing_file:
+                existing_file = check_lidarr_duplicate(artist, title, user_id=user_id)
         # Sentinel Navidrome paths are unusable for playlist M3U entries.
         if playlist_name and existing_file and not (existing_file.is_absolute() or existing_file.exists()):
             existing_file = None
@@ -5052,7 +5057,9 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
                 pass
     ensure_album_cover_files(override_dir, album_art_bytes, album_art_mime)
 
-    if _complete_if_existing_album_track(job_id, album_ctx, user_id=user_id):
+    if not skip_dupe_check and _complete_if_existing_album_track(
+        job_id, album_ctx, user_id=user_id
+    ):
         return
 
     # Direct stream sources: bypass yt-dlp entirely.

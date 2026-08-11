@@ -2,6 +2,8 @@
 
 ## v4.0.0 (DEV)
 
+- Fixed Album mode and Watched Artists album acquisitions incorrectly reporting fetched tracks as already in the library, including Soulseek's post-download duplicate gate.
+
 The artist-centred restructure, in which MusicGrabber stops organising itself around what it downloads and starts organising itself around who made it. Monochrome's lossless downloads also came back from the dead, and a rather nasty database bug wandered in and got fixed while we waited.
 
 ### Changed
