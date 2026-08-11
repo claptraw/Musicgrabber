@@ -116,8 +116,8 @@ def test_new_release_group_gets_queued_on_refresh(fresh_db, monkeypatch):
     assert rows["rel-1"]["status"] == "seen"  # untouched
 
 
-def test_previously_seen_release_group_not_queued_twice(fresh_db, monkeypatch):
-    """Once an album has been diffed (seeded, queued, or failed), a later refresh leaves it alone."""
+def test_previously_queued_release_group_not_queued_twice(fresh_db, monkeypatch):
+    """Once an album reaches the queue, a later refresh leaves it alone."""
     import watched_artists as wa
 
     _seed_artist(fresh_db, "a1", "Radiohead", "mbid-1", auto_add_albums=1)
@@ -141,6 +141,42 @@ def test_previously_seen_release_group_not_queued_twice(fresh_db, monkeypatch):
     assert first == {"new_albums": 1, "queued": 1, "failed": 0}
     assert second == {"new_albums": 0, "queued": 0, "failed": 0}
     assert queue_calls == ["rel-2"]  # queued exactly once across both refreshes
+
+
+def test_failed_album_queue_attempt_retries_on_next_artist_cycle(fresh_db, monkeypatch):
+    """A transient queueing failure remains retryable and keeps its attempt history."""
+    import watched_artists as wa
+
+    _seed_artist(fresh_db, "a1", "Radiohead", "mbid-1", auto_add_albums=1)
+    monkeypatch.setattr(wa, "fetch_artist_albums", lambda mbid: [
+        {"title": "Kid A", "year": "2000", "release_mbid": "rel-2",
+         "release_group_mbid": "rg-2"},
+    ])
+    calls = []
+
+    def flaky_queue(artist, title, release_mbid, **kwargs):
+        calls.append(release_mbid)
+        if len(calls) == 1:
+            raise RuntimeError("MusicBrainz had a wobble")
+        return {"import_id": "imp-retry"}
+
+    monkeypatch.setattr(wa.albums, "queue_album_download", flaky_queue)
+    artist = {"mbid": "mbid-1", "name": "Radiohead", "convert_audio": 1}
+
+    with fresh_db() as conn:
+        first = wa._refresh_artist_albums(conn, artist, "a1", None)
+    with fresh_db() as conn:
+        second = wa._refresh_artist_albums(conn, artist, "a1", None)
+
+    assert first == {"new_albums": 1, "queued": 0, "failed": 1}
+    assert second == {"new_albums": 0, "queued": 1, "failed": 0}
+    assert calls == ["rel-2", "rel-2"]
+    with fresh_db() as conn:
+        row = conn.execute(
+            """SELECT status, attempt_count, last_error, import_id
+               FROM watched_artist_albums WHERE release_group_mbid = 'rg-2'"""
+        ).fetchone()
+    assert row == ("queued", 2, None, "imp-retry")
 
 
 def test_a_new_earliest_pressing_does_not_make_a_known_album_look_new(fresh_db, monkeypatch):
@@ -210,6 +246,8 @@ def test_one_album_failing_does_not_abort_the_rest(fresh_db, monkeypatch):
     assert result == {"new_albums": 2, "queued": 1, "failed": 1}
     rows = _album_rows(fresh_db)
     assert rows["rel-bad"]["status"] == "failed"
+    assert rows["rel-bad"]["attempt_count"] == 1
+    assert rows["rel-bad"]["last_error"] == "MusicBrainz had a wobble"
     assert rows["rel-2"]["status"] == "queued"
 
 

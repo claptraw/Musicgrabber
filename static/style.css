@@ -3240,6 +3240,57 @@ h1 {
     padding: var(--space-1) var(--space-2);
 }
 
+.maintenance-preview {
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.maintenance-actions,
+.maintenance-history {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.maintenance-history label {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+@media (max-width: 560px) {
+    .version-label,
+    .header-user-text {
+        display: none !important;
+    }
+
+    header {
+        gap: 8px;
+    }
+
+    .header-controls {
+        gap: 8px;
+        min-width: 0;
+    }
+}
+
+@media (max-width: 430px) {
+    header {
+        flex-wrap: wrap;
+    }
+
+    .header-controls {
+        flex-basis: 100%;
+        justify-content: flex-end;
+    }
+}
+
 /* --------------------------------------------------------------------------
    Bulk import tab
 -------------------------------------------------------------------------- */
@@ -4785,6 +4836,12 @@ h1 {
     align-items: center;
     gap: 8px;
     z-index: 2;
+}
+
+.missing-track-candidate-note {
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
 }
 
 .missing-track-candidate-btn {

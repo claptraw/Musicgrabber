@@ -442,6 +442,7 @@ def project_search_result(item: dict) -> dict:
         "size_bytes": item.get("size") or item.get("slskd_size"),
         "bitrate": item.get("bitrate"),
         "match_confidence": item.get("match_confidence"),
+        "queue_length": item.get("queue_length"),
     }
 
 

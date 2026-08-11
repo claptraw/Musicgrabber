@@ -141,6 +141,8 @@
         }
 
         const missingTrackVersionsState = {
+            mode: 'watched',
+            jobId: '',
             playlistId: '',
             playlistName: '',
             artist: '',
@@ -2416,14 +2418,19 @@
         }
 
         function _renderMissingTrackCandidate(result, index) {
+            const rescueNote = missingTrackVersionsState.mode === 'job' && result.attempted
+                ? '<span class="missing-track-candidate-note">Tried automatically</span>'
+                : '';
+            const selectable = result.selectable !== false;
             return `
                 <div class="missing-track-candidate">
                     ${_renderOneResult(result, index)}
                     <div class="missing-track-candidate-actions">
+                        ${rescueNote}
                         <button type="button"
                             class="missing-track-candidate-btn"
                             data-action="queue-missing-track-candidate"
-                            data-index="${index}">Use This</button>
+                            data-index="${index}" ${selectable ? '' : 'disabled'}>${selectable ? 'Use This' : 'Search again'}</button>
                     </div>
                 </div>
             `;
@@ -2580,6 +2587,7 @@
                             ${r.duration ? `<span class="result-duration">${r.duration}</span>` : ''}
                             ${r.bitrate ? `<span class="result-detail">${Number(r.bitrate)} kbps</span>` : ''}
                             ${r.size_bytes ? `<span class="result-detail">${formatFileSize(r.size_bytes)}</span>` : ''}
+                            ${r.source === 'soulseek' && Number.isInteger(r.queue_length) ? `<span class="result-detail" title="Number of uploads already queued by this Soulseek peer">Peer queue: ${r.queue_length}</span>` : ''}
                             ${r.source === 'soulseek' && r.channel ? `<span class="result-uploader" title="The Soulseek user sharing this file">via ${escapeHtml(r.channel)}</span>` : ''}
                         </div>
                     </div>
@@ -2663,23 +2671,38 @@
             const meta = document.getElementById('missingTrackVersionsMeta');
             if (!body || !meta) return;
 
-            meta.textContent = `${missingTrackVersionsState.playlistName || 'Watched playlist'} • ${missingTrackVersionsState.artist} - ${missingTrackVersionsState.title}`;
-            body.innerHTML = '<div class="missing-track-modal-empty">Searching for alternatives...</div>';
+            const isJobRescue = missingTrackVersionsState.mode === 'job';
+            meta.textContent = isJobRescue
+                ? `Failed download • ${missingTrackVersionsState.artist} - ${missingTrackVersionsState.title}`
+                : `${missingTrackVersionsState.playlistName || 'Watched playlist'} • ${missingTrackVersionsState.artist} - ${missingTrackVersionsState.title}`;
+            body.innerHTML = `<div class="missing-track-modal-empty">${isJobRescue ? 'Loading saved alternatives...' : 'Searching for alternatives...'}</div>`;
 
             try {
-                const params = new URLSearchParams({
-                    artist: missingTrackVersionsState.artist,
-                    title: missingTrackVersionsState.title,
-                    limit: '4',
-                });
-                const resp = await apiFetch(`/api/watched-playlists/${encodeURIComponent(missingTrackVersionsState.playlistId)}/track-candidates?${params.toString()}`);
+                let resp;
+                if (isJobRescue) {
+                    resp = await apiFetch(`/api/jobs/${encodeURIComponent(missingTrackVersionsState.jobId)}/rescue-candidates`);
+                } else {
+                    const params = new URLSearchParams({
+                        artist: missingTrackVersionsState.artist,
+                        title: missingTrackVersionsState.title,
+                        limit: '4',
+                    });
+                    resp = await apiFetch(`/api/watched-playlists/${encodeURIComponent(missingTrackVersionsState.playlistId)}/track-candidates?${params.toString()}`);
+                }
                 if (!resp.ok) throw new Error('Search failed');
                 const data = await resp.json();
-                const results = Array.isArray(data.results) ? data.results : [];
+                if (isJobRescue) {
+                    missingTrackVersionsState.artist = data.artist || '';
+                    missingTrackVersionsState.title = data.title || '';
+                    meta.textContent = `Failed download • ${missingTrackVersionsState.artist} - ${missingTrackVersionsState.title}`;
+                }
+                const results = Array.isArray(isJobRescue ? data.candidates : data.results)
+                    ? (isJobRescue ? data.candidates : data.results)
+                    : [];
                 missingTrackVersionsState.results = results;
 
                 if (!results.length) {
-                    body.innerHTML = '<div class="missing-track-modal-empty">No alternatives found. Retry will still run the automatic watched-playlist search, or Search will open the full Tracks tab.</div>';
+                    body.innerHTML = `<div class="missing-track-modal-empty">${isJobRescue ? 'No saved alternatives remain. Use Search Again to ask the allowed sources for fresh options.' : 'No alternatives found. Retry will still run the automatic watched-playlist search, or Search will open the full Tracks tab.'}</div>`;
                     return;
                 }
 
@@ -2693,6 +2716,8 @@
         }
 
         async function openMissingTrackVersionsModal(playlistId, playlistName, artist, title, rowId) {
+            missingTrackVersionsState.mode = 'watched';
+            missingTrackVersionsState.jobId = '';
             missingTrackVersionsState.playlistId = playlistId;
             missingTrackVersionsState.playlistName = playlistName;
             missingTrackVersionsState.artist = artist;
@@ -2703,14 +2728,33 @@
             await loadMissingTrackVersions();
         }
 
-        function closeMissingTrackVersionsModal() {
-            stopPreview();
+        async function openJobRescueVersions(jobId) {
+            missingTrackVersionsState.mode = 'job';
+            missingTrackVersionsState.jobId = jobId;
             missingTrackVersionsState.playlistId = '';
             missingTrackVersionsState.playlistName = '';
             missingTrackVersionsState.artist = '';
             missingTrackVersionsState.title = '';
             missingTrackVersionsState.rowId = '';
             missingTrackVersionsState.results = [];
+            document.querySelector('#missingTrackVersionsOverlay .modal-title').textContent = 'Choose Another Version';
+            document.getElementById('missingTrackVersionsRefreshBtn').textContent = 'Search Again';
+            document.getElementById('missingTrackVersionsOverlay').style.display = 'flex';
+            await loadMissingTrackVersions();
+        }
+
+        function closeMissingTrackVersionsModal() {
+            stopPreview();
+            missingTrackVersionsState.mode = 'watched';
+            missingTrackVersionsState.jobId = '';
+            missingTrackVersionsState.playlistId = '';
+            missingTrackVersionsState.playlistName = '';
+            missingTrackVersionsState.artist = '';
+            missingTrackVersionsState.title = '';
+            missingTrackVersionsState.rowId = '';
+            missingTrackVersionsState.results = [];
+            document.querySelector('#missingTrackVersionsOverlay .modal-title').textContent = 'Find Versions';
+            document.getElementById('missingTrackVersionsRefreshBtn').textContent = 'Refresh Results';
             document.getElementById('missingTrackVersionsOverlay').style.display = 'none';
         }
 
@@ -2725,6 +2769,21 @@
             }
 
             try {
+                if (missingTrackVersionsState.mode === 'job') {
+                    const resp = await apiFetch(`/api/jobs/${encodeURIComponent(missingTrackVersionsState.jobId)}/rescue-candidate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ candidate_key: result.candidate_key })
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        throw new Error(err.detail || 'Failed to queue candidate');
+                    }
+                    showToast(`Queued ${missingTrackVersionsState.artist} - ${missingTrackVersionsState.title}`);
+                    closeMissingTrackVersionsModal();
+                    loadJobs(false);
+                    return;
+                }
                 const payload = {
                     artist: missingTrackVersionsState.artist,
                     title: missingTrackVersionsState.title,
@@ -3159,6 +3218,7 @@
                             ${job.acquisition_attempt_count ? `<div class="job-details-row"><span class="job-details-label">Acquisition:</span> ${escapeHtml(String(job.acquisition_cycle_count || 0))} cycle${Number(job.acquisition_cycle_count || 0) === 1 ? '' : 's'} · ${escapeHtml(String(job.acquisition_attempt_count))} source attempt${Number(job.acquisition_attempt_count) === 1 ? '' : 's'}${job.acquisition_last_attempt_at ? ` · last ${formatTime(job.acquisition_last_attempt_at)}` : ''}</div>` : ''}
                             ${attemptHistoryHtml}
                             ${job.metadata_source ? `<div class="job-details-row"><span class="job-details-label">Metadata:</span> ${escapeHtml(formatMetadataSource(job.metadata_source))}</div>` : ''}
+                            ${job.requested_video_fallback ? '<div class="job-details-row"><span class="job-details-label">Fallback:</span> Used the video from the original YouTube playlist after no confident alternative succeeded.</div>' : ''}
                             ${sourceUrl ? `<div class="job-details-row"><span class="job-details-label">URL:</span> ${isClickableUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sourceUrl)}</a>` : `<span class="job-details-url">${escapeHtml(sourceUrl)}</span>`}</div>` : ''}
                             <div class="job-details-row"><span class="job-details-label">Queued:</span> ${formatTimeFull(job.created_at)}</div>
                             ${job.completed_at ? `<div class="job-details-row"><span class="job-details-label">Completed:</span> ${formatTimeFull(job.completed_at)}</div>` : ''}
@@ -3172,7 +3232,10 @@
                             ` : ''}
                             <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
                                 ${job.status !== 'failed' && !fileDeleted ? `<button class="library-play-btn" onclick="event.stopPropagation(); playJobAudio('${escapeAttr(job.id || '')}', this)" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;"><i class="fa-solid fa-play"></i></button>` : ''}
-                                <button onclick="event.stopPropagation(); redownloadJob('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Re-download</button>
+                                ${job.status === 'failed' && job.acquisition_mode === 'automatic'
+                                    ? `<button onclick="event.stopPropagation(); retryNextJob('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Retry next option</button>
+                                       <button onclick="event.stopPropagation(); openJobRescueVersions('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Choose version</button>`
+                                    : `<button onclick="event.stopPropagation(); redownloadJob('${escapeAttr(job.id || '')}')" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Re-download</button>`}
                                 <button class="report-btn" data-job-id="${escapeHtml(job.id || '')}" data-video-id="${escapeHtml(job.video_id || '')}" data-uploader="${escapeHtml(job.uploader || '')}" data-source="${escapeHtml(job.source || 'youtube')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--warning); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Report</button>
                                 ${(job.error || '').includes('mismatch') ? `<button class="force-accept-btn" data-job-id="${escapeHtml(job.id || '')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Force Download</button>` : ''}
                                 ${(job.status === 'completed' || job.status === 'completed_with_errors') && !fileDeleted ? `<button class="edit-tags-btn" data-job-id="${escapeHtml(job.id || '')}" data-artist="${escapeAttr(job.artist || '')}" data-title="${escapeAttr(job.title || '')}" data-album="${escapeAttr(job.album_name || '')}" onclick="event.stopPropagation()" style="padding: 6px 12px; font-size: 11px; font-family: inherit; font-weight: 600; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; cursor: pointer;">Edit Tags</button>` : ''}
@@ -3724,6 +3787,21 @@
             }
         }
 
+        async function retryNextJob(jobId) {
+            try {
+                showToast('Finding the next allowed option...');
+                const response = await apiFetch(`/api/jobs/${jobId}/retry-next`, { method: 'POST' });
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({}));
+                    throw new Error(data.detail || 'Retry failed');
+                }
+                showToast('Queued a new rescue attempt');
+                loadJobs();
+            } catch (error) {
+                showToast(error.message || 'Retry failed', true);
+            }
+        }
+
         async function deleteJobFile(jobId, trackName) {
             if (!confirm(`Move "${trackName}" to trash?`)) return;
 
@@ -3972,8 +4050,29 @@
         document.getElementById('missingTrackVersionsOverlay').addEventListener('click', (e) => {
             if (e.target === e.currentTarget) closeMissingTrackVersionsModal();
         });
-        document.getElementById('missingTrackVersionsRefreshBtn').addEventListener('click', () => {
-            loadMissingTrackVersions();
+        document.getElementById('missingTrackVersionsRefreshBtn').addEventListener('click', async () => {
+            if (missingTrackVersionsState.mode !== 'job') {
+                loadMissingTrackVersions();
+                return;
+            }
+            const body = document.getElementById('missingTrackVersionsBody');
+            if (body) body.innerHTML = '<div class="missing-track-modal-empty">Searching allowed sources...</div>';
+            try {
+                const resp = await apiFetch(`/api/jobs/${encodeURIComponent(missingTrackVersionsState.jobId)}/rescue-candidates/refresh`, { method: 'POST' });
+                if (!resp.ok) throw new Error('Search failed');
+                const data = await resp.json();
+                const results = Array.isArray(data.candidates) ? data.candidates : [];
+                missingTrackVersionsState.results = results;
+                if (!body) return;
+                body.innerHTML = results.length
+                    ? results.map((result, index) => _renderMissingTrackCandidate(result, index)).join('')
+                    : '<div class="missing-track-modal-empty">No suitable alternatives found on the allowed sources.</div>';
+                body.querySelectorAll('.missing-track-candidate').forEach((wrapper, index) => {
+                    _attachMissingTrackCandidateHandlers(wrapper, results[index], index);
+                });
+            } catch (error) {
+                if (body) body.innerHTML = '<div class="missing-track-modal-empty">Could not refresh alternatives right now.</div>';
+            }
         });
 
         async function submitReport() {
@@ -4183,6 +4282,12 @@
                         requestBody.use_playlists_dir = true;
                     }
                 }
+                if (bulkInput.dataset.originalYoutubeVideoMap) {
+                    const originalRows = JSON.parse(bulkInput.dataset.originalYoutubeVideoMap);
+                    const idsByTrack = new Map(originalRows.map(row => [row.track, row.video_id]));
+                    requestBody.original_youtube_video_ids = songs.split('\n')
+                        .map(line => idsByTrack.get(line.trim()) || null);
+                }
                 const bulkPriority = document.getElementById('bulkPrioritySource');
                 if (bulkPriority && bulkPriority.value) {
                     requestBody.priority_source = bulkPriority.value;
@@ -4207,6 +4312,7 @@
                 bulkInput.value = '';
                 playlistNameInput.value = '';
                 delete playlistNameInput.dataset.sourceUrl;
+                delete bulkInput.dataset.originalYoutubeVideoMap;
                 createPlaylistCheckbox.checked = false;
                 playlistNameInput.style.display = 'none';
                 const usePlaylistsDirCheckboxCleared = document.getElementById('usePlaylistsDirCheckbox');
@@ -5845,6 +5951,16 @@
                 if (data.tracks && data.tracks.length > 0) {
                     // Populate the textarea with all tracks (no limit)
                     bulkInput.value = data.tracks.join('\n');
+                    if (Array.isArray(data.original_youtube_video_ids)) {
+                        bulkInput.dataset.originalYoutubeVideoMap = JSON.stringify(
+                            data.tracks.map((track, index) => ({
+                                track,
+                                video_id: data.original_youtube_video_ids[index] || null
+                            }))
+                        );
+                    } else {
+                        delete bulkInput.dataset.originalYoutubeVideoMap;
+                    }
                     updateLineCounter();
 
                     // Auto-fill playlist name if checkbox is checked
@@ -8743,6 +8859,7 @@
                 const statusLabel = {
                     seen: 'Seen',
                     queued: 'Queued',
+                    processing: 'Retrying',
                     downloading: 'Downloading',
                     cancelling: 'Cancelling',
                     complete: 'Complete',
@@ -9117,6 +9234,7 @@
             'source_soulseek_enabled': 'settingSourceSoulseek',
             'source_monochrome_enabled': 'settingSourceMonochrome',
             'source_offline_fallback': 'settingSourceOfflineFallback',
+            'youtube_requested_video_fallback': 'settingYoutubeRequestedVideoFallback',
             'source_health_checks_enabled': 'settingSourceHealthChecks',
             'source_health_check_interval_minutes': 'settingSourceHealthInterval',
             'source_health_cooldown_minutes': 'settingSourceHealthCooldown',
@@ -9269,10 +9387,77 @@
                 // Show cookie expiry status if cookies are configured
                 _updateCookieExpiryHint();
                 _updateSpotifyCookieHint(settings);
+                await loadMaintenancePreview();
             } catch (error) {
                 console.error('Failed to load settings:', error);
                 showToast('Failed to load settings', true);
             }
+        }
+
+        async function loadMaintenancePreview() {
+            const preview = document.getElementById('maintenancePreview');
+            if (!preview || !isAdmin()) return;
+            try {
+                const response = await apiFetch('/api/settings/maintenance');
+                if (!response.ok) throw new Error('Preview failed');
+                const data = await response.json();
+                const history = data.queue_history || {};
+                preview.textContent = `${data.orphan_imports || 0} orphan import(s); `
+                    + `${history.completed || 0} completed, ${history.completed_with_errors || 0} completed with issues, `
+                    + `${history.failed || 0} failed, ${history.cancelled || 0} cancelled Queue row(s); `
+                    + `${data.indexed_paths || 0} exact library path(s) indexed.`;
+            } catch (error) {
+                preview.textContent = 'Could not load the maintenance preview.';
+            }
+        }
+
+        async function _postMaintenance(payload, confirmation) {
+            if (!confirm(confirmation + ' Library audio will not be deleted or moved.')) return;
+            const result = document.getElementById('maintenanceResult');
+            if (result) result.textContent = 'Working...';
+            try {
+                const response = await apiFetch('/api/settings/maintenance', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...payload, confirm: true })
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || 'Maintenance failed');
+                if (result) result.textContent = Object.entries(data)
+                    .map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`)
+                    .join('; ');
+                showToast('Maintenance complete');
+                await loadMaintenancePreview();
+                loadJobs();
+            } catch (error) {
+                if (result) {
+                    result.textContent = error.message || 'Maintenance failed';
+                    result.classList.add('error');
+                }
+                showToast(error.message || 'Maintenance failed', true);
+            }
+        }
+
+        function runMaintenanceAction(action) {
+            const labels = {
+                purge_orphans: 'Remove imports whose watched playlist or artist no longer exists?',
+                reconcile: 'Check indexed files and mark missing ones as deleted in Queue history?',
+                clean_rebuild: 'Remove orphan imports, reconcile missing files, and index untracked audio beneath configured library folders?'
+            };
+            return _postMaintenance({ action }, labels[action] || 'Run maintenance?');
+        }
+
+        function clearSelectedQueueHistory() {
+            const statuses = Array.from(document.querySelectorAll('.maintenance-history input:checked'))
+                .map(input => input.value);
+            if (!statuses.length) {
+                showToast('Select at least one Queue history type', true);
+                return;
+            }
+            return _postMaintenance(
+                { action: 'clear_history', statuses },
+                `Permanently remove ${statuses.length} selected Queue history type(s) from the database?`
+            );
         }
 
         const SUBDIR_CUSTOM_VALUE = '__custom__';
@@ -10413,3 +10598,5 @@
 
         // Destination picker - initialise on page load so it's ready before the first search
         initDestinationPicker();
+            missingTrackVersionsState.mode = 'watched';
+            missingTrackVersionsState.jobId = '';

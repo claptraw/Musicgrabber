@@ -106,8 +106,9 @@ def test_bulk_import_status_404_unknown_id(api, base_url):
 @pytest.mark.slow
 def test_bulk_import_tracks_get_searched(api, base_url):
     """
-    Submit 3 well-known tracks, wait up to 60s, verify all were searched and
-    at least some were queued. Does NOT wait for downloads to complete.
+    Submit 3 well-known tracks and verify the serial import lifecycle searches
+    every one. Imports intentionally allow only one active download at a time,
+    so later searches wait for the current file to finish.
     """
     r = api.post(
         f"{base_url}/api/bulk-import-async",
@@ -117,9 +118,9 @@ def test_bulk_import_tracks_get_searched(api, base_url):
     assert r.status_code == 200
     import_id = r.json()["import_id"]
 
-    # Poll until the search phase is done (status = "completed" or "error")
-    # The search worker runs at 1 track/sec, so 3 tracks = ~3-5s; give 60s headroom
-    deadline = time.time() + 60
+    # Poll until the import is done. Live providers and serial downloads can
+    # each take a while, especially when an acquisition falls through sources.
+    deadline = time.time() + 180
     status = {}
     while time.time() < deadline:
         time.sleep(3)

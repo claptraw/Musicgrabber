@@ -159,6 +159,35 @@ def test_a_lossy_hit_scores_below_an_otherwise_equal_lossless_one(slskd_ready):
     assert by_user["generous_stranger"] > by_user["mp3_merchant"]
 
 
+def test_peer_queue_depth_is_preserved_and_nudges_ranking_without_filtering(slskd_ready):
+    free_peer = _flac_hit()
+    free_peer["username"] = "free_peer"
+    free_peer["queueLength"] = 0
+
+    busy_peer = _flac_hit()
+    busy_peer["username"] = "busy_peer"
+    busy_peer["queueLength"] = 12
+
+    slskd_ready([busy_peer, free_peer])
+    results = slskd.search_slskd("Fleetwood Mac - Dreams")
+
+    assert [result["slskd_username"] for result in results] == ["free_peer", "busy_peer"]
+    assert {result["queue_length"] for result in results} == {0, 12}
+    assert any("peer_queue=-" in note for note in results[1]["score_breakdown"])
+
+
+def test_a_very_busy_peer_remains_available(slskd_ready):
+    hit = _flac_hit()
+    hit["queueLength"] = 10_000
+    slskd_ready([hit])
+
+    results = slskd.search_slskd("Fleetwood Mac - Dreams")
+
+    assert results
+    assert results[0]["queue_length"] == 10_000
+    assert f"peer_queue=-{slskd.SLSKD_QUEUE_PENALTY_CAP}" in results[0]["score_breakdown"]
+
+
 def test_an_empty_response_list_is_still_just_empty(slskd_ready, capsys):
     """The quiet case must stay quiet; no results is not an error."""
     slskd_ready([])

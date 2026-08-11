@@ -35,7 +35,11 @@ from constants import (
     SEARCH_SLOT_WAIT_INTERACTIVE,
     SEARCH_SLOT_WAIT_AUTOMATED,
 )
-from db import db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs, cleanup_old_search_logs, upsert_album_track_lock
+from db import (
+    db_conn, init_db, start_stale_job_monitor, cleanup_stale_jobs,
+    cleanup_old_search_logs, upsert_album_track_lock, save_search_decision,
+    reconcile_deleted_library_files,
+)
 from settings import (
     get_setting, get_setting_bool, set_setting, set_user_setting, get_singles_dir, get_playlists_dir,
     get_albums_dir,
@@ -48,7 +52,8 @@ from models import (
     SettingsUpdate, SearchResult, BlacklistRequest,
     TestSlskdRequest, TestNavidromeRequest, TestJellyfinRequest, TestLidarrRequest, TestYouTubeCookiesRequest,
     TestAppriseRequest, TestEmailRequest, TestSpotifyCookiesRequest, RetryMissingTrackRequest, QueueMissingTrackCandidateRequest,
-    OrphanMoveRequest,
+    QueueRescueCandidateRequest,
+    OrphanMoveRequest, MaintenanceRequest,
     AlbumDownloadRequest, ReleaseGroupResolveRequest, ExploreRequest, PatchTagsRequest,
     LoginRequest, ChangePasswordRequest, CreateUserRequest,
     SetUserPasswordRequest, SetUserRoleRequest,
@@ -82,9 +87,14 @@ from downloads import (
     get_job_source_allowlist,
 )
 from acquisition import (
+    acquisition_candidate_summary,
     attach_job_to_acquisition,
     begin_acquisition_cycle,
     ensure_acquisition_target,
+    finish_acquisition_cycle,
+    parse_allowed_sources,
+    rank_automatic_candidates,
+    stored_rescue_candidates,
 )
 from bulk_import import (
     clean_bulk_import_line,
@@ -812,6 +822,141 @@ def update_settings(updates: SettingsUpdate, request: Request):
         "updated": updated_keys,
         "settings": get_settings(request)["settings"]
     }
+
+
+def _maintenance_orphan_import_ids(conn: sqlite3.Connection) -> list[str]:
+    return [
+        row[0] for row in conn.execute(
+            """SELECT bi.id
+               FROM bulk_imports bi
+               LEFT JOIN watched_playlists wp ON wp.id = bi.watch_playlist_id
+               LEFT JOIN watched_artists wa ON wa.id = bi.watch_artist_id
+               WHERE (bi.watch_playlist_id IS NOT NULL AND wp.id IS NULL)
+                  OR (bi.watch_artist_id IS NOT NULL AND wa.id IS NULL)"""
+        ).fetchall()
+    ]
+
+
+@app.get("/api/settings/maintenance")
+def maintenance_preview(http_request: Request):
+    """Preview database maintenance without changing anything."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    with db_conn() as conn:
+        orphan_ids = _maintenance_orphan_import_ids(conn)
+        counts = {
+            status: conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status = ?", (status,)
+            ).fetchone()[0]
+            for status in ("completed", "completed_with_errors", "failed", "cancelled")
+        }
+        indexed_paths = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE final_path IS NOT NULL AND final_path != ''"
+        ).fetchone()[0]
+    return {
+        "orphan_imports": len(orphan_ids),
+        "queue_history": counts,
+        "indexed_paths": indexed_paths,
+    }
+
+
+def _purge_orphan_imports(conn: sqlite3.Connection) -> int:
+    orphan_ids = _maintenance_orphan_import_ids(conn)
+    for import_id in orphan_ids:
+        target_ids = [
+            row[0] for row in conn.execute(
+                "SELECT acquisition_target_id FROM bulk_import_tracks WHERE import_id = ? AND acquisition_target_id IS NOT NULL",
+                (import_id,),
+            ).fetchall()
+        ]
+        conn.execute("DELETE FROM bulk_import_tracks WHERE import_id = ?", (import_id,))
+        conn.execute("DELETE FROM bulk_imports WHERE id = ?", (import_id,))
+        conn.executemany(
+            "DELETE FROM acquisition_targets WHERE id = ?",
+            [(target_id,) for target_id in target_ids],
+        )
+    return len(orphan_ids)
+
+
+def _rebuild_library_index() -> int:
+    """Add history rows for audio under configured roots which lacks an exact path."""
+    roots = [get_singles_dir(), get_playlists_dir(), get_albums_dir()]
+    with db_conn() as conn:
+        known = {
+            row[0] for row in conn.execute(
+                "SELECT final_path FROM jobs WHERE final_path IS NOT NULL AND final_path != ''"
+            ).fetchall()
+        }
+    rebuilt = []
+    seen = set()
+    for root in roots:
+        if root is None or not root.exists():
+            continue
+        for audio_path in iter_library_audio_files(root, AUDIO_EXTENSIONS):
+            resolved = str(audio_path.resolve())
+            if resolved in known or resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                relative = audio_path.relative_to(root)
+                artist = relative.parts[-2] if len(relative.parts) > 1 else "Unknown"
+            except ValueError:
+                artist = "Unknown"
+            rebuilt.append((str(uuid.uuid4())[:8], audio_path.stem, artist, resolved))
+    if rebuilt:
+        with db_conn() as conn:
+            conn.executemany(
+                """INSERT INTO jobs
+                   (id, title, artist, status, download_type, source, final_path,
+                    file_deleted, created_at, completed_at)
+                   VALUES (?, ?, ?, 'completed', 'single', 'library_rebuild', ?, 0,
+                           datetime('now'), datetime('now'))""",
+                rebuilt,
+            )
+            conn.commit()
+    return len(rebuilt)
+
+
+@app.post("/api/settings/maintenance")
+def run_maintenance(body: MaintenanceRequest, http_request: Request):
+    """Run an explicitly confirmed, audio-safe maintenance action."""
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="Confirmation required")
+    if body.action == "purge_orphans":
+        with db_conn() as conn:
+            changed = _purge_orphan_imports(conn)
+            conn.commit()
+        return {"orphan_imports_removed": changed}
+    if body.action == "clear_history":
+        allowed = {"completed", "completed_with_errors", "failed", "cancelled"}
+        statuses = set(body.statuses) & allowed
+        if not statuses:
+            raise HTTPException(status_code=400, detail="Select at least one history status")
+        placeholders = ",".join("?" for _ in statuses)
+        with db_conn() as conn:
+            changed = conn.execute(
+                f"DELETE FROM jobs WHERE status IN ({placeholders})", tuple(sorted(statuses))
+            ).rowcount
+            conn.commit()
+        return {"queue_rows_removed": changed}
+    if body.action in {"reconcile", "clean_rebuild"}:
+        marked_deleted, unlinked = reconcile_deleted_library_files(batch_size=1_000_000)
+        orphan_count = 0
+        rebuilt = 0
+        if body.action == "clean_rebuild":
+            with db_conn() as conn:
+                orphan_count = _purge_orphan_imports(conn)
+                conn.commit()
+            rebuilt = _rebuild_library_index()
+        return {
+            "jobs_marked_deleted": marked_deleted,
+            "watched_rows_unlinked": unlinked,
+            "orphan_imports_removed": orphan_count,
+            "library_rows_rebuilt": rebuilt,
+        }
+    raise HTTPException(status_code=400, detail="Unknown maintenance action")
 
 
 # =============================================================================
@@ -1951,6 +2096,7 @@ def search_slskd_endpoint(request: SearchRequest):
                 size_bytes=r.get("size") or r.get("slskd_size"),
                 bitrate=r.get("bitrate"),
                 match_confidence=r.get("match_confidence"),
+                queue_length=r.get("queue_length"),
             ))
 
         return {"results": final_results, "slskd_enabled": True}
@@ -1978,7 +2124,7 @@ def search_artwork(artist: str, title: str = "", album: str = ""):
     album = (album or "").strip()
     if not artist or not (album or title):
         return {"url": None}
-    url = fetch_cover_art_url(artist, album or title)
+    url = fetch_cover_art_url(artist, album or title, album=bool(album))
     return {"url": url}
 
 
@@ -2660,6 +2806,404 @@ def retry_job(job_id: str, http_request: Request):
         )
 
     return {"job_id": job_id, "status": "queued"}
+
+
+def _rescue_context(job_id: str, user_id: str | None, is_admin: bool) -> tuple[dict, dict]:
+    """Load an owned failed job and its durable automatic-acquisition target."""
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        _scope_frag, _scope_params = _user_scope(user_id, is_admin)
+        _scope_frag = _scope_frag.replace("user_id", "j.user_id")
+        row = conn.execute(
+            f"""SELECT j.*, at.user_id AS target_user_id, at.owner_type,
+                       at.owner_key, at.mode AS target_mode, at.artist AS target_artist,
+                       at.title AS target_title, at.isrc AS target_isrc,
+                       at.allowed_sources, at.priority_source,
+                       at.convert_audio AS target_convert_audio,
+                       at.destination_json, at.status AS target_status
+                FROM jobs j
+                JOIN acquisition_targets at ON at.id = j.acquisition_target_id
+                WHERE j.id = ? AND {_scope_frag}""",
+            (job_id, *_scope_params),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Automatic acquisition job not found")
+    data = dict(row)
+    if data.get("target_mode") != "automatic":
+        raise HTTPException(
+            status_code=400,
+            detail="This was a manually pinned source; use Re-download to honour that source",
+        )
+    if data.get("status") != "failed":
+        raise HTTPException(status_code=400, detail="Only failed automatic jobs can be rescued")
+    try:
+        destination = json.loads(data.get("destination_json") or "{}")
+    except (TypeError, ValueError):
+        destination = {}
+    return data, destination
+
+
+def _candidate_can_download(candidate: dict) -> bool:
+    source = (candidate.get("source") or "youtube").strip().lower()
+    if source == "youtube":
+        return bool(candidate.get("video_id") and is_valid_youtube_id(candidate["video_id"]))
+    if source == "soulseek":
+        return bool(candidate.get("slskd_username") and candidate.get("slskd_filename"))
+    if source in URL_BASED_SOURCES:
+        return bool(candidate.get("source_url"))
+    return False
+
+
+def _rescue_candidates_for_target(target_id: str, allowed_sources: set[str] | None) -> list[dict]:
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        candidates = stored_rescue_candidates(conn, target_id)
+        attempts = conn.execute(
+            """SELECT source, candidate_id
+               FROM acquisition_attempts WHERE target_id = ?""",
+            (target_id,),
+        ).fetchall()
+    attempted = {
+        ((row["source"] or "youtube").lower(), str(row["candidate_id"] or ""))
+        for row in attempts
+    }
+    results = []
+    for candidate in candidates:
+        source = (candidate.get("source") or "youtube").strip().lower()
+        if allowed_sources is not None and source not in allowed_sources:
+            continue
+        candidate["attempted"] = (source, str(candidate.get("video_id") or "")) in attempted
+        candidate["selectable"] = _candidate_can_download(candidate)
+        results.append(candidate)
+    return results
+
+
+def _rescue_routing(job: dict, destination: dict) -> tuple[str | None, bool, str | None]:
+    use_playlists_dir = bool(destination.get("use_playlists_dir"))
+    custom_subdir = (destination.get("custom_subdir") or "").strip() or None
+    playlist_name = (destination.get("playlist_name") or "").strip() or None
+    watch_playlist_id = destination.get("watch_playlist_id")
+    if watch_playlist_id:
+        with db_conn() as conn:
+            row = conn.execute(
+                "SELECT name, use_playlists_dir, custom_subdir FROM watched_playlists WHERE id = ?",
+                (watch_playlist_id,),
+            ).fetchone()
+        if row:
+            playlist_name = row[0]
+            use_playlists_dir = bool(row[1])
+            custom_subdir = (row[2] or "").strip() or custom_subdir
+    if not (use_playlists_dir or custom_subdir):
+        playlist_name = None
+    return playlist_name, use_playlists_dir, custom_subdir
+
+
+def _search_rescue_candidates(job: dict, slot_wait: float) -> list[dict]:
+    """Repeat automatic search without dropping an album/playlist's ISRC identity."""
+    artist = job.get("target_artist") or job.get("artist") or ""
+    title = job.get("target_title") or job.get("title") or ""
+    allowed = parse_allowed_sources(job.get("allowed_sources"))
+    raw: list[dict] = []
+    isrc = (job.get("target_isrc") or "").strip()
+    if isrc and (allowed is None or "monochrome" in allowed):
+        try:
+            from monochrome import resolve_by_isrc
+            exact = resolve_by_isrc(isrc, artist, title)
+            if exact:
+                raw.append(exact)
+        except Exception as exc:
+            print(f"Rescue ISRC lookup failed for {artist} - {title}: {exc}")
+    searched, _ = search_all(
+        f"{artist} - {title}".strip(" -"),
+        limit=12,
+        sources=sorted(allowed) if allowed is not None else None,
+        include_soulseek=True,
+        slot_wait=slot_wait,
+        return_all_source_results=True,
+    )
+    seen = {
+        ((item.get("source") or "youtube").lower(), str(item.get("video_id") or ""))
+        for item in raw
+    }
+    raw.extend(
+        item for item in searched
+        if ((item.get("source") or "youtube").lower(), str(item.get("video_id") or ""))
+        not in seen
+    )
+    ranked, _rejected = rank_automatic_candidates(
+        raw, artist, title, priority_source=job.get("priority_source")
+    )
+    return ranked
+
+
+def _create_rescue_job(job: dict, destination: dict, candidate: dict | None = None) -> tuple[str, int]:
+    """Append a new Queue row without erasing the failed attempt it rescues."""
+    target_id = job["acquisition_target_id"]
+    with db_conn() as conn:
+        active = conn.execute(
+            """SELECT 1 FROM jobs
+               WHERE acquisition_target_id = ? AND status IN ('queued', 'downloading')
+               LIMIT 1""",
+            (target_id,),
+        ).fetchone()
+    if active:
+        raise HTTPException(status_code=409, detail="A rescue attempt is already running")
+
+    cycle = begin_acquisition_cycle(target_id)
+    new_job_id = str(uuid.uuid4())[:8]
+    candidate = candidate or {}
+    source = (candidate.get("source") or job.get("source") or "youtube").strip().lower()
+    video_id = candidate.get("video_id") or ""
+    source_url = candidate.get("source_url")
+    if source == "youtube" and video_id and not source_url:
+        source_url = f"https://www.youtube.com/watch?v={video_id}"
+    if source == "soulseek" and not source_url and candidate.get("slskd_username"):
+        source_url = f"soulseek://{candidate['slskd_username']}/{candidate.get('slskd_filename') or ''}"
+
+    with db_conn() as conn:
+        conn.execute(
+            """INSERT INTO jobs
+               (id, video_id, title, artist, status, download_type, playlist_name,
+                source, slskd_username, slskd_filename, slskd_size, convert_audio,
+                source_url, user_id, override_dir, album_release_mbid, album_name,
+                album_track_title, album_track_number, album_track_total,
+                skip_mismatch_check, acquisition_target_id, acquisition_cycle,
+                progress_stage)
+               VALUES (?, ?, ?, ?, 'queued', 'single', ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?, ?, 'Finding next option')""",
+            (
+                new_job_id, video_id, job.get("target_title") or job.get("title") or "",
+                job.get("target_artist") or job.get("artist") or "",
+                job.get("playlist_name"), source,
+                candidate.get("slskd_username"), candidate.get("slskd_filename"),
+                candidate.get("slskd_size") or candidate.get("size"),
+                int(bool(job.get("target_convert_audio"))), source_url,
+                job.get("target_user_id") or job.get("user_id"),
+                destination.get("override_dir") or job.get("override_dir"),
+                destination.get("album_release_mbid") or job.get("album_release_mbid"),
+                job.get("album_name"), job.get("album_track_title"),
+                job.get("album_track_number"), job.get("album_track_total"),
+                int(bool(job.get("skip_mismatch_check"))), target_id, cycle,
+            ),
+        )
+        conn.execute(
+            """UPDATE bulk_import_tracks
+               SET job_id = ?, status = 'queued', error = NULL, acquisition_cycle = ?
+               WHERE acquisition_target_id = ?""",
+            (new_job_id, cycle, target_id),
+        )
+        watch_playlist_id = destination.get("watch_playlist_id")
+        if watch_playlist_id:
+            conn.execute(
+                """UPDATE watched_playlist_tracks
+                   SET job_id = ?, downloaded_at = NULL
+                   WHERE playlist_id = ? AND track_hash = ?""",
+                (
+                    new_job_id, watch_playlist_id,
+                    hash_track(job.get("target_artist") or "", job.get("target_title") or ""),
+                ),
+            )
+        watch_artist_id = destination.get("watch_artist_id")
+        if watch_artist_id:
+            conn.execute(
+                """UPDATE watched_artist_tracks
+                   SET job_id = ?, downloaded_at = NULL
+                   WHERE artist_id = ? AND track_hash = ?""",
+                (
+                    new_job_id, watch_artist_id,
+                    hash_track(job.get("target_artist") or "", job.get("target_title") or ""),
+                ),
+            )
+        conn.commit()
+    return new_job_id, cycle
+
+
+def _run_rescue_cycle(
+    job: dict,
+    destination: dict,
+    new_job_id: str,
+    cycle: int,
+    candidates: list[dict],
+    automatic: bool,
+) -> None:
+    target_id = job["acquisition_target_id"]
+    artist = job.get("target_artist") or job.get("artist") or ""
+    title = job.get("target_title") or job.get("title") or ""
+    allowed_sources = parse_allowed_sources(job.get("allowed_sources"))
+    priority_source = job.get("priority_source")
+
+    if automatic:
+        untried = [candidate for candidate in candidates if not candidate.get("attempted")]
+        candidate_pool = [candidate for candidate in untried if _candidate_can_download(candidate)]
+        if not candidate_pool:
+            try:
+                candidate_pool = _search_rescue_candidates(
+                    job, SEARCH_SLOT_WAIT_AUTOMATED
+                )
+            except Exception as exc:
+                candidate_pool = []
+                failure = f"Rescue search failed: {exc}"
+        else:
+            candidate_pool, _rejected = rank_automatic_candidates(
+                candidate_pool, artist, title, priority_source=priority_source
+            )
+        if not candidate_pool:
+            failure = locals().get("failure", "No suitable rescue candidates found")
+            with db_conn() as conn:
+                conn.execute(
+                    """UPDATE jobs SET status = 'failed', error = ?, progress_stage = NULL,
+                              completed_at = datetime('now') WHERE id = ?""",
+                    (failure, new_job_id),
+                )
+                conn.execute(
+                    """UPDATE bulk_import_tracks SET status = 'failed', error = ?
+                       WHERE acquisition_target_id = ?""",
+                    (failure, target_id),
+                )
+                conn.commit()
+            finish_acquisition_cycle(target_id, "failed", failure)
+            return
+        save_search_decision(
+            new_job_id,
+            f"{artist} - {title}".strip(" -"),
+            acquisition_candidate_summary(candidate_pool[0]),
+            [acquisition_candidate_summary(item) for item in candidate_pool[1:4]],
+        )
+    else:
+        candidate_pool = [candidate for candidate in candidates if _candidate_can_download(candidate)]
+        if not candidate_pool:
+            failure = "The selected candidate no longer has enough download information"
+            with db_conn() as conn:
+                conn.execute(
+                    "UPDATE jobs SET status = 'failed', error = ?, progress_stage = NULL WHERE id = ?",
+                    (failure, new_job_id),
+                )
+                conn.execute(
+                    """UPDATE bulk_import_tracks SET status = 'failed', error = ?
+                       WHERE acquisition_target_id = ?""",
+                    (failure, target_id),
+                )
+                conn.commit()
+            finish_acquisition_cycle(target_id, "failed", failure)
+            return
+
+    playlist_name, use_playlists_dir, custom_subdir = _rescue_routing(job, destination)
+    process_acquisition_cycle(
+        new_job_id,
+        candidate_pool[0],
+        artist,
+        title,
+        bool(job.get("target_convert_audio")),
+        target_id=target_id,
+        cycle=cycle,
+        automatic=automatic,
+        candidate_pool=candidate_pool,
+        allowed_sources=allowed_sources if automatic else {
+            (candidate_pool[0].get("source") or "youtube").lower()
+        },
+        priority_source=priority_source if automatic else candidate_pool[0].get("source"),
+        playlist_name=playlist_name,
+        use_playlists_dir=use_playlists_dir,
+        user_id=job.get("target_user_id") or job.get("user_id"),
+        override_dir=destination.get("override_dir") or job.get("override_dir"),
+        skip_dupe_check=bool(destination.get("override_dir") or job.get("override_dir")),
+        custom_subdir=custom_subdir,
+    )
+    with db_conn() as conn:
+        state_row = conn.execute(
+            "SELECT status, error FROM jobs WHERE id = ?", (new_job_id,)
+        ).fetchone()
+        if state_row:
+            track_status = (
+                "completed"
+                if state_row[0] in ("completed", "completed_with_errors")
+                else "cancelled" if state_row[0] == "cancelled" else "failed"
+            )
+            conn.execute(
+                """UPDATE bulk_import_tracks SET status = ?, error = ?
+                   WHERE acquisition_target_id = ?""",
+                (
+                    track_status,
+                    None if track_status == "completed" else state_row[1],
+                    target_id,
+                ),
+            )
+            conn.commit()
+
+
+@app.get("/api/jobs/{job_id}/rescue-candidates")
+def get_job_rescue_candidates(job_id: str, http_request: Request):
+    job, _destination = _rescue_context(
+        job_id, http_request.state.user_id, http_request.state.is_admin
+    )
+    candidates = _rescue_candidates_for_target(
+        job["acquisition_target_id"], parse_allowed_sources(job.get("allowed_sources"))
+    )
+    return {
+        "artist": job.get("target_artist") or job.get("artist") or "",
+        "title": job.get("target_title") or job.get("title") or "",
+        "candidates": candidates,
+    }
+
+
+@app.post("/api/jobs/{job_id}/rescue-candidates/refresh")
+def refresh_job_rescue_candidates(job_id: str, http_request: Request):
+    job, _destination = _rescue_context(
+        job_id, http_request.state.user_id, http_request.state.is_admin
+    )
+    artist = job.get("target_artist") or job.get("artist") or ""
+    title = job.get("target_title") or job.get("title") or ""
+    try:
+        ranked = _search_rescue_candidates(job, SEARCH_SLOT_WAIT_INTERACTIVE)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Candidate search failed: {exc}")
+    if ranked:
+        save_search_decision(
+            job_id,
+            f"{artist} - {title}".strip(" -"),
+            acquisition_candidate_summary(ranked[0]),
+            [acquisition_candidate_summary(item) for item in ranked[1:4]],
+        )
+    return get_job_rescue_candidates(job_id, http_request)
+
+
+@app.post("/api/jobs/{job_id}/retry-next")
+def retry_job_next_option(job_id: str, http_request: Request):
+    job, destination = _rescue_context(
+        job_id, http_request.state.user_id, http_request.state.is_admin
+    )
+    candidates = _rescue_candidates_for_target(
+        job["acquisition_target_id"], parse_allowed_sources(job.get("allowed_sources"))
+    )
+    new_job_id, cycle = _create_rescue_job(job, destination)
+    spawn_daemon_thread(
+        _run_rescue_cycle, job, destination, new_job_id, cycle, candidates, True
+    )
+    return {"job_id": new_job_id, "status": "queued"}
+
+
+@app.post("/api/jobs/{job_id}/rescue-candidate")
+def queue_job_rescue_candidate(
+    job_id: str, body: QueueRescueCandidateRequest, http_request: Request
+):
+    job, destination = _rescue_context(
+        job_id, http_request.state.user_id, http_request.state.is_admin
+    )
+    allowed = parse_allowed_sources(job.get("allowed_sources"))
+    candidates = _rescue_candidates_for_target(job["acquisition_target_id"], allowed)
+    candidate = next(
+        (item for item in candidates if item.get("candidate_key") == body.candidate_key),
+        None,
+    )
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Stored candidate not found")
+    if not candidate.get("selectable"):
+        raise HTTPException(status_code=400, detail="Candidate download details have expired; search again")
+    new_job_id, cycle = _create_rescue_job(job, destination, candidate)
+    spawn_daemon_thread(
+        _run_rescue_cycle, job, destination, new_job_id, cycle, [candidate], False
+    )
+    return {"job_id": new_job_id, "status": "queued"}
 
 
 @app.post("/api/jobs/{job_id}/force-accept")
@@ -3351,7 +3895,7 @@ def bulk_import_async(body: AsyncBulkImportRequest, http_request: Request):
         )
 
         # Insert all tracks
-        for track in tracks_to_import:
+        for track_index, track in enumerate(tracks_to_import):
             target_id = ensure_acquisition_target(
                 owner_type="bulk_import",
                 owner_key=f"{import_id}:{track['line_num']}",
@@ -3371,11 +3915,19 @@ def bulk_import_async(body: AsyncBulkImportRequest, http_request: Request):
             )
             conn.execute(
                 """INSERT INTO bulk_import_tracks
-                   (import_id, line_num, artist, song, status, acquisition_target_id)
-                   VALUES (?, ?, ?, ?, 'pending', ?)""",
+                   (import_id, line_num, artist, song, status,
+                    original_youtube_video_id, acquisition_target_id)
+                   VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
                 (
                     import_id, track["line_num"], track["artist"],
-                    track["song"], target_id,
+                    track["song"],
+                    (
+                        body.original_youtube_video_ids[track_index]
+                        if body.original_youtube_video_ids
+                        and track_index < len(body.original_youtube_video_ids)
+                        else None
+                    ),
+                    target_id,
                 )
             )
 
@@ -3529,10 +4081,14 @@ def fetch_playlist(request: Request, body: PlaylistFetchRequest):
     # fetch_playlist_tracks returns (artist, title) tuples - reformat to the
     # "Artist - Title" strings the bulk import UI expects, plus a playlist name.
     user_id = request.state.user_id
-    tracks_tuples, playlist_name, warning = fetch_playlist_tracks(url, platform, user_id=user_id)
+    fetched = fetch_playlist_tracks(url, platform, user_id=user_id)
+    tracks_tuples, playlist_name, warning = fetched[:3]
+    original_video_ids = fetched[3] if len(fetched) > 3 else [None] * len(tracks_tuples)
     playlist_name = sanitize_playlist_name(playlist_name, url)
     tracks = [f"{artist} - {title}" for artist, title in tracks_tuples]
     resp = {"tracks": tracks, "playlist_name": playlist_name, "count": len(tracks), "platform": platform}
+    if any(original_video_ids):
+        resp["original_youtube_video_ids"] = original_video_ids
     if warning:
         resp["warning"] = warning
     return resp
@@ -3650,7 +4206,9 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
 
         # Fetch playlist to get name and initial tracks
         try:
-            tracks, playlist_name, fetch_warning = fetch_playlist_tracks(body.url, platform, user_id=user_id)
+            fetched = fetch_playlist_tracks(body.url, platform, user_id=user_id)
+            tracks, playlist_name, fetch_warning = fetched[:3]
+            original_video_ids = fetched[3] if len(fetched) > 3 else [None] * len(tracks)
             playlist_name = sanitize_playlist_name(playlist_name, body.url)
         except HTTPException:
             raise
@@ -3680,13 +4238,13 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
               (body.custom_subdir or "").strip() or None))
 
         # Insert all current tracks as "seen"
-        for artist, title in tracks:
+        for index, (artist, title) in enumerate(tracks):
             track_hash = hash_track(artist, title)
             conn.execute("""
                 INSERT OR IGNORE INTO watched_playlist_tracks
-                (playlist_id, track_hash, artist, title)
-                VALUES (?, ?, ?, ?)
-            """, (playlist_id, track_hash, artist, title))
+                (playlist_id, track_hash, artist, title, original_youtube_video_id)
+                VALUES (?, ?, ?, ?, ?)
+            """, (playlist_id, track_hash, artist, title, original_video_ids[index]))
 
         conn.commit()
 
@@ -3701,6 +4259,7 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
             preferred_sources=_new_preferred_sources,
             priority_source=body.priority_source,
             custom_subdir=(body.custom_subdir or "").strip() or None,
+            original_youtube_video_ids=original_video_ids,
         )
 
     resp = {
@@ -4977,7 +5536,8 @@ def get_watched_artist_albums(artist_id: str, http_request: Request):
         rows = conn.execute(
             """SELECT waa.title, waa.year, waa.release_mbid,
                       waa.release_group_mbid, waa.status, waa.queued_at,
-                      waa.import_id, bi.status AS import_status,
+                      waa.import_id, waa.attempt_count, waa.last_attempt_at,
+                      waa.last_error, bi.status AS import_status,
                       bi.album_total_tracks AS expected_track_count
                FROM watched_artist_albums waa
                LEFT JOIN bulk_imports bi ON bi.id = waa.import_id
@@ -5002,6 +5562,12 @@ def get_watched_artist_albums(artist_id: str, http_request: Request):
             audio_count,
             d.get("expected_track_count"),
         ))
+        if d.get("status") == "failed" and d.get("last_error"):
+            count = int(d.get("attempt_count") or 0)
+            d["status_detail"] = (
+                f"Queue attempt {count} failed: {d['last_error']}. "
+                "It will retry on the next artist check."
+            )
         out.append(d)
     return {"artist": artist_name, "albums": out}
 

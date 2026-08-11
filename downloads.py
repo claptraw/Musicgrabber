@@ -875,6 +875,30 @@ def _find_alternate_search_candidate(
     return None
 
 
+def _requested_video_fallback_candidate(
+    video_id: str | None,
+    expected_artist: str,
+    expected_title: str,
+    allowed_sources: set[str] | None,
+    user_id: str | None,
+) -> dict | None:
+    """Return the explicitly enabled original YouTube video as a final candidate."""
+    if (
+        not video_id
+        or (allowed_sources is not None and "youtube" not in allowed_sources)
+        or not get_setting_bool("youtube_requested_video_fallback", False, user_id=user_id)
+    ):
+        return None
+    return {
+        "video_id": video_id,
+        "source": "youtube",
+        "source_url": f"https://www.youtube.com/watch?v={video_id}",
+        "artist": expected_artist,
+        "title": expected_title,
+        "requested_video_fallback": True,
+    }
+
+
 def process_acquisition_cycle(
     job_id: str,
     initial_candidate: dict,
@@ -894,6 +918,7 @@ def process_acquisition_cycle(
     override_dir: str | None = None,
     skip_dupe_check: bool = False,
     custom_subdir: str | None = None,
+    original_youtube_video_id: str | None = None,
 ) -> None:
     """Run one bounded candidate cycle and persist every source leg.
 
@@ -907,6 +932,7 @@ def process_acquisition_cycle(
     attempted_sources: set[str] = set()
     last_error = "No candidate succeeded"
 
+    requested_video_tried = False
     while candidate:
         if _job_was_cancelled(job_id):
             finish_acquisition_cycle(target_id, "cancelled", "Cancelled")
@@ -932,6 +958,7 @@ def process_acquisition_cycle(
             slskd_size=slskd_size,
             error=None,
             completed_at=None,
+            requested_video_fallback=int(bool(candidate.get("requested_video_fallback"))),
         )
         attempt_id = start_acquisition_attempt(target_id, cycle, job_id, candidate)
 
@@ -1020,6 +1047,15 @@ def process_acquisition_cycle(
                 expected_title=expected_title,
                 allowed_sources=allowed_sources,
                 priority_source=priority_source,
+            )
+        if candidate is None and not requested_video_tried:
+            requested_video_tried = True
+            candidate = _requested_video_fallback_candidate(
+                original_youtube_video_id,
+                expected_artist,
+                expected_title,
+                allowed_sources,
+                user_id,
             )
 
     finish_acquisition_cycle(target_id, "failed", last_error)
@@ -1659,7 +1695,7 @@ _ALLOWED_JOB_COLS = frozenset({
     "final_path",
     "override_dir", "album_release_mbid", "album_name", "album_track_title",
     "album_track_number", "album_track_total", "completed_at", "uploader",
-    "audio_quality", "progress_stage", "source_history",
+    "audio_quality", "progress_stage", "source_history", "requested_video_fallback",
 })
 
 

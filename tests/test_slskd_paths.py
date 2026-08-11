@@ -182,6 +182,56 @@ def test_a_date_stamped_folder_does_not_pass_itself_off_as_an_artist():
     assert parsed["year"] == 2009
 
 
+@pytest.mark.parametrize(
+    "folder",
+    ["(2013-05-06) Haunted House", "2013-05-06 Haunted House"],
+)
+def test_a_full_release_date_is_consumed_in_one_piece(folder):
+    parsed = parse_slskd_path(
+        rf"music\Knife Party\{folder}\01 Power Glove.flac",
+        query_artist="Knife Party",
+    )
+
+    assert parsed["album"] == "Haunted House"
+    assert parsed["year"] == 2013
+
+
+@pytest.mark.parametrize("marker", ["FLAC", "1733 kbps", "16-44"])
+def test_an_unmistakable_format_marker_is_removed_from_the_title(marker):
+    parsed = parse_slskd_path(
+        rf"music\Knife Party\Haunted House\01 Power Glove [{marker}].flac",
+        query_artist="Knife Party",
+    )
+
+    assert parsed["title"] == "Power Glove"
+
+
+def test_legitimate_bracketed_title_text_is_preserved():
+    parsed = parse_slskd_path(
+        r"music\Knife Party\Haunted House\01 Power Glove [VIP Mix].flac",
+        query_artist="Knife Party",
+    )
+
+    assert parsed["title"] == "Power Glove [VIP Mix]"
+
+
+@pytest.mark.parametrize(
+    "folder,query,expected",
+    [
+        ("Knife Party (2011-2019)", "Knife Party", "Knife Party"),
+        ("Pendulum (Knife Party)", "Knife Party", "Knife Party"),
+        ("Pendulum (Knife Party)", "Pendulum", "Pendulum"),
+    ],
+)
+def test_bracketed_artist_shelf_labels_offer_clean_query_matches(folder, query, expected):
+    parsed = parse_slskd_path(
+        rf"music\{folder}\Haunted House\01 Power Glove.flac",
+        query_artist=query,
+    )
+
+    assert parsed["artist"] == expected
+
+
 def test_underscores_are_treated_as_the_spaces_they_plainly_are():
     """A whole folder tree with no spaces in it still has an artist somewhere."""
     parsed = parse_slskd_path(

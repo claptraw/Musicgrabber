@@ -109,10 +109,18 @@ def _refresh_artist_albums(conn, artist: dict, artist_id: str, user_id: str | No
         return {"new_albums": 0, "queued": 0, "failed": 0}
 
     known_rows = conn.execute(
-        "SELECT release_group_mbid FROM watched_artist_albums WHERE artist_id = ?",
+        """SELECT release_group_mbid, status
+           FROM watched_artist_albums
+           WHERE artist_id = ?""",
         (artist_id,)
     ).fetchall()
-    known = {row[0] for row in known_rows if row[0]}
+    # A queueing failure is not album identity. It is a transient attempt and
+    # gets one fresh go on the next owning artist cycle, just like a failed
+    # track acquisition target. Seen/queued releases remain terminal here.
+    known = {
+        row[0] for row in known_rows
+        if row[0] and row[1] in {"seen", "queued"}
+    }
 
     new_count = 0
     queued_count = 0
@@ -123,11 +131,33 @@ def _refresh_artist_albums(conn, artist: dict, artist_id: str, user_id: str | No
         release_mbid = (album.get("release_mbid") or "").strip()
         group_mbid = (album.get("release_group_mbid") or "").strip() or release_mbid
         if not release_mbid or group_mbid in known:
-            continue  # already seeded, already queued, or already failed once
+            continue  # already seeded or successfully handed to the album queue
 
-        new_count += 1
+        existing = conn.execute(
+            """SELECT status FROM watched_artist_albums
+               WHERE artist_id = ? AND release_group_mbid = ?""",
+            (artist_id, group_mbid),
+        ).fetchone()
+        if not existing:
+            new_count += 1
         title = album.get("title") or ""
         year = album.get("year") or ""
+        conn.execute(
+            """INSERT INTO watched_artist_albums
+               (artist_id, release_group_mbid, release_mbid, title, year, status,
+                attempt_count, last_attempt_at, last_error)
+               VALUES (?, ?, ?, ?, ?, 'processing', 1, datetime('now'), NULL)
+               ON CONFLICT(artist_id, release_group_mbid) DO UPDATE SET
+                   release_mbid = excluded.release_mbid,
+                   title = excluded.title,
+                   year = excluded.year,
+                   status = 'processing',
+                   attempt_count = watched_artist_albums.attempt_count + 1,
+                   last_attempt_at = datetime('now'),
+                   last_error = NULL""",
+            (artist_id, group_mbid, release_mbid, title, year),
+        )
+        conn.commit()
         try:
             result = albums.queue_album_download(
                 artist["name"], title, release_mbid,
@@ -138,7 +168,8 @@ def _refresh_artist_albums(conn, artist: dict, artist_id: str, user_id: str | No
                    (artist_id, release_group_mbid, release_mbid, title, year, status, queued_at, import_id)
                    VALUES (?, ?, ?, ?, ?, 'queued', datetime('now'), ?)
                    ON CONFLICT(artist_id, release_group_mbid) DO UPDATE SET
-                       status = 'queued', queued_at = datetime('now'), import_id = excluded.import_id""",
+                       status = 'queued', queued_at = datetime('now'),
+                       import_id = excluded.import_id, last_error = NULL""",
                 (artist_id, group_mbid, release_mbid, title, year, result.get("import_id"))
             )
             conn.commit()
@@ -149,8 +180,9 @@ def _refresh_artist_albums(conn, artist: dict, artist_id: str, user_id: str | No
                 """INSERT INTO watched_artist_albums
                    (artist_id, release_group_mbid, release_mbid, title, year, status)
                    VALUES (?, ?, ?, ?, ?, 'failed')
-                   ON CONFLICT(artist_id, release_group_mbid) DO UPDATE SET status = 'failed'""",
-                (artist_id, group_mbid, release_mbid, title, year)
+                   ON CONFLICT(artist_id, release_group_mbid) DO UPDATE SET
+                       status = 'failed', last_error = ?""",
+                (artist_id, group_mbid, release_mbid, title, year, str(e)[:1000])
             )
             conn.commit()
             failed_count += 1

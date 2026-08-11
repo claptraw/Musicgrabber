@@ -21,6 +21,7 @@ from constants import (
 from db import db_conn, upsert_album_track_lock
 from downloads import process_acquisition_cycle, create_bulk_playlist
 from acquisition import (
+    acquisition_candidate_summary,
     begin_acquisition_cycle,
     ensure_acquisition_target,
     finish_acquisition_cycle,
@@ -298,6 +299,7 @@ def start_bulk_import_for_tracks(
     priority_source: Optional[str] = None,
     *,
     track_isrcs: Optional[list[str | None]] = None,
+    original_youtube_video_ids: Optional[list[str | None]] = None,
 ) -> str:
     """Create a bulk import job from a list of (artist, title) tuples.
 
@@ -338,6 +340,11 @@ def start_bulk_import_for_tracks(
                 if track_isrcs and line_num - 1 < len(track_isrcs)
                 else None
             )
+            _original_video_id = (
+                original_youtube_video_ids[line_num - 1]
+                if original_youtube_video_ids and line_num - 1 < len(original_youtube_video_ids)
+                else None
+            )
             track_hash = hash_track(artist, song)
             if watch_playlist_id:
                 owner_type = "watched_playlist"
@@ -374,9 +381,10 @@ def start_bulk_import_for_tracks(
             )
             conn.execute(
                 """INSERT INTO bulk_import_tracks
-                   (import_id, line_num, artist, song, status, isrc, acquisition_target_id)
-                   VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
-                (import_id, line_num, artist, song, _isrc, target_id)
+                   (import_id, line_num, artist, song, status, isrc,
+                    original_youtube_video_id, acquisition_target_id)
+                   VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)""",
+                (import_id, line_num, artist, song, _isrc, _original_video_id, target_id)
             )
 
         conn.commit()
@@ -838,22 +846,12 @@ def process_bulk_import_worker(import_id: str):
                     # Record why the scorer picked this candidate over its rivals.
                     # Done inside the same transaction to avoid "database is locked"
                     # from a second connection fighting for the write lock.
-                    def _candidate_summary(r: dict) -> dict:
-                        return {
-                            "video_id": r.get("video_id", ""),
-                            "title": r.get("title", ""),
-                            "channel": r.get("channel", ""),
-                            "source": r.get("source", "unknown"),
-                            "score": r.get("relevance_score"),
-                            "breakdown": r.get("score_breakdown", []),
-                        }
-
                     import json as _json
                     try:
                         _blob = _json.dumps({
-                            "selected": _candidate_summary(best_match),
+                            "selected": acquisition_candidate_summary(best_match),
                             "runners_up": [
-                                _candidate_summary(r)
+                                acquisition_candidate_summary(r)
                                 for r in search_results[:4]
                                 if r.get("video_id") != best_match.get("video_id")
                             ][:3],
@@ -903,6 +901,7 @@ def process_bulk_import_worker(import_id: str):
                     override_dir=override_dir,
                     skip_dupe_check=_skip_dupes,
                     custom_subdir=custom_subdir,
+                    original_youtube_video_id=track.get("original_youtube_video_id"),
                 )
 
                 # One import owns at most one active file. This gives cancellation

@@ -8,6 +8,7 @@ folded into whichever Queue row happens to be newest.
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import uuid
 from sqlite3 import Connection
@@ -16,6 +17,87 @@ from constants import FALLBACK_MATCH_CONFIDENCE_FLOOR
 from db import db_conn
 from matching import compute_match_confidence
 from search import quality_tier_of_result
+
+
+_RESCUE_CANDIDATE_FIELDS = (
+    "video_id", "title", "artist", "channel", "duration", "thumbnail",
+    "source", "source_url", "quality", "quality_tier", "relevance_score",
+    "score_breakdown", "slskd_username", "slskd_filename", "slskd_size",
+    "size", "album", "year", "bitrate", "size_bytes", "match_confidence",
+)
+
+
+def acquisition_candidate_summary(candidate: dict) -> dict:
+    """Keep enough candidate data to explain, preview and later rescue a job."""
+    summary = {
+        field: candidate.get(field)
+        for field in _RESCUE_CANDIDATE_FIELDS
+        if candidate.get(field) is not None
+    }
+    summary.setdefault("video_id", "")
+    summary.setdefault("title", "")
+    summary.setdefault("channel", "")
+    summary.setdefault("source", "youtube")
+    # Preserve the historical rationale field names used by the Queue panel.
+    summary["score"] = candidate.get("relevance_score", candidate.get("score"))
+    summary["breakdown"] = candidate.get(
+        "score_breakdown", candidate.get("breakdown", [])
+    )
+    return summary
+
+
+def acquisition_candidate_key(candidate: dict) -> str:
+    """Stable opaque identity for selecting a server-stored rescue candidate."""
+    source = str(candidate.get("source") or "youtube").strip().lower()
+    identity = "\x1f".join(
+        str(candidate.get(field) or "").strip()
+        for field in ("video_id", "source_url", "slskd_username", "slskd_filename")
+    )
+    return hashlib.sha256(f"{source}\x1f{identity}".encode("utf-8")).hexdigest()[:24]
+
+
+def stored_rescue_candidates(conn: Connection, target_id: str) -> list[dict]:
+    """Return de-duplicated candidates saved across every job for one target."""
+    rows = conn.execute(
+        """SELECT sd.decision_json, j.video_id, j.source, j.source_url,
+                  j.slskd_username, j.slskd_filename, j.slskd_size
+           FROM search_decisions sd
+           JOIN jobs j ON j.id = sd.job_id
+           WHERE j.acquisition_target_id = ?
+           ORDER BY sd.created_at DESC, sd.id DESC""",
+        (target_id,),
+    ).fetchall()
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        try:
+            decision = json.loads(row[0] or "{}")
+        except (TypeError, ValueError):
+            continue
+        for raw in [decision.get("selected"), *(decision.get("runners_up") or [])]:
+            if not isinstance(raw, dict):
+                continue
+            candidate = dict(raw)
+            if (
+                str(candidate.get("video_id") or "") == str(row[1] or "")
+                and str(candidate.get("source") or "youtube").lower()
+                == str(row[2] or "youtube").lower()
+            ):
+                candidate.setdefault("source_url", row[3])
+                candidate.setdefault("slskd_username", row[4])
+                candidate.setdefault("slskd_filename", row[5])
+                candidate.setdefault("slskd_size", row[6])
+            if "relevance_score" not in candidate and candidate.get("score") is not None:
+                candidate["relevance_score"] = candidate["score"]
+            if "score_breakdown" not in candidate and candidate.get("breakdown") is not None:
+                candidate["score_breakdown"] = candidate["breakdown"]
+            key = acquisition_candidate_key(candidate)
+            if key in seen:
+                continue
+            candidate["candidate_key"] = key
+            candidates.append(candidate)
+            seen.add(key)
+    return candidates
 
 
 def normalise_allowed_sources(value: str | list[str] | set[str] | None) -> str:

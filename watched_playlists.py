@@ -979,10 +979,10 @@ def _fetch_soundcloud_playlist(url: str) -> tuple[list[tuple[str, str]], str]:
     return tracks, playlist_name
 
 
-def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -> tuple[list[tuple[str, str]], str, str | None]:
+def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -> tuple[list[tuple[str, str]], str, str | None, list[str | None]]:
     """Fetch tracks from a playlist URL
 
-    Returns (list of (artist, title) tuples, playlist_name, warning_or_None)
+    Returns tracks, playlist name, warning, and aligned original YouTube IDs.
     """
     if platform == "spotify_likes":
         spotify_cookies_text = get_setting("spotify_cookies", "", user_id=user_id)
@@ -1002,7 +1002,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
                 tracks.append((artist.strip(), title.strip()))
             else:
                 tracks.append(("Unknown", track_str.strip()))
-        return tracks, result["playlist_name"], result.get("warning")
+        return tracks, result["playlist_name"], result.get("warning"), [None] * len(tracks)
 
     if platform == "spotify":
         spotify_cookies_text = get_setting("spotify_cookies", "", user_id=user_id)
@@ -1018,7 +1018,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             else:
                 tracks.append(("Unknown", track_str.strip()))
 
-        return tracks, result["playlist_name"], result.get("warning")
+        return tracks, result["playlist_name"], result.get("warning"), [None] * len(tracks)
 
     elif platform == "youtube":
         # Use yt-dlp to get playlist info
@@ -1073,6 +1073,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             raise HTTPException(status_code=502, detail="Failed to fetch YouTube playlist")
 
         tracks = []
+        original_video_ids = []
         playlist_name = "YouTube Playlist"
 
         for line in result.stdout.strip().split('\n'):
@@ -1089,13 +1090,14 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
                     channel = data.get("channel", data.get("uploader", "Unknown"))
                     artist, clean_title_val = extract_artist_title(title, channel)
                     tracks.append((artist, clean_title_val))
+                    original_video_ids.append(data["id"])
             except json.JSONDecodeError:
                 continue
 
         if not tracks:
             raise HTTPException(status_code=422, detail="No tracks found in YouTube playlist")
 
-        return tracks, playlist_name, None
+        return tracks, playlist_name, None, original_video_ids
 
     elif platform == "apple":
         music_user_token = get_setting("apple_music_user_token", "", user_id=user_id) or None
@@ -1109,7 +1111,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             else:
                 tracks.append(("Unknown", track_str.strip()))
 
-        return tracks, result["playlist_name"], None
+        return tracks, result["playlist_name"], None, [None] * len(tracks)
 
     elif platform == "amazon":
         result = fetch_amazon_playlist(url)
@@ -1122,7 +1124,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             else:
                 tracks.append(("Unknown", track_str.strip()))
 
-        return tracks, result["playlist_name"], None
+        return tracks, result["playlist_name"], None, [None] * len(tracks)
 
     elif platform == "listenbrainz":
         # Single LB playlist by UUID  -  regular refresh path
@@ -1130,7 +1132,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
         if not m:
             raise HTTPException(status_code=400, detail="Invalid ListenBrainz playlist URL: no UUID found")
         tracks, name = _fetch_listenbrainz_playlist(m.group(1))
-        return tracks, name, None
+        return tracks, name, None, [None] * len(tracks)
 
     elif platform == "listenbrainz_user":
         # Username URLs are handled at the add-watched level (fan-out to multiple playlists).
@@ -1142,7 +1144,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
 
     elif platform == "soundcloud":
         tracks, name = _fetch_soundcloud_playlist(url)
-        return tracks, name, None
+        return tracks, name, None, [None] * len(tracks)
 
     elif platform == "tidal":
         m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', url, re.IGNORECASE)
@@ -1156,7 +1158,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
                 tracks.append((artist.strip(), title.strip()))
             else:
                 tracks.append(("Unknown", track_str.strip()))
-        return tracks, result["playlist_name"], None
+        return tracks, result["playlist_name"], None, [None] * len(tracks)
 
     elif platform == "monochrome":
         m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', url, re.IGNORECASE)
@@ -1166,7 +1168,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
         tracks, name = fetch_tidal_playlist_tracks(m.group(1))
         if not tracks:
             raise HTTPException(status_code=422, detail="No tracks found in Monochrome playlist")
-        return tracks, name, None
+        return tracks, name, None, [None] * len(tracks)
 
     elif platform == "beatport":
         result = fetch_beatport_playlist(url)
@@ -1177,7 +1179,7 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
                 tracks.append((artist.strip(), title.strip()))
             else:
                 tracks.append(("Unknown", track_str.strip()))
-        return tracks, result["playlist_name"], None
+        return tracks, result["playlist_name"], None, [None] * len(tracks)
 
     raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
 
@@ -1355,15 +1357,21 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
 
                 if _lb_needs_reresolution():
                     tracks = _lb_reresolution_fetch(prefer_latest=True)
+                    original_video_ids = [None] * len(tracks)
                 else:
                     try:
-                        tracks, _, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"], user_id=user_id)
+                        fetched = fetch_playlist_tracks(playlist["url"], playlist["platform"], user_id=user_id)
+                        tracks = fetched[0]
+                        original_video_ids = fetched[3] if len(fetched) > 3 else [None] * len(tracks)
                     except HTTPException as e:
                         if e.status_code != 404:
                             raise
                         tracks = _lb_reresolution_fetch(prefer_latest=False)
+                        original_video_ids = [None] * len(tracks)
             else:
-                tracks, _, _ = fetch_playlist_tracks(playlist["url"], playlist["platform"], user_id=user_id)
+                fetched = fetch_playlist_tracks(playlist["url"], playlist["platform"], user_id=user_id)
+                tracks = fetched[0]
+                original_video_ids = fetched[3] if len(fetched) > 3 else [None] * len(tracks)
 
             # Build a set of hashes for what the upstream playlist currently contains
             current_hashes = {hash_track(artist, title) for artist, title in tracks}
@@ -1502,12 +1510,16 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             # Insert any new tracks so they are tracked before download
             # Build a position lookup from the current upstream order
             track_positions = {hash_track(a, t): i for i, (a, t) in enumerate(tracks)}
+            original_video_by_hash = {
+                hash_track(artist, title): original_video_ids[index]
+                for index, (artist, title) in enumerate(tracks)
+            }
             for artist, title, track_hash in new_tracks:
                 conn.execute("""
                     INSERT INTO watched_playlist_tracks
-                    (playlist_id, track_hash, artist, title, position)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (playlist_id, track_hash, artist, title, track_positions.get(track_hash)))
+                    (playlist_id, track_hash, artist, title, position, original_youtube_video_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (playlist_id, track_hash, artist, title, track_positions.get(track_hash), original_video_by_hash.get(track_hash)))
 
             tracks_to_import = [(artist, title) for artist, title, _ in new_tracks + missing_tracks]
             use_playlists_dir = bool(playlist.get("use_playlists_dir", False))
@@ -1524,6 +1536,10 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     preferred_sources=playlist.get("preferred_sources") or "all",
                     priority_source=playlist.get("priority_source"),
                     custom_subdir=custom_subdir,
+                    original_youtube_video_ids=[
+                        original_video_by_hash.get(track_hash)
+                        for _, _, track_hash in new_tracks + missing_tracks
+                    ],
                 )
 
             # Update playlist metadata

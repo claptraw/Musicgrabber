@@ -31,8 +31,10 @@ _MBID_CACHE_LOCK = threading.Lock()
 _SEARCH_CACHE: dict[tuple[str, str], tuple[bytes, str] | None] = {}
 _SEARCH_CACHE_LOCK = threading.Lock()
 
-# URL-only cache for search result thumbnails (just the remote URL, no download)
-_URL_CACHE: dict[tuple[str, str], str | None] = {}
+# URL-only cache for search result thumbnails (just the remote URL, no download).
+# The lookup kind is part of the key: an album and a song can quite reasonably
+# share a title while needing different Deezer endpoints and different artwork.
+_URL_CACHE: dict[tuple[str, str, str], str | None] = {}
 _URL_CACHE_LOCK = threading.Lock()
 
 
@@ -239,19 +241,22 @@ def cache_cover_art(release_mbid: str, art: tuple[bytes, str] | None) -> None:
         _MBID_CACHE[release_mbid] = art
 
 
-def fetch_cover_art_url(artist: str, title: str) -> str | None:
+def fetch_cover_art_url(artist: str, title: str, *, album: bool = False) -> str | None:
     """Return a cover art image URL for display in search results.
 
     Unlike fetch_cover_art(), this returns just a remote URL without downloading
     the image bytes; the browser loads it directly. Tries iTunes then Deezer.
+    Album cards use Deezer's album search rather than pretending the album name
+    is a track title.
     Results are cached so repeated calls for the same track are free.
     """
-    cache_key = (artist.lower().strip(), title.lower().strip())
+    cache_key = ("album" if album else "track", artist.lower().strip(), title.lower().strip())
     with _URL_CACHE_LOCK:
         if cache_key in _URL_CACHE:
             return _URL_CACHE[cache_key]
 
-    url = _itunes_artwork_url(artist, title) or _deezer_artwork_url(artist, title)
+    deezer_lookup = _deezer_album_artwork_url if album else _deezer_artwork_url
+    url = _itunes_artwork_url(artist, title) or deezer_lookup(artist, title)
 
     with _URL_CACHE_LOCK:
         _URL_CACHE[cache_key] = url
@@ -289,6 +294,24 @@ def _deezer_artwork_url(artist: str, title: str) -> str | None:
         if not results:
             return None
         return results[0].get("album", {}).get("cover_big") or None
+    except Exception:
+        return None
+
+
+def _deezer_album_artwork_url(artist: str, album: str) -> str | None:
+    """Return artwork from Deezer's album-shaped search response."""
+    try:
+        resp = httpx.get(
+            f"{DEEZER_SEARCH_URL.rstrip('/')}/album",
+            params={"q": f'artist:"{artist}" album:"{album}"'},
+            timeout=COVER_ART_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return None
+        results = resp.json().get("data", [])
+        if not results:
+            return None
+        return results[0].get("cover_big") or None
     except Exception:
         return None
 

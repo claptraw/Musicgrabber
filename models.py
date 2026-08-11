@@ -92,6 +92,7 @@ class AsyncBulkImportRequest(BaseModel):
     use_playlists_dir: bool = False  # Save files to Playlists folder instead of Singles
     preferred_sources: Optional[str] = None  # Comma-separated source IDs or "all"
     priority_source: Optional[str] = None  # Tie-breaker within the same automatic quality tier
+    original_youtube_video_ids: Optional[list[Optional[str]]] = None
 
 class WatchedPlaylistRequest(BaseModel):
     url: str  # Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, etc. playlist URL
@@ -162,6 +163,7 @@ class SettingsUpdate(BaseModel):
     source_soulseek_enabled: Optional[bool] = None
     source_monochrome_enabled: Optional[bool] = None
     source_offline_fallback: Optional[bool] = None
+    youtube_requested_video_fallback: Optional[bool] = None
     source_health_checks_enabled: Optional[bool] = None
     source_health_check_interval_minutes: Optional[int] = None
     source_health_cooldown_minutes: Optional[int] = None
@@ -238,6 +240,7 @@ class SearchResult(BaseModel):
     size_bytes: Optional[int] = None  # File size where the source declares one
     bitrate: Optional[int] = None     # kbps, declared or worked out from size/duration
     match_confidence: Optional[float] = None  # 0.0-1.0, Soulseek path scoring only
+    queue_length: Optional[int] = None  # Soulseek peer queue depth at search time
 
 class BlacklistRequest(BaseModel):
     """Report a bad track / block an uploader."""
@@ -333,6 +336,12 @@ class OrphanMoveRequest(BaseModel):
     """Absolute paths of orphaned playlist files to move into Singles"""
     files: list[str]
 
+
+class MaintenanceRequest(BaseModel):
+    action: str
+    statuses: list[str] = Field(default_factory=list)
+    confirm: bool = False
+
 class QueueMissingTrackCandidateRequest(BaseModel):
     artist: str
     title: str
@@ -342,6 +351,10 @@ class QueueMissingTrackCandidateRequest(BaseModel):
     slskd_username: Optional[str] = None
     slskd_filename: Optional[str] = None
     slskd_size: Optional[int] = None
+
+
+class QueueRescueCandidateRequest(BaseModel):
+    candidate_key: str = Field(..., min_length=8, max_length=64)
 
 class PatchTagsRequest(BaseModel):
     artist: str = Field(..., min_length=1, max_length=200)

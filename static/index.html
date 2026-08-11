@@ -835,6 +835,13 @@
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
+                            <label class="source-toggle-item" title="For YouTube playlists only, use the exact upstream video as a final fallback after every confident alternative has failed.">
+                                <span class="source-toggle-text">Original YouTube video fallback <i class="fa-solid fa-circle-info source-toggle-help" aria-label="Original YouTube video fallback help"></i></span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="settingYoutubeRequestedVideoFallback">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>
                             <label class="source-toggle-item" title="Check sources at startup and before stale searches. Sources that look down are hidden temporarily, then retried after the cooldown.">
                                 <span class="source-toggle-text">Health checks <i class="fa-solid fa-circle-info source-toggle-help" aria-label="Health checks help"></i></span>
                                 <div class="toggle-switch">
@@ -1431,6 +1438,26 @@
                         </button>
                     </div>
                 </div>
+            </div>
+
+            <div class="settings-section admin-only">
+                <h3 class="settings-section-title">Maintenance</h3>
+                <p class="settings-hint settings-hint-full">Database housekeeping only. These tools never delete or move library audio. Preview the counts, then choose exactly what to clean.</p>
+                <div id="maintenancePreview" class="maintenance-preview">Load Settings to preview maintenance.</div>
+                <div class="maintenance-actions">
+                    <button type="button" class="btn btn-ghost" onclick="runMaintenanceAction('purge_orphans')">Remove orphan imports</button>
+                    <button type="button" class="btn btn-ghost" onclick="runMaintenanceAction('reconcile')">Reconcile missing files</button>
+                    <button type="button" class="btn btn-ghost" onclick="runMaintenanceAction('clean_rebuild')">Clean and rebuild index</button>
+                </div>
+                <div class="maintenance-history">
+                    <span>Queue history to remove:</span>
+                    <label><input type="checkbox" value="completed"> Completed</label>
+                    <label><input type="checkbox" value="completed_with_errors"> Completed with issues</label>
+                    <label><input type="checkbox" value="failed"> Failed</label>
+                    <label><input type="checkbox" value="cancelled"> Cancelled</label>
+                    <button type="button" class="btn btn-danger" onclick="clearSelectedQueueHistory()">Remove selected history</button>
+                </div>
+                <div id="maintenanceResult" class="save-result"></div>
             </div>
 
             <div class="settings-actions-spacer"></div>

@@ -35,6 +35,8 @@ _slskd_token_cache: dict[tuple[str, str], tuple[str, float]] = {}
 SLSKD_SOURCE_TRUST_BONUS = 35
 SLSKD_LOSSLESS_BONUS = 25
 SLSKD_HIRES_BONUS = 15
+SLSKD_QUEUE_PENALTY_PER_ITEM = 2
+SLSKD_QUEUE_PENALTY_CAP = 40
 
 
 def slskd_enabled(user_id: str | None = None) -> bool:
@@ -131,6 +133,18 @@ def _display_bitrate(file_info: dict) -> Optional[int]:
     if isinstance(size, (int, float)) and isinstance(length, (int, float)) and size > 0 and length > 0:
         return int(size * 8 / length / 1000)
     return None
+
+
+def _peer_queue_length(response: dict) -> Optional[int]:
+    """Return slskd's peer queue depth when it supplied a usable value."""
+    value = response.get("queueLength")
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def normalize_slskd_path(path: str) -> str:
@@ -357,6 +371,9 @@ _CONTAINER_WORDS = frozenset({
 _DISC_FOLDER_RE = re.compile(r'^(cd|disc|disk|vol|volume)\s*\d*$')
 _BARE_YEAR_RE = re.compile(r'^(19|20)\d{2}$')
 _YEAR_RE = re.compile(r'(?<!\d)((?:19|20)\d{2})(?!\d)')
+_FULL_DATE_RE = re.compile(
+    r'(?<!\d)((?:19|20)\d{2})[-._](?:0[1-9]|1[0-2])[-._](?:0[1-9]|[12]\d|3[01])(?!\d)'
+)
 _AUDIO_EXT_RE = re.compile(r'\.(flac|mp3|m4a|aac|ogg|opus|wav|wma|ape|alac)$', re.IGNORECASE)
 # Optional leading disc number, so "1-02 Ignorance" and "02.14 Ignorance" give up
 # the track rather than handing back a title that still starts with a number.
@@ -416,13 +433,46 @@ def _strip_format_suffix(text: str) -> str:
     return text
 
 
+_TITLE_FORMAT_SUFFIX_RE = re.compile(
+    r'''\s*\[(?:
+        flac|mp3|wav|alac|ape|aac|m4a|ogg|opus|lossless|
+        \d{2,4}\s*kbps|
+        (?:16|24|32)\s*[-/]\s*(?:44(?:\.1)?|48|88(?:\.2)?|96|176(?:\.4)?|192)
+    )\]\s*$''',
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _strip_title_format_suffix(text: str) -> str:
+    """Remove unmistakable format labels while preserving actual title text."""
+    for _ in range(3):
+        cleaned = _TITLE_FORMAT_SUFFIX_RE.sub("", text).rstrip()
+        if cleaned == text or not cleaned:
+            break
+        text = cleaned
+    return text
+
+
 def _name_variants(name: str) -> list[str]:
-    """A folder called "Paramore - Hayley Williams" holds two names. Offer both."""
-    variants = [name]
+    """Offer clean names hidden inside common Soulseek shelf labels."""
+    variants = []
+
+    # "Knife Party (2011-2019)" should match Knife Party, while a collaborative
+    # shelf called "Pendulum (Knife Party)" should also be able to match the name
+    # in brackets.  Keep the raw folder as the final fallback, not the first guess.
+    bracketed = re.match(r'^(.+?)\s*[\(\[\{]([^\)\]\}]+)[\)\]\}]\s*$', name)
+    if bracketed:
+        for part in bracketed.groups():
+            part = part.strip()
+            if part and _plausible_name(part) and part not in variants:
+                variants.append(part)
+
     for part in re.split(r'\s+[-–—]\s+', name):
         part = part.strip()
         if part and part not in variants:
             variants.append(part)
+    if name not in variants:
+        variants.append(name)
     return variants
 
 
@@ -456,11 +506,16 @@ def _split_year(text: str) -> tuple[str, Optional[int]]:
     If removing it would leave nothing behind the year *is* the name, so Taylor
     Swift's "1989" and Dr Dre's "2001" keep their titles and lose their years.
     """
-    match = _YEAR_RE.search(text)
+    # Consume an entire ISO-shaped date before considering a bare year. Removing
+    # only "2013" from "2013-05-06" used to leave "05-06" masquerading as part
+    # of the album title.
+    match = _FULL_DATE_RE.search(text)
+    pattern = _FULL_DATE_RE if match else _YEAR_RE
+    match = match or _YEAR_RE.search(text)
     if not match:
         return text.strip(), None
 
-    cleaned = _YEAR_RE.sub("", text, count=1)
+    cleaned = pattern.sub("", text, count=1)
     cleaned = re.sub(r'[\[\(\{]\s*[\]\)\}]', ' ', cleaned)  # empty brackets left behind
     cleaned = _tidy_edges(re.sub(r'\s{2,}', ' ', cleaned))
     if not cleaned:
@@ -503,6 +558,7 @@ def parse_slskd_path(filepath: str, query_artist: str | None = None) -> dict:
         track_number = int(track_match.group(1))
         title = title[track_match.end():]
     basename_artist, title = _split_artist_prefix(title.strip())
+    title = _strip_title_format_suffix(title)
 
     # The album folder is the nearest parent that isn't a "CD2"-style subfolder.
     album_folder, album_index = "", None
@@ -707,6 +763,7 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                 username = response.get("username", "")
                 has_free_slot = response.get("hasFreeUploadSlot", False)
                 upload_speed = response.get("uploadSpeed", 0)
+                queue_length = _peer_queue_length(response)
 
                 if SLSKD_REQUIRE_FREE_SLOT and not has_free_slot:
                     skipped_no_slot += 1
@@ -731,7 +788,11 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                     title = parsed["title"]
 
                     # Dedupe by artist+title+quality
-                    track_key = f"{artist.lower()}|{title.lower()}|{quality_label}"
+                    # Keep one copy per peer, not one copy across the entire
+                    # network. Otherwise whichever peer happened to answer first
+                    # erased the less-busy alternative before ranking saw either
+                    # queue depth.
+                    track_key = f"{username.lower()}|{artist.lower()}|{title.lower()}|{quality_label}"
                     if track_key in seen_tracks:
                         continue
                     seen_tracks.add(track_key)
@@ -787,6 +848,13 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                     if upload_speed > 1000000:  # > 1MB/s
                         relevance_score += 5
                         score_breakdown.append("fast_uploader=+5")
+                    if queue_length:
+                        queue_penalty = min(
+                            queue_length * SLSKD_QUEUE_PENALTY_PER_ITEM,
+                            SLSKD_QUEUE_PENALTY_CAP,
+                        )
+                        relevance_score -= queue_penalty
+                        score_breakdown.append(f"peer_queue=-{queue_penalty}")
 
                     results.append({
                         # Stable id derived from who's sharing what: the same
@@ -807,6 +875,10 @@ def search_slskd(query: str, timeout_secs: int = TIMEOUT_SLSKD_SEARCH) -> list[d
                         # a certainty just because it landed at the top.
                         "match_confidence": round(confidence, 3),
                         "bitrate": _display_bitrate(file_info),
+                        # Peer-level wait signal from slskd. It nudges an equally
+                        # good result down the list but never removes it, because a
+                        # busy lossless peer can still be the best remaining source.
+                        "queue_length": queue_length,
                         "source": "soulseek",
                         "duration": str(file_info.get("length", 0)),
                         "size": file_info.get("size", 0),

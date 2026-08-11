@@ -23,11 +23,11 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 ## Features
 
-- **Multi-source search:** the Tracks tab searches YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek in parallel; relevance-ranked results include source badges and score explanations, plus a separate audio-quality tier where the provider declares one. The single-song search collapses when you leave Tracks, keeping the other workspaces focused on their own jobs
+- **Multi-source search:** the Tracks tab searches YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, and optional Soulseek in parallel; relevance-ranked results include source badges and score explanations, plus a separate audio-quality tier where the provider declares one. Soulseek results also show the peer's current queue depth and use it as a bounded ranking penalty, so an idle peer wins an otherwise equal contest without a busy peer disappearing altogether. The single-song search collapses when you leave Tracks, keeping the other workspaces focused on their own jobs
 - **Live search progress:** results stream in as each source answers, with live status for completed, slow, parked, or unavailable sources; repeated timeouts automatically bench an unhealthy source until a background probe clears it. yt-dlp searches and metadata lookups share a bounded retry policy for throttling, timeouts, gateway failures, and reduced format manifests, while genuinely private/deleted media fails immediately
 - **Monochrome/Qobuz source:** searches the Tidal catalogue via hifi-api metadata, then resolves matching Qobuz FLAC streams by ISRC. Public Qobuz routes are tried first; if they fail, an optional SeleniumBase browser session can complete Monochrome's Turnstile check and use its authorised direct playback. Enabled by default and configurable in Search Sources
 - **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
-- **Artists tab:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles come first: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Albums sit underneath for browsing and picking off individually, with an optional "automatically add new albums" toggle that marks everything already released as seen, so ticking it never starts a back-catalogue download. Tracks already on disk are recognised immediately, and followed-album labels are derived from the current import and actual audio count rather than preserving “Queued” until the sun burns out. Per-artist check interval, Keep source/Convert to control, pause/resume, missing and track list panels. You can also browse any artist's albums without following them at all
+- **Artists tab:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles come first: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Albums sit underneath for browsing and picking off individually, with an optional "automatically add new albums" toggle that marks everything already released as seen, so ticking it never starts a back-catalogue download. A transient failure while handing a new album to the queue is recorded and retried once on the next artist check rather than making the release permanently “known but abandoned”. Tracks already on disk are recognised immediately, and followed-album labels are derived from the current import and actual audio count rather than preserving “Queued” until the sun burns out. Per-artist check interval, Keep source/Convert to control, pause/resume, missing and track list panels. You can also browse any artist's albums without following them at all
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
 - **Playlist housekeeping:** find audio left behind by mirror-mode playlist removals and move it safely into Singles; optionally stamp watched-playlist names into audio Comment tags for macOS Music smart playlists
 - **Album mode:** browse MusicBrainz artists from either the Artists tab or Bulk Import, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Equivalent folders and numbered/fuzzy track names inside the configured Albums tree are reused rather than downloaded again. Multi-disc and Various Artists groups choose the most complete official release and keep the canonical release-group credit/title
@@ -298,7 +298,7 @@ The easiest way to configure MusicGrabber is via the **Settings tab** in the UI.
 - **General**: MusicBrainz and Deezer metadata, lyrics fetching, default conversion, minimum bitrate, live-version rejection, and optional loudness normalisation
 - **Audio format**: FLAC, ALAC/AAC-in-M4A, Opus, or MP3, including MP3/Opus/ALAC quality presets
 - **Library layout**: Singles, Playlists, and Albums subfolders, track-number filenames, auto-album routing, playlist album/comment tagging, automatic Music import, singles-only mode, and file permissions
-- **Search sources**: enable/disable YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Soulseek, and Monochrome; configure cross-source fallback, automatic health checks, and a per-provider search limit from 1–5 (default 1). Download concurrency remains deliberately internal and conservative
+- **Search sources**: enable/disable YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Soulseek, and Monochrome; configure cross-source fallback, automatic health checks, and a per-provider search limit from 1–5 (default 1). An off-by-default YouTube playlist option can use the exact upstream video only after every confident alternative fails. Download concurrency remains deliberately internal and conservative
 - **Track upgrades**: scan the library for files below the configured quality tier and control the scan interval
 - **Monochrome**: hifi-api URL, Qobuz proxy URL, qbdlx fallback, and browser-authenticated Turnstile fallback
 - **Soulseek (slskd)**: enable toggle, URL, credentials, downloads path
@@ -307,6 +307,7 @@ The easiest way to configure MusicGrabber is via the **Settings tab** in the UI.
 - **Lidarr**: URL and API key for library refresh
 - **Notifications**: Apprise URL, Telegram webhook, generic webhook URL, and SMTP settings
 - **YouTube**: Upload browser cookies for authenticated downloads
+- **Maintenance**: preview and remove orphaned watched imports, clear selected Queue-history states, reconcile missing files, or rebuild path records from audio beneath the configured Singles, Playlists, and Albums folders. These actions change database records only; they never delete or move library audio
 - **Spotify**: Upload browser cookies to access private playlists
 - **Apple Music**: Add a user token for private library playlists
 - **Blacklist**: View and manage reported tracks and blocked uploaders
@@ -363,6 +364,7 @@ Settings are stored in the database and persist across container restarts.
 | `YTDLP_PLAYER_CLIENT` | *(empty)* | Override yt-dlp YouTube player client (expert-only, e.g. `android`, `web,android`) |
 | `YOUTUBE_BOT_BACKOFF_MIN` | `5` | Minimum backoff in seconds before retrying after YouTube bot-detection style failures |
 | `YOUTUBE_BOT_BACKOFF_MAX` | `20` | Maximum backoff in seconds before retrying after YouTube bot-detection style failures |
+| `YOUTUBE_REQUESTED_VIDEO_FALLBACK` | `false` | After confident alternatives fail for a YouTube playlist track, permit the exact upstream video as the final fallback |
 | `NAVIDROME_URL` | - | Navidrome server URL (e.g., `http://navidrome:4533`) |
 | `NAVIDROME_USER` | - | Navidrome username for API |
 | `NAVIDROME_PASS` | - | Navidrome password for API |
@@ -549,7 +551,7 @@ environment:
 
 ### Soulseek Integration (Optional)
 
-MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled, search results from YouTube and Soulseek are shown together, ranked by relevance. Soulseek's declared codec and bitrate contribute to that rank and also feed the separate minimum-quality filter, so a good FLAC match still receives its due without pretending audio quality and title relevance are the same measurement. The peer remains visible as the source of the download but is kept separate from the artist. A search result may initially infer an artist from the remote path; after download, MusicGrabber validates the file in private staging and prefers its embedded `ARTIST` tag before metadata lookup, tagging, duplicate detection, or choosing the library folder. Untagged files fall back to the path guess, since even a folder called `Music (FLAC)` is occasionally all the evidence the internet has volunteered.
+MusicGrabber can search [slskd](https://github.com/slskd/slskd) (a Soulseek daemon) for higher quality sources. When enabled, search results from YouTube and Soulseek are shown together, ranked by relevance. Soulseek's declared codec and bitrate contribute to that rank and also feed the separate minimum-quality filter, so a good FLAC match still receives its due without pretending audio quality and title relevance are the same measurement. The peer's `queueLength` is shown on the card and applies a small capped rank penalty; it is never an exclusion rule, so a busy peer holding the only good copy remains available. The peer remains visible as the source of the download but is kept separate from the artist. Filename format decorations such as `[FLAC]`, `[1733 kbps]`, and `[16-44]` are removed from displayed titles, full release dates are parsed as one value, and bracketed artist shelf labels are matched against the artist that was searched. A search result may initially infer an artist from the remote path; after download, MusicGrabber validates the file in private staging and prefers its embedded `ARTIST` tag before metadata lookup, tagging, duplicate detection, or choosing the library folder. Untagged files fall back to the path guess, since even a folder called `Music (FLAC)` is occasionally all the evidence the internet has volunteered.
 
 Soulseek is disabled by default. Turn it on in Settings under Search Sources, or set `SOURCE_SOULSEEK_ENABLED=true`. Entering credentials alone does not enable it.
 
@@ -799,14 +801,16 @@ Supports various dash formats: `-`, `–`, `--`
 - **View progress:** see queued, in-progress, completed, and failed jobs
 - **Job details:** click completed/failed jobs to see source, timestamps, download duration, audio quality, numbered acquisition cycles, source attempts, and the last error from each leg
 - **Play:** completed downloads have a play/stop button for instant in-browser preview
-- **Re-download:** re-queue any completed or failed download (overwrites existing file)
+- **Re-download:** repeat a completed or manually source-pinned download
+- **Retry next option:** failed automatic jobs open a new numbered acquisition cycle, keep the failed Queue row, and try saved untried candidates before performing a fresh quality-led search across the original allowed sources
+- **Choose version:** inspect the candidates saved during automatic search, preview them where supported, explicitly retry one (including an option already attempted), or search the allowed sources again. Album/playlist destination, expected identity, conversion choice, and source exclusions survive the rescue
 - **Report bad tracks:** flag wrong tracks, ContentID dodges, or poor quality from the queue. Blacklisted videos are excluded from future searches
 - **Edit tags:** completed downloads can be retagged from the queue, including artist, title, album, album artist, year, and track number. MusicBrainz can have a guess too, which is handy when the filename is doing its best impression of a ransom note
 - **Why this result?:** automated downloads record the scorer's reasoning, including the winning score and a few near misses
 - **Force accept:** watched-playlist mismatches can be accepted manually when the source metadata is messy but your ears say it is the right track
 - **Trash:** move audio files (and lyrics) to `/data/.trash/` instead of permanently deleting them. Trashed files can be played and restored from the Trash Bin section at the bottom of the Queue tab
 - **Trash bin:** lists all trashed files with per-file Play, Restore, and permanent Delete buttons. "Empty Trash" clears the lot (admin only). Files that fail mismatch or duration checks during download also land here automatically
-- **Retry failed:** click retry on individual failed downloads
+- **Retry failed:** automatic failures offer **Retry next option** and **Choose version**; manually selected tracks retain the ordinary source-pinned re-download action
 - **Queue history is retained:** completed and failed rows remain available for
   inspection until someone deliberately uses **Clear Queue**. The browser asks
   for confirmation and the API independently requires `?confirm=true`, which
@@ -853,7 +857,7 @@ With `ENABLE_MUSICBRAINZ=true`:
 3. Falls back to a text-based MusicBrainz search if fingerprinting fails or scores too low. For bootleg-heavy catalogues where the best search hit appears on only a handful of releases, it checks the exact-title single/EP release group and follows the recording reused across its official editions back to a studio album; well-supported results keep the normal two-request path
 4. Falls back to cleaned source metadata if neither lookup finds anything
 5. Sets album to "Singles" by default when no album is found
-6. Fetches proper cover art using Cover Art Archive, then iTunes/Deezer fallbacks, keeping source thumbnails as the last resort
+6. Fetches proper cover art using Cover Art Archive, then iTunes/Deezer fallbacks, keeping source thumbnails as the last resort. Album cards use Deezer's album search endpoint rather than sending an album name through its track search
 
 Manual selections intentionally bypass the canonical MusicBrainz duration rejection so you can choose a live version, remix, edit, or extended mix. They still have an independent completeness check: when the selected search result advertised a duration, downloaded audio shorter by more than both 10% and 15 seconds is rejected as a likely preview/sample or truncated response. If the source supplied no duration, MusicGrabber keeps the existing codec, container, start-offset, silence, and HTTP content-length checks rather than inventing one.
 
@@ -1011,7 +1015,7 @@ music.yourdomain.com {
 | `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "all/youtube/soundcloud/zvu4no/freemp3cloud/monochrome/soulseek"}`); results expose `relevance_score` for ordering and `quality_tier` for declared audio quality |
 | `POST` | `/api/search/stream` | Stream per-source status and ranked results as NDJSON, using the same `relevance_score`/`quality_tier` result contract |
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured); results use the same ranking and quality fields |
-| `GET` | `/api/search/artwork` | Find display artwork for a search result (`?artist=...&title=...`) |
+| `GET` | `/api/search/artwork` | Find display artwork for a search result (`?artist=...&title=...` or `?artist=...&album=...`); album lookups use Deezer `/search/album` as the fallback |
 | `GET` | `/api/preview/{video_id}` | Get a streamable audio URL. Monochrome accepts its complete `url` plus optional `artist` and `title` hints for lossless fallback resolution |
 | `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
 
@@ -1026,6 +1030,10 @@ music.yourdomain.com {
 | `GET` | `/api/jobs/{id}/download` | Download the audio file to browser (completed jobs only; use bearer auth, a short-lived `download_token`, or `X-API-Key`) |
 | `GET` | `/api/jobs/{id}/stream` | Stream audio file for in-browser playback (completed jobs only) |
 | `POST` | `/api/jobs/{id}/retry` | Retry a failed download |
+| `POST` | `/api/jobs/{id}/retry-next` | Append a Queue row and run the next automatic rescue cycle using the target's original identity, destination, conversion, and source allowlist |
+| `GET` | `/api/jobs/{id}/rescue-candidates` | List the stored automatic candidates available for explicit manual rescue |
+| `POST` | `/api/jobs/{id}/rescue-candidates/refresh` | Search the target's allowed sources again and refresh its stored rescue choices |
+| `POST` | `/api/jobs/{id}/rescue-candidate` | Queue one server-stored candidate explicitly (`{"candidate_key":"..."}`) while preserving target routing and conversion |
 | `POST` | `/api/jobs/{id}/force-accept` | Retry while skipping the watched-playlist mismatch check |
 | `PATCH` | `/api/jobs/{id}/tags` | Correct artist/title/album/year/track tags and rename the file |
 | `GET` | `/api/jobs/{id}/musicbrainz-guess` | Get a MusicBrainz tag suggestion for the tag editor (`?artist=...&title=...&offset=0`) |

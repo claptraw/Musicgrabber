@@ -11,6 +11,14 @@ const RELEASE_NOTES = {
         title: "What's New in v4.0.0",
         sections: [
             {
+                heading: "Maintenance, mobile, and one honest YouTube fallback",
+                items: [
+                    "Settings now previews database housekeeping before you run it: orphan imports, selected Queue history, missing-file reconciliation, and a clean path-index rebuild. None of these actions deletes or moves library audio.",
+                    "YouTube playlist tracks can optionally fall back to their exact original video after every confident alternative fails. It is off by default, and the Queue labels it when used.",
+                    "On phones the header drops version and username text first, then wraps only on the narrowest screens, so Sign out no longer wanders beyond the edge.",
+                ]
+            },
+            {
                 heading: "A new Artists tab, and the Albums tab has retired",
                 items: [
                     "The tab bar is now Tracks, Bulk Import, Artists, Watched, Queue, Stats, Settings. Albums was a way of finding things rather than a place, so its artist browsing, duplicate checks and album downloading have moved into Bulk Import and the new Artists tab rather than going anywhere.",
@@ -97,6 +105,9 @@ const RELEASE_NOTES = {
                     "Almost all of it was already in the search response and being thrown away. Cover art is the one genuine addition, looked up once per album rather than once per result, so twenty results from the same record cost one lookup.",
                     "The bitrate on a lossless file is worked out from its size and duration rather than taken on trust. A \"24bit/96kHz\" FLAC quietly running at 900 kbps is an upscale, and now you can see that before you download it.",
                     "Only Soulseek shows a match percentage, because only Soulseek has a real number to put there.",
+                    "Rip labels such as [FLAC], [1733 kbps], and [16-44] are cleaned off titles, complete release dates no longer leave half a date in the album name, and bracketed shelf labels are reduced to the artist you actually searched for.",
+                    "The card now shows the peer's queue depth too. A busy queue lowers that result slightly without hiding it, so an idle peer wins a tie but the only good copy remains available.",
+                    "Album artwork now falls back through Deezer's actual album search when iTunes has nothing, rather than asking its track search to guess what an album title meant.",
                 ]
             },
             {

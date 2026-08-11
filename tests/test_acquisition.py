@@ -118,6 +118,30 @@ def test_exact_album_resolution_honours_monochrome_exclusion(monkeypatch):
     ) == {}
 
 
+def test_requested_youtube_video_fallback_is_explicit_and_respects_allowlist(monkeypatch):
+    monkeypatch.setattr(
+        downloads,
+        "get_setting_bool",
+        lambda key, default=False, user_id=None: key == "youtube_requested_video_fallback",
+    )
+
+    candidate = downloads._requested_video_fallback_candidate(
+        "abcdefghijk", "Artist", "Track", {"youtube", "monochrome"}, "user-1"
+    )
+
+    assert candidate == {
+        "video_id": "abcdefghijk",
+        "source": "youtube",
+        "source_url": "https://www.youtube.com/watch?v=abcdefghijk",
+        "artist": "Artist",
+        "title": "Track",
+        "requested_video_fallback": True,
+    }
+    assert downloads._requested_video_fallback_candidate(
+        "abcdefghijk", "Artist", "Track", {"monochrome"}, "user-1"
+    ) is None
+
+
 def test_target_survives_jobs_and_cycles_with_append_only_attempts(monkeypatch):
     conn = sqlite3.connect(":memory:")
     conn.executescript("""
@@ -192,6 +216,69 @@ def test_target_survives_jobs_and_cycles_with_append_only_attempts(monkeypatch):
         (1, "job-old", "monochrome", "failed", "proxy unavailable"),
         (2, "job-new", "youtube", "completed", None),
     ]
+
+
+def test_saved_candidates_keep_download_fields_for_manual_rescue():
+    candidate = {
+        "video_id": "direct-1",
+        "title": "Artist - Track",
+        "artist": "Artist",
+        "channel": "Artist",
+        "source": "freemp3cloud",
+        "source_url": "https://meln.top/audio/direct-1.mp3",
+        "quality": "320kbps",
+        "relevance_score": 91,
+        "score_breakdown": ["title_match=100"],
+    }
+
+    summary = acquisition.acquisition_candidate_summary(candidate)
+
+    assert summary["source_url"] == candidate["source_url"]
+    assert summary["score"] == 91
+    assert summary["breakdown"] == ["title_match=100"]
+    assert acquisition.acquisition_candidate_key(summary) == acquisition.acquisition_candidate_key(candidate)
+
+
+def test_stored_rescue_candidates_span_queue_rows_and_deduplicate():
+    conn = sqlite3.connect(":memory:")
+    conn.executescript("""
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY, acquisition_target_id TEXT, video_id TEXT,
+            source TEXT, source_url TEXT, slskd_username TEXT,
+            slskd_filename TEXT, slskd_size INTEGER
+        );
+        CREATE TABLE search_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, query TEXT,
+            decision_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO jobs VALUES (
+            'job-1', 'target-1', 'yt-picked', 'youtube',
+            'https://www.youtube.com/watch?v=yt-picked', NULL, NULL, NULL
+        );
+    """)
+    selected = acquisition.acquisition_candidate_summary(
+        _candidate("youtube", "yt-picked", None)
+    )
+    runner = acquisition.acquisition_candidate_summary(
+        _candidate("monochrome", "mono-runner", "LOSSLESS")
+        | {"source_url": "monochrome://track/mono-runner?isrc=GB123"}
+    )
+    conn.execute(
+        "INSERT INTO search_decisions (job_id, query, decision_json) VALUES (?, ?, ?)",
+        ("job-1", "Artist - Track", __import__("json").dumps({
+            "selected": selected,
+            "runners_up": [runner, runner],
+        })),
+    )
+
+    candidates = acquisition.stored_rescue_candidates(conn, "target-1")
+
+    assert [candidate["video_id"] for candidate in candidates] == [
+        "yt-picked", "mono-runner"
+    ]
+    assert candidates[0]["source_url"].endswith("yt-picked")
+    assert candidates[1]["source_url"].startswith("monochrome://")
+    assert all(candidate["candidate_key"] for candidate in candidates)
 
 
 def test_automatic_cycle_falls_through_and_records_each_source(monkeypatch, tmp_path):

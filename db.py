@@ -412,6 +412,10 @@ def init_db():
             conn.execute("ALTER TABLE bulk_import_tracks ADD COLUMN isrc TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE bulk_import_tracks ADD COLUMN original_youtube_video_id TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         # Watched playlists - playlists to monitor for new tracks
         conn.execute("""
@@ -464,6 +468,10 @@ def init_db():
     """)
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_watched_tracks_playlist ON watched_playlist_tracks(playlist_id)")
+        try:
+            conn.execute("ALTER TABLE watched_playlist_tracks ADD COLUMN original_youtube_video_id TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         # Search history logs for stats
         conn.execute("""
@@ -801,12 +809,26 @@ def init_db():
             queued_at TIMESTAMP,
             import_id TEXT,
             status TEXT DEFAULT 'seen',
+            attempt_count INTEGER DEFAULT 0,
+            last_attempt_at TIMESTAMP,
+            last_error TEXT,
             UNIQUE (artist_id, release_group_mbid),
             FOREIGN KEY (artist_id) REFERENCES watched_artists(id) ON DELETE CASCADE
         )
     """)
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_watched_artist_albums_artist ON watched_artist_albums(artist_id)")
+        for _column, _declaration in (
+            ("attempt_count", "INTEGER DEFAULT 0"),
+            ("last_attempt_at", "TIMESTAMP"),
+            ("last_error", "TEXT"),
+        ):
+            try:
+                conn.execute(
+                    f"ALTER TABLE watched_artist_albums ADD COLUMN {_column} {_declaration}"
+                )
+            except sqlite3.OperationalError:
+                pass
 
         # Migration: resolved_path - actual on-disk path saved at download time.
         # Sidesteps artist/title lookup mismatches caused by romanisation or
@@ -1059,6 +1081,10 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN acquisition_cycle INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN requested_video_fallback INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
         try:
