@@ -190,7 +190,10 @@ SOURCE_REGISTRY = {
         "has_preview": True,
     },
     "mp3phoenix": {
-        "label": "MP3Phoenix (experimental)",
+        # Short label: this feeds compact UI (source health chips, toast text), where
+        # "(experimental)" just wrapped awkwardly. The Settings toggle still spells out
+        # "experimental" in full next to its own description, which is where it counts.
+        "label": "MP3Phoenix",
         "badge": "PX",
         "colour": "#e05c00",
         "search_fn": search_mp3phoenix,

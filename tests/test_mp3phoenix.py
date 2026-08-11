@@ -37,7 +37,9 @@ def test_source_is_experimental_and_disabled_by_default():
     source = search.SOURCE_REGISTRY["mp3phoenix"]
     assert source["default_enabled"] is False
     assert source["has_preview"] is False
-    assert "experimental" in source["label"].lower()
+    # Kept short for compact UI (source health chips, toast text); the Settings
+    # toggle spells "experimental" out in full right next to its description.
+    assert source["label"] == "MP3Phoenix"
 
 
 def test_browser_subprocess_does_not_receive_application_secrets(monkeypatch):
