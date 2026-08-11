@@ -110,6 +110,10 @@ TIMEOUT_AMAZON_BROWSER = 180     # Amazon Music playlist scraping (3 minutes)
 TIMEOUT_FPCALC = 30              # Audio fingerprinting via fpcalc
 TIMEOUT_MP3PHOENIX_SEARCH = int(os.getenv("TIMEOUT_MP3PHOENIX_SEARCH", "30"))
 TIMEOUT_MP3PHOENIX_DOWNLOAD = int(os.getenv("TIMEOUT_MP3PHOENIX_DOWNLOAD", "180"))
+# How long the Chrome bootstrap gets to clear Cloudflare and hand back cookies.
+# Forwarded to mp3phoenix_browser.py; the parent's own kill timer allows this
+# plus a buffer, so the child isn't killed mid-clearance (see MONOCHROME_BROWSER_AUTH_TIMEOUT).
+MP3PHOENIX_BROWSER_TIMEOUT = int(os.getenv("MP3PHOENIX_BROWSER_TIMEOUT", "75"))
 MP3PHOENIX_SESSION_TTL = int(os.getenv("MP3PHOENIX_SESSION_TTL", "3600"))
 MP3PHOENIX_BROWSER_FAILURE_LIMIT = 3
 MP3PHOENIX_BROWSER_FAILURE_COOLDOWN = int(os.getenv("MP3PHOENIX_BROWSER_FAILURE_COOLDOWN", "600"))

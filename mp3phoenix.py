@@ -17,6 +17,7 @@ from curl_cffi import requests
 from constants import (
     MP3PHOENIX_BROWSER_FAILURE_LIMIT,
     MP3PHOENIX_BROWSER_FAILURE_COOLDOWN,
+    MP3PHOENIX_BROWSER_TIMEOUT,
     MP3PHOENIX_SESSION_TTL,
     TIMEOUT_MP3PHOENIX_DOWNLOAD,
     TIMEOUT_MP3PHOENIX_SEARCH,
@@ -46,6 +47,7 @@ def _browser_subprocess_env() -> dict[str, str]:
     )
     env = {key: os.environ[key] for key in allowed if key in os.environ}
     env["PYTHONUNBUFFERED"] = "1"
+    env["MP3PHOENIX_BROWSER_TIMEOUT"] = str(MP3PHOENIX_BROWSER_TIMEOUT)
     return env
 
 
@@ -114,6 +116,11 @@ def _cloudflare_rejected(response) -> bool:
     return "cf-chl-" in body or "just a moment" in body or "verify you are human" in body
 
 
+class _CoolingDown(RuntimeError):
+    """Raised while the circuit breaker is open. Never counts as a fresh failure,
+    otherwise every call made during the cooldown re-arms it and it never expires."""
+
+
 class _PhoenixClient:
     """Reuse a Chrome-shaped HTTP session, refreshing it only when necessary."""
 
@@ -130,7 +137,10 @@ class _PhoenixClient:
             self._disabled_until = time.monotonic() + MP3PHOENIX_BROWSER_FAILURE_COOLDOWN
 
     def _refresh(self) -> None:
-        details = _BROWSER.request({"action": "session"}, TIMEOUT_MP3PHOENIX_SEARCH)
+        # The child's own Cloudflare-clearance wait defaults to MP3PHOENIX_BROWSER_TIMEOUT
+        # (forwarded via env in _browser_subprocess_env); give it that plus a buffer here
+        # so a slow-but-succeeding clearance isn't killed by an impatient parent.
+        details = _BROWSER.request({"action": "session"}, MP3PHOENIX_BROWSER_TIMEOUT + 20)
         cookies = details.get("cookies") or []
         user_agent = str(details.get("user_agent") or "")
         if not cookies or not user_agent:
@@ -151,7 +161,7 @@ class _PhoenixClient:
         now = time.monotonic()
         if now < self._disabled_until:
             remaining = int(self._disabled_until - now)
-            raise RuntimeError(f"MP3Phoenix session is cooling down for {remaining}s")
+            raise _CoolingDown(f"MP3Phoenix session is cooling down for {remaining}s")
         if force or not self._session or now - self._refreshed_at >= MP3PHOENIX_SESSION_TTL:
             self._refresh()
         return self._session
@@ -178,6 +188,8 @@ class _PhoenixClient:
                 body = response.text
                 self._failures = 0
                 return body
+            except _CoolingDown:
+                raise
             except Exception:
                 self._record_failure()
                 raise
@@ -213,6 +225,8 @@ class _PhoenixClient:
                     )
                 partial_path.replace(output_path)
                 self._failures = 0
+            except _CoolingDown:
+                raise
             except Exception:
                 partial_path.unlink(missing_ok=True)
                 self._record_failure()
@@ -221,16 +235,13 @@ class _PhoenixClient:
                 if response is not None:
                     response.close()
 
-    def probe(self) -> None:
-        with self._lock:
-            response = None
-            try:
-                response = self._get(_BASE_URL, timeout=TIMEOUT_MP3PHOENIX_SEARCH)
-                response.raise_for_status()
-                self._failures = 0
-            finally:
-                if response is not None:
-                    response.close()
+    def health(self) -> tuple[bool, str]:
+        """Report remembered health without spinning up Chrome for a probe."""
+        now = time.monotonic()
+        if now < self._disabled_until:
+            remaining = int(self._disabled_until - now)
+            return False, f"MP3Phoenix is cooling down for {remaining}s after repeated failures"
+        return True, "MP3Phoenix session available on demand"
 
 
 _CLIENT = _PhoenixClient()
@@ -239,14 +250,26 @@ _CLIENT = _PhoenixClient()
 def _parse_results(fragment: str, query: str) -> list[dict]:
     parts = fragment.split(_DELIMITER)
     result_html = parts[2] if len(parts) >= 3 else fragment
+    artists = _RE_ARTIST.findall(result_html)
+    titles = _RE_TITLE.findall(result_html)
+    durations = _RE_DUR.findall(result_html)
+    hrefs = _RE_HREF.findall(result_html)
+    if len({len(artists), len(titles), len(durations), len(hrefs)}) > 1:
+        # The four fields below are paired up purely by position. If a card is
+        # missing one of them (or something elsewhere in the page matches one
+        # of these patterns), a positional zip would silently shift every
+        # result after it onto the wrong download link. Discarding the whole
+        # page and asking again beats mis-tagging a download with someone
+        # else's track.
+        print(
+            "MP3Phoenix parse error: mismatched result field counts "
+            f"(artist={len(artists)}, title={len(titles)}, duration={len(durations)}, href={len(hrefs)}); "
+            "discarding this page rather than risk mis-pairing results"
+        )
+        return []
     results = []
     seen_urls = set()
-    for artist_raw, title_raw, duration_raw, href_raw in zip(
-        _RE_ARTIST.findall(result_html),
-        _RE_TITLE.findall(result_html),
-        _RE_DUR.findall(result_html),
-        _RE_HREF.findall(result_html),
-    ):
+    for artist_raw, title_raw, duration_raw, href_raw in zip(artists, titles, durations, hrefs):
         artist = _clean_text(artist_raw)
         title = _clean_text(title_raw)
         duration = _clean_text(duration_raw)
@@ -312,9 +335,10 @@ def download_mp3phoenix_track(download_url: str, output_path: Path) -> None:
 
 
 def browser_healthy() -> tuple[bool, str]:
-    """Prove the Selenium-assisted HTTP session can reach the provider."""
-    try:
-        _CLIENT.probe()
-        return True, ""
-    except Exception as exc:
-        return False, str(exc)
+    """Report remembered session health without launching Chrome for a probe.
+
+    A real search or download launches Chrome when it actually needs a fresh
+    session, and its failures feed the circuit breaker; this just reads that
+    state back, matching monochrome_browser.py's browser_fallback_health().
+    """
+    return _CLIENT.health()

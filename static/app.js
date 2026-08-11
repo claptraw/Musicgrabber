@@ -2357,18 +2357,25 @@
             }
         }
 
+        // Sources with no preview endpoint (mirrors has_preview in search.py's SOURCE_REGISTRY).
+        // Soulseek has no streamable URL until it's downloaded; MP3Phoenix's Cloudflare-guarded
+        // session isn't worth spending on a hover.
+        const NO_PREVIEW_SOURCES = new Set(['soulseek', 'mp3phoenix']);
+        const sourceHasPreview = source => !NO_PREVIEW_SOURCES.has(source);
+
         // Render a single result card as an HTML string (mirrors the main renderResults template)
         function _renderOneResult(r, index) {
             const safeSource = escapeHtml(r.source || '');
             const safeVideoId = escapeHtml(r.video_id || '');
+            const previewable = sourceHasPreview(r.source);
             return `
                 <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''} ${r.source === 'soulseek' ? 'soulseek' : ''}"
                      data-video-id="${safeVideoId}"
                      data-quality-tier="${Number(r.quality_tier) || 0}"
                      data-index="${index}"
                      data-title="${escapeHtml(r.title)}"
-                     data-tooltip="${r.source !== 'soulseek' ? 'Hover to preview, click to download' : 'Click to download'}">
-                    ${r.source !== 'soulseek' ? '<div class="preview-indicator">▶</div>' : ''}
+                     data-tooltip="${previewable ? 'Hover to preview, click to download' : 'Click to download'}">
+                    ${previewable ? '<div class="preview-indicator">▶</div>' : ''}
                     ${r.thumbnail ? `<img class="result-thumb" src="${escapeHtml(r.thumbnail)}" alt="" loading="lazy">` : '<div class="result-thumb"></div>'}
                     <div class="result-info">
                         <div class="result-title">${escapeHtml(r.title)}</div>
@@ -2379,7 +2386,7 @@
                             ${r.duration ? `<span class="result-duration">${r.duration}</span>` : ''}
                         </div>
                     </div>
-                    ${r.source !== 'soulseek' ? `<div class="mobile-actions"><button class="preview-btn" data-video-id="${safeVideoId}" data-index="${index}" title="Preview">Preview &#9654;</button></div>` : ''}
+                    ${previewable ? `<div class="mobile-actions"><button class="preview-btn" data-video-id="${safeVideoId}" data-index="${index}" title="Preview">Preview &#9654;</button></div>` : ''}
                 </div>
             `;
         }
@@ -2396,7 +2403,7 @@
             });
 
             item.addEventListener('mouseenter', () => {
-                if (!downloadingIds.has(videoId) && result.source !== 'soulseek') {
+                if (!downloadingIds.has(videoId) && sourceHasPreview(result.source)) {
                     startHoverTimer(videoId, item, result);
                 }
             });
@@ -2441,7 +2448,7 @@
             if (item) {
                 const videoId = item.dataset.videoId;
                 item.addEventListener('mouseenter', () => {
-                    if (result.source !== 'soulseek') {
+                    if (sourceHasPreview(result.source)) {
                         startHoverTimer(videoId, item, result);
                     }
                 });
@@ -2569,14 +2576,15 @@
             resultsTab.innerHTML = results.map((r, index) => {
                 const safeSource = escapeHtml(r.source || '');
                 const safeVideoId = escapeHtml(r.video_id || '');
+                const previewable = sourceHasPreview(r.source);
                 return `
                 <div class="result-item ${downloadingIds.has(r.video_id) ? 'downloading' : ''} ${r.source === 'soulseek' ? 'soulseek' : ''}"
                      data-video-id="${safeVideoId}"
                      data-quality-tier="${Number(r.quality_tier) || 0}"
                      data-index="${index}"
                      data-title="${escapeHtml(r.title)}"
-                     data-tooltip="${r.source !== 'soulseek' ? 'Hover to preview, click to download' : 'Click to download'}">
-                    ${r.source !== 'soulseek' ? '<div class="preview-indicator">▶</div>' : ''}
+                     data-tooltip="${previewable ? 'Hover to preview, click to download' : 'Click to download'}">
+                    ${previewable ? '<div class="preview-indicator">▶</div>' : ''}
                     ${r.thumbnail ? `<img class="result-thumb" src="${escapeHtml(r.thumbnail)}" alt="" loading="lazy">` : '<div class="result-thumb"></div>'}
                     <div class="result-info">
                         <div class="result-title">${escapeHtml(r.title)}</div>
@@ -2593,7 +2601,7 @@
                     </div>
                     ${renderMatchBadge(r)}
                     <div class="mobile-actions">
-                        ${r.source !== 'soulseek' ? `<button class="preview-btn" data-video-id="${safeVideoId}" data-index="${index}" title="Preview">Preview &#9654;</button>` : ''}
+                        ${previewable ? `<button class="preview-btn" data-video-id="${safeVideoId}" data-index="${index}" title="Preview">Preview &#9654;</button>` : ''}
                         <button class="explore-btn" data-artist="${escapeAttr(r.artist || r.channel)}" title="Find similar artists via ListenBrainz">~ Similar</button>
                     </div>
                 </div>
@@ -2617,9 +2625,9 @@
                     }
                 });
 
-                // Hover to preview (desktop only, not Soulseek)
+                // Hover to preview (desktop only, not for sources with no preview endpoint)
                 item.addEventListener('mouseenter', () => {
-                    if (!downloadingIds.has(videoId) && result.source !== 'soulseek') {
+                    if (!downloadingIds.has(videoId) && sourceHasPreview(result.source)) {
                         startHoverTimer(videoId, item, result);
                     }
                 });
@@ -2873,7 +2881,7 @@
                 }
 
                 // URL-based sources need the full URL for downloading
-                if ((result.source === 'soundcloud' || result.source === 'zvu4no' || result.source === 'freemp3cloud' || result.source === 'monochrome') && result.source_url) {
+                if ((result.source === 'soundcloud' || result.source === 'mp3phoenix' || result.source === 'zvu4no' || result.source === 'freemp3cloud' || result.source === 'monochrome') && result.source_url) {
                     payload.source_url = result.source_url;
                 }
 
@@ -7909,7 +7917,7 @@
             const verifiedBadge = item.found_verified
                 ? '<span class="upgrade-verified" title="Quality confirmed by the source">verified</span>'
                 : '<span class="upgrade-unverified" title="Estimated; confirmed only after download">needs download to confirm</span>';
-            const canPreview = item.found_video_id && item.found_source !== 'soulseek';
+            const canPreview = item.found_video_id && sourceHasPreview(item.found_source);
             const previewBtn = canPreview
                 ? `<button class="btn btn-ghost btn-sm upgrade-preview"
                         onmouseenter="previewUpgrade('${item.found_video_id}', '${item.found_source}', this, ${item.id})"

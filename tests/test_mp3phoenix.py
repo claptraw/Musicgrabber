@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 import mp3phoenix
 import mp3phoenix_browser
 import search
@@ -16,6 +18,19 @@ _FRAGMENT = """ignored<!|!>ignored<!|!>
      href="//mp3phoenix.net/getmp3/token/file.mp3">Download</a>
 </div>
 """
+
+
+@pytest.fixture(autouse=True)
+def _reset_circuit_breaker():
+    """_CLIENT is a module-level singleton; production code mutates its
+    _failures/_disabled_until directly, which monkeypatch cannot undo. Reset
+    it around every test so a failure recorded by one test can't trip the
+    breaker for an unrelated test later in the run."""
+    mp3phoenix._CLIENT._failures = 0
+    mp3phoenix._CLIENT._disabled_until = 0.0
+    yield
+    mp3phoenix._CLIENT._failures = 0
+    mp3phoenix._CLIENT._disabled_until = 0.0
 
 
 def test_source_is_experimental_and_disabled_by_default():
@@ -170,3 +185,82 @@ def test_cloudflare_rejection_refreshes_session_once(monkeypatch):
     client = mp3phoenix._PhoenixClient()
     assert client.search("https://mp3phoenix.net/ajax/music/test") == _FRAGMENT
     assert len(browser_calls) == 2
+
+
+def test_refresh_gives_the_browser_bootstrap_more_time_than_the_search_timeout(monkeypatch):
+    """The bootstrap clears Cloudflare (slow); the AJAX search call is quick. Giving
+    the bootstrap only the search's own timeout budget risks killing it mid-clearance."""
+    browser_calls = []
+
+    class FakeBrowser:
+        def request(self, payload, timeout):
+            browser_calls.append(timeout)
+            return _session_details()
+
+    monkeypatch.setattr(mp3phoenix, "_BROWSER", FakeBrowser())
+    monkeypatch.setattr(
+        mp3phoenix.requests, "Session", lambda **_kwargs: _FakeSession([_FakeResponse(_FRAGMENT)])
+    )
+    client = mp3phoenix._PhoenixClient()
+    client.search("https://mp3phoenix.net/ajax/music/test")
+    assert browser_calls == [mp3phoenix.MP3PHOENIX_BROWSER_TIMEOUT + 20]
+    assert browser_calls[0] > mp3phoenix.TIMEOUT_MP3PHOENIX_SEARCH
+
+
+def test_browser_subprocess_env_forwards_timeout_to_the_child():
+    env = mp3phoenix._browser_subprocess_env()
+    assert env["MP3PHOENIX_BROWSER_TIMEOUT"] == str(mp3phoenix.MP3PHOENIX_BROWSER_TIMEOUT)
+
+
+def test_cooldown_does_not_renew_itself_on_every_call(monkeypatch):
+    """A RuntimeError raised while the breaker is open must not be recorded as a
+    fresh failure, otherwise anything polling MP3Phoenix during the cooldown
+    keeps pushing _disabled_until further out and it never expires."""
+    class FailIfCalledBrowser:
+        def request(self, payload, timeout):
+            raise AssertionError("should not attempt to refresh a cooling-down session")
+
+    monkeypatch.setattr(mp3phoenix, "_BROWSER", FailIfCalledBrowser())
+    client = mp3phoenix._PhoenixClient()
+    client._failures = mp3phoenix.MP3PHOENIX_BROWSER_FAILURE_LIMIT
+    client._disabled_until = mp3phoenix.time.monotonic() + 600
+    disabled_until_before = client._disabled_until
+
+    for _ in range(3):
+        with pytest.raises(RuntimeError, match="cooling down"):
+            client.search("https://mp3phoenix.net/ajax/music/test")
+
+    assert client._disabled_until == disabled_until_before
+    assert client._failures == mp3phoenix.MP3PHOENIX_BROWSER_FAILURE_LIMIT
+
+
+def test_parse_results_discards_a_page_with_mismatched_field_counts():
+    """Two artist cards but only one title/duration/href: pairing these positionally
+    would tag the second card's download link onto the first card's identity."""
+    broken_fragment = """ignored<!|!>ignored<!|!>
+<div>
+  <div class="musicTheme-results-info__card_artist"><b>Massive Attack</b></div>
+  <div class="musicTheme-results-info__card_artist"><b>Portishead</b></div>
+  <a class="musicTheme-results-info__card_tracklink">Teardrop</a>
+  <span class="dur">5:31</span>
+  <a class="musicTheme-results-info__card_download link"
+     href="//mp3phoenix.net/getmp3/token/file.mp3">Download</a>
+</div>
+"""
+    assert mp3phoenix._parse_results(broken_fragment, "Massive Attack - Teardrop") == []
+
+
+def test_browser_healthy_reports_remembered_state_without_launching_chrome(monkeypatch):
+    class FailIfCalledBrowser:
+        def request(self, payload, timeout):
+            raise AssertionError("a health check should never launch Chrome")
+
+    monkeypatch.setattr(mp3phoenix, "_BROWSER", FailIfCalledBrowser())
+
+    healthy, _reason = mp3phoenix.browser_healthy()
+    assert healthy is True
+
+    mp3phoenix._CLIENT._disabled_until = mp3phoenix.time.monotonic() + 600
+    healthy, reason = mp3phoenix.browser_healthy()
+    assert healthy is False
+    assert "cooling down" in reason
