@@ -736,6 +736,67 @@ def test_by_id_lookup_still_uses_a_real_album_when_there_is_one(monkeypatch):
     assert result.get("release_mbid") == "rel-bne"
 
 
+def test_isrc_lookup_prefers_the_studio_recording_over_a_bootleg(monkeypatch):
+    """MusicBrainz sometimes attaches one ISRC to both a studio recording and one
+    of its many bootleg live takes. Taking whichever the API lists first used to
+    mean a Tidal-sourced "Creep" could come back tagged as a 1998 Tibetan Freedom
+    Concert bootleg; the ISRC endpoint must score candidates like the title-search
+    path already does, not trust list order."""
+    metadata = _import_metadata_or_skip()
+
+    bootleg_recording = {
+        "id": "bootleg-id",
+        "title": "Creep",
+        "artist-credit": [{"name": "Radiohead"}],
+        "releases": [{
+            "id": "rel-bootleg",
+            "title": "1998-06-14: Tibetan Freedom Concert, RFK, Washington DC, USA",
+            "artist-credit": [{"name": "Radiohead"}],
+            "release-group": {
+                "title": "1998-06-14: Tibetan Freedom Concert, RFK, Washington DC, USA",
+                "primary-type": "Album", "secondary-types": ["Live"],
+                "artist-credit": [{"name": "Radiohead"}],
+            },
+        }],
+    }
+    studio_recording = {
+        "id": "studio-id",
+        "title": "Creep",
+        "length": 238640,
+        "artist-credit": [{"name": "Radiohead"}],
+        "releases": [
+            {
+                "id": "rel-pablo-honey",
+                "title": "Pablo Honey",
+                "artist-credit": [{"name": "Radiohead"}],
+                "release-group": {"title": "Pablo Honey", "primary-type": "Album",
+                                  "secondary-types": [], "artist-credit": [{"name": "Radiohead"}]},
+                "media": [{"position": 1, "tracks": [{"number": "2", "title": "Creep"}], "track-count": 12}],
+            },
+            {
+                "id": "rel-single",
+                "title": "Creep",
+                "artist-credit": [{"name": "Radiohead"}],
+                "release-group": {"title": "Creep", "primary-type": "Single",
+                                  "secondary-types": [], "artist-credit": [{"name": "Radiohead"}]},
+            },
+        ],
+    }
+
+    _patch_httpx(monkeypatch, metadata, [
+        _FakeResp(200, {"recordings": [bootleg_recording, studio_recording]}),
+        _FakeResp(200, {"length": 238640, "releases": studio_recording["releases"]}),
+    ])
+
+    result = metadata.lookup_musicbrainz_by_isrc(
+        "GBAAA9300111", expected_artist="Radiohead", expected_title="Creep"
+    )
+
+    assert result is not None
+    assert result["recording_id"] == "studio-id"
+    assert result.get("album") == "Pablo Honey"
+
+
 def test_acoustid_recording_album_skips_compilation_release_groups():
     metadata = _import_metadata_or_skip()
     recording = {

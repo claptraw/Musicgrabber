@@ -1236,13 +1236,21 @@ def _is_live_recording(acoustid_result: dict) -> bool:
     return False
 
 
-def lookup_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional[dict]:
+def lookup_musicbrainz_by_isrc(isrc: str, expected_artist: str = "", expected_title: str = "") -> Optional[dict]:
     """Look up a recording by ISRC.
 
     Tidal hands us a real ISRC at search time, so we can ask MusicBrainz the
     exact question instead of guessing by title and crossing our fingers.
     The ISRC endpoint returns the recording; we then reuse the by-ID release
     scoring to land on a sensible album/year/track number.
+
+    An ISRC is not always a one-recording answer: MusicBrainz has plenty of
+    cases where the same ISRC is attached to both the studio take and one of
+    its umpteen bootleg live versions (data-entry error upstream, not ours to
+    fix). Taking whichever the API lists first previously meant "Creep" could
+    come back tagged as a 1998 Tibetan Freedom Concert bootleg. Score every
+    candidate the same way the title-search path already does, and take the
+    best one.
     """
     if not get_setting_bool("enable_musicbrainz", True):
         return None
@@ -1251,7 +1259,7 @@ def lookup_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional
     try:
         headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
         url = f"https://musicbrainz.org/ws/2/isrc/{isrc}"
-        params = {"inc": "artist-credits", "fmt": "json"}
+        params = {"inc": "artist-credits releases release-groups", "fmt": "json"}
         with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
             response = client.get(url, params=params, headers=headers)
         if response.status_code != 200:
@@ -1261,7 +1269,10 @@ def lookup_musicbrainz_by_isrc(isrc: str, expected_artist: str = "") -> Optional
         if not recordings:
             return None
 
-        recording = recordings[0]
+        recording = max(
+            recordings,
+            key=lambda rec: _score_recording_canonicity(rec, expected_artist, expected_title),
+        )
         recording_id = recording.get("id")
         artist_credit = recording.get("artist-credit") or []
         artist_name = "".join(

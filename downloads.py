@@ -4816,7 +4816,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         if source_label == "monochrome" and download_url.startswith("monochrome://"):
             isrc = (parse_qs(urlparse(download_url).query).get("isrc") or [""])[0]
             if isrc:
-                mb_metadata = lookup_musicbrainz_by_isrc(isrc, expected_artist=artist)
+                mb_metadata = lookup_musicbrainz_by_isrc(isrc, expected_artist=artist, expected_title=title)
         if not mb_metadata:
             mb_metadata = lookup_metadata(artist, title, output_path)
         metadata_source = _default_metadata_source(source_label)
