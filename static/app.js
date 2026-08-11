@@ -9228,6 +9228,7 @@
             'playlist_album_as_name': 'settingPlaylistAlbumAsName',
             'singles_only_mode': 'settingSinglesOnlyMode',
             'source_youtube_enabled': 'settingSourceYoutube',
+            'source_mp3phoenix_enabled': 'settingSourceMp3phoenix',
             'source_soundcloud_enabled': 'settingSourceSoundcloud',
             'source_zvu4no_enabled': 'settingSourceZvu4no',
             'source_freemp3cloud_enabled': 'settingSourceFreemp3cloud',

@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gosu \
     libchromaprint-tools \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp (latest version); pick the right binary for the host arch
@@ -34,6 +35,7 @@ RUN pip install --no-cache-dir \
     fastapi~=0.128.0 \
     uvicorn[standard]~=0.40.0 \
     httpx~=0.28.1 \
+    curl_cffi~=0.13.0 \
     pydantic~=2.12.5 \
     mutagen~=1.47.0 \
     playwright~=1.58.0 \
@@ -41,8 +43,8 @@ RUN pip install --no-cache-dir \
     bcrypt~=4.2.0
 
 # SeleniumBase is kept beside Playwright rather than replacing the working
-# Spotify/Amazon scrapers. It is used solely for Monochrome's browser Turnstile
-# exchange; Chrome's audio traffic never passes through WebDriver.
+# Spotify/Amazon scrapers. Monochrome uses it for a small Turnstile exchange;
+# experimental MP3Phoenix uses it briefly to seed curl_cffi with clearance.
 RUN pip install --no-cache-dir seleniumbase~=4.49.0
 
 # Install Playwright browsers into a fixed path so non-root users (PUID/PGID) can find them.
@@ -102,6 +104,9 @@ EXPOSE 8080
 # Health check - uses LISTEN_PORT if set, falls back to 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${LISTEN_PORT:-8080}/ || exit 1
+
+# Reap short-lived browser children as well as forwarding shutdown signals.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 
 # Run the application
 CMD ["/app/entrypoint.sh"]

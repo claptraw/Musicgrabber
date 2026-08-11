@@ -257,6 +257,7 @@ SETTINGS_SCHEMA = {
     "acoustid_api_key": {"type": "str", "default": "0NILMQojj4", "env": "ACOUSTID_API_KEY"},
     # Search sources
     "source_youtube_enabled": {"type": "bool", "default": True, "env": "SOURCE_YOUTUBE_ENABLED"},
+    "source_mp3phoenix_enabled": {"type": "bool", "default": False, "env": "SOURCE_MP3PHOENIX_ENABLED"},
     "source_soundcloud_enabled": {"type": "bool", "default": True, "env": "SOURCE_SOUNDCLOUD_ENABLED"},
     "source_zvu4no_enabled": {"type": "bool", "default": True, "env": "SOURCE_ZVU4NO_ENABLED"},
     "source_freemp3cloud_enabled": {"type": "bool", "default": True, "env": "SOURCE_FREEMP3CLOUD_ENABLED"},

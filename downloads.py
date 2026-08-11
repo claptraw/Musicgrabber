@@ -70,6 +70,7 @@ from utils import (
 from monochrome import download_monochrome_track
 from zvu4no import download_zvu4no_track, is_zvu4no_url
 from freemp3cloud import download_freemp3cloud_track
+from mp3phoenix import download_mp3phoenix_track, is_mp3phoenix_url
 from youtube import (
     _ytdlp_base_args, _is_ytdlp_403, _note_cookie_failure,
     run_ytdlp_with_retries,
@@ -91,6 +92,8 @@ def _default_metadata_source(source: str) -> str:
     source_name = (source or "youtube").lower()
     if source_name == "soundcloud":
         return "soundcloud_guessed"
+    if source_name == "mp3phoenix":
+        return "mp3phoenix_guessed"
     if source_name == "zvu4no":
         return "zvu4no_guessed"
     if source_name == "freemp3cloud":
@@ -2715,7 +2718,7 @@ def _enforce_target_format(audio_file: Path, convert_audio: bool, user_id: str |
 
 # The sources whose volume is a lottery. Monochrome and Soulseek serve proper
 # masters/rips, so they are deliberately absent; we don't rewrite those.
-_LOUDNORM_SOURCES = {"youtube", "soundcloud", "zvu4no", "freemp3cloud"}
+_LOUDNORM_SOURCES = {"youtube", "soundcloud", "mp3phoenix", "zvu4no", "freemp3cloud"}
 
 
 def _carry_over_artwork(src: Path, dest: Path) -> None:
@@ -5016,7 +5019,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
 
     source_url overrides the default YouTube URL construction  -  used for
     SoundCloud and any future yt-dlp-supported source.
-    zvu4no/freemp3cloud/Monochrome tracks bypass yt-dlp entirely and download directly.
+    MP3Phoenix/zvu4no/freemp3cloud/Monochrome tracks bypass yt-dlp entirely.
     playlist_name + use_playlists_dir route bulk import tracks into the Playlists folder.
     override_dir, when set, is an absolute path string used as the download directory
     instead of the normal Singles/Artist layout  -  used by album downloads.
@@ -5024,6 +5027,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
     if _job_was_cancelled(job_id):
         return
     is_soundcloud  = source_url and "soundcloud.com" in source_url
+    is_mp3phoenix  = is_mp3phoenix_url(source_url)
     is_zvu4no      = is_zvu4no_url(source_url)
     is_freemp3cloud = source_url and "meln.top" in source_url
     is_monochrome  = source_url and source_url.startswith("monochrome://")
@@ -5064,7 +5068,7 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
 
     # Direct stream sources: bypass yt-dlp entirely.
     # artist/title come from the job row (set at queue time from search results).
-    if is_monochrome or is_zvu4no or is_freemp3cloud:
+    if is_monochrome or is_mp3phoenix or is_zvu4no or is_freemp3cloud:
         with db_conn() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
@@ -5077,6 +5081,8 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
             direct_label = "monochrome"
             direct_fn = partial(download_monochrome_track,
                                 artist_hint=artist_hint, title_hint=title_hint)
+        elif is_mp3phoenix:
+            direct_label, direct_fn = "mp3phoenix", download_mp3phoenix_track
         elif is_zvu4no:
             direct_label, direct_fn = "zvu4no", download_zvu4no_track
         else:

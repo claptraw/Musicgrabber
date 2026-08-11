@@ -2,6 +2,7 @@
 
 ## v4.0.0 (DEV)
 
+- **Rise of the Phoenix**: MP3Phoenix returns as an experimental source, disabled by default. SeleniumBase briefly clears Cloudflare, then `curl_cffi` reuses those cookies and the exact user-agent with Chrome's network fingerprint for efficient AJAX searches and streamed MP3 delivery. The session lives for at most an hour, but any challenge response refreshes it immediately and retries once. The image now runs under `tini`, which reaps each short-lived Chrome cleanly instead of collecting browser zombies. Results rejoin the normal relevance and quality ranking at the declared 320 kbps tier, and completed bytes still face the ordinary integrity, duration, metadata, conversion, duplicate, and fallback checks. Three consecutive failures put the source back in its box for ten minutes, because endlessly launching Chrome at a locked door is not resilience.
 - Fixed Album mode and Watched Artists album acquisitions incorrectly reporting fetched tracks as already in the library, including Soulseek's post-download duplicate gate.
 
 The artist-centred restructure, in which MusicGrabber stops organising itself around what it downloads and starts organising itself around who made it. Monochrome's lossless downloads also came back from the dead, and a rather nasty database bug wandered in and got fixed while we waited.

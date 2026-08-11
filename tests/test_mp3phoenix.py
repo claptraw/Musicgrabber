@@ -1,0 +1,172 @@
+"""Regression tests for the Selenium-assisted MP3Phoenix resurrection."""
+
+from types import SimpleNamespace
+
+import mp3phoenix
+import mp3phoenix_browser
+import search
+
+
+_FRAGMENT = """ignored<!|!>ignored<!|!>
+<div>
+  <div class="musicTheme-results-info__card_artist"><b>Massive Attack</b></div>
+  <a class="musicTheme-results-info__card_tracklink">Teardrop</a>
+  <span class="dur">5:31</span>
+  <a class="musicTheme-results-info__card_download link"
+     href="//mp3phoenix.net/getmp3/token/file.mp3">Download</a>
+</div>
+"""
+
+
+def test_source_is_experimental_and_disabled_by_default():
+    source = search.SOURCE_REGISTRY["mp3phoenix"]
+    assert source["default_enabled"] is False
+    assert source["has_preview"] is False
+    assert "experimental" in source["label"].lower()
+
+
+def test_browser_subprocess_does_not_receive_application_secrets(monkeypatch):
+    monkeypatch.setenv("NAVIDROME_PASS", "nope")
+    monkeypatch.setenv("SLSKD_PASS", "also-nope")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = mp3phoenix._browser_subprocess_env()
+    assert env["PATH"] == "/usr/bin"
+    assert env["PYTHONUNBUFFERED"] == "1"
+    assert "NAVIDROME_PASS" not in env
+    assert "SLSKD_PASS" not in env
+
+
+def test_parse_results_restores_scored_320k_mp3():
+    results = mp3phoenix._parse_results(_FRAGMENT, "Massive Attack - Teardrop")
+    assert len(results) == 1
+    result = results[0]
+    assert result["source"] == "mp3phoenix"
+    assert result["channel"] == "Massive Attack"
+    assert result["title"] == "Teardrop"
+    assert result["quality"] == "320kbps"
+    assert result["source_url"].startswith("https://mp3phoenix.net/getmp3/")
+
+
+def test_browser_exports_clearance_session():
+    class FakeCdp:
+        def get_all_cookies(self):
+            return [SimpleNamespace(name="cf_clearance", value="token", domain=".mp3phoenix.net", path="/")]
+
+        def evaluate(self, _script):
+            return "Chrome UA"
+
+    details = mp3phoenix_browser._session_details(SimpleNamespace(cdp=FakeCdp()))
+    assert details["user_agent"] == "Chrome UA"
+    assert details["cookies"][0]["name"] == "cf_clearance"
+
+
+class _FakeResponse:
+    def __init__(self, body="", status=200, content_type="text/html", chunks=()):
+        self.text = body
+        self.status_code = status
+        self.headers = {"content-type": content_type}
+        self._chunks = chunks
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def iter_content(self, _size):
+        return iter(self._chunks)
+
+    def close(self):
+        pass
+
+
+class _FakeSession:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.cookies = self
+        self.headers = {}
+
+    def set(self, *_args, **_kwargs):
+        pass
+
+    def get(self, *_args, **_kwargs):
+        return next(self.responses)
+
+    def close(self):
+        pass
+
+
+def _session_details():
+    return {
+        "user_agent": "Chrome UA",
+        "cookies": [{
+            "name": "cf_clearance", "value": "token",
+            "domain": ".mp3phoenix.net", "path": "/",
+        }],
+    }
+
+
+def test_search_bootstraps_once_then_reuses_http_session(monkeypatch):
+    browser_calls = []
+
+    class FakeBrowser:
+        def request(self, payload, timeout):
+            browser_calls.append((payload, timeout))
+            return _session_details()
+
+    monkeypatch.setattr(mp3phoenix, "_BROWSER", FakeBrowser())
+    session = _FakeSession([_FakeResponse(_FRAGMENT), _FakeResponse(_FRAGMENT)])
+    monkeypatch.setattr(mp3phoenix.requests, "Session", lambda **_kwargs: session)
+    monkeypatch.setattr(mp3phoenix, "_CLIENT", mp3phoenix._PhoenixClient())
+    results = mp3phoenix.search_mp3phoenix("Massive Attack - Teardrop", 4)
+    again = mp3phoenix.search_mp3phoenix("Massive Attack - Teardrop", 4)
+    assert len(results) == 1
+    assert len(again) == 1
+    assert browser_calls[0][0] == {"action": "session"}
+    assert len(browser_calls) == 1
+
+
+def test_http_download_streams_chunks_to_staging(monkeypatch, tmp_path):
+    payload = b"ID3" + (b"phoenix" * 50)
+    response = _FakeResponse(content_type="audio/mpeg", chunks=(payload[:20], payload[20:]))
+    response.headers["content-length"] = str(len(payload))
+    monkeypatch.setattr(mp3phoenix._CLIENT, "_session", _FakeSession([response]))
+    monkeypatch.setattr(mp3phoenix._CLIENT, "_refreshed_at", mp3phoenix.time.monotonic())
+    destination = tmp_path / "track.mp3"
+    mp3phoenix.download_mp3phoenix_track(
+        "https://mp3phoenix.net/getmp3/token/file.mp3", destination
+    )
+    assert destination.read_bytes() == payload
+    assert not (tmp_path / "track.mp3.part").exists()
+
+
+def test_http_download_rejects_non_audio_response(monkeypatch, tmp_path):
+    response = _FakeResponse("ordinary error page", content_type="text/html")
+    monkeypatch.setattr(mp3phoenix._CLIENT, "_session", _FakeSession([response]))
+    monkeypatch.setattr(mp3phoenix._CLIENT, "_refreshed_at", mp3phoenix.time.monotonic())
+    destination = tmp_path / "challenge.mp3"
+    try:
+        mp3phoenix.download_mp3phoenix_track(
+            "https://mp3phoenix.net/getmp3/token/file.mp3", destination
+        )
+    except RuntimeError as exc:
+        assert "instead of audio" in str(exc)
+    else:
+        raise AssertionError("HTML challenge response was accepted as an MP3")
+
+
+def test_cloudflare_rejection_refreshes_session_once(monkeypatch):
+    browser_calls = []
+
+    class FakeBrowser:
+        def request(self, payload, timeout):
+            browser_calls.append((payload, timeout))
+            return _session_details()
+
+    sessions = iter([
+        _FakeSession([_FakeResponse("Just a moment", status=403)]),
+        _FakeSession([_FakeResponse(_FRAGMENT)]),
+    ])
+    monkeypatch.setattr(mp3phoenix, "_BROWSER", FakeBrowser())
+    monkeypatch.setattr(mp3phoenix.requests, "Session", lambda **_kwargs: next(sessions))
+    client = mp3phoenix._PhoenixClient()
+    assert client.search("https://mp3phoenix.net/ajax/music/test") == _FRAGMENT
+    assert len(browser_calls) == 2

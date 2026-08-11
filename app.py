@@ -138,7 +138,7 @@ from utils import hash_track, is_valid_youtube_id, iter_library_audio_files, san
 from coverart import fetch_cover_art_url
 from notifications import send_test_email
 
-URL_BASED_SOURCES = {"soundcloud", "zvu4no", "freemp3cloud", "monochrome"}
+URL_BASED_SOURCES = {"soundcloud", "mp3phoenix", "zvu4no", "freemp3cloud", "monochrome"}
 DIRECT_PREVIEW_SOURCES = {"zvu4no", "freemp3cloud"}
 MONOCHROME_PREVIEW_SOURCES = {"monochrome"}
 

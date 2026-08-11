@@ -8,8 +8,17 @@
 
 const RELEASE_NOTES = {
     "4.0.0": {
-        title: "What's New in v4.0.0",
+        title: "What's New in v4.0.0: Rise of the Phoenix",
         sections: [
+            {
+                heading: "Rise of the Phoenix",
+                items: [
+                    "MP3Phoenix is back as an experimental search and download source. It remains disabled by default; turn it on under Settings, Search Sources if another decent MP3 fallback is worth a little browser theatre.",
+                    "SeleniumBase briefly clears Cloudflare, then curl_cffi reuses the browser cookies and user-agent with Chrome's network fingerprint for efficient searches and streamed MP3 delivery. The session lasts at most an hour; a challenge refreshes it immediately and retries once.",
+                    "Three consecutive browser failures park the source for ten minutes and automatic work falls through normally. Downloads still face MusicGrabber's integrity, duration, metadata, conversion, duplicate, and fallback checks before reaching the library.",
+                    "There is no hover preview for MP3Phoenix. Spending the guarded provider session because a mouse rested on a card would be an impressively expensive tooltip.",
+                ]
+            },
             {
                 heading: "Maintenance, mobile, and one honest YouTube fallback",
                 items: [
