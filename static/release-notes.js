@@ -224,6 +224,14 @@ const RELEASE_NOTES = {
                     "Thanks to Tristan for the report and for digging into the logs.",
                 ]
             },
+            {
+                heading: "\"Guess Again\" stops handing out rehearsal tapes",
+                items: [
+                    "The tag editor's Guess Again button searched MusicBrainz by text alone and took whichever recording scored highest for raw relevance, with none of the safeguards an ordinary download already has.",
+                    "Re-guessing The Beatles' \"Let It Be\" could hand back a rehearsal take filed on the Artifacts II bootleg box set, complete with the wrong year and the wrong track number.",
+                    "It now shares the same recording picker an ordinary download uses, and tries matching the actual audio file with AcoustID first when it is available, rather than trusting a text search alone.",
+                ]
+            },
         ]
     },
     "3.1.0": {
