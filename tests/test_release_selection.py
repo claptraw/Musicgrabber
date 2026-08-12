@@ -266,6 +266,146 @@ def test_well_supported_recording_skips_release_group_fallback(monkeypatch):
     assert metadata.lookup_musicbrainz("Artist", "Song")["album"] == "The Album"
 
 
+class _NoNetworkReleaseResponse:
+    """A 404-alike so _build_musicbrainz_guess_for_release's optional release-detail
+    fetch backs off cleanly, instead of a real request leaving the network to decide
+    how offline this "offline" test file actually is."""
+    status_code = 404
+
+    def json(self):
+        return {}
+
+
+class _NoNetworkHttpxClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, *args, **kwargs):
+        return _NoNetworkReleaseResponse()
+
+
+def test_guess_candidates_prefer_canonicity_over_a_rehearsal_bootleg(monkeypatch):
+    """Same failure mode as test_weak_recording_result_uses_release_group_fallback,
+    but through guess_musicbrainz_tag_candidates() ("Guess Again" in the tag
+    editor), which used to sort by raw MusicBrainz relevance and had no alt-take
+    penalty at all. A real example: "Let It Be" text-searched a rehearsal take
+    catalogued on the "Artifacts II" bootleg box set ahead of the actual single,
+    because MusicBrainz scored the rehearsal's title a confident text match."""
+    metadata = _import_metadata_or_skip()
+    monkeypatch.setattr(metadata, "get_setting_bool", lambda *a, **k: True)
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    monkeypatch.setattr(metadata.httpx, "Client", _NoNetworkHttpxClient)
+
+    rehearsal = {
+        "id": "rehearsal-rec", "score": 100, "title": "Let It Be (Let It Be rehearsals)",
+        "artist-credit": [{"name": "The Beatles"}],
+        "releases": [{
+            "id": "artifacts-ii", "title": "Artifacts II", "date": "1994",
+            "artist-credit": [{"name": "The Beatles"}],
+            "release-group": {"primary-type": "Album", "secondary-types": ["Compilation"],
+                               "title": "Artifacts II"},
+        }],
+    }
+    studio = {
+        "id": "studio-rec", "title": "Let It Be", "length": 243000,
+        "artist-credit": [{"name": "The Beatles"}],
+        "releases": [{
+            "id": "let-it-be-album", "title": "Let It Be", "date": "1970-05-08",
+            "artist-credit": [{"name": "The Beatles"}],
+            "release-group": {"primary-type": "Album", "title": "Let It Be"},
+            "media": [{"track": [{"number": "11"}], "track-count": 12}],
+        }],
+    }
+    monkeypatch.setattr(metadata, "_mb_search_recordings", lambda *a, **k: [rehearsal])
+    monkeypatch.setattr(
+        metadata, "_mb_resolve_recording_via_release_group",
+        lambda *a, **k: studio,
+    )
+
+    candidates = metadata.guess_musicbrainz_tag_candidates("The Beatles", "Let It Be")
+    assert candidates, "expected at least one candidate"
+    assert candidates[0]["album"] == "Let It Be"
+    assert candidates[0]["metadata_source"] == "musicbrainz_text"
+    assert not any(c["album"] == "Artifacts II" for c in candidates), (
+        "the rehearsal bootleg should have been superseded, not merely outranked")
+
+
+def test_guess_candidates_use_fingerprint_tier_when_file_is_available(monkeypatch, tmp_path):
+    """When the actual file can be fingerprinted, that audio-verified recording's
+    releases should come first, ahead of anything the text search turns up."""
+    metadata = _import_metadata_or_skip()
+    monkeypatch.setattr(metadata, "get_setting_bool", lambda *a, **k: True)
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    monkeypatch.setattr(metadata.httpx, "Client", _NoNetworkHttpxClient)
+
+    audio_file = tmp_path / "track.flac"
+    audio_file.write_bytes(b"not really audio, just needs to exist")
+
+    monkeypatch.setattr(metadata, "_run_fpcalc", lambda path: (243, "fake-fingerprint"))
+    monkeypatch.setattr(
+        metadata, "_lookup_acoustid",
+        lambda duration, fingerprint, artist, title: {
+            "recording_id": "studio-rec", "artist": artist, "title": title,
+        },
+    )
+    monkeypatch.setattr(
+        metadata, "_mb_fetch_recording_with_releases",
+        lambda recording_id, headers: {
+            "id": "studio-rec", "title": "Let It Be",
+            "artist-credit": [{"name": "The Beatles"}],
+            "releases": [{
+                "id": "let-it-be-album", "title": "Let It Be", "date": "1970-05-08",
+                "artist-credit": [{"name": "The Beatles"}],
+                "release-group": {"primary-type": "Album", "title": "Let It Be"},
+                "media": [{"track": [{"number": "11"}], "track-count": 12}],
+            }],
+        },
+    )
+    # Text-search tier should not even be needed here, but stub it so a bug that
+    # accidentally calls it does not turn into a real network request.
+    monkeypatch.setattr(metadata, "_mb_search_recordings", lambda *a, **k: [])
+
+    candidates = metadata.guess_musicbrainz_tag_candidates(
+        "The Beatles", "Let It Be", file_path=audio_file,
+    )
+    assert candidates, "expected at least one candidate"
+    assert candidates[0]["metadata_source"] == "acoustid_fingerprint"
+    assert candidates[0]["album"] == "Let It Be"
+
+
+def test_guess_candidates_fall_back_to_text_search_without_a_file(monkeypatch):
+    """No file (or fingerprinting finds nothing) should still work exactly as
+    guess_musicbrainz_tag_candidates always did: text search only."""
+    metadata = _import_metadata_or_skip()
+    monkeypatch.setattr(metadata, "get_setting_bool", lambda *a, **k: True)
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    monkeypatch.setattr(metadata.httpx, "Client", _NoNetworkHttpxClient)
+
+    recording = {
+        "id": "studio-rec", "score": 100, "title": "Song",
+        "artist-credit": [{"name": "Artist"}],
+        "releases": [{
+            "id": "release-1", "title": "The Album",
+            "release-group": {"primary-type": "Album", "title": "The Album"},
+        }],
+    }
+    monkeypatch.setattr(metadata, "_mb_search_recordings", lambda *a, **k: [recording])
+    monkeypatch.setattr(
+        metadata, "_mb_resolve_recording_via_release_group", lambda *a, **k: None,
+    )
+
+    candidates = metadata.guess_musicbrainz_tag_candidates("Artist", "Song")
+    assert candidates
+    assert candidates[0]["metadata_source"] == "musicbrainz_text"
+    assert candidates[0]["album"] == "The Album"
+
+
 def test_release_group_fallback_uses_the_recording_repeated_across_editions(monkeypatch):
     metadata = _import_metadata_or_skip()
     calls = []

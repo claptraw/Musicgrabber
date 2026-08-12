@@ -34,6 +34,13 @@ const SEARCH_QUIPS = {
             "Hunting the actual song, not the meme",
             "Wrestling the recommendation engine",
             "Looking past the 'FULL ALBUM (no ads)' uploads",
+            "Looking past fourteen copies labelled BEST QUALITY",
+            "Checking whether 'official audio' means either word",
+            "Avoiding thumbnails with unnecessary red arrows",
+            "Wading through videos filmed from three streets away",
+            "Skipping the version pitched up for legal reasons",
+            "Searching beneath several tonnes of algorithm",
+            "Looking for the song between two sponsored opinions",
         ],
 
         monochrome: [
@@ -51,6 +58,12 @@ const SEARCH_QUIPS = {
             "Politely refusing the live version",
             "Triangulating Tidal and Qobuz",
             "Insisting on the proper master",
+            "Polishing the bits until they look lossless",
+            "Checking whether 'hi-res' is wearing a fake moustache",
+            "Inspecting the waveform with unnecessary suspicion",
+            "Asking Qobuz where it keeps the good crockery",
+            "Rejecting MP3s attempting to pass as respectable",
+            "Counting bits like a particularly dull accountant",
         ],
 
         soundcloud: [
@@ -64,6 +77,12 @@ const SEARCH_QUIPS = {
             "Checking who actually uploaded this",
             "Filtering out the podcast episodes",
             "Hunting the real upload, not the rip",
+            "Searching between the airhorns and producer tags",
+            "Avoiding anything described as an absolute weapon",
+            "Looking past seven remixes made before breakfast",
+            "Checking whether the drop ever actually arrives",
+            "Navigating a light dusting of self-promotion",
+            "Searching the orange wilderness",
         ],
 
         zvu4no: [
@@ -102,6 +121,13 @@ const SEARCH_QUIPS = {
             "Tipping the uploader (in good vibes)",
             "Communing with the Soulseek hive",
             "Dowsing for souls",
+            "Knocking on computers last rebooted in 2014",
+            "Borrowing music from the internet's spare bedroom",
+            "Searching folders organised by one person's private logic",
+            "Waiting for a peer whose uptime deserves an award",
+            "Asking strangers to rummage through their hard drives",
+            "Entering filenames from a less regulated age",
+            "Hoping the uploader has not gone to bed",
         ],
 
         _default: [
@@ -113,6 +139,14 @@ const SEARCH_QUIPS = {
             "Following a hunch",
             "Casting the net",
             "Giving it a good shake",
+            "Rebuilding the library the streaming giants misplaced",
+            "Looking for the album a licensing deal made disappear",
+            "Undoing another triumph of shareholder value",
+            "Searching for music you apparently only rented",
+            "Preserving culture while quarterly earnings look elsewhere",
+            "Putting ownership back where the buy button implied it was",
+            "I blame Spotify for making me do this",
+            "Removing music I paid for is why we're here",
         ],
     },
 
@@ -127,6 +161,14 @@ const SEARCH_QUIPS = {
         "the cupboard's bare",
         "not a dickie bird",
         "computer says no",
+        "found precisely bugger all",
+        "returned with empty pockets",
+        "not even a suspicious cover version",
+        "nothing but the sound of distant servers",
+        "searched everywhere except somewhere useful",
+        "no joy, despite some very professional rummaging",
+        "the trail has gone cold",
+        "zero tunes, several opinions",
     ],
 
     // Shown when a source is still going long after the others finished. Per
@@ -173,6 +215,13 @@ const SEARCH_QUIPS = {
         "no reply, moving swiftly along",
         "asleep at the wheel",
         "took the scenic route, missed the deadline",
+        "went for lunch during a simple question",
+        "still loading in a more philosophical sense",
+        "missed the bus and blamed the timetable",
+        "became emotionally attached to the request",
+        "timed out with considerable confidence",
+        "wandered off midway through the conversation",
+        "needed longer than civilisation could spare",
     ],
 
     offline: [
@@ -203,5 +252,97 @@ const SEARCH_QUIPS = {
         "lost the plot momentarily",
         "blue-screened in spirit",
         "had a senior moment",
+        "pressed the wrong button internally",
+        "encountered consequences",
+        "made a noise engineers dislike",
+        "has submitted an incident report to itself",
+        "failed in a technically interesting way",
+        "found an exciting new route to nowhere",
+        "tripped over a semicolon and is blaming us",
+        "has entered the denial stage of debugging",
+    ],
+};
+
+// =============================================================================
+// Queue / Live Updates quips
+// =============================================================================
+// The little aside under the Queue tab's live summary line. One per state,
+// picked at random whenever the state changes (not on every poll, so it
+// doesn't gabble on).
+//
+// Structure:
+//   QUEUE_QUIPS.both         -> at least one downloading and one queued
+//   QUEUE_QUIPS.downloading  -> downloading, nothing waiting
+//   QUEUE_QUIPS.queued       -> waiting, nothing downloading yet
+//   QUEUE_QUIPS.idle         -> all caught up
+//
+// Same house style as SEARCH_QUIPS: British, light, no emdashes.
+
+const QUEUE_QUIPS = {
+
+    both: [
+        "The conveyor belt is earning its keep.",
+        "Two things at once. How modern.",
+        "Busy, but far too polite to show it.",
+        "Multitasking, cautiously optimistic.",
+        "The workbench has become a production line.",
+        "The machinery is humming and nobody has lost a finger.",
+        "Several plates spinning, only one visibly wobbling.",
+        "The queue is busy pretending this was all planned.",
+        "Full steam ahead, at a responsible pressure.",
+        "Work is occurring. Management is delighted.",
+        "The tiny hammers have requested overtime.",
+    ],
+
+    downloading: [
+        "Tiny hammers, serious business.",
+        "Bits on the move, quietly.",
+        "The workbench is warm.",
+        "Somewhere, a tiny hammer is rather proud of itself.",
+        "Progress, of the unglamorous sort.",
+        "Converting electricity into music and mild warmth.",
+        "A file is being persuaded into existence.",
+        "Downloading with all the urgency of a council meeting.",
+        "The progress bar knows where it is going.",
+        "Bits are arriving in broadly the correct order.",
+        "The tiny hammer union has approved this shift.",
+        "Something musical is coming down the pipes.",
+        "Applying patience directly to the internet.",
+        "I'd still record it off the radio, if I could.",
+        "Making permanent what a licensing deal made temporary.",
+    ],
+
+    queued: [
+        "Forming an orderly queue, naturally.",
+        "Patience: we're British, remember.",
+        "Waiting its turn, ever so politely.",
+        "Standing in line like civilised little files.",
+        "Taking a ticket, minding its manners.",
+        "Queued behind someone with a much larger trolley.",
+        "Waiting patiently, while judging the track ahead.",
+        "Ticket taken. Magazine selection disappointing.",
+        "Currently in the foyer, pretending to read a leaflet.",
+        "The files have formed a queue without being asked.",
+        "Waiting for the tiny hammer to become available.",
+        "Standing by with the resigned air of a commuter.",
+        "Next in line, unless someone claims priority boarding.",
+        "Queued because ownership now requires admin.",
+    ],
+
+    idle: [
+        "The queue has put its feet up.",
+        "Not a hammer stirring.",
+        "The workbench has been swept.",
+        "Kettle's on, nothing else is happening.",
+        "All quiet on the download front.",
+        "Nothing doing. Even the progress bar has gone home.",
+        "The tiny hammers are in the biscuit tin.",
+        "All finished. Please resist inventing more work.",
+        "The machinery is off and the silence is suspicious.",
+        "No queue. This level of efficiency feels unnatural.",
+        "Everything is done, pending someone noticing.",
+        "The workbench is spotless. Give it five minutes.",
+        "Idle, but maintaining a convincing air of purpose.",
+        "Your music is still here. Novel idea, apparently.",
     ],
 };

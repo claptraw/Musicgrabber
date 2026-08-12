@@ -3078,6 +3078,11 @@
             return `${hours}h ${String(mins % 60).padStart(2, '0')}m`;
         }
 
+        function _queueQuip(section, fallback) {
+            const pool = (typeof QUEUE_QUIPS !== 'undefined' && QUEUE_QUIPS[section]) || null;
+            return _randomQuip(pool, fallback);
+        }
+
         function renderQueueSummary() {
             if (!queueLiveSummary) return;
             if (!allQueueJobs.length) {
@@ -3094,16 +3099,16 @@
                 let aside;
                 if (downloading && queued) {
                     headline = `${downloading} on the workbench · ${queued} waiting`;
-                    aside = 'The conveyor belt is earning its keep.';
+                    aside = _queueQuip('both', 'The conveyor belt is earning its keep.');
                 } else if (downloading) {
                     headline = `${downloading} track${downloading === 1 ? '' : 's'} on the workbench`;
-                    aside = 'Tiny hammers, serious business.';
+                    aside = _queueQuip('downloading', 'Tiny hammers, serious business.');
                 } else if (queued) {
                     headline = `${queued} track${queued === 1 ? '' : 's'} waiting its turn`;
-                    aside = 'Forming an orderly queue, naturally.';
+                    aside = _queueQuip('queued', 'Forming an orderly queue, naturally.');
                 } else {
                     headline = 'All caught up';
-                    aside = 'The queue has put its feet up.';
+                    aside = _queueQuip('idle', 'The queue has put its feet up.');
                 }
                 queueLiveSummary.innerHTML = `
                     <span class="queue-live-dot ${active ? 'active' : ''}" aria-hidden="true"></span>
@@ -3126,7 +3131,15 @@
             const updated = queueLiveSummary?.querySelector('.queue-live-updated');
             if (updated && queueLastUpdatedAt) {
                 const age = Math.floor((Date.now() - queueLastUpdatedAt) / 1000);
-                updated.textContent = age < 2 ? 'Live · checked just now' : `Live · checked ${age}s ago`;
+                const nextText = age < 2 ? 'Live · checked just now' : `Live · checked ${age}s ago`;
+                if (updated.textContent !== nextText) {
+                    updated.classList.add('is-changing');
+                    setTimeout(() => {
+                        if (!updated.isConnected) return;
+                        updated.textContent = nextText;
+                        updated.classList.remove('is-changing');
+                    }, 140);
+                }
             }
         }
 
@@ -4605,12 +4618,12 @@
                     <div id="${eid('existingWarning')}" class="album-existing-warning" style="display:none;"></div>
                     <div id="${eid('trackLegend')}" class="album-track-legend" style="display:none;"></div>
                     <ol id="${eid('tracklist')}" class="album-tracklist"></ol>
-                    <div class="bulk-playlist-row" style="margin-top: 12px;">
+                    <div class="bulk-playlist-row">
                         <input type="checkbox" id="${eid('makeM3u')}">
                         <label for="${eid('makeM3u')}">Generate M3U playlist</label>
                     </div>
                     <div id="${eid('m3uHint')}" class="album-m3u-hint" style="display:none;"></div>
-                    <button id="${eid('downloadBtn')}" class="btn btn-primary btn-lg btn-block bulk-import-btn" style="margin-top: 12px;">
+                    <button id="${eid('downloadBtn')}" class="btn btn-primary btn-lg btn-block bulk-import-btn album-download-btn">
                         Download Album
                     </button>
                     <button id="${eid('resetBtn')}" class="btn btn-ghost album-reset-btn" type="button">
@@ -4618,7 +4631,7 @@
                     </button>
                 </div>
 
-                <div id="${eid('progress')}" style="display:none;"></div>
+                <div id="${eid('progress')}" class="album-download-progress" style="display:none;"></div>
             `;
 
             const els = {
@@ -8935,7 +8948,14 @@
         // =============================================================================
 
         async function loadStats() {
-            statsContent.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+            statsContent.innerHTML = `
+                <div class="loading stats-loading" role="status">
+                    <div class="stats-equaliser" aria-hidden="true">
+                        <span></span><span></span><span></span>
+                    </div>
+                    <span>Crunching the numbers…</span>
+                </div>
+            `;
 
             try {
                 const response = await apiFetch('/api/stats');
@@ -9211,7 +9231,7 @@
                 `;
             }
 
-            statsContent.innerHTML = html;
+            statsContent.innerHTML = `<div class="stats-reveal">${html}</div>`;
         }
 
         // =============================================================================

@@ -382,63 +382,82 @@ def _mb_resolve_recording_via_release_group(
         return None
 
 
+def _mb_find_best_recording(artist: str, title: str, headers: dict) -> Optional[dict]:
+    """Search MusicBrainz for the recording that best represents artist/title.
+
+    Two searches: the plain one, plus a studio-album-filtered second opinion. Their
+    recordings are merged, the most canonical-looking recording is chosen (by
+    _score_recording_canonicity, not raw text relevance), and only then do we hand
+    it back for a release to be picked from it. If both come back empty we try once
+    more against aliases, which is the only way romanised non-English titles ever
+    match.
+
+    Shared by lookup_musicbrainz (ordinary downloads) and the "Guess Again" tag
+    editor, so a rehearsal bootleg getting mistaken for the studio single only
+    ever needs fixing in one place.
+    """
+    import time as _time
+
+    base = f'artist:"{artist}" AND recording:"{title}"'
+
+    plain = _mb_search_recordings(base, headers)
+    _time.sleep(1)  # MusicBrainz rate limit: 1 req/sec
+    studio = _mb_search_recordings(base + MB_STUDIO_ALBUM_FILTER, headers)
+    recordings = _mb_merge_recordings(plain, studio)
+
+    if not recordings:
+        # Nothing matched a recording title. Aliases carry transliterations, so
+        # "Yoru ni Kakeru" can still find 夜に駆ける. Only worth a request when
+        # we have nothing at all, since alias matching is looser.
+        _time.sleep(1)
+        alias_query = f'artist:"{artist}" AND (recording:"{title}" OR alias:"{title}")'
+        alias_hits = _mb_search_recordings(alias_query, headers)
+        recordings = _mb_merge_recordings(alias_hits)
+        plain = plain or alias_hits
+
+    if not recordings:
+        # Distinguish "MusicBrainz has never heard of this" from "it has, but
+        # only at a confidence we refuse to act on". The second one is worth
+        # saying out loud, since it means we kept the source metadata on purpose.
+        if plain:
+            best = max(int(r.get("score", 0)) for r in plain)
+            print(f"MusicBrainz text search score too low ({best}) for "
+                  f"{artist} - {title}, skipping")
+        return None
+
+    recording = max(recordings,
+                    key=lambda rec: _score_recording_canonicity(rec, artist, title))
+
+    # A popular studio take normally appears on many releases. When the best
+    # search hit has only a few, recording search has probably handed us one
+    # live bootleg from a catalogue full of them. Resolve the exact-title
+    # release group only in that weak-evidence case; the ordinary two-request
+    # path stays quick for well-behaved catalogues.
+    if len(recording.get("releases") or []) <= MB_RELEASE_GROUP_FALLBACK_MAX_RELEASES:
+        _time.sleep(1)
+        group_recording = _mb_resolve_recording_via_release_group(
+            artist, title, headers,
+        )
+        if group_recording:
+            recording = group_recording
+
+    return recording
+
+
 def lookup_musicbrainz(artist: str, title: str) -> Optional[dict]:
     """Look up track metadata from MusicBrainz.
 
-    Two searches: the plain one, plus a studio-album-filtered second opinion. Their
-    recordings are merged, the most canonical-looking recording is chosen, and only
-    then do we pick a release from it. If both come back empty we try once more
-    against aliases, which is the only way romanised non-English titles ever match.
+    Delegates recording selection to _mb_find_best_recording, then picks the
+    best-scoring release from whichever recording it settles on.
     """
     if not get_setting_bool("enable_musicbrainz", True):
         return None
 
-    import time as _time
-
     try:
         headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
-        base = f'artist:"{artist}" AND recording:"{title}"'
-
-        plain = _mb_search_recordings(base, headers)
-        _time.sleep(1)  # MusicBrainz rate limit: 1 req/sec
-        studio = _mb_search_recordings(base + MB_STUDIO_ALBUM_FILTER, headers)
-        recordings = _mb_merge_recordings(plain, studio)
-
-        if not recordings:
-            # Nothing matched a recording title. Aliases carry transliterations, so
-            # "Yoru ni Kakeru" can still find 夜に駆ける. Only worth a request when
-            # we have nothing at all, since alias matching is looser.
-            _time.sleep(1)
-            alias_query = f'artist:"{artist}" AND (recording:"{title}" OR alias:"{title}")'
-            alias_hits = _mb_search_recordings(alias_query, headers)
-            recordings = _mb_merge_recordings(alias_hits)
-            plain = plain or alias_hits
-
-        if not recordings:
-            # Distinguish "MusicBrainz has never heard of this" from "it has, but
-            # only at a confidence we refuse to act on". The second one is worth
-            # saying out loud, since it means we kept the source metadata on purpose.
-            if plain:
-                best = max(int(r.get("score", 0)) for r in plain)
-                print(f"MusicBrainz text search score too low ({best}) for "
-                      f"{artist} - {title}, skipping")
+        recording = _mb_find_best_recording(artist, title, headers)
+        if not recording:
             return None
-
-        recording = max(recordings,
-                        key=lambda rec: _score_recording_canonicity(rec, artist, title))
-
-        # A popular studio take normally appears on many releases. When the best
-        # search hit has only a few, recording search has probably handed us one
-        # live bootleg from a catalogue full of them. Resolve the exact-title
-        # release group only in that weak-evidence case; the ordinary two-request
-        # path stays quick for well-behaved catalogues.
-        if len(recording.get("releases") or []) <= MB_RELEASE_GROUP_FALLBACK_MAX_RELEASES:
-            _time.sleep(1)
-            group_recording = _mb_resolve_recording_via_release_group(
-                artist, title, headers,
-            )
-            if group_recording:
-                recording = group_recording
 
         # Extract metadata
         metadata = {
@@ -593,8 +612,19 @@ def _build_musicbrainz_guess_for_release(
     return metadata
 
 
-def guess_musicbrainz_tag_candidates(artist: str, title: str) -> list[dict]:
-    """Return ordered MusicBrainz tag candidates for a track."""
+def guess_musicbrainz_tag_candidates(artist: str, title: str, file_path: Path = None) -> list[dict]:
+    """Return ordered MusicBrainz tag candidates for a track.
+
+    Tier 1, when the actual file is available: fingerprint it and ask AcoustID
+    what it really is, then list that recording's releases as candidates. This
+    is grounded in what the audio actually sounds like, so it cannot be fooled
+    by a text search matching a rehearsal tape whose title happens to contain
+    the words we searched for.
+
+    Tier 2: the same canonicity-scored recording search lookup_musicbrainz uses
+    for ordinary downloads, widening the net (or providing the only net, if
+    fingerprinting found nothing to work with).
+    """
     if not get_setting_bool("enable_musicbrainz", True):
         return []
 
@@ -603,71 +633,59 @@ def guess_musicbrainz_tag_candidates(artist: str, title: str) -> list[dict]:
     if not artist or not title:
         return []
 
+    headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
+    candidates: list[dict] = []
+    seen_release_ids: set[str] = set()
+    seen_album_keys: set[tuple[str, str]] = set()
+
+    def _add_release_candidates(recording: dict, releases: list[dict], source: str) -> None:
+        sorted_releases = sorted(releases, key=lambda rel: _release_score_for(rel, artist), reverse=True)
+        for release in sorted_releases:
+            release_id = release.get("id")
+            album_key = ((release.get("title") or "").strip().lower(), (release.get("date") or "")[:4])
+            if release_id and release_id in seen_release_ids:
+                continue
+            if album_key in seen_album_keys:
+                continue
+            if release_id:
+                seen_release_ids.add(release_id)
+            seen_album_keys.add(album_key)
+            candidate = _build_musicbrainz_guess_for_release(recording, release, artist, title, headers)
+            candidate["metadata_source"] = source
+            candidates.append(candidate)
+
     try:
-        headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
-        params = {
-            "query": f'artist:"{artist}" AND recording:"{title}"',
-            "fmt": "json",
-            "limit": 5,
-            "inc": "releases release-groups artist-credits",
-        }
+        if file_path and file_path.exists():
+            fp_result = _run_fpcalc(file_path)
+            if fp_result:
+                duration, fingerprint = fp_result
+                if duration >= MIN_SONG_DURATION_SECS:
+                    acoustid_meta = _lookup_acoustid(duration, fingerprint, artist, title)
+                    recording_id = acoustid_meta.get("recording_id") if acoustid_meta else None
+                    if recording_id:
+                        data = _mb_fetch_recording_with_releases(recording_id, headers)
+                        if data and data.get("releases"):
+                            _add_release_candidates(data, data["releases"], "acoustid_fingerprint")
+    except Exception as e:
+        print(f"AcoustID candidate tier failed for '{artist} - {title}': {e}")
 
-        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
-            response = client.get("https://musicbrainz.org/ws/2/recording/", params=params, headers=headers)
-        if response.status_code != 200:
-            return []
-
-        recordings = response.json().get("recordings") or []
-        if not recordings:
-            return []
-
-        def _recording_score(rec: dict) -> tuple[int, int]:
-            raw_score = int(rec.get("score", 0))
-            release_bonus = 1 if rec.get("releases") else 0
-            return (raw_score, release_bonus)
-
-        def _release_score_text(rel: dict) -> int:
-            rg = rel.get("release-group") or {}
-            rg_for_score = dict(rg)
-            if not rg_for_score.get("artist-credit"):
-                rg_for_score["artist-credit"] = rel.get("artist-credit") or []
-            if rel.get("date") and not rg_for_score.get("first-release-date"):
-                rg_for_score["_date"] = rel["date"]
-            return _score_release_group(rg_for_score, artist)
-
-        candidates = []
-        seen_release_ids = set()
-        seen_album_keys = set()
-        sorted_recordings = sorted(recordings, key=_recording_score, reverse=True)
-        for recording in sorted_recordings:
-            mb_score = int(recording.get("score", 0))
-            if mb_score < 85:
-                continue
-            releases = sorted(recording.get("releases") or [], key=_release_score_text, reverse=True)
-            if not releases:
+    try:
+        recording = _mb_find_best_recording(artist, title, headers)
+        if recording:
+            releases = recording.get("releases") or []
+            if releases:
+                _add_release_candidates(recording, releases, "musicbrainz_text")
+            elif not candidates:
                 candidates.append(_build_musicbrainz_guess_for_release(recording, None, artist, title, headers))
-                continue
-            for release in releases:
-                release_id = release.get("id")
-                album_key = ((release.get("title") or "").strip().lower(), (release.get("date") or "")[:4])
-                if release_id and release_id in seen_release_ids:
-                    continue
-                if album_key in seen_album_keys:
-                    continue
-                if release_id:
-                    seen_release_ids.add(release_id)
-                seen_album_keys.add(album_key)
-                candidates.append(_build_musicbrainz_guess_for_release(recording, release, artist, title, headers))
-
-        return candidates
     except Exception as e:
         print(f"MusicBrainz tag guess failed for '{artist} - {title}': {e}")
-        return []
+
+    return candidates
 
 
-def guess_musicbrainz_tags(artist: str, title: str, offset: int = 0) -> Optional[dict]:
+def guess_musicbrainz_tags(artist: str, title: str, offset: int = 0, file_path: Path = None) -> Optional[dict]:
     """Return one MusicBrainz tag guess for a track, by ordered candidate index."""
-    candidates = guess_musicbrainz_tag_candidates(artist, title)
+    candidates = guess_musicbrainz_tag_candidates(artist, title, file_path=file_path)
     if not candidates:
         return None
     if offset < 0 or offset >= len(candidates):
@@ -958,6 +976,25 @@ def _lookup_acoustid(duration: int, fingerprint: str,
         return None
 
 
+def _mb_fetch_recording_with_releases(recording_id: str, headers: dict) -> Optional[dict]:
+    """Fetch a recording by MBID with its releases/release-groups/media attached.
+
+    `media` is what makes a release carry its track listing; without it
+    MusicBrainz cheerfully returns releases with no media block at all, and any
+    track-number hunt over them finds precisely nothing.
+    """
+    try:
+        url = f"https://musicbrainz.org/ws/2/recording/{recording_id}"
+        params = {"inc": "releases release-groups artist-credits media", "fmt": "json"}
+        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
+            response = client.get(url, params=params, headers=headers)
+        if response.status_code != 200:
+            return None
+        return response.json()
+    except Exception:
+        return None
+
+
 def _lookup_musicbrainz_by_id(recording_id: str, expected_artist: str = "") -> Optional[dict]:
     """Fetch release date from MusicBrainz using a recording MBID.
 
@@ -967,19 +1004,10 @@ def _lookup_musicbrainz_by_id(recording_id: str, expected_artist: str = "") -> O
     try:
         headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
 
-        url = f"https://musicbrainz.org/ws/2/recording/{recording_id}"
-        # `media` is what makes the release carry its track listing; without it
-        # MusicBrainz cheerfully returns releases with no media block at all,
-        # and the track-number hunt below finds precisely nothing.
-        params = {"inc": "releases release-groups artist-credits media", "fmt": "json"}
-
-        with httpx.Client(timeout=TIMEOUT_HTTP_REQUEST) as client:
-            response = client.get(url, params=params, headers=headers)
-
-        if response.status_code != 200:
+        data = _mb_fetch_recording_with_releases(recording_id, headers)
+        if not data:
             return None
 
-        data = response.json()
         releases = data.get("releases", [])
         if not releases:
             return None

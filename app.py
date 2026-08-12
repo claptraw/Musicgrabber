@@ -3486,7 +3486,7 @@ def get_job_musicbrainz_guess(job_id: str, artist: str, title: str, http_request
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         row = conn.execute(
-            f"SELECT id, status, file_deleted FROM jobs WHERE id = ? AND {_scope_frag}",
+            f"SELECT id, status, file_deleted, final_path FROM jobs WHERE id = ? AND {_scope_frag}",
             (job_id, *_scope_params)
         ).fetchone()
 
@@ -3497,7 +3497,19 @@ def get_job_musicbrainz_guess(job_id: str, artist: str, title: str, http_request
     if row["file_deleted"]:
         raise HTTPException(status_code=400, detail="File has been deleted")
 
-    guess = guess_musicbrainz_tags(artist, title, offset=offset)
+    from utils import check_duplicate
+
+    file_path = None
+    if row["final_path"]:
+        candidate = Path(row["final_path"])
+        if candidate.is_absolute() and candidate.exists():
+            file_path = candidate
+    if file_path is None:
+        candidate = check_duplicate(artist, title, user_id=user_id)
+        if candidate and candidate.exists():
+            file_path = candidate
+
+    guess = guess_musicbrainz_tags(artist, title, offset=offset, file_path=file_path)
     if not guess:
         raise HTTPException(status_code=404, detail="No more suitable MusicBrainz matches found")
 
