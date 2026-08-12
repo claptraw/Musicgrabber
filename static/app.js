@@ -1476,6 +1476,18 @@
             return `${source.label}: unavailable${reason}${retry}`;
         }
 
+        // Short labels just for the Sources health strip - full names would wrap the
+        // row. The tooltip (sourceHealthTitle) still carries the full name on hover.
+        const SOURCE_HEALTH_SHORT_LABELS = {
+            monochrome: 'MonoC',
+            youtube: 'YT',
+            soundcloud: 'SC',
+            mp3phoenix: 'Phoenix',
+            zvu4no: 'zvu4no',
+            freemp3cloud: 'MP3C',
+            soulseek: 'SLSK',
+        };
+
         function renderSourceHealth(sources) {
             const strip = document.getElementById('sourceHealthStrip');
             if (!strip) return;
@@ -1489,8 +1501,9 @@
                 const stateClass = source.healthy === null
                     ? 'checking'
                     : (source.available ? 'healthy' : 'unavailable');
+                const shortLabel = SOURCE_HEALTH_SHORT_LABELS[source.id] || source.label || source.id;
                 return `<span class="source-health-chip ${stateClass}" title="${escapeAttr(sourceHealthTitle(source))}">
-                    <span class="source-health-dot"></span>${escapeHtml(source.label || source.id)}
+                    <span class="source-health-dot"></span>${escapeHtml(shortLabel)}
                 </span>`;
             }).join('');
             const recheck = isAdmin()
