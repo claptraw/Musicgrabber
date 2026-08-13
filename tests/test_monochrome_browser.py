@@ -120,7 +120,7 @@ def test_resolve_refreshes_config_and_browser_after_auth_rejection(monkeypatch):
     )
     playback_calls = []
 
-    def fake_playback(api_base, api_token, params, restart=False):
+    def fake_playback(api_base, api_token, params, restart=False, wait_for_lock=True):
         playback_calls.append((api_token, restart))
         if len(playback_calls) == 1:
             return 401, {"detail": "Invalid client token"}
@@ -139,6 +139,68 @@ def test_resolve_refreshes_config_and_browser_after_auth_rejection(monkeypatch):
     ) == "https://cdn.test/track.flac"
     assert config_calls == [False, True]
     assert playback_calls == [("old-token", False), ("new-token", True)]
+
+
+def test_broker_warm_reflects_process_state():
+    assert browser.broker_warm() is False
+    lines = queue.Queue()
+    browser._broker_process = _FakeProcess(lines)
+    browser._broker_lines = lines
+    assert browser.broker_warm() is True
+
+
+def test_preview_skips_browser_leg_when_broker_is_cold(monkeypatch):
+    # No process running yet: a preview must not be the thing that cold-starts
+    # Chrome, so it should bail before ever touching _browser_playback.
+    monkeypatch.setattr(browser, "browser_fallback_enabled", lambda: True)
+    calls = []
+    monkeypatch.setattr(browser, "_browser_playback", lambda *a, **kw: calls.append(1) or (200, {}))
+
+    result = browser.resolve_unified_stream_url(
+        "GBAYE9200070", "LOSSLESS", artist="Radiohead", title="Creep", wait_for_lock=False
+    )
+
+    assert result is None
+    assert calls == []
+
+
+def test_preview_does_not_retry_or_restart_on_auth_rejection(monkeypatch):
+    monkeypatch.setattr(browser, "browser_fallback_enabled", lambda: True)
+    monkeypatch.setattr(browser, "_discover_unified_config", lambda force=False: ("https://api.test", "token"))
+    lines = queue.Queue()
+    browser._broker_process = _FakeProcess(lines)
+    browser._broker_lines = lines
+    calls = []
+
+    def fake_playback(api_base, api_token, params, restart=False, wait_for_lock=True):
+        calls.append(restart)
+        return 401, {"detail": "expired"}
+
+    monkeypatch.setattr(browser, "_browser_playback", fake_playback)
+
+    result = browser.resolve_unified_stream_url(
+        "GBAYE9200070", "LOSSLESS", artist="Radiohead", title="Creep", wait_for_lock=False
+    )
+
+    assert result is None
+    assert calls == [False]  # one shot only; never restart=True off the back of a hover
+
+
+def test_preview_gives_up_immediately_when_broker_is_busy(monkeypatch):
+    monkeypatch.setattr(browser, "browser_fallback_enabled", lambda: True)
+    monkeypatch.setattr(browser, "_discover_unified_config", lambda force=False: ("https://api.test", "token"))
+    lines = queue.Queue()
+    browser._broker_process = _FakeProcess(lines)
+    browser._broker_lines = lines
+    browser._broker_lock.acquire()  # simulate a download already using the session
+    try:
+        result = browser.resolve_unified_stream_url(
+            "GBAYE9200070", "LOSSLESS", artist="Radiohead", title="Creep", wait_for_lock=False
+        )
+    finally:
+        browser._broker_lock.release()
+
+    assert result is None
 
 
 def test_repeated_browser_failures_are_remembered(monkeypatch):

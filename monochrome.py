@@ -1590,28 +1590,41 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
                 return fallback_url
         return ""
 
+    def _resolve_via_browser() -> str:
+        """Monochrome's own infrastructure: no proxy or qbdlx token involved.
+
+        Keep authentication and the small playback JSON request in that one
+        browser session; the returned media still downloads through httpx.
+        Downloads queue behind that session as normal. Previews (lossless_only)
+        ask non-blocking instead: if the session is already mid-request, a
+        hover just moves on to the next leg rather than sitting behind
+        whatever a download is doing.
+        """
+        try:
+            from monochrome_browser import resolve_unified_stream_url
+            url = resolve_unified_stream_url(
+                isrc,
+                quality,
+                artist=artist_hint,
+                title=title_hint,
+                wait_for_lock=not lossless_only,
+            ) or ""
+            if url:
+                print(f"Monochrome: served ISRC {isrc} via browser-authenticated unified playback")
+            return url
+        except Exception as exc:
+            print(f"Monochrome: browser-authenticated fallback errored for ISRC {isrc}: {exc}")
+            return ""
+
+    # Browser leg ahead of qbdlx: it costs no shared token and, being the
+    # site's actual backend, doesn't care how thin qbdlx's token pool has
+    # worn this week. Proxies still go first since they're free and fast when
+    # they work; qbdlx drops to last resort now that it's the one running short.
     if not cdn_url:
-        cdn_url = _resolve_via_qbdlx()
+        cdn_url = _resolve_via_browser()
 
     if not cdn_url:
-        # Monochrome's current web player protects unified playback with a
-        # Turnstile exchange. Keep authentication and the small playback JSON
-        # request in that browser session; the returned media still downloads
-        # through httpx. Do not do this for previews: launching Chrome because
-        # somebody hovered a play button would be both slow and slightly unhinged.
-        if not lossless_only:
-            try:
-                from monochrome_browser import resolve_unified_stream_url
-                cdn_url = resolve_unified_stream_url(
-                    isrc,
-                    quality,
-                    artist=artist_hint,
-                    title=title_hint,
-                ) or ""
-                if cdn_url:
-                    print(f"Monochrome: served ISRC {isrc} via browser-authenticated unified playback")
-            except Exception as exc:
-                print(f"Monochrome: browser-authenticated fallback errored for ISRC {isrc}: {exc}")
+        cdn_url = _resolve_via_qbdlx()
 
     # Qobuz genuinely has nothing under this ISRC. Before giving up on Qobuz,
     # ask Deezer whether the ISRC we were handed is simply wrong for the
@@ -1622,6 +1635,8 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
             print(f"Monochrome: Qobuz had nothing for ISRC {isrc}; retrying with Deezer's {rescue_isrc}")
             isrc = rescue_isrc
             cdn_url, last_error, _ = _resolve_cdn_url()
+            if not cdn_url:
+                cdn_url = _resolve_via_browser()
             if not cdn_url:
                 cdn_url = _resolve_via_qbdlx()
 
@@ -1645,7 +1660,7 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
     if not cdn_url:
         raise RuntimeError(
             f"Monochrome: no stream available for ISRC {isrc} at an allowed quality "
-            f"on any leg (Qobuz proxies, qbdlx, browser-authenticated playback, "
+            f"on any leg (Qobuz proxies, browser-authenticated playback, qbdlx, "
             f"Deezer rescue, Tidal stream) "
             f"(last error: {last_error})"
         )

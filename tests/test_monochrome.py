@@ -562,7 +562,9 @@ def test_download_monochrome_raises_when_proxy_and_qbdlx_fail(monkeypatch, tmp_p
     assert not output.exists()
 
 
-def test_qbdlx_is_tried_before_browser_fallback(monkeypatch):
+def test_browser_fallback_is_tried_before_qbdlx(monkeypatch):
+    """Browser leg costs no shared token, so it now goes ahead of qbdlx,
+    which is the leg actually running short (see qbdlx.py's token pool)."""
     import monochrome
 
     monkeypatch.setattr(
@@ -574,14 +576,40 @@ def test_qbdlx_is_tried_before_browser_fallback(monkeypatch):
     )
     monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
     monkeypatch.setattr(
+        "monochrome_browser.resolve_unified_stream_url",
+        lambda *a, **k: "https://monochrome.test/browser.flac",
+    )
+
+    def qbdlx_must_not_run(isrc, quality_fmt):
+        raise AssertionError("qbdlx must not run when the browser leg already succeeded")
+
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", qbdlx_must_not_run)
+
+    url = monochrome._resolve_monochrome_stream_url(
+        "monochrome://123?isrc=GBAYE9200070&quality=LOSSLESS",
+        artist_hint="Radiohead",
+        title_hint="Creep",
+    )
+
+    assert url == "https://monochrome.test/browser.flac"
+
+
+def test_qbdlx_still_runs_when_browser_leg_has_nothing(monkeypatch):
+    """Browser is tried first, but qbdlx remains the fallback when it comes up empty."""
+    import monochrome
+
+    monkeypatch.setattr(
+        monochrome,
+        "_get_qobuz_stream_url",
+        lambda *a, **k: (_ for _ in ()).throw(
+            monochrome.QobuzProxyError("proxy down", transport_failure=True)
+        ),
+    )
+    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
+    monkeypatch.setattr("monochrome_browser.resolve_unified_stream_url", lambda *a, **k: None)
+    monkeypatch.setattr(
         "qbdlx.resolve_qobuz_stream_url",
         lambda isrc, quality_fmt: "https://qobuz.test/fast.flac",
-    )
-    monkeypatch.setattr(
-        "monochrome_browser.resolve_unified_stream_url",
-        lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("browser must not launch when qbdlx succeeds")
-        ),
     )
 
     url = monochrome._resolve_monochrome_stream_url(

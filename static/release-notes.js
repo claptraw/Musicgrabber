@@ -9,7 +9,15 @@
 const RELEASE_NOTES = {
     "4.0.1": {
         title: "What's New in v4.0.1",
-        sections: []
+        sections: [
+            {
+                heading: "Monochrome previews are back",
+                items: [
+                    "Hovering a Monochrome result can preview through the same browser-authenticated route downloads use, once a download has already warmed it up. A hover never launches Chrome cold and never waits behind a download in progress; it just moves on if the session is busy.",
+                    "Downloads now try Monochrome's own infrastructure before the shared Qobuz token pool (qbdlx) rather than after, since that pool has been running thin. qbdlx remains the fallback for when Monochrome's own route comes up empty.",
+                ]
+            },
+        ]
     },
     "4.0.0": {
         title: "What's New in v4.0.0: Rise of the Phoenix",

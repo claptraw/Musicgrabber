@@ -154,9 +154,36 @@ def stop_browser_broker() -> None:
 atexit.register(stop_browser_broker)
 
 
-def _broker_request(playback_request: dict, *, restart: bool = False) -> dict:
+def broker_warm() -> bool:
+    """Whether the persistent browser session is already up and answering.
+
+    Gates previews: a non-blocking request only avoids queueing behind an
+    in-flight one, it does nothing about cold-starting Chrome from scratch,
+    which is the exact slow, unhinged thing previews were kept away from in
+    the first place. So a preview only asks once a download has already
+    warmed the session up.
+    """
+    if not _broker_lock.acquire(blocking=False):
+        return True  # something else is using it right now, so it's up
+    try:
+        return _broker_process is not None and _broker_process.poll() is None
+    finally:
+        _broker_lock.release()
+
+
+class BrokerBusy(RuntimeError):
+    """Raised for a non-blocking request when the browser is mid-request already.
+
+    Not a fault, just contention, so callers should treat it as "try again
+    later" rather than feeding it to the failure/circuit-breaker bookkeeping.
+    """
+
+
+def _broker_request(playback_request: dict, *, restart: bool = False, wait_for_lock: bool = True) -> dict:
     timeout = MONOCHROME_BROWSER_AUTH_TIMEOUT + 20
-    with _broker_lock:
+    if not _broker_lock.acquire(blocking=wait_for_lock):
+        raise BrokerBusy("Monochrome browser session is busy with another request")
+    try:
         diagnostics: list[str] = []
         try:
             if restart:
@@ -194,6 +221,8 @@ def _broker_request(playback_request: dict, *, restart: bool = False) -> dict:
             _stop_broker_locked()
             _record_browser_failure(detail)
             raise RuntimeError(f"Monochrome browser authentication failed: {detail}") from exc
+    finally:
+        _broker_lock.release()
 
 
 def _discover_unified_config(force: bool = False) -> tuple[str, str]:
@@ -271,6 +300,7 @@ def _browser_playback(
     params: dict,
     *,
     restart: bool = False,
+    wait_for_lock: bool = True,
 ) -> tuple[int, dict]:
     request_url = str(httpx.URL(f"{api_base}/api/v2/track/", params=params))
     payload = _broker_request({
@@ -279,7 +309,7 @@ def _browser_playback(
             "Accept": "application/json",
             "Authorization": f"Bearer {api_token}",
         },
-    }, restart=restart)
+    }, restart=restart, wait_for_lock=wait_for_lock)
     playback = payload.get("playback") or {}
     body = playback.get("body") if isinstance(playback, dict) else None
     if not isinstance(body, dict):
@@ -292,12 +322,22 @@ def resolve_unified_stream_url(
     quality: str,
     artist: str = "",
     title: str = "",
+    *,
+    wait_for_lock: bool = True,
 ) -> str | None:
-    """Resolve one directly-downloadable resource through Monochrome's web flow."""
+    """Resolve one directly-downloadable resource through Monochrome's web flow.
+
+    wait_for_lock=False is for previews: the browser session handles one
+    request at a time, so a hover asks once and gives up immediately if a
+    download already has it, rather than queueing behind however long that
+    download takes.
+    """
     if not browser_fallback_enabled() or not isrc or not title:
         return None
     browser_ok, _ = browser_fallback_health()
     if not browser_ok:
+        return None
+    if not wait_for_lock and not broker_warm():
         return None
 
     params = {
@@ -311,20 +351,33 @@ def resolve_unified_stream_url(
 
     status = 0
     body: dict = {}
-    for attempt in range(2):
-        try:
-            api_base, api_token = _discover_unified_config(force=attempt > 0)
-        except Exception as exc:
-            _record_browser_failure(str(exc))
-            raise
-        status, body = _browser_playback(
-            api_base,
-            api_token,
-            params,
-            restart=attempt > 0,
-        )
-        if status not in (401, 403, 428):
-            break
+    # Previews get one shot, no restart: a 401 there just means "skip this leg
+    # for now", not "relaunch Chrome for a hover". Downloads still get the
+    # second, restart-backed attempt.
+    attempts = 2 if wait_for_lock else 1
+    try:
+        for attempt in range(attempts):
+            try:
+                api_base, api_token = _discover_unified_config(force=attempt > 0)
+            except Exception as exc:
+                _record_browser_failure(str(exc))
+                raise
+            status, body = _browser_playback(
+                api_base,
+                api_token,
+                params,
+                restart=attempt > 0,
+                wait_for_lock=wait_for_lock,
+            )
+            if status not in (401, 403, 428):
+                break
+    except BrokerBusy:
+        return None
+    if not wait_for_lock and status in (401, 403, 428):
+        # A preview declined the restart-and-retry recovery flight on purpose;
+        # that's not evidence the browser leg is actually broken, so leave the
+        # verdict (and the circuit breaker) to a download's full attempt.
+        return None
     if status in (404, 429, 502):
         _record_browser_success()
         return None
