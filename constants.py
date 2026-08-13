@@ -125,6 +125,14 @@ TIMEOUT_MONOCHROME_SEARCH = 15   # Monochrome/Qobuz search and proxy lookups
 # Whole Tidal metadata leg, across every endpoint and query variant
 MONOCHROME_HIFI_SEARCH_BUDGET = float(os.getenv("MONOCHROME_HIFI_SEARCH_BUDGET", "15"))
 TIMEOUT_MONOCHROME_DOWNLOAD = int(os.getenv("TIMEOUT_MONOCHROME_DOWNLOAD", "300"))  # Qobuz FLAC CDN download (FLACs are big)
+
+# Preview snippets: Monochrome's browser leg only ever yields encrypted
+# FLAC-in-MP4, so a hover preview is decrypted to a short MP3 and served
+# locally. Measured at roughly 1.2s to prepare, hence the modest timeout.
+PREVIEW_SNIPPET_SECONDS = int(os.getenv("PREVIEW_SNIPPET_SECONDS", "30"))
+PREVIEW_SNIPPET_TTL = int(os.getenv("PREVIEW_SNIPPET_TTL", "600"))
+PREVIEW_SNIPPET_MAX_CACHED = int(os.getenv("PREVIEW_SNIPPET_MAX_CACHED", "20"))
+TIMEOUT_PREVIEW_SNIPPET_BUILD = int(os.getenv("TIMEOUT_PREVIEW_SNIPPET_BUILD", "60"))
 STALE_JOB_TIMEOUT = 900          # Mark downloading/queued jobs as failed after 15 minutes
 STALE_JOB_CHECK_INTERVAL = 120   # Check for stale jobs every 2 minutes
 

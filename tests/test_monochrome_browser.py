@@ -141,6 +141,58 @@ def test_resolve_refreshes_config_and_browser_after_auth_rejection(monkeypatch):
     assert playback_calls == [("old-token", False), ("new-token", True)]
 
 
+def test_warm_up_is_skipped_when_monochrome_is_not_a_source(monkeypatch):
+    """No point heating a browser for a source nobody is searching."""
+    monkeypatch.setattr("monochrome.monochrome_enabled", lambda: False)
+    monkeypatch.setattr(browser, "browser_fallback_enabled", lambda: True)
+    started = []
+    monkeypatch.setattr(browser, "_start_broker_locked", lambda: started.append(1))
+
+    assert browser.warm_browser_broker() is False
+    assert started == []
+
+
+def test_warm_up_is_skipped_when_browser_leg_is_disabled(monkeypatch):
+    monkeypatch.setattr("monochrome.monochrome_enabled", lambda: True)
+    monkeypatch.setattr(browser, "browser_fallback_enabled", lambda: False)
+    started = []
+    monkeypatch.setattr(browser, "_start_broker_locked", lambda: started.append(1))
+
+    assert browser.warm_browser_broker() is False
+    assert started == []
+
+
+def test_warm_up_starts_the_broker_once(monkeypatch):
+    monkeypatch.setattr("monochrome.monochrome_enabled", lambda: True)
+    monkeypatch.setattr(browser, "browser_fallback_enabled", lambda: True)
+    lines = queue.Queue()
+    started = []
+
+    def fake_start():
+        started.append(1)
+        browser._broker_process = _FakeProcess(lines)
+        browser._broker_lines = lines
+
+    monkeypatch.setattr(browser, "_start_broker_locked", fake_start)
+
+    assert browser.warm_browser_broker() is True
+    assert browser.warm_browser_broker() is True  # already warm, don't start a second Chrome
+    assert started == [1]
+
+
+def test_failed_warm_up_does_not_prejudice_the_circuit_breaker(monkeypatch):
+    monkeypatch.setattr("monochrome.monochrome_enabled", lambda: True)
+    monkeypatch.setattr(browser, "browser_fallback_enabled", lambda: True)
+
+    def boom():
+        raise RuntimeError("no chrome here")
+
+    monkeypatch.setattr(browser, "_start_broker_locked", boom)
+
+    assert browser.warm_browser_broker() is False
+    assert browser._browser_failures == 0  # the first real request still gets a fair go
+
+
 def test_broker_warm_reflects_process_state():
     assert browser.broker_warm() is False
     lines = queue.Queue()

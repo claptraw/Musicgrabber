@@ -77,6 +77,7 @@ from search import (
     SourceSearchBusy,
 )
 import servicecheck
+import monochrome_browser
 from slskd import slskd_enabled, search_slskd
 from downloads import (
     process_acquisition_cycle, process_download, process_playlist_download,
@@ -212,6 +213,11 @@ start_scheduler()
 start_artist_scheduler()
 start_upgrade_scheduler()
 servicecheck.start_health_checks()  # initial background health sweep at boot
+
+# Warm Monochrome's browser session at boot so the first hover preview (or
+# download) isn't the poor soul paying Chrome's start-up bill. Quietly does
+# nothing unless Monochrome is an enabled source with the browser leg on.
+spawn_daemon_thread(monochrome_browser.warm_browser_broker)
 
 # Sync cookies file from settings at startup
 _sync_cookies_file()
@@ -1828,8 +1834,8 @@ def get_score_rationale(job_id: str, http_request: Request):
 # =============================================================================
 
 @app.get("/api/preview/{video_id}")
-def get_preview_url(video_id: str, source: str = "youtube", url: str = None,
-                    artist: str = "", title: str = ""):
+def get_preview_url(http_request: Request, video_id: str, source: str = "youtube",
+                    url: str = None, artist: str = "", title: str = ""):
     """Get a streamable audio URL for preview playback."""
     try:
         # Direct MP3 sources: the source_url is already streamable  -  hand it
@@ -1854,6 +1860,18 @@ def get_preview_url(video_id: str, source: str = "youtube", url: str = None,
                 artist_hint=artist,
                 title_hint=title,
             )
+            # Anything resolved through the browser leg arrives as CENC-encrypted
+            # FLAC-in-MP4, which an <audio> element will stare at blankly. Decrypt
+            # the opening seconds and hand back one of ours instead. The proxy and
+            # Tidal legs return ordinary playable audio, so they pass straight through.
+            from monochrome_browser import pop_decryption_key
+            decryption_key = pop_decryption_key(cdn_url)
+            if decryption_key:
+                from preview_snippets import build_snippet
+                token = build_snippet(
+                    cdn_url, decryption_key, getattr(http_request.state, "user", None)
+                )
+                return {"url": f"/api/preview-audio/{token}", "video_id": video_id}
             return {"url": cdn_url, "video_id": video_id}
 
         if source == "youtube":
@@ -1906,6 +1924,20 @@ def get_preview_url(video_id: str, source: str = "youtube", url: str = None,
     except Exception as e:
         print(f"preview error: {e}")
         raise HTTPException(status_code=500, detail="Failed to get preview URL")
+
+
+@app.get("/api/preview-audio/{token}")
+def get_preview_audio(token: str):
+    """Serve a decrypted preview snippet prepared by /api/preview.
+
+    Authenticated by the token itself, resolved back to its owner in the auth
+    middleware, because an <audio> element cannot carry a Bearer header.
+    """
+    from preview_snippets import snippet_path
+    path = snippet_path(token)
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="Preview snippet has expired")
+    return FileResponse(path=str(path), media_type="audio/mpeg")
 
 
 @app.get("/api/sources")

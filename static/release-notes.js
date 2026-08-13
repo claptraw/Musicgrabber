@@ -13,8 +13,10 @@ const RELEASE_NOTES = {
             {
                 heading: "Monochrome previews are back",
                 items: [
-                    "Hovering a Monochrome result can preview through the same browser-authenticated route downloads use, once a download has already warmed it up. A hover never launches Chrome cold and never waits behind a download in progress; it just moves on if the session is busy.",
+                    "Hovering a Monochrome result plays a preview again, roughly two seconds from hover to sound. Monochrome only serves encrypted FLAC-in-MP4, which no browser can play, so MusicGrabber decrypts the first thirty seconds to MP3 and serves that itself. Snippets are cached briefly, then deleted.",
+                    "The browser session is warmed once in the background at startup, so a hover never waits for Chrome to start and never queues behind a download in progress. That warm-up only runs when Monochrome is an enabled source with the browser fallback switched on; turn either off and no browser is started at all.",
                     "Downloads now try Monochrome's own infrastructure before the shared Qobuz token pool (qbdlx) rather than after, since that pool has been running thin. qbdlx remains the fallback for when Monochrome's own route comes up empty.",
+                    "The search box's clear cross is no longer sat on by the Search button when it widens to say \"Searching…\".",
                 ]
             },
         ]

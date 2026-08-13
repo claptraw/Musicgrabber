@@ -140,6 +140,7 @@ def invalidate_users_cache():
 
 # Public paths that never require auth
 _PUBLIC_PATHS = {"/api/auth/login", "/api/config"}
+_PREVIEW_AUDIO_PREFIX = "/api/preview-audio/"
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -204,6 +205,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 if download_token and job_id:
                     from auth import consume_download_token
                     user = consume_download_token(download_token, job_id)
+
+            # Preview snippets: an <audio> element cannot send a Bearer header,
+            # so the unguessable token in the path stands in for one and resolves
+            # back to whoever asked for the preview. Reusable, unlike the
+            # download token above, because players make range requests.
+            if user is None and path.startswith(_PREVIEW_AUDIO_PREFIX):
+                from preview_snippets import snippet_user
+                user = snippet_user(path[len(_PREVIEW_AUDIO_PREFIX):])
 
             # API key fallback for backwards compatibility with scripts
             if user is None:

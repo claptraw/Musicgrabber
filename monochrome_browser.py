@@ -154,6 +154,34 @@ def stop_browser_broker() -> None:
 atexit.register(stop_browser_broker)
 
 
+def warm_browser_broker() -> bool:
+    """Start the browser session up front so nothing else pays the cold start.
+
+    Chrome's launch plus the Turnstile handshake takes the better part of
+    fifteen seconds: perfectly reasonable in the background at boot, thoroughly
+    rude in front of somebody who has just hovered a play button. Only worth
+    doing when Monochrome is actually an enabled source and the browser leg is
+    allowed; warming a browser for a source nobody searches is an expensive way
+    to heat a container.
+    """
+    from monochrome import monochrome_enabled
+    if not monochrome_enabled() or not browser_fallback_enabled():
+        return False
+    with _broker_lock:
+        if _broker_process is not None and _broker_process.poll() is None:
+            return True
+        try:
+            _start_broker_locked()
+        except Exception as exc:
+            # Best-effort on purpose: a failed warm-up shouldn't prejudice the
+            # circuit breaker against the first real request, which is the one
+            # anybody actually cares about.
+            print(f"Monochrome: could not warm the browser session: {exc}")
+            return False
+    print("Monochrome: browser session warming in the background")
+    return True
+
+
 def broker_warm() -> bool:
     """Whether the persistent browser session is already up and answering.
 
