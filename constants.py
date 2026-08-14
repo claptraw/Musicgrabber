@@ -23,7 +23,7 @@ TIMEOUT_YTDLP_SEARCH = 30        # Search queries
 # second or two; this stops one limping source (looking at you, freemp3cloud)
 # from holding the entire response hostage. Stragglers are abandoned, not awaited.
 # Set generously enough to let Monochrome's lossless ladder finish on a bad day
-# (proxies down, on the slow fallback) rather than silently dropping the one
+# (direct lookup down, on the slow fallback) rather than silently dropping the one
 # source that actually serves FLAC. The proper fix for the wait is a progress UI.
 SEARCH_ALL_DEADLINE = int(os.getenv("SEARCH_ALL_DEADLINE", "30"))  # Multi-source search collection deadline
 # Each provider has one admission slot, so two searches wanting the same source
@@ -121,7 +121,7 @@ TIMEOUT_ZVU4NO_SEARCH = 15       # zvu4no HTML search
 TIMEOUT_ZVU4NO_DOWNLOAD = int(os.getenv("TIMEOUT_ZVU4NO_DOWNLOAD", "120"))  # zvu4no direct MP3 stream
 TIMEOUT_FREEMP3CLOUD_SEARCH = 20    # FreeMp3Cloud landing + form POST (two round-trips)
 TIMEOUT_FREEMP3CLOUD_DOWNLOAD = int(os.getenv("TIMEOUT_FREEMP3CLOUD_DOWNLOAD", "120"))  # FreeMp3Cloud direct MP3 stream
-TIMEOUT_MONOCHROME_SEARCH = 15   # Monochrome/Qobuz search and proxy lookups
+TIMEOUT_MONOCHROME_SEARCH = 15   # Monochrome and direct-Qobuz catalogue lookups
 # Whole Tidal metadata leg, across every endpoint and query variant
 MONOCHROME_HIFI_SEARCH_BUDGET = float(os.getenv("MONOCHROME_HIFI_SEARCH_BUDGET", "15"))
 TIMEOUT_MONOCHROME_DOWNLOAD = int(os.getenv("TIMEOUT_MONOCHROME_DOWNLOAD", "300"))  # Qobuz FLAC CDN download (FLACs are big)
@@ -386,22 +386,6 @@ MONOCHROME_HIFI_API_URL = os.getenv(
     "MONOCHROME_HIFI_API_URL",
     "https://us-west.monochrome.tf,https://monochrome-api.samidy.com",
 )
-# Monochrome themselves have retired the Qobuz proxy API (their frontend no longer
-# calls it at all), so this list is down to the one host that still answers, and
-# even that one's Qobuz credentials have expired. Kept because it fails in half a
-# second and might yet be revived; kennyy.com.br (Cloudflare 522 after a 20s
-# timeout) and qdl-api.monochrome.tf (no DNS) were shown the door on 2026-08-03.
-# In practice the qbdlx direct-Qobuz leg is what actually delivers these days.
-MONOCHROME_QOBUZ_PROXY_URL = os.getenv(
-    "MONOCHROME_QOBUZ_PROXY_URL",
-    "https://mono.scavengerfurs.net",
-)
-# The Qobuz proxies are gloriously flaky (502 one second, 200 the next), so we
-# sweep the whole list, have a little lie down, then sweep again a few times
-# before declaring the source dead and letting the fallback machinery take over.
-MONOCHROME_PROXY_RETRY_ROUNDS = int(os.getenv("MONOCHROME_PROXY_RETRY_ROUNDS", "5"))
-MONOCHROME_PROXY_RETRY_WAIT = float(os.getenv("MONOCHROME_PROXY_RETRY_WAIT", "3"))
-
 # Current Monochrome playback is protected by a browser Turnstile exchange. A
 # short-lived JWT obtained by the real web app can be presented to the unified
 # playback API; SeleniumBase supplies the normal browser session only for that
@@ -425,9 +409,9 @@ TIMEOUT_DEEZER = int(os.getenv("TIMEOUT_DEEZER", "10"))
 DEEZER_METADATA_MATCH_FLOOR = float(os.getenv("DEEZER_METADATA_MATCH_FLOOR", "0.65"))
 DEEZER_METADATA_SEARCH_LIMIT = int(os.getenv("DEEZER_METADATA_SEARCH_LIMIT", "5"))
 
-# qbdlx fallback: when every Qobuz proxy is down, sign the official Qobuz API
-# ourselves using a shared free-account token (the same pool the qbdlx web UI
-# uses). No proxy middleman, so it survives when the proxies are all face-down.
+# qbdlx fallback: if browser-authenticated Monochrome playback comes up empty,
+# sign the official Qobuz API using a shared free-account token (the same pool
+# the qbdlx web UI uses).
 # Heads up: the free shared tokens deliver 16/44.1 lossless FLAC, not 24-bit
 # hi-res, so this is a "a real FLAC beats a failed download" safety net.
 QBDLX_FALLBACK_ENABLED = os.getenv("QBDLX_FALLBACK_ENABLED", "true").lower() == "true"

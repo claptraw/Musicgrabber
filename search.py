@@ -636,7 +636,7 @@ def _search_all_events(
         # Park the sources last seen unhealthy so their results don't show up
         # only to fall over at play or download time. Stale verdicts refresh in
         # a background thread; a probe must NEVER block the search itself, or a
-        # dead Monochrome proxy sweep turns every search into 25s of dead air
+        # a slow Monochrome playback probe turns every search into dead air
         # (this happened; nobody enjoyed it).
         servicecheck.refresh_sources_async(set(active))
         available = {n: c for n, c in active.items() if servicecheck.is_source_available(n)}

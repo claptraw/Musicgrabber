@@ -300,7 +300,7 @@ The easiest way to configure MusicGrabber is via the **Settings tab** in the UI.
 - **Library layout**: Singles, Playlists, and Albums subfolders, track-number filenames, auto-album routing, playlist album/comment tagging, automatic Music import, singles-only mode, and file permissions
 - **Search sources**: enable/disable YouTube, SoundCloud, zvu4no, FreeMp3Cloud, experimental MP3Phoenix, Soulseek, and Monochrome; configure cross-source fallback, automatic health checks, and a per-provider search limit from 1–5 (default 1). MP3Phoenix and Soulseek are disabled by default. An off-by-default YouTube playlist option can use the exact upstream video only after every confident alternative fails. Download concurrency remains deliberately internal and conservative
 - **Track upgrades**: scan the library for files below the configured quality tier and control the scan interval
-- **Monochrome**: hifi-api URL, Qobuz proxy URL, qbdlx fallback, and browser-authenticated Turnstile fallback
+- **Monochrome**: hifi-api URL, browser-authenticated Turnstile playback, and direct-qbdlx fallback
 - **Soulseek (slskd)**: enable toggle, URL, credentials, downloads path
 - **Navidrome**: URL and credentials for library refresh
 - **Jellyfin**: URL and API key for library refresh
@@ -385,9 +385,8 @@ Settings are stored in the database and persist across container restarts.
 | `SOURCE_HEALTH_COOLDOWN_MINUTES` | `10` | Minimum time a failed source remains parked before it can be probed again |
 | `SEARCH_CONCURRENCY` | `1` | Maximum simultaneous searches admitted per provider, from 1 to 5. This does not increase download concurrency |
 | `MONOCHROME_HIFI_API_URL` | `https://monochrome-api.samidy.com,https://api.monochrome.tf,https://eu-central.monochrome.tf` | hifi-api compatible endpoint(s) used for Tidal metadata/ISRC lookups. Comma or newline separated lists are tried in order |
-| `MONOCHROME_QOBUZ_PROXY_URL` | `https://qdl-api.monochrome.tf` | Qobuz proxy used to resolve direct audio streams |
-| `QBDLX_FALLBACK_ENABLED` | `true` | Try qbdlx's direct Qobuz API after public proxies fail and before launching a browser |
-| `MONOCHROME_BROWSER_FALLBACK_ENABLED` | `true` | Allow a SeleniumBase/Chrome session to complete Monochrome's Turnstile flow when the proxy and qbdlx routes fail |
+| `QBDLX_FALLBACK_ENABLED` | `true` | Try qbdlx's direct Qobuz API when browser-authenticated Monochrome playback has no stream |
+| `MONOCHROME_BROWSER_FALLBACK_ENABLED` | `true` | Allow a SeleniumBase/Chrome session to complete Monochrome's Turnstile flow as the primary playback route |
 | `MONOCHROME_WEB_URL` | `https://monochrome.tf` | Monochrome web client used for browser authentication and public playback configuration discovery |
 | `MONOCHROME_BROWSER_AUTH_TIMEOUT` | `75` | Seconds to wait for Monochrome to issue a browser Turnstile JWT |
 | `SLSKD_URL` | - | slskd API URL (e.g., `http://slskd:5030`) |
@@ -483,9 +482,9 @@ This is a refresh nudge, not a promise that Lidarr will suddenly become reasonab
 
 ### Monochrome/Qobuz Source (Optional)
 
-Monochrome is enabled by default. MusicGrabber searches Tidal metadata through a hifi-api compatible endpoint and uses the ISRC to find the same recording. It tries the configured Qobuz proxy first, stepping down quality if necessary, then the fast qbdlx direct-Qobuz route. Only when both fail does the browser-authenticated fallback open headed Chrome under Xvfb to complete the Turnstile flow shown by Monochrome's real web client. Authentication and playback resolution stay in Chrome, while the resulting media URL downloads with MusicGrabber's normal HTTP client.
+Monochrome is enabled by default. MusicGrabber searches Tidal and Deezer metadata and uses the ISRC to find the same recording. Browser-authenticated playback is the primary route: headed Chrome runs under Xvfb and completes the Turnstile flow used by Monochrome's real web client. Authentication and playback resolution stay in Chrome, while the resulting media URL downloads with MusicGrabber's normal HTTP client. If Monochrome has no stream, MusicGrabber tries the direct qbdlx Qobuz route, an ISRC rescue through Deezer, and finally a lossless Tidal stream where the result carries a genuine Tidal track ID. The retired public Qobuz proxy layer and its configuration have been removed.
 
-The first browser-authenticated resolution normally takes several seconds. MusicGrabber keeps that browser and its short-lived JWT session alive, so later fallback tracks avoid another Chrome launch; playback requests are serialised briefly through the one session. If it expires or Monochrome rotates its public client token, MusicGrabber refreshes the public configuration and starts a clean session once. Two consecutive browser failures temporarily mark that fallback unhealthy so a broken Chrome host does not impose the full timeout on every queued track; a retry window opens after ten minutes. Some lossless resources are standard CENC AES-CTR protected FLAC-in-MP4: MusicGrabber keeps the authorised key in memory, downloads the media normally, and asks ffmpeg to decrypt/remux it to a clean FLAC. The key is neither logged nor written to disk, though ffmpeg necessarily receives it as a process argument while remuxing. Preview requests never launch the browser fallback.
+The first browser-authenticated resolution normally takes several seconds. MusicGrabber keeps that browser and its short-lived JWT session alive, so later tracks avoid another Chrome launch; playback requests are serialised briefly through the one session. If it expires or Monochrome rotates its public client token, MusicGrabber refreshes the public configuration and starts a clean session once. Two consecutive browser failures temporarily mark that route unhealthy so a broken Chrome host does not impose the full timeout on every queued track; a retry window opens after ten minutes. Some lossless resources are standard CENC AES-CTR protected FLAC-in-MP4: MusicGrabber keeps the authorised key in memory, downloads the media normally, and asks ffmpeg to decrypt/remux it to a clean FLAC. The key is neither logged nor written to disk, though ffmpeg necessarily receives it as a process argument while remuxing. Preview requests only use an already-warmed browser session and never cold-start Chrome on hover.
 
 You can turn it off in Settings, Search Sources, or use:
 
@@ -493,7 +492,6 @@ You can turn it off in Settings, Search Sources, or use:
 environment:
   - SOURCE_MONOCHROME_ENABLED=false
   - MONOCHROME_HIFI_API_URL=https://monochrome-api.samidy.com,https://api.monochrome.tf,https://eu-central.monochrome.tf
-  - MONOCHROME_QOBUZ_PROXY_URL=https://qdl-api.monochrome.tf
   - MONOCHROME_BROWSER_FALLBACK_ENABLED=true
 ```
 
@@ -1034,7 +1032,7 @@ music.yourdomain.com {
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/sources` | List available search sources (for source selector UI) |
-| `GET` | `/api/sources/health` | Get current source and Monochrome proxy health state |
+| `GET` | `/api/sources/health` | Get current source health, including Monochrome playback availability |
 | `POST` | `/api/sources/health/recheck` | Start an admin-only background re-check of every source |
 | `POST` | `/api/search` | Search sources (`{"query": "...", "limit": 15, "source": "all/youtube/soundcloud/mp3phoenix/zvu4no/freemp3cloud/monochrome/soulseek"}`); results expose `relevance_score` for ordering and `quality_tier` for declared audio quality |
 | `POST` | `/api/search/stream` | Stream per-source status and ranked results as NDJSON, using the same `relevance_score`/`quality_tier` result contract |

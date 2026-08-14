@@ -374,7 +374,7 @@ def test_manual_completeness_gate_requires_search_token_and_single_job(monkeypat
 
 # ---------------------------------------------------------------------------
 # _maybe_mark_monochrome_unhealthy: a single track missing from every leg
-# (Qobuz proxies, qbdlx, Deezer rescue, Tidal stream) raises the exact same
+# (browser playback, qbdlx, Deezer rescue, Tidal stream) raises the exact same
 # exception as the whole leg being down. These confirm we re-check the leg
 # itself before parking Monochrome for everyone over one unlucky search
 # result -- see docs/requests and bugs.md, "the shared qbdlx token pool
@@ -403,7 +403,7 @@ def test_maybe_mark_monochrome_unhealthy_parks_source_when_leg_is_down(monkeypat
     import monochrome
     import servicecheck
 
-    reason = "all Qobuz proxies down; qbdlx fallback also unavailable (0/28 shared tokens usable this cycle)"
+    reason = "browser playback unavailable; qbdlx fallback unavailable (0/28 shared tokens usable this cycle)"
     monkeypatch.setattr(monochrome, "download_leg_healthy", lambda: (False, reason))
     calls = []
     monkeypatch.setattr(servicecheck, "mark_unhealthy", lambda *a, **k: calls.append((a, k)))

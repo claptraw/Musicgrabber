@@ -1,10 +1,9 @@
 """
-MusicGrabber - qbdlx Qobuz fallback
+MusicGrabber - direct Qobuz fallback
 
-Monochrome's normal download leg goes through third-party Qobuz proxies, which
-are gloriously flaky. This module is the last resort for when every proxy is
-face-down: it talks to the *official* Qobuz API directly, signing requests with
-a shared free-account token (the same pool the qbdlx web UI at
+When browser-authenticated Monochrome playback cannot resolve a track, this
+module talks to the official Qobuz API directly, signing requests with a shared
+free-account token (the same pool the qbdlx web UI at
 qbdlx.launchpd.cloud hands out under its "Free account" tab).
 
 The flow mirrors classic qobuz-dl:
@@ -27,7 +26,6 @@ was actually requested). We walk straight past those and keep trying tokens
 until one hands back the real thing, because nobody asked for the chorus on
 a loop.
 
-No proxy dependency here, which is the whole point.
 """
 
 import hashlib
@@ -213,6 +211,31 @@ def search_qobuz_catalog(query: str, limit: int = 10) -> list[dict]:
         if items:
             return items
     return []
+
+
+def lookup_qobuz_isrc(isrc: str) -> tuple[list[dict], bool]:
+    """Return exact Qobuz catalogue matches and whether every API call failed.
+
+    The boolean distinguishes a clean catalogue miss from an unavailable token
+    pool. Search callers may discard a confirmed miss, but keep an unverified
+    result for browser-authenticated playback to settle at download time.
+    """
+    if not qbdlx_enabled() or not isrc:
+        return [], True
+
+    tokens = _fetch_shared_tokens()
+    if not tokens:
+        return [], True
+
+    for token in _usable_tokens(tokens):
+        body = _signed_call(token, "catalog/search", {"query": isrc, "limit": 10})
+        if body is None:
+            _mark_token_bad(token.get("token"))
+            continue
+        items = ((body.get("tracks") or {}).get("items")) or []
+        matches = [item for item in items if (item.get("isrc") or "").upper() == isrc.upper()]
+        return matches, False
+    return [], True
 
 
 def _mark_token_bad(token: str | None) -> None:
@@ -405,9 +428,8 @@ def resolve_qobuz_stream_url(isrc: str, quality_fmt: int) -> str | None:
 def download_leg_healthy() -> tuple[bool, str]:
     """Can the qbdlx fallback actually serve a FLAC right now?
 
-    Used by servicecheck so Monochrome can be considered healthy when the proxies
-    are all down but the direct-Qobuz fallback still works. Probes the same known
-    ISRC the proxy health check uses (Radiohead - Creep). The reason string always
+    Used by servicecheck when browser-authenticated playback is unavailable.
+    Probes Radiohead's Creep, a stable known ISRC. The reason string always
     carries the usable-token count, healthy or not, so degradation shows up before
     the pool is fully dead rather than only once it is.
     """

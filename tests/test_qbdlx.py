@@ -228,6 +228,30 @@ def test_resolve_qobuz_track_id_returns_first_working_token_match(monkeypatch):
     assert qbdlx.resolve_qobuz_track_id("GBAYE9200070") == 222
 
 
+def test_lookup_qobuz_isrc_returns_exact_matches_and_clean_miss(monkeypatch):
+    monkeypatch.setattr(qbdlx, "qbdlx_enabled", lambda: True)
+    monkeypatch.setattr(qbdlx, "_fetch_shared_tokens", lambda force=False: [_TOKEN])
+    monkeypatch.setattr(qbdlx, "_signed_call", lambda *a, **k: {
+        "tracks": {"items": [
+            {"id": 111, "isrc": "WRONGISRC0001"},
+            {"id": 222, "isrc": "GBAYE9200070", "hires": True},
+        ]}
+    })
+
+    matches, transport_failure = qbdlx.lookup_qobuz_isrc("GBAYE9200070")
+
+    assert [item["id"] for item in matches] == [222]
+    assert transport_failure is False
+
+
+def test_lookup_qobuz_isrc_reports_transport_failure_when_no_token_answers(monkeypatch):
+    monkeypatch.setattr(qbdlx, "qbdlx_enabled", lambda: True)
+    monkeypatch.setattr(qbdlx, "_fetch_shared_tokens", lambda force=False: [_TOKEN])
+    monkeypatch.setattr(qbdlx, "_signed_call", lambda *a, **k: None)
+
+    assert qbdlx.lookup_qobuz_isrc("GBAYE9200070") == ([], True)
+
+
 # ---------------------------------------------------------------------------
 # Known-bad token tracking: a token that fails once (transport/auth failure,
 # or a sample-only downgrade) shouldn't cost another timeout for the rest of

@@ -1862,7 +1862,7 @@ def get_preview_url(http_request: Request, video_id: str, source: str = "youtube
             )
             # Anything resolved through the browser leg arrives as CENC-encrypted
             # FLAC-in-MP4, which an <audio> element will stare at blankly. Decrypt
-            # the opening seconds and hand back one of ours instead. The proxy and
+            # the opening seconds and hand back one of ours instead. The qbdlx and
             # Tidal legs return ordinary playable audio, so they pass straight through.
             from monochrome_browser import pop_decryption_key
             decryption_key = pop_decryption_key(cdn_url)

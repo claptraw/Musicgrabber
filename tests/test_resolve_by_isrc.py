@@ -2,7 +2,7 @@
 Unit tests for monochrome.resolve_by_isrc.
 
 Fast, no-network tests: _qobuz_isrc_lookup is mocked so nothing hits the
-Qobuz proxies. We verify the happy path (hires vs lossless), the caller-hint
+direct Qobuz catalogue route. We verify the happy path (hires vs lossless), the caller-hint
 field fallback, the validation short-circuit on a malformed ISRC, a clean
 miss, and the deliberately-conservative transport-failure behaviour.
 """
@@ -117,7 +117,7 @@ def test_malformed_isrc_short_circuits_before_lookup(bad_isrc):
         result = monochrome.resolve_by_isrc(bad_isrc, "Some Artist", "Some Title")
 
     assert result is None
-    # Validation should short-circuit; the proxies must not be touched.
+    # Validation should short-circuit; the catalogue must not be touched.
     mock_lookup.assert_not_called()
 
 
@@ -136,7 +136,7 @@ def test_clean_miss_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# 6. Transport failure: every proxy fell over -> None (conservative)
+# 6. Direct catalogue transport failure -> None (conservative)
 # ---------------------------------------------------------------------------
 
 def test_transport_failure_returns_none():

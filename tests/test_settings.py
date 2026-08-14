@@ -141,9 +141,9 @@ def test_per_row_conversion_flags_survive_the_column_rename(tmp_path, monkeypatc
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # db_version 12 means every numbered migration is already behind us, which
+        # db_version 13 means every numbered migration is already behind us, which
         # is the state an actual v3 install upgrades from.
-        conn.execute("INSERT INTO settings (key, value) VALUES ('db_version', '12')")
+        conn.execute("INSERT INTO settings (key, value) VALUES ('db_version', '13')")
         conn.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY, convert_to_flac INTEGER DEFAULT 0)")
         conn.execute("INSERT INTO jobs (id, convert_to_flac) VALUES ('job-yes', 1)")
         conn.execute("INSERT INTO jobs (id, convert_to_flac) VALUES ('job-no', 0)")
@@ -200,6 +200,40 @@ def test_migration_is_idempotent_on_an_already_renamed_db(tmp_path, monkeypatch)
         _drain(migration_pool)
 
 
+def test_migration_removes_obsolete_qobuz_proxy_setting(tmp_path, monkeypatch):
+    old_db = tmp_path / "pre-proxy-removal.db"
+    with sqlite3.connect(old_db) as conn:
+        conn.execute("""
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.executemany(
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            [
+                ("db_version", "12"),
+                ("monochrome_qobuz_proxy_url", "https://self-hosted.example.test"),
+            ],
+        )
+
+    migration_pool = _migrate_old_db(old_db, monkeypatch)
+    try:
+        db.init_db()
+        with db.db_conn() as conn:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'monochrome_qobuz_proxy_url'"
+            ).fetchone()
+            version = conn.execute(
+                "SELECT value FROM settings WHERE key = 'db_version'"
+            ).fetchone()[0]
+        assert row is None
+        assert version == "13"
+    finally:
+        _drain(migration_pool)
+
+
 def test_legacy_env_var_still_drives_the_renamed_setting(tmp_path, monkeypatch):
     """A compose file written for v3 must not silently stop converting."""
     from settings import _is_env_override
@@ -219,11 +253,11 @@ def test_settings_monochrome_enabled_by_default(api, base_url):
     assert settings["source_monochrome_enabled"] is True
 
 
-def test_settings_monochrome_urls_non_empty(api, base_url):
-    """Monochrome URL settings must have non-empty defaults (migration guard)."""
+def test_settings_monochrome_hifi_url_non_empty_and_proxy_removed(api, base_url):
+    """The metadata URL remains configured; the retired proxy control does not."""
     settings = api.get(f"{base_url}/api/settings", timeout=10).json()["settings"]
     assert settings.get("monochrome_hifi_api_url"), "monochrome_hifi_api_url is blank; migration may have failed"
-    assert settings.get("monochrome_qobuz_proxy_url"), "monochrome_qobuz_proxy_url is blank; migration may have failed"
+    assert "monochrome_qobuz_proxy_url" not in settings
 
 
 def test_settings_write_and_restore(api, base_url):

@@ -26,7 +26,6 @@ from constants import (
     SEARCH_LOG_RETENTION_DAYS,
     WATCHED_REFRESH_STALE_SECONDS,
     MONOCHROME_HIFI_API_URL,
-    MONOCHROME_QOBUZ_PROXY_URL,
 )
 
 
@@ -1288,41 +1287,18 @@ def init_db():
             )
             print("DB migrated to version 1: multi-user unique constraints applied")
 
-        # v2: Seed Monochrome URL settings for users upgrading across the removal/re-addition
-        # gap. Anyone with an empty or missing value gets the current defaults; anyone who
-        # deliberately changed them keeps their value (UPDATE ... WHERE value = '' only).
+        # v2: Seed the Monochrome metadata URL for version-skipping upgrades.
         if db_version < 2:
-            for key, default in (
-                ("monochrome_hifi_api_url", MONOCHROME_HIFI_API_URL),
-                ("monochrome_qobuz_proxy_url", MONOCHROME_QOBUZ_PROXY_URL),
-            ):
-                conn.execute("""
-                    INSERT INTO settings (key, value, updated_at)
-                    VALUES (?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE value = '' OR value IS NULL
-                """, (key, default, default))
+            conn.execute("""
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('monochrome_hifi_api_url', ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE value = '' OR value IS NULL
+            """, (MONOCHROME_HIFI_API_URL, MONOCHROME_HIFI_API_URL))
             conn.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '2')"
             )
-            print("DB migrated to version 2: Monochrome URL defaults seeded")
-
-        # v3: The old qobuz.kennyy.com.br proxy went dark. The new official proxy
-        # (qdl-api.monochrome.tf) speaks the exact same API, so anyone still pointed
-        # at the dead host gets transparently migrated. Custom self-hosted URLs are
-        # untouched, because the WHERE clause only matches the specific dead host.
-        if db_version < 3:
-            conn.execute("""
-                UPDATE settings
-                SET value = 'https://qdl-api.monochrome.tf',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE key = 'monochrome_qobuz_proxy_url'
-                  AND value = 'https://qobuz.kennyy.com.br'
-            """)
-            conn.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '3')"
-            )
-            print("DB migrated to version 3: stale kennyy Qobuz proxy URL retired")
+            print("DB migrated to version 2: Monochrome metadata URL default seeded")
 
         # v4: The eu-central Render node was suspended by its owner, so hifi-api lookups
         # via that hostname now return 503. The apex api.monochrome.tf is CDN-routed and
@@ -1407,52 +1383,6 @@ def init_db():
             )
             print(f"DB migrated to version 6: Monochrome hifi-api URLs rebuilt → {new_value}")
 
-        # v7: The qdl-api.monochrome.tf Qobuz proxy expired its Qobuz credentials
-        # (returns HTTP 400 wrapping a Qobuz 401). Two community proxies that speak
-        # the same API are live: kennyy.com.br and mono.scavengerfurs.net.
-        # We prepend these to whatever the user had, keeping any custom self-hosted
-        # URLs, and strip the now-dead qdl-api entry from front-runner position.
-        if db_version < 7:
-            import re as _re7
-            _NEW_QOBUZ_LIVE = [
-                "https://qobuz.kennyy.com.br",
-                "https://mono.scavengerfurs.net",
-                "https://qdl-api.monochrome.tf",  # keep at the back, may recover
-            ]
-
-            row7 = conn.execute(
-                "SELECT value FROM settings WHERE key = 'monochrome_qobuz_proxy_url'"
-            ).fetchone()
-            current7 = (row7[0] if row7 else "") or ""
-
-            existing7 = []
-            seen7: set[str] = set()
-            for part in _re7.split(r"[\s,]+", current7):
-                url = part.strip().rstrip("/")
-                if not url or not _re7.match(r"https?://", url, _re7.I) or url in seen7:
-                    continue
-                seen7.add(url)
-                existing7.append(url)
-
-            # Custom URLs: anything that isn't one of our known public proxies
-            custom7 = [u for u in existing7 if u not in {
-                "https://qdl-api.monochrome.tf",
-                "https://qobuz.kennyy.com.br",
-                "https://mono.scavengerfurs.net",
-            }]
-            new_qobuz_value = ",".join(_NEW_QOBUZ_LIVE + custom7)
-
-            conn.execute("""
-                INSERT INTO settings (key, value, updated_at)
-                VALUES ('monochrome_qobuz_proxy_url', ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-                                               updated_at = excluded.updated_at
-            """, (new_qobuz_value,))
-            conn.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '7')"
-            )
-            print(f"DB migrated to version 7: Qobuz proxy list rebuilt → {new_qobuz_value}")
-
         # v8: Track when a watched playlist keeps coming back "not found" so we can
         # auto-pause vanished playlists with a note instead of retrying forever.
         if db_version < 8:
@@ -1469,49 +1399,6 @@ def init_db():
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '8')"
             )
             print("DB migrated to version 8: watched playlists gain gone-strike auto-pause tracking")
-
-        # v9: Monochrome retired its Qobuz proxy API altogether (their own frontend
-        # no longer calls /api/get-music at all), and two of our three defaults are
-        # beyond saving: qobuz.kennyy.com.br answers with a Cloudflare 522 after
-        # burning a full 20-second timeout, and qdl-api.monochrome.tf has no DNS
-        # record left. Sweeping those corpses cost ~27 seconds on every single
-        # download before the qbdlx fallback got a look in. mono.scavengerfurs.net
-        # stays: its Qobuz credentials are expired, but it fails in half a second
-        # and is the only one that could plausibly come back from the dead.
-        if db_version < 9:
-            import re as _re9
-            _DEAD_QOBUZ_URLS_V9 = {
-                "https://qobuz.kennyy.com.br",
-                "https://qdl-api.monochrome.tf",
-            }
-
-            row9 = conn.execute(
-                "SELECT value FROM settings WHERE key = 'monochrome_qobuz_proxy_url'"
-            ).fetchone()
-            current9 = (row9[0] if row9 else "") or ""
-
-            kept9 = []
-            seen9: set[str] = set()
-            for part in _re9.split(r"[\s,]+", current9):
-                url = part.strip().rstrip("/")
-                if not url or not _re9.match(r"https?://", url, _re9.I) or url in seen9:
-                    continue
-                if url in _DEAD_QOBUZ_URLS_V9:
-                    continue  # self-hosted overrides survive; these two do not
-                seen9.add(url)
-                kept9.append(url)
-
-            new_qobuz_value_v9 = ",".join(kept9)
-            conn.execute("""
-                INSERT INTO settings (key, value, updated_at)
-                VALUES ('monochrome_qobuz_proxy_url', ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-                                               updated_at = excluded.updated_at
-            """, (new_qobuz_value_v9,))
-            conn.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '9')"
-            )
-            print(f"DB migrated to version 9: dead Qobuz proxies retired → {new_qobuz_value_v9 or '(none left)'}")
 
         # v10: artists can now opt in to "automatically add new albums". The column
         # only needs adding for DBs that predate it; the watched_artist_albums table
@@ -1558,6 +1445,16 @@ def init_db():
                 "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '12')"
             )
             print("DB migrated to version 12: bulk imports gain a progress heartbeat")
+
+        # v13: Monochrome retired the proxy API and every public resolver died.
+        # Remove the obsolete setting so old installations do not keep exposing
+        # a control that no runtime path reads.
+        if db_version < 13:
+            conn.execute("DELETE FROM settings WHERE key = 'monochrome_qobuz_proxy_url'")
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '13')"
+            )
+            print("DB migrated to version 13: obsolete Qobuz proxy setting removed")
 
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already

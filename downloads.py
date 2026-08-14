@@ -820,7 +820,7 @@ def _find_alternate_search_candidate(
 
     `exclude_sources` skips entire sources, used when a source is offline so we
     don't keep picking more results from the same dead platform (e.g. three
-    Monochrome hits in a row when the Qobuz proxies are all down).
+    Monochrome hits in a row when an upstream playback route is down).
 
     `allowed_sources` is a strict import or watched-playlist contract. Fallback
     may narrow it as providers fail, but must never widen it.
@@ -4701,7 +4701,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
             try:
                 download_fn(download_url, source_path)
             except Exception as dl_exc:
-                # Source itself blew up (e.g. Qobuz proxy has nothing for this ISRC at any tier).
+                # Source itself blew up (e.g. no Monochrome playback leg has this ISRC).
                 # Don't keep retrying the same dead source; bail out and let the alternate-candidate
                 # path try YouTube / Soulseek / friends. Belt and braces: nuke any partial file too.
                 source_path.unlink(missing_ok=True)

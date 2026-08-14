@@ -9282,7 +9282,6 @@
             'source_health_cooldown_minutes': 'settingSourceHealthCooldown',
             'search_concurrency': 'settingSearchConcurrency',
             'monochrome_hifi_api_url': 'settingMonochromeHifiUrl',
-            'monochrome_qobuz_proxy_url': 'settingMonochromeQobuzUrl',
             'monochrome_qbdlx_fallback_enabled': 'settingMonochromeQbdlxFallback',
             'monochrome_browser_fallback_enabled': 'settingMonochromeBrowserFallback',
             'slskd_url': 'settingSlskdUrl',

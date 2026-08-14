@@ -2,7 +2,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -14,611 +13,162 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_qobuz_search_response(track_id=33933680, isrc="GBAYE9200070"):
-    """Minimal /api/get-music response that passes the ISRC filter."""
-    return {
-        "success": True,
-        "data": {
-            "tracks": {
-                "items": [{"id": track_id, "isrc": isrc}]
-            }
-        },
-    }
-
-
-def _make_qobuz_download_response(url="https://streaming-qobuz-std.akamaized.net/test.flac"):
-    return {"success": True, "data": {"url": url}}
-
-
-# The failover tests need several proxies to fail over between, but the shipped
-# default list shrinks every time another community proxy gives up the ghost.
-# Pinning our own trio here keeps these tests about the ordering and blacklisting
-# logic, rather than about whichever hosts happened to be alive on release day.
-_PROXY_A = "https://proxy-a.example.test"
-_PROXY_B = "https://proxy-b.example.test"
-_PROXY_C = "https://proxy-c.example.test"
-_FAKE_PROXY_LIST = f"{_PROXY_A},{_PROXY_B},{_PROXY_C}"
-
-
-def _patch_proxy_list(monkeypatch, value=_FAKE_PROXY_LIST):
-    """Point the Qobuz proxy setting at our fake trio."""
-    monkeypatch.setattr(
-        "settings.get_setting",
-        lambda key, default="", **kw: value if key == "monochrome_qobuz_proxy_url" else default,
-    )
-
-
-class _FakeHTTPResponse:
-    """Pretend httpx.Response for proxy tests."""
-    def __init__(self, json_body, status_code=200):
-        self._body = json_body
-        self.status_code = status_code
-
-    @property
-    def is_success(self):
-        return self.status_code < 400
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            req = httpx.Request("GET", "https://example.test")
-            resp = httpx.Response(self.status_code, request=req)
-            raise httpx.HTTPStatusError(
-                f"HTTP {self.status_code}", request=req, response=resp
-            )
-
-    def json(self):
-        return self._body
-
-
 # ---------------------------------------------------------------------------
-# Qobuz proxy URL ordering
+# download_leg_healthy
 # ---------------------------------------------------------------------------
 
-def test_qobuz_proxy_urls_returns_all_defaults(monkeypatch):
+def test_download_leg_healthy_prefers_browser_without_launching_it(monkeypatch):
     import monochrome
-    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())  # suppress probe
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
-    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
-
-    from constants import MONOCHROME_QOBUZ_PROXY_URL
-    urls = monochrome._qobuz_proxy_urls()
-    # Whatever we ship as the default should all come back; asserting against the
-    # constant means the next proxy funeral doesn't also break this test.
-    assert urls == monochrome._split_endpoint_urls(MONOCHROME_QOBUZ_PROXY_URL)
-
-
-def test_qobuz_proxy_urls_puts_cached_first(monkeypatch):
-    import monochrome
-    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", "https://mono.scavengerfurs.net")
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
-    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
-
-    urls = monochrome._qobuz_proxy_urls()
-    assert urls[0] == "https://mono.scavengerfurs.net"
-
-
-def test_qobuz_proxy_urls_deprioritises_recently_failed(monkeypatch):
-    import monochrome
-    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {_PROXY_A: time.time()})
-    _patch_proxy_list(monkeypatch)
-
-    urls = monochrome._qobuz_proxy_urls()
-    assert urls[-1] == _PROXY_A
-
-
-def test_mark_qobuz_proxy_failed_invalidates_cache(monkeypatch):
-    import monochrome
-    failures = {}
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", "https://qdl-api.monochrome.tf")
-
-    monochrome._mark_qobuz_proxy_failed("https://qdl-api.monochrome.tf")
-
-    assert monochrome._qobuz_proxy_url_cache is None
-    assert "https://qdl-api.monochrome.tf" in failures
-
-
-def test_remember_qobuz_proxy_clears_failure(monkeypatch):
-    import monochrome
-    failures = {"https://qobuz.kennyy.com.br": time.time() - 10}
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
-
-    monochrome._remember_qobuz_proxy_url("https://qobuz.kennyy.com.br")
-
-    assert "https://qobuz.kennyy.com.br" not in failures
-    assert monochrome._qobuz_proxy_url_cache == "https://qobuz.kennyy.com.br"
-
-
-def test_prune_qobuz_proxy_failures_removes_expired_entries(monkeypatch):
-    import monochrome
-    failures = {
-        "https://old.example.test": 100.0,
-        "https://recent.example.test": 950.0,
-    }
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
-    monkeypatch.setattr(monochrome, "_QOBUZ_FAILURE_TTL", 600)
-
-    removed = monochrome._prune_qobuz_proxy_failures(now=1000.0)
-
-    assert removed == 1
-    assert failures == {"https://recent.example.test": 950.0}
-
-
-# ---------------------------------------------------------------------------
-# download_leg_healthy: gates Monochrome's overall source health. The qbdlx
-# leg's reason used to be discarded on both the healthy and unhealthy paths
-# (`ok, _reason = qbdlx_healthy()`); it's now threaded through so a live
-# token-pool note actually reaches servicecheck and the UI's "unavailable"
-# tooltip, instead of only ever saying "also unavailable".
-# ---------------------------------------------------------------------------
-
-def test_download_leg_healthy_true_when_proxies_up(monkeypatch):
-    import monochrome
-    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: True)
-
-    ok, reason = monochrome.download_leg_healthy()
-
-    assert ok is True
-    assert reason == ""
-
-
-def test_download_leg_healthy_true_via_qbdlx_when_proxies_down(monkeypatch):
-    import monochrome
-    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
-    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: True)
-    monkeypatch.setattr("qbdlx.download_leg_healthy",
-                         lambda: (True, "3/28 shared tokens usable this cycle"))
-
-    ok, reason = monochrome.download_leg_healthy()
-
-    assert ok is True
-
-
-def test_download_leg_healthy_false_reports_qbdlx_reason(monkeypatch):
-    """The qbdlx reason must survive, not just collapse into 'also unavailable'."""
-    import monochrome
-    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
-    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: True)
-    monkeypatch.setattr(
-        "qbdlx.download_leg_healthy",
-        lambda: (False, "qbdlx could not resolve a stream (0/28 shared tokens usable this cycle)"),
-    )
-    monkeypatch.setattr("monochrome_browser.browser_fallback_enabled", lambda: False)
-
-    ok, reason = monochrome.download_leg_healthy()
-
-    assert ok is False
-    assert "0/28 shared tokens usable this cycle" in reason
-
-
-def test_download_leg_healthy_false_when_qbdlx_disabled(monkeypatch):
-    import monochrome
-    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
-    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: False)
-    monkeypatch.setattr("monochrome_browser.browser_fallback_enabled", lambda: False)
-
-    ok, reason = monochrome.download_leg_healthy()
-
-    assert ok is False
-    assert "qbdlx" in reason.lower()
-
-
-def test_download_leg_healthy_true_via_browser_without_launching_it(monkeypatch):
-    import monochrome
-    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
-    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: False)
     monkeypatch.setattr(
         "monochrome_browser.browser_fallback_health",
         lambda: (True, "browser-authenticated playback available on demand"),
     )
-
+    monkeypatch.setattr(
+        "qbdlx.download_leg_healthy",
+        lambda: (_ for _ in ()).throw(AssertionError("qbdlx probe should not run")),
+    )
     ok, reason = monochrome.download_leg_healthy()
-
     assert ok is True
     assert "browser-authenticated" in reason
 
 
-def test_download_leg_healthy_remembers_repeated_browser_failure(monkeypatch):
+def test_download_leg_healthy_uses_qbdlx_when_browser_unavailable(monkeypatch):
     import monochrome
-    monkeypatch.setattr(monochrome, "_probe_qobuz_proxies", lambda: False)
-    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: False)
-    monkeypatch.setattr(
-        "monochrome_browser.browser_fallback_health",
-        lambda: (False, "Chrome failed twice"),
-    )
-
+    monkeypatch.setattr("monochrome_browser.browser_fallback_health", lambda: (False, "Chrome failed twice"))
+    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: True)
+    monkeypatch.setattr("qbdlx.download_leg_healthy", lambda: (True, "3/28 shared tokens usable this cycle"))
     ok, reason = monochrome.download_leg_healthy()
+    assert ok is True
+    assert "shared tokens" in reason
 
+
+def test_download_leg_healthy_reports_both_failures(monkeypatch):
+    import monochrome
+    monkeypatch.setattr("monochrome_browser.browser_fallback_health", lambda: (False, "Chrome failed twice"))
+    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: True)
+    monkeypatch.setattr("qbdlx.download_leg_healthy", lambda: (False, "0/28 shared tokens usable this cycle"))
+    ok, reason = monochrome.download_leg_healthy()
     assert ok is False
     assert "Chrome failed twice" in reason
+    assert "0/28 shared tokens" in reason
 
 
 # ---------------------------------------------------------------------------
-# _get_qobuz_stream_url fallback chain
+# Browser-first stream fallback chain
 # ---------------------------------------------------------------------------
 
-def test_get_qobuz_stream_url_uses_first_healthy_proxy(monkeypatch):
+def test_preview_uses_browser_before_qbdlx(monkeypatch):
     import monochrome
-
     calls = []
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
-    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    _patch_proxy_list(monkeypatch)
-
-    def fake_get(url, params, headers, timeout):
-        calls.append(url)
-        if "api/get-music" in url:
-            return _FakeHTTPResponse(_make_qobuz_search_response())
-        return _FakeHTTPResponse(_make_qobuz_download_response())
-
-    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
-
-    cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
-
-    assert cdn_url == "https://streaming-qobuz-std.akamaized.net/test.flac"
-    # Should have stopped at the first proxy and left the others alone
-    assert all(u.startswith(_PROXY_A) for u in calls)
+    monkeypatch.setattr(
+        "monochrome_browser.resolve_unified_stream_url",
+        lambda *a, **k: calls.append(("browser", a[0], a[1])) or "https://mono.test/preview.mp4",
+    )
+    monkeypatch.setattr(
+        "qbdlx.resolve_qobuz_stream_url",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("qbdlx should not run")),
+    )
+    assert monochrome.get_monochrome_preview_url("GBAYE9200070") == "https://mono.test/preview.mp4"
+    assert calls == [("browser", "GBAYE9200070", "LOSSLESS")]
 
 
-def test_get_qobuz_stream_url_falls_back_on_http_error(monkeypatch):
+def test_preview_uses_qbdlx_when_browser_has_nothing(monkeypatch):
     import monochrome
-
-    failures = {}
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
-    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    _patch_proxy_list(monkeypatch)
-
     calls = []
-
-    def fake_get(url, params, headers, timeout):
-        calls.append(url)
-        if url.startswith(_PROXY_A):
-            return _FakeHTTPResponse({}, status_code=400)
-        if "api/get-music" in url:
-            return _FakeHTTPResponse(_make_qobuz_search_response())
-        return _FakeHTTPResponse(_make_qobuz_download_response())
-
-    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
-
-    cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
-
-    assert cdn_url == "https://streaming-qobuz-std.akamaized.net/test.flac"
-    # The 400 got the first proxy blacklisted
-    assert _PROXY_A in failures
-    # The second one picked up the slack
-    assert monochrome._qobuz_proxy_url_cache == _PROXY_B
-
-
-def test_get_qobuz_stream_url_raises_when_all_fail(monkeypatch):
-    import monochrome
-
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
-    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
-
-    def fake_get(url, params, headers, timeout):
-        return _FakeHTTPResponse({}, status_code=401)
-
-    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
-
-    with pytest.raises(RuntimeError, match="all instances failed"):
-        monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
-
-
-def test_get_qobuz_stream_url_timeout_blacklists_proxy(monkeypatch):
-    """A timing-out proxy charges 15s per visit, so it must be parked on sight."""
-    import monochrome
-
-    failures = {}
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
-    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    _patch_proxy_list(monkeypatch)
-
-    def fake_get(url, params, headers, timeout):
-        if url.startswith(_PROXY_A):
-            raise httpx.ReadTimeout("glacial proxy")
-        if "api/get-music" in url:
-            return _FakeHTTPResponse(_make_qobuz_search_response())
-        return _FakeHTTPResponse(_make_qobuz_download_response())
-
-    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
-
-    cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
-
-    assert cdn_url  # the next proxy along served it
-    assert _PROXY_A in failures
-
-
-def test_get_qobuz_stream_url_fails_fast_when_all_proxies_parked(monkeypatch):
-    """Every proxy in cooldown: no HTTP calls, instant no-retry error."""
-    import monochrome
-
-    now = time.time()
-    failures = {
-        "https://qobuz.kennyy.com.br": now,
-        "https://mono.scavengerfurs.net": now,
-        "https://qdl-api.monochrome.tf": now,
-    }
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
-    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", now)
-    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
-
-    def fake_get(url, params, headers, timeout):
-        raise AssertionError("no HTTP call should be made when every proxy is parked")
-
-    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
-
-    with pytest.raises(monochrome.QobuzProxyError, match="failure cooldown") as excinfo:
-        monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
-
-    # False = "retrying won't help"; the retry rounds must not grind on this
-    assert excinfo.value.transport_failure is False
-
-
-def test_get_qobuz_stream_url_clean_no_isrc_answer_is_not_transport_failure(monkeypatch):
-    """A live proxy saying 'never heard of it' means the track is missing, not the infra."""
-    import monochrome
-
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", {})
-    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
-
-    def fake_get(url, params, headers, timeout):
-        # Proxy is up and answers, just with an empty catalogue result
-        return _FakeHTTPResponse({"success": True, "data": {"tracks": {"items": []}}})
-
-    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
-
-    with pytest.raises(monochrome.QobuzProxyError, match="all instances failed") as excinfo:
-        monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
-
-    assert excinfo.value.transport_failure is False
-
-
-def test_get_qobuz_stream_url_connection_error_does_not_blacklist(monkeypatch):
-    import monochrome
-
-    failures = {}
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_url_cache", None)
-    monkeypatch.setattr(monochrome, "_qobuz_proxy_failures", failures)
-    monkeypatch.setattr(monochrome, "_qobuz_probe_last_run", time.time())
-    monkeypatch.setattr("settings.get_setting", lambda key, default="", **kw: default)
-
-    def fake_get(url, params, headers, timeout):
-        if "kennyy" in url:
-            raise httpx.ConnectError("connection refused")
-        if "api/get-music" in url:
-            return _FakeHTTPResponse(_make_qobuz_search_response())
-        return _FakeHTTPResponse(_make_qobuz_download_response())
-
-    monkeypatch.setattr(monochrome.httpx, "get", fake_get)
-
-    cdn_url = monochrome._get_qobuz_stream_url("GBAYE9200070", 6)
-
-    assert cdn_url  # scavengerfurs succeeded
-    # Connection error must NOT blacklist kennyy
-    assert "https://qobuz.kennyy.com.br" not in failures
-
-
-def test_monochrome_preview_uses_qbdlx_when_proxies_fail(monkeypatch):
-    import monochrome
-
-    def fake_proxy(isrc, quality_fmt):
-        raise monochrome.QobuzProxyError("all proxies down", transport_failure=True)
-
-    calls = []
-
-    def fake_qbdlx(isrc, quality_fmt):
-        calls.append((isrc, quality_fmt))
-        return "https://streaming-qobuz-std.akamaized.net/qbdlx-preview.flac"
-
-    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
-    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", fake_qbdlx)
-
-    url = monochrome.get_monochrome_preview_url("GBAYE9200070")
-
-    assert url == "https://streaming-qobuz-std.akamaized.net/qbdlx-preview.flac"
+    monkeypatch.setattr("monochrome_browser.resolve_unified_stream_url", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "qbdlx.resolve_qobuz_stream_url",
+        lambda isrc, quality_fmt: calls.append((isrc, quality_fmt)) or "https://qobuz.test/preview.flac",
+    )
+    assert monochrome.get_monochrome_preview_url("GBAYE9200070") == "https://qobuz.test/preview.flac"
     assert calls == [("GBAYE9200070", 7)]
 
 
-def test_monochrome_preview_never_falls_back_to_lossy_qbdlx_format(monkeypatch):
+def test_preview_never_falls_back_to_lossy_qbdlx_format(monkeypatch):
     import monochrome
-
-    def fake_proxy(isrc, quality_fmt):
-        raise monochrome.QobuzProxyError("all proxies down", transport_failure=True)
-
     calls = []
-
-    def fake_qbdlx(isrc, quality_fmt):
-        calls.append((isrc, quality_fmt))
-        return None
-
-    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
-    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", fake_qbdlx)
-
+    monkeypatch.setattr("monochrome_browser.resolve_unified_stream_url", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "qbdlx.resolve_qobuz_stream_url",
+        lambda isrc, quality_fmt: calls.append((isrc, quality_fmt)),
+    )
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda *a: "")
     with pytest.raises(RuntimeError, match="no stream available"):
         monochrome.get_monochrome_preview_url("GBAYE9200070")
-
     assert calls == [("GBAYE9200070", 7)]
 
 
-def test_monochrome_preview_rescues_isrc_with_artist_and_title(monkeypatch):
+def test_preview_rescues_isrc_with_artist_and_title(monkeypatch):
     import monochrome
-    proxy_calls = []
-
-    def fake_proxy(isrc, quality_fmt):
-        proxy_calls.append((isrc, quality_fmt))
-        if isrc == "GBNEW2500001":
-            return "https://cdn.test/rescued.flac"
-        raise monochrome.QobuzProxyError("not found", transport_failure=False)
-
-    rescue_calls = []
-    def fake_rescue(artist, title, old_isrc):
-        rescue_calls.append((artist, title, old_isrc))
-        return "GBNEW2500001"
-
-    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
-    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
-    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", fake_rescue)
-
+    browser_calls = []
+    def fake_browser(isrc, *args, **kwargs):
+        browser_calls.append(isrc)
+        return "https://mono.test/rescued.mp4" if isrc == "GBNEW2500001" else None
+    monkeypatch.setattr("monochrome_browser.resolve_unified_stream_url", fake_browser)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda *a: None)
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda *a: "GBNEW2500001")
     url = monochrome.get_monochrome_preview_url(
         "monochrome://123?isrc=GBOLD2500001&quality=LOSSLESS&src=deezer",
-        artist_hint="Artist",
-        title_hint="Track",
+        artist_hint="Artist", title_hint="Track",
     )
-
-    assert url == "https://cdn.test/rescued.flac"
-    assert rescue_calls == [("Artist", "Track", "GBOLD2500001")]
-    assert proxy_calls == [("GBOLD2500001", 7), ("GBNEW2500001", 7)]
+    assert url == "https://mono.test/rescued.mp4"
+    assert browser_calls == ["GBOLD2500001", "GBNEW2500001"]
 
 
-def test_monochrome_preview_uses_tidal_lossless_as_final_leg(monkeypatch):
+def test_preview_uses_tidal_lossless_as_final_leg(monkeypatch):
     import monochrome
-
-    monkeypatch.setattr(
-        monochrome,
-        "_get_qobuz_stream_url",
-        lambda isrc, quality_fmt: (_ for _ in ()).throw(
-            monochrome.QobuzProxyError("not found", transport_failure=False)
-        ),
-    )
-    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
-    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda artist, title, isrc: "")
+    monkeypatch.setattr("monochrome_browser.resolve_unified_stream_url", lambda *a, **k: None)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda *a: None)
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda *a: "")
     tidal_calls = []
-
-    def fake_tidal(tidal_id, quality):
-        tidal_calls.append((tidal_id, quality))
-        return "https://tidal-cdn.test/lossless.flac"
-
-    monkeypatch.setattr(monochrome, "_tidal_stream_url", fake_tidal)
-
+    monkeypatch.setattr(
+        monochrome, "_tidal_stream_url",
+        lambda tidal_id, quality: tidal_calls.append((tidal_id, quality)) or "https://tidal.test/lossless.flac",
+    )
     url = monochrome.get_monochrome_preview_url(
         "monochrome://18420572?isrc=GBZZZ9900001&quality=HI_RES_LOSSLESS&src=tidal"
     )
-
-    assert url == "https://tidal-cdn.test/lossless.flac"
+    assert url == "https://tidal.test/lossless.flac"
     assert tidal_calls == [("18420572", "LOSSLESS")]
 
 
-def test_monochrome_preview_only_sweeps_proxies_once(monkeypatch):
+def test_download_fails_cleanly_when_browser_and_qbdlx_have_nothing(monkeypatch, tmp_path):
     import monochrome
-    calls = []
-
-    def dead_proxy(isrc, quality_fmt):
-        calls.append((isrc, quality_fmt))
-        raise monochrome.QobuzProxyError("down", transport_failure=True)
-
-    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 5)
-    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", dead_proxy)
-    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
-
-    with pytest.raises(RuntimeError, match="no stream available"):
-        monochrome.get_monochrome_preview_url("GBAYE9200070")
-
-    assert calls == [("GBAYE9200070", 7)]
-
-
-def test_monochrome_preview_raises_when_proxy_and_qbdlx_fail(monkeypatch):
-    import monochrome
-
-    def fake_proxy(isrc, quality_fmt):
-        raise monochrome.QobuzProxyError("all proxies down", transport_failure=True)
-
-    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
-    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
-
-    with pytest.raises(RuntimeError, match="all proxies down"):
-        monochrome.get_monochrome_preview_url("GBAYE9200070")
-
-
-def test_download_monochrome_raises_when_proxy_and_qbdlx_fail(monkeypatch, tmp_path):
-    """With Lucida gone, qbdlx is the last resort; if it can't resolve either, the
-    download fails cleanly rather than hanging or half-writing."""
-    import monochrome
-
-    def fake_proxy(isrc, quality_fmt):
-        raise monochrome.QobuzProxyError("all proxies down", transport_failure=True)
-
-    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_proxy)
-    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
-    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, quality_fmt: None)
-
+    monkeypatch.setattr("monochrome_browser.resolve_unified_stream_url", lambda *a, **k: None)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda *a: None)
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda *a: "")
     output = tmp_path / "track.flac"
     with pytest.raises(RuntimeError, match="no stream available"):
         monochrome.download_monochrome_track(
-            "monochrome://tidal123?isrc=GBAYE9200070&quality=LOSSLESS",
-            output,
+            "monochrome://not-tidal?isrc=GBAYE9200070&quality=LOSSLESS", output,
         )
     assert not output.exists()
 
 
 def test_browser_fallback_is_tried_before_qbdlx(monkeypatch):
-    """Browser leg costs no shared token, so it now goes ahead of qbdlx,
-    which is the leg actually running short (see qbdlx.py's token pool)."""
     import monochrome
-
-    monkeypatch.setattr(
-        monochrome,
-        "_get_qobuz_stream_url",
-        lambda *a, **k: (_ for _ in ()).throw(
-            monochrome.QobuzProxyError("proxy down", transport_failure=True)
-        ),
-    )
-    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
     monkeypatch.setattr(
         "monochrome_browser.resolve_unified_stream_url",
         lambda *a, **k: "https://monochrome.test/browser.flac",
     )
-
-    def qbdlx_must_not_run(isrc, quality_fmt):
-        raise AssertionError("qbdlx must not run when the browser leg already succeeded")
-
-    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", qbdlx_must_not_run)
-
-    url = monochrome._resolve_monochrome_stream_url(
-        "monochrome://123?isrc=GBAYE9200070&quality=LOSSLESS",
-        artist_hint="Radiohead",
-        title_hint="Creep",
-    )
-
-    assert url == "https://monochrome.test/browser.flac"
-
-
-def test_qbdlx_still_runs_when_browser_leg_has_nothing(monkeypatch):
-    """Browser is tried first, but qbdlx remains the fallback when it comes up empty."""
-    import monochrome
-
-    monkeypatch.setattr(
-        monochrome,
-        "_get_qobuz_stream_url",
-        lambda *a, **k: (_ for _ in ()).throw(
-            monochrome.QobuzProxyError("proxy down", transport_failure=True)
-        ),
-    )
-    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
-    monkeypatch.setattr("monochrome_browser.resolve_unified_stream_url", lambda *a, **k: None)
     monkeypatch.setattr(
         "qbdlx.resolve_qobuz_stream_url",
-        lambda isrc, quality_fmt: "https://qobuz.test/fast.flac",
+        lambda *a: (_ for _ in ()).throw(AssertionError("qbdlx must not run")),
     )
-
-    url = monochrome._resolve_monochrome_stream_url(
+    assert monochrome._resolve_monochrome_stream_url(
         "monochrome://123?isrc=GBAYE9200070&quality=LOSSLESS",
-        artist_hint="Radiohead",
-        title_hint="Creep",
-    )
+        artist_hint="Radiohead", title_hint="Creep",
+    ) == "https://monochrome.test/browser.flac"
 
-    assert url == "https://qobuz.test/fast.flac"
+
+def test_qbdlx_runs_when_browser_leg_has_nothing(monkeypatch):
+    import monochrome
+    monkeypatch.setattr("monochrome_browser.resolve_unified_stream_url", lambda *a, **k: None)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda *a: "https://qobuz.test/fast.flac")
+    assert monochrome._resolve_monochrome_stream_url(
+        "monochrome://123?isrc=GBAYE9200070&quality=LOSSLESS",
+        artist_hint="Radiohead", title_hint="Creep",
+    ) == "https://qobuz.test/fast.flac"
 
 
 # ---------------------------------------------------------------------------
@@ -1064,7 +614,7 @@ def test_deezer_search_leg_verifies_against_qobuz(monkeypatch):
     assert all(any("via=deezer-isrc" in b for b in r["score_breakdown"]) for r in results)
 
 
-def test_deezer_search_leg_keeps_unverified_when_proxies_down(monkeypatch):
+def test_deezer_search_leg_keeps_unverified_when_direct_lookup_is_down(monkeypatch):
     import monochrome
     monkeypatch.setattr(monochrome, "_deezer_search_tracks",
                         lambda q, limit: [_make_deezer_item()])
@@ -1179,32 +729,25 @@ class _FakeStreamResponse:
 
 def test_download_rescues_malformed_isrc_via_deezer(monkeypatch, tmp_path):
     import monochrome
-
     rescue_calls = []
-    def fake_rescue(artist, title, bad_isrc):
-        rescue_calls.append((artist, title, bad_isrc))
-        return "GB28K1100036"
-    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", fake_rescue)
-
+    monkeypatch.setattr(
+        monochrome, "_deezer_isrc_rescue",
+        lambda artist, title, bad_isrc: rescue_calls.append((artist, title, bad_isrc)) or "GB28K1100036",
+    )
     stream_calls = []
-    def fake_stream_url(isrc, fmt):
-        stream_calls.append(isrc)
-        return "https://cdn.test/track.flac"
-    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", fake_stream_url)
-    monkeypatch.setattr(monochrome.httpx, "stream",
-                        lambda *a, **k: _FakeStreamResponse())
-
+    monkeypatch.setattr(
+        "monochrome_browser.resolve_unified_stream_url",
+        lambda isrc, *a, **k: stream_calls.append(isrc) or "https://cdn.test/track.flac",
+    )
+    monkeypatch.setattr(monochrome.httpx, "stream", lambda *a, **k: _FakeStreamResponse())
     output = tmp_path / "track.flac"
     monochrome.download_monochrome_track(
         "monochrome://12345?isrc=QT%26JC2622262&quality=LOSSLESS&src=tidal",
-        output,
-        artist_hint="David Guetta", title_hint="Titanium",
+        output, artist_hint="David Guetta", title_hint="Titanium",
     )
-
     assert rescue_calls == [("David Guetta", "Titanium", "QT&JC2622262")]
-    assert stream_calls and stream_calls[0] == "GB28K1100036"
+    assert stream_calls == ["GB28K1100036"]
     assert output.exists() and output.stat().st_size > 0
-
 
 def test_download_decrypts_browser_cenc_resource_without_persisting_key(monkeypatch, tmp_path):
     import monochrome
@@ -1235,55 +778,37 @@ def test_download_decrypts_browser_cenc_resource_without_persisting_key(monkeypa
 
 def test_download_falls_back_to_tidal_stream_for_tidal_results(monkeypatch, tmp_path):
     import monochrome
-
-    def clean_miss(isrc, fmt):
-        raise monochrome.QobuzProxyError("no results", transport_failure=False)
-    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", clean_miss)
-    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
-    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, fmt: None)
-    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda a, t, b: "")
-
+    monkeypatch.setattr("monochrome_browser.resolve_unified_stream_url", lambda *a, **k: None)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda *a: None)
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda *a: "")
     tidal_calls = []
-    def fake_tidal(tidal_id, quality):
-        tidal_calls.append((tidal_id, quality))
-        return "https://tidal-cdn.test/track.flac"
-    monkeypatch.setattr(monochrome, "_tidal_stream_url", fake_tidal)
-    monkeypatch.setattr(monochrome.httpx, "stream",
-                        lambda *a, **k: _FakeStreamResponse())
-
+    monkeypatch.setattr(
+        monochrome, "_tidal_stream_url",
+        lambda tidal_id, quality: tidal_calls.append((tidal_id, quality)) or "https://tidal.test/track.flac",
+    )
+    monkeypatch.setattr(monochrome.httpx, "stream", lambda *a, **k: _FakeStreamResponse())
     output = tmp_path / "track.flac"
     monochrome.download_monochrome_track(
-        "monochrome://18420572?isrc=GBZZZ9900001&quality=LOSSLESS&src=tidal",
-        output,
+        "monochrome://18420572?isrc=GBZZZ9900001&quality=LOSSLESS&src=tidal", output,
     )
-
     assert tidal_calls == [("18420572", "LOSSLESS")]
     assert output.exists()
 
-
 def test_download_never_uses_tidal_stream_for_non_tidal_results(monkeypatch, tmp_path):
     import monochrome
-
-    def clean_miss(isrc, fmt):
-        raise monochrome.QobuzProxyError("no results", transport_failure=False)
-    monkeypatch.setattr(monochrome, "_get_qobuz_stream_url", clean_miss)
-    monkeypatch.setattr(monochrome, "MONOCHROME_PROXY_RETRY_ROUNDS", 1)
-    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, fmt: None)
-    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda a, t, b: "")
-
-    def boom(tidal_id, quality):
-        raise AssertionError("Tidal stream must not run for qbdlx-sourced results")
-    monkeypatch.setattr(monochrome, "_tidal_stream_url", boom)
-
+    monkeypatch.setattr("monochrome_browser.resolve_unified_stream_url", lambda *a, **k: None)
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda *a: None)
+    monkeypatch.setattr(monochrome, "_deezer_isrc_rescue", lambda *a: "")
+    monkeypatch.setattr(
+        monochrome, "_tidal_stream_url",
+        lambda *a: (_ for _ in ()).throw(AssertionError("Tidal must not run for non-Tidal results")),
+    )
     output = tmp_path / "track.flac"
-    # netloc is a Qobuz id here; treating it as a Tidal id risks surprise polka
     with pytest.raises(RuntimeError, match="no stream available"):
         monochrome.download_monochrome_track(
-            "monochrome://8767428?isrc=GBZZZ9900001&quality=LOSSLESS&src=qbdlx",
-            output,
+            "monochrome://8767428?isrc=GBZZZ9900001&quality=LOSSLESS&src=qbdlx", output,
         )
     assert not output.exists()
-
 
 def test_monochrome_playlist_urls_detect_as_monochrome():
     from watched_playlists import detect_playlist_platform

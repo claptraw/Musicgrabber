@@ -92,7 +92,7 @@ def _blues_and_hope():
 
 
 def _patched(monochrome, deezer_get, qobuz=([], True)):
-    """Patch the network edges. Default Qobuz answer is 'proxies down'."""
+    """Patch the network edges. Default Qobuz answer is 'lookup unavailable'."""
     return (
         patch.object(monochrome, "_deezer_get", side_effect=deezer_get),
         patch.object(monochrome, "_qobuz_isrc_lookup", return_value=qobuz),
@@ -229,7 +229,7 @@ def test_a_clean_qobuz_miss_drops_the_track():
     assert resolved == {}
 
 
-def test_proxies_being_down_does_not_lose_the_track():
+def test_catalogue_transport_failure_does_not_lose_the_track():
     """Unverifiable is not the same as absent; qbdlx may still deliver it."""
     monochrome = _import_monochrome_or_skip()
 

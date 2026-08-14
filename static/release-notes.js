@@ -13,6 +13,7 @@ const RELEASE_NOTES = {
             {
                 heading: "Monochrome previews are back",
                 items: [
+                    "The retired public Qobuz proxy layer has been removed. Monochrome now goes straight to its browser-authenticated playback route, then direct qbdlx and Tidal fallbacks, without probing or retrying endpoints that can no longer serve a track. The obsolete proxy URL setting disappears automatically.",
                     "Hovering a Monochrome result plays a preview again, roughly two seconds from hover to sound. Monochrome only serves encrypted FLAC-in-MP4, which no browser can play, so MusicGrabber decrypts the first thirty seconds to MP3 and serves that itself. Snippets are cached briefly, then deleted.",
                     "The browser session is warmed once in the background at startup, so a hover never waits for Chrome to start and never queues behind a download in progress. That warm-up only runs when Monochrome is an enabled source with the browser fallback switched on; turn either off and no browser is started at all.",
                     "Downloads now try Monochrome's own infrastructure before the shared Qobuz token pool (qbdlx) rather than after, since that pool has been running thin. qbdlx remains the fallback for when Monochrome's own route comes up empty.",

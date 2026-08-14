@@ -827,7 +827,7 @@
                                     <span class="toggle-slider"></span>
                                 </div>
                             </label>
-                            <label class="source-toggle-item" title="Search Monochrome for lossless Qobuz FLAC via the Tidal catalogue. Depends on public hifi-api and Qobuz proxy availability.">
+                            <label class="source-toggle-item" title="Search Monochrome for lossless Qobuz or Tidal audio via browser-authenticated playback and direct fallbacks.">
                                 <span class="source-toggle-text">Monochrome <i class="fa-solid fa-circle-info source-toggle-help" aria-label="Monochrome help"></i></span>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="settingSourceMonochrome">
@@ -1339,7 +1339,7 @@
             <div class="settings-section admin-only">
                 <h3 class="settings-section-title">Monochrome (Qobuz / Tidal)</h3>
                 <div class="settings-warning">
-                    Enable Monochrome in Search Sources above to get lossless FLAC from Qobuz via the Tidal catalogue. No account or API key required. The default public proxy is shared infrastructure, so be reasonable with it. You can point these at a self-hosted hifi-api + Qobuz proxy if you prefer.
+                    Enable Monochrome in Search Sources above to get lossless audio from Qobuz or Tidal. No account or API key is required: MusicGrabber uses Monochrome's browser-authenticated playback first, with direct qbdlx and Tidal routes as fallbacks.
                 </div>
                 <div class="settings-form">
                     <div class="settings-row">
@@ -1348,23 +1348,18 @@
                         <span class="settings-hint-sm">Tidal metadata proxy (hifi-api). Used for search and Tidal playlist import.</span>
                     </div>
                     <div class="settings-row">
-                        <label for="settingMonochromeQobuzUrl">Qobuz Proxy URL</label>
-                        <input type="text" id="settingMonochromeQobuzUrl" placeholder="https://qobuz.kennyy.com.br">
-                        <span class="settings-hint-sm">Qobuz stream resolver. Fetches the actual FLAC CDN URL given an ISRC.</span>
-                    </div>
-                    <div class="settings-row">
                         <label class="settings-checkbox-label">
                             <input type="checkbox" id="settingMonochromeQbdlxFallback">
                             <span>Use qbdlx direct-Qobuz fallback</span>
                         </label>
-                        <span class="settings-hint-sm">Hidden Monochrome fallback used when all configured Qobuz proxies fail.</span>
+                        <span class="settings-hint-sm">Direct-Qobuz fallback used when browser-authenticated Monochrome playback has no stream.</span>
                     </div>
                     <div class="settings-row">
                         <label class="settings-checkbox-label">
                             <input type="checkbox" id="settingMonochromeBrowserFallback">
-                            <span>Use browser-authenticated playback fallback</span>
+                            <span>Use browser-authenticated playback</span>
                         </label>
-                        <span class="settings-hint-sm">Last resort after the Qobuz proxy and qbdlx. Keeps one SeleniumBase Chrome session alive to complete Monochrome's Turnstile flow and resolve authorised resources; media still downloads normally outside Chrome.</span>
+                        <span class="settings-hint-sm">Primary Monochrome playback route. Keeps one SeleniumBase Chrome session alive to complete Monochrome's Turnstile flow and resolve authorised resources; media still downloads normally outside Chrome.</span>
                     </div>
                 </div>
             </div>

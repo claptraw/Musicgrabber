@@ -1,18 +1,17 @@
 """
 MusicGrabber - Source Health Checks
 
-Living the pirate lifestyle means free services come and go. Monochrome's Qobuz
-proxies in particular love to fall over (502 one second, 200 the next), and when
-a source is down its results used to still show, rank high, and then fail
-silently at preview/download time. Nobody enjoys a result that won't play.
+Living the pirate lifestyle means free services come and go, and when a source
+is down its results used to still show, rank high, and then fail silently at
+preview/download time. Nobody enjoys a result that won't play.
 
 This module checks whether each search source can actually deliver, hides the
 ones that can't, and parks a failing source for a cooldown before re-checking.
 
 Design notes:
-- Each source gets the *cheapest* check that proves it works. Monochrome is
-  gated on its download leg (Qobuz proxy), because the search leg being up is
-  worthless if it can't stream. The direct-MP3 sites just need a live root. The
+- Each source gets the *cheapest* check that proves it works. Monochrome checks
+  remembered browser health first, then probes direct qbdlx if needed. The
+  search leg being up is worthless if neither route can stream. Direct-MP3 sites just need a live root. The
   big platforms need host reachability. Soulseek needs to be configured and
   slskd reachable.
 - Last-known state is persisted in SQLite. Startup honours a still-live cooldown
@@ -47,7 +46,7 @@ _LOCK = threading.RLock()
 # concurrent searches all launching their own identical probe of the same
 # dead service; one probe at a time is plenty.
 _IN_FLIGHT: dict[str, float] = {}
-# A probe older than this is presumed wedged (hung socket, misbehaving proxy)
+# A probe older than this is presumed wedged (hung socket, misbehaving upstream)
 # and a fresh one is allowed past the guard.
 _PROBE_STUCK_SECONDS = 120
 
@@ -85,7 +84,7 @@ def _http_ok(url: str, method: str = "GET") -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 def _check_monochrome() -> tuple[bool, str]:
-    """Gate on the Qobuz download leg, the bit that actually serves FLAC bytes."""
+    """Gate on the browser/qbdlx download legs that actually serve audio."""
     from monochrome import download_leg_healthy
     return download_leg_healthy()
 
