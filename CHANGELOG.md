@@ -1,5 +1,7 @@
 # Changelog
 
+## v4.0.2 (DEV)
+
 ## v4.0.1 - Fix of the Phoenix (2026-08-16)
 
 ### Added
