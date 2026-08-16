@@ -1,6 +1,6 @@
 # Changelog
 
-## v4.0.2 (DEV)
+## v4.0.2 (2026-08-16)
 
 ### Fixed
 - **Soulseek track upgrades no longer fail after a successful download**: the upgrade worker's Soulseek call was missing the duplicate-check bypass its own sibling call (for every other source) already had, so it dutifully found the file being replaced, declared the download "already exists", and threw the freshly-fetched replacement away, reporting "Download failed or produced no file" despite Soulseek having done its job perfectly. It now skips that check the same way the rest of the upgrade path always has.
