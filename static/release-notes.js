@@ -9,7 +9,14 @@
 const RELEASE_NOTES = {
     "4.0.3": {
         title: "What's New in v4.0.3",
-        sections: []
+        sections: [
+            {
+                heading: "Track Upgrades leave a trace",
+                items: [
+                    "A completed upgrade used to vanish without a trace: the Queue entry for the download was deleted the instant the swap finished, so there was nothing to look back on. Completed upgrades now stick around in the Queue like any other finished download, marked with an UPGRADE badge, pointing at the file that's actually sitting in your library.",
+                ]
+            },
+        ]
     },
     "4.0.2": {
         title: "What's New in v4.0.2",

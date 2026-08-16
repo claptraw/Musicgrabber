@@ -649,12 +649,14 @@ def _fingerprint_similarity(fa: list[int], fb: list[int]) -> float:
     return best
 
 
-def _download_candidate_to_staging(user_id: str | None, row, staging_dir: Path) -> Path | None:
+def _download_candidate_to_staging(user_id: str | None, row, staging_dir: Path) -> tuple[Path | None, str]:
     """Download the proposed upgrade into a staging dir using the normal pipeline.
 
     Reuses process_download / process_slskd_download with override_dir=staging so we get
     all the source-specific handling and quality probing for free, then we take the file
-    out of staging ourselves. The transient job row is removed to keep the Queue clean.
+    out of staging ourselves. Returns (file, job_id); the caller decides the job row's
+    fate once it knows whether the swap actually went ahead, so a genuine upgrade leaves
+    a normal Queue history entry instead of vanishing without a trace.
     """
     import uuid as _uuid
     from downloads import process_download, process_slskd_download
@@ -701,14 +703,12 @@ def _download_candidate_to_staging(user_id: str | None, row, staging_dir: Path) 
         conn.row_factory = sqlite3.Row
         j = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
         status = j["status"] if j else None
-        conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
-        conn.commit()
 
     files = [p for p in staging_dir.rglob("*")
              if p.is_file() and p.suffix.lower() in _AUDIO_EXTS]
     if status == "completed" and files:
-        return max(files, key=lambda p: p.stat().st_mtime)
-    return None
+        return max(files, key=lambda p: p.stat().st_mtime), job_id
+    return None, job_id
 
 
 def _fix_m3u_references(user_id: str | None, old_path: Path, new_path: Path) -> None:
@@ -793,8 +793,10 @@ def perform_upgrade(user_id: str | None, candidate_id: int, force: bool = False)
 
     import tempfile
     staging = Path(tempfile.mkdtemp(prefix=f"upg_{candidate_id}_", dir=str(_quarantine_dir().parent)))
+    job_id = None
+    upgraded_ok = False
     try:
-        staged = _download_candidate_to_staging(user_id, row, staging)
+        staged, job_id = _download_candidate_to_staging(user_id, row, staging)
         if staged is None:
             _set_upgrade_state(uid, candidate_id, "rejected")
             return {"status": "rejected", "reason": "Download failed or produced no file"}
@@ -870,6 +872,7 @@ def perform_upgrade(user_id: str | None, candidate_id: int, force: bool = False)
             # Swap failed mid-flight: restore the original so we never lose the file.
             shutil.move(str(quarantined), str(current))
             return {"status": "error", "reason": f"Swap failed, original restored: {e}"}
+        upgraded_ok = True
 
         # Keep the library entry's identity; the download already stamped SOURCE/SOURCE_QUALITY.
         try:
@@ -922,6 +925,23 @@ def perform_upgrade(user_id: str | None, candidate_id: int, force: bool = False)
         return {"status": "upgraded", "from": row["found_quality"] or "",
                 "path": str(new_path), "quarantined": str(quarantined)}
     finally:
+        if job_id:
+            # A genuine upgrade gets to stay in the Queue as an ordinary completed
+            # job, same as any other download, pointed at where the file actually
+            # ended up. Anything short of that (rejected, errored, gate failure)
+            # was never a real acquisition and is cleaned up as before.
+            try:
+                with db_conn() as conn:
+                    if upgraded_ok:
+                        conn.execute(
+                            "UPDATE jobs SET final_path=?, override_dir=NULL WHERE id=?",
+                            (str(new_path), job_id),
+                        )
+                    else:
+                        conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+                    conn.commit()
+            except Exception as e:
+                print(f"Upgrade job history update failed (candidate {candidate_id}): {e}")
         try:
             import shutil
             shutil.rmtree(staging, ignore_errors=True)

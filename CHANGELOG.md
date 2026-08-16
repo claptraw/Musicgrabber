@@ -2,6 +2,9 @@
 
 ## v4.0.3 (DEV)
 
+### Fixed
+- **A completed Track Upgrade now leaves a trace**: the worker inserted a normal job row so it could reuse the ordinary download pipeline, then quietly deleted it the moment the file landed, "to keep the Queue clean". Handy for the failed attempts, less so for the successful ones, since a genuine swap-in-place vanished just as thoroughly as a rejected one, leaving nothing in the Queue and nothing to look back on. A completed upgrade now stays in the Queue like any other finished download (tagged with an UPGRADE badge so it doesn't get mistaken for a fresh acquisition), pointed at wherever the swapped-in file actually ended up. Rejected and errored attempts are still cleaned up as before, since those were never real acquisitions. Re-download on one of these rows is turned away rather than silently writing into a staging folder that was rmtree'd minutes ago; search again from Watched Upgrades instead.
+
 ## v4.0.2 (2026-08-16)
 
 ### Fixed

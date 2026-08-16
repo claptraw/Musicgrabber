@@ -1601,6 +1601,16 @@ h1 {
     margin-left: 6px;
 }
 
+.job-upgrade-badge {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--accent);
+    color: #000;
+    margin-left: 6px;
+}
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }

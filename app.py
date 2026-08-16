@@ -2789,6 +2789,15 @@ def retry_job(job_id: str, http_request: Request):
 
         job = dict(row)
 
+        # Track Upgrades jobs are a swap-in-place, not a standalone acquisition: their
+        # staging directory is long gone by the time this row is visible, so retrying
+        # would silently download into a folder nobody will ever look in again.
+        if job["download_type"] == "upgrade":
+            raise HTTPException(
+                status_code=400,
+                detail="Track upgrade jobs can't be re-downloaded from here; search again from Watched Upgrades",
+            )
+
         # Allow retrying failed jobs or re-downloading completed jobs
         if job["status"] not in ("failed", "completed", "completed_with_errors"):
             raise HTTPException(status_code=400, detail="Only failed or completed jobs can be retried")
