@@ -229,7 +229,66 @@ def test_migration_removes_obsolete_qobuz_proxy_setting(tmp_path, monkeypatch):
                 "SELECT value FROM settings WHERE key = 'db_version'"
             ).fetchone()[0]
         assert row is None
-        assert version == "13"
+        assert version == "14"  # migrations run to the latest version in one boot
+    finally:
+        _drain(migration_pool)
+
+
+def test_migration_clears_dead_default_hifi_api_url_but_not_a_self_hosted_one(tmp_path, monkeypatch):
+    """A stored value that's still one of the dead public defaults gets cleared;
+    a genuinely self-hosted URL is left alone, since it may still work fine."""
+    old_db = tmp_path / "pre-hifi-cleanup.db"
+    with sqlite3.connect(old_db) as conn:
+        conn.execute("""
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("INSERT INTO settings (key, value) VALUES ('db_version', '13')")
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('monochrome_hifi_api_url', 'https://monochrome-api.samidy.com')"
+        )
+
+    migration_pool = _migrate_old_db(old_db, monkeypatch)
+    try:
+        db.init_db()
+        with db.db_conn() as conn:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'monochrome_hifi_api_url'"
+            ).fetchone()
+            version = conn.execute(
+                "SELECT value FROM settings WHERE key = 'db_version'"
+            ).fetchone()[0]
+        assert row is None
+        assert version == "14"
+    finally:
+        _drain(migration_pool)
+
+    self_hosted_db = tmp_path / "pre-hifi-cleanup-self-hosted.db"
+    with sqlite3.connect(self_hosted_db) as conn:
+        conn.execute("""
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("INSERT INTO settings (key, value) VALUES ('db_version', '13')")
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('monochrome_hifi_api_url', 'https://hifi.example-self-hosted.test')"
+        )
+
+    migration_pool = _migrate_old_db(self_hosted_db, monkeypatch)
+    try:
+        db.init_db()
+        with db.db_conn() as conn:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'monochrome_hifi_api_url'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "https://hifi.example-self-hosted.test"
     finally:
         _drain(migration_pool)
 
@@ -253,10 +312,10 @@ def test_settings_monochrome_enabled_by_default(api, base_url):
     assert settings["source_monochrome_enabled"] is True
 
 
-def test_settings_monochrome_hifi_url_non_empty_and_proxy_removed(api, base_url):
-    """The metadata URL remains configured; the retired proxy control does not."""
+def test_settings_monochrome_hifi_url_blank_by_default_and_proxy_removed(api, base_url):
+    """No honest public default remains; a fresh install starts blank, not pointed at a dead host."""
     settings = api.get(f"{base_url}/api/settings", timeout=10).json()["settings"]
-    assert settings.get("monochrome_hifi_api_url"), "monochrome_hifi_api_url is blank; migration may have failed"
+    assert settings.get("monochrome_hifi_api_url", "") == ""
     assert "monochrome_qobuz_proxy_url" not in settings
 
 

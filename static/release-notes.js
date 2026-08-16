@@ -52,6 +52,7 @@ const RELEASE_NOTES = {
                     "The browser session is warmed once in the background at startup, so a hover never waits for Chrome to start and never queues behind a download in progress. That warm-up only runs when Monochrome is an enabled source with the browser fallback switched on; turn either off and no browser is started at all.",
                     "Downloads now try Monochrome's own infrastructure before the shared Qobuz token pool (qbdlx) rather than after, since that pool has been running thin. qbdlx remains the fallback for when Monochrome's own route comes up empty.",
                     "The search box's clear cross is no longer sat on by the Search button when it widens to say \"Searching…\".",
+                    "Monochrome playlist share links (monochrome.tf/playlist/...) fetch their tracks again, now via the same direct Tidal route plain tidal.com playlist links already use, since the hifi-api gateway they relied on has stopped working.",
                 ]
             },
             {
@@ -59,6 +60,7 @@ const RELEASE_NOTES = {
                 items: [
                     "Paste a single YouTube video into Bulk Import's Fetch box and, if it's over 12 minutes, MusicGrabber checks whether it looks like a mix or compilation. It never guesses where one track ends and the next begins: it uses YouTube's own chapters when they exist, then a hand-typed cue sheet in the video's description, then one in the comments, and otherwise gives you a blank table (or a box to paste your own cue sheet into).",
                     "Either way you always get an editable preview, start time, end time, title and artist per track, before anything downloads. Confirming it cuts each track with ffmpeg, tags it from what's in the table, and files the lot under Albums with cover art from the video thumbnail.",
+                    "Pasting a playlist or album link into the ordinary Search box now sends it to Bulk Import instead of quietly going nowhere, since that's the box that actually knows what to do with a URL.",
                 ]
             },
         ]

@@ -1,5 +1,5 @@
 # Music Grabber
-**v4.0.0 (2026-08-12)**
+**v4.0.1 (2026-08-16)**
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, optional MP3Phoenix, and optional Soulseek, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
@@ -25,13 +25,14 @@ MusicGrabber is intentionally narrow. It is **not**:
 
 - **Multi-source search:** the Tracks tab searches YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, optional MP3Phoenix, and optional Soulseek in parallel; relevance-ranked results include source badges and score explanations, plus a separate audio-quality tier where the provider declares one. MP3Phoenix is an experimental, off-by-default source that briefly launches Selenium to obtain Cloudflare clearance, then searches and downloads through a reusable Chrome-impersonating HTTP session. Soulseek results also show the peer's current queue depth and use it as a bounded ranking penalty, so an idle peer wins an otherwise equal contest without a busy peer disappearing altogether. The single-song search collapses when you leave Tracks, keeping the other workspaces focused on their own jobs
 - **Live search progress:** results stream in as each source answers, with live status for completed, slow, parked, or unavailable sources; repeated timeouts automatically bench an unhealthy source until a background probe clears it. yt-dlp searches and metadata lookups share a bounded retry policy for throttling, timeouts, gateway failures, and reduced format manifests, while genuinely private/deleted media fails immediately
-- **Monochrome/Qobuz source:** searches the Tidal catalogue via hifi-api metadata, then resolves matching Qobuz FLAC streams by ISRC. Public Qobuz routes are tried first; if they fail, an optional SeleniumBase browser session can complete Monochrome's Turnstile check and use its authorised direct playback. Enabled by default and configurable in Search Sources
+- **Monochrome/Qobuz source:** searches Tidal and Deezer metadata and resolves matching Qobuz FLAC streams by ISRC. Browser-authenticated Monochrome playback is tried first, then the direct qbdlx Qobuz route, then a Deezer ISRC rescue, then a lossless Tidal stream as a last resort. No account or API key is required. Enabled by default and configurable in Search Sources
 - **Watched playlists:** monitor Spotify, YouTube (including Mixes), Amazon Music, Apple Music, SoundCloud, Tidal, Beatport, Monochrome, and ListenBrainz playlists; auto-downloads new tracks and grabs the best match available. Per-playlist sync mode: Append (M3U grows as tracks arrive) or Mirror (M3U stays in sync with the upstream; removed tracks drop out). Each card shows live refresh state and stage. "Missing" button shows tracks that never made it; Retry and Search buttons to fix them. M3U updates immediately as each track finishes
 - **Artists tab:** follow an artist on MusicBrainz and new singles are downloaded automatically as they appear. Search by name, pick from up to five candidates, set a from-date (defaults to today so your back-catalogue stays put). Singles come first: remixes, live cuts, soundtracks, and compilations are filtered out at the MusicBrainz level. Albums sit underneath for browsing and picking off individually, with an optional "automatically add new albums" toggle that marks everything already released as seen, so ticking it never starts a back-catalogue download. A transient failure while handing a new album to the queue is recorded and retried once on the next artist check rather than making the release permanently “known but abandoned”. Tracks already on disk are recognised immediately, and followed-album labels are derived from the current import and actual audio count rather than preserving “Queued” until the sun burns out. Per-artist check interval, Keep source/Convert to control, pause/resume, missing and track list panels. You can also browse any artist's albums without following them at all
 - **Playlist routing:** pick any watched playlist or existing `.m3u` file from the selector below the search bar; downloads land there instead of Singles
 - **Playlist housekeeping:** find audio left behind by mirror-mode playlist removals and move it safely into Singles; optionally stamp watched-playlist names into audio Comment tags for macOS Music smart playlists
 - **Album mode:** browse MusicBrainz artists from either the Artists tab or Bulk Import, pick a release, download the full album into `Albums/Artist/Album/`, tag tracks with album context, write cover files, and optionally generate an album-local M3U. Equivalent folders and numbered/fuzzy track names inside the configured Albums tree are reused rather than downloaded again. Multi-disc and Various Artists groups choose the most complete official release and keep the canonical release-group credit/title
 - **Bulk Import takes almost anything:** playlist URLs, pasted `Artist - Title` lists, MusicBrainz release links, Spotify and Apple Music album URLs, or simply an album name typed in. Anything recognised as an album is routed through the album pipeline rather than flattened into loose singles. Album search does not need an artist first, so soundtracks and various-artists compilations work; uncertain matches ask which release you meant instead of guessing. YouTube, Amazon, Beatport, and Monochrome album URLs are not supported yet
+- **Split long DJ mixes and compilation uploads into proper tracks:** paste a single YouTube video into the Bulk Import Fetch box and, if it runs over 12 minutes, MusicGrabber offers to cut it up rather than download it as one blob. It never guesses a boundary: it prefers YouTube's own chapters, then a cue sheet hunted out of the description or comments, and otherwise hands you an empty table (or a box to paste your own cue sheet into) to fill in by hand. Either way you get an editable start/end/title/artist preview before a single byte downloads; confirming it downloads the audio once, cuts each segment with ffmpeg, runs the usual integrity check, and tags directly from the table, landing the lot in `Albums/Album Artist/Video Title/` with cover art from the video thumbnail
 - **Auto-album routing for singles:** optional setting to file single-track downloads into artist/album folders when MusicBrainz resolves an album, either under Singles or the Albums directory
 - **Bulk import:** paste or upload a text file of "Artist - Title" lines; searches enabled sources in parallel, rejects weak recording matches, then walks confident candidates from lossless towards progressively worse lossy formats. A preferred source breaks ties inside the same quality tier; an allowed lossless result still comes first. It can also create a playlist and route files into the Playlists directory or a custom watched-playlist folder. Cancel stops untouched work, lets the one active file finish, and keeps completed files and Queue history
 - **Similar artist discovery:** hover any result and click Similar to explore related artists via MusicBrainz and ListenBrainz Labs. Download the lot in one go with "Download All", optionally saved as a playlist
@@ -384,7 +385,7 @@ Settings are stored in the database and persist across container restarts.
 | `SOURCE_HEALTH_CHECK_INTERVAL_MINUTES` | `10` | Minutes between scheduled source health probes |
 | `SOURCE_HEALTH_COOLDOWN_MINUTES` | `10` | Minimum time a failed source remains parked before it can be probed again |
 | `SEARCH_CONCURRENCY` | `1` | Maximum simultaneous searches admitted per provider, from 1 to 5. This does not increase download concurrency |
-| `MONOCHROME_HIFI_API_URL` | `https://monochrome-api.samidy.com,https://api.monochrome.tf,https://eu-central.monochrome.tf` | hifi-api compatible endpoint(s) used for Tidal metadata/ISRC lookups. Comma or newline separated lists are tried in order |
+| `MONOCHROME_HIFI_API_URL` | *(blank)* | Optional self-hosted hifi-api compatible endpoint(s) for Tidal metadata top-up. Comma or newline separated lists are tried in order. The public instances that used to ship as the default have been dead since Tidal revoked their OAuth client, so there is no honest public default any more; Monochrome works fine without this set |
 | `QBDLX_FALLBACK_ENABLED` | `true` | Try qbdlx's direct Qobuz API when browser-authenticated Monochrome playback has no stream |
 | `MONOCHROME_BROWSER_FALLBACK_ENABLED` | `true` | Allow a SeleniumBase/Chrome session to complete Monochrome's Turnstile flow as the primary playback route |
 | `MONOCHROME_WEB_URL` | `https://monochrome.tf` | Monochrome web client used for browser authentication and public playback configuration discovery |
@@ -491,7 +492,7 @@ You can turn it off in Settings, Search Sources, or use:
 ```yaml
 environment:
   - SOURCE_MONOCHROME_ENABLED=false
-  - MONOCHROME_HIFI_API_URL=https://monochrome-api.samidy.com,https://api.monochrome.tf,https://eu-central.monochrome.tf
+  - MONOCHROME_HIFI_API_URL=https://your-own-hifi-api-instance
   - MONOCHROME_BROWSER_FALLBACK_ENABLED=true
 ```
 
@@ -957,7 +958,7 @@ For browser-native file downloads in multi-user mode, the frontend asks `/api/au
 |------|----------------|
 | `admin` | Full access, global settings, users, stats reset, blacklist, trash emptying |
 | `user` | Own queue, watched playlists/artists, album workflows, personal credentials, notifications, and password |
-| `peon` | Search, Bulk Import, Queue, Albums, and Watched. No Settings or Stats, and conversion/source settings are inherited from admin |
+| `peon` | Search, Bulk Import, Artists, Queue, and Watched. No Settings or Stats, and conversion/source settings are inherited from admin |
 
 Single-user installs are still admin-equivalent and need no account unless you want multi-user mode.
 
@@ -966,6 +967,9 @@ Single-user installs are still admin-equivalent and need no account unless you w
 - For external access, consider a reverse proxy with additional authentication (Caddy, nginx, Authelia)
 - The API allows triggering downloads and file operations, so treat access as administrative
 - Rate limiting helps prevent abuse but isn't a substitute for proper access control
+- Download and preview URLs are checked against a per-source hostname allowlist before MusicGrabber fetches them, so a request can't redirect the server into fetching an arbitrary internal address
+- Custom playlist/Singles/Playlists/Albums folder paths are rejected if they resolve outside your configured music directory, `..` included
+- The trash bin is per-account on multi-user installs; nobody can browse, restore, or empty another user's bin
 
 **Example: Adding basic auth with Caddy (in addition to API key):**
 
@@ -998,6 +1002,7 @@ music.yourdomain.com {
 | `POST` | `/api/auth/logout` | Invalidate session token |
 | `GET` | `/api/auth/me` | Get current authenticated user info |
 | `POST` | `/api/auth/download-token` | Issue single-use download token for a job file |
+| `POST` | `/api/auth/stream-token` | Issue a short-lived reusable token so an `<audio>` element can play a file (it cannot carry an Authorization header) |
 | `PUT` | `/api/auth/password` | Change own password |
 
 ### User Management (admin only)
@@ -1025,7 +1030,10 @@ music.yourdomain.com {
 | `POST` | `/api/settings/test/spotify-cookies` | Test Spotify cookie validity |
 | `POST` | `/api/settings/test/apprise` | Test Apprise notification URL |
 | `POST` | `/api/settings/test/email` | Send a test email with SMTP settings |
+| `POST` | `/api/settings/test/monochrome` | Run the full Monochrome download diagnostic end to end (searches, resolves every leg, downloads and probes a real track, then deletes it) and report each step pass/warn/skip/fail |
 | `GET` | `/api/settings/youtube-cookies/status` | Get cookie upload status |
+| `GET` | `/api/settings/maintenance` | Preview database maintenance (orphan imports, Queue history counts, indexed paths) without changing anything (admin only) |
+| `POST` | `/api/settings/maintenance` | Run a confirmed maintenance action: purge orphan imports, clear selected Queue history states, or reconcile/rebuild the path index (admin only) |
 
 ### Search and Preview
 
@@ -1039,6 +1047,7 @@ music.yourdomain.com {
 | `POST` | `/api/search/slskd` | Search Soulseek via slskd (if configured); results use the same ranking and quality fields |
 | `GET` | `/api/search/artwork` | Find display artwork for a search result (`?artist=...&title=...` or `?artist=...&album=...`); album lookups use Deezer `/search/album` as the fallback |
 | `GET` | `/api/preview/{video_id}` | Get a streamable audio URL. Monochrome accepts its complete `url` plus optional `artist` and `title` hints for lossless fallback resolution |
+| `GET` | `/api/preview-audio/{token}` | Serve a decrypted Monochrome preview snippet prepared by `/api/preview`, since an `<audio>` element cannot carry the token any other way |
 | `POST` | `/api/explore/similar` | Get similar artists via MusicBrainz + ListenBrainz Labs (`{"artist": "...", "mode": "easy", "limit": 25}`) |
 
 ### Downloads
@@ -1078,6 +1087,15 @@ music.yourdomain.com {
 |--------|----------|-------------|
 | `POST` | `/api/fetch-playlist` | Fetch tracks from playlist URL (Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, Beatport, Monochrome, ListenBrainz) |
 | `POST` | `/api/spotify-playlist` | Backwards-compat alias for `/api/fetch-playlist` |
+
+### Long-Form YouTube Splitting
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/longform/detect` | Probe a single YouTube video for split eligibility (over the length threshold, and whether chapters/a cue sheet were found). No download |
+| `POST` | `/api/longform/split` | Confirm a split: download the video once, then cut and tag each segment (`{url, video_title, album_artist, segments: [{start_seconds, end_seconds, title, artist?}]}`) |
+| `GET` | `/api/longform/{split_id}/status` | Poll a split's progress |
+| `POST` | `/api/longform/{split_id}/cancel` | Ask an in-progress split to stop before its next segment |
 
 ### Statistics and Reporting
 

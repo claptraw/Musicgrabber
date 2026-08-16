@@ -1146,10 +1146,13 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
         tracks, name = _fetch_soundcloud_playlist(url)
         return tracks, name, None, [None] * len(tracks)
 
-    elif platform == "tidal":
+    elif platform in ("tidal", "monochrome"):
+        # A Monochrome playlist share link is a Tidal playlist UUID wearing
+        # Monochrome's hostname; the same embed-page scrape resolves both,
+        # so there's no need for hifi-api (which increasingly means "down").
         m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', url, re.IGNORECASE)
         if not m:
-            raise HTTPException(status_code=400, detail="Invalid Tidal playlist URL: no UUID found")
+            raise HTTPException(status_code=400, detail="Invalid Tidal/Monochrome playlist URL: no UUID found")
         result = fetch_tidal_playlist(m.group(1))
         tracks = []
         for track_str in result["tracks"]:
@@ -1159,16 +1162,6 @@ def fetch_playlist_tracks(url: str, platform: str, user_id: str | None = None) -
             else:
                 tracks.append(("Unknown", track_str.strip()))
         return tracks, result["playlist_name"], None, [None] * len(tracks)
-
-    elif platform == "monochrome":
-        m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', url, re.IGNORECASE)
-        if not m:
-            raise HTTPException(status_code=400, detail="Invalid Monochrome playlist URL: no UUID found")
-        from monochrome import fetch_tidal_playlist_tracks
-        tracks, name = fetch_tidal_playlist_tracks(m.group(1))
-        if not tracks:
-            raise HTTPException(status_code=422, detail="No tracks found in Monochrome playlist")
-        return tracks, name, None, [None] * len(tracks)
 
     elif platform == "beatport":
         result = fetch_beatport_playlist(url)

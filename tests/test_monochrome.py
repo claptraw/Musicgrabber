@@ -819,3 +819,24 @@ def test_monochrome_playlist_urls_detect_as_monochrome():
 
     assert platform == "monochrome"
     assert playlist_id == "0dfc3b10-fbdb-4419-bf54-11b90051fa6c"
+
+
+def test_monochrome_playlist_fetch_uses_tidal_embed_not_hifi_api(monkeypatch):
+    # A Monochrome playlist share is a Tidal playlist UUID wearing Monochrome's
+    # hostname; it should resolve via the same embed-page scrape as a plain
+    # tidal.com link, not hifi-api, which has been dead since Tidal revoked its
+    # OAuth client.
+    import watched_playlists
+
+    def fake_fetch_tidal_playlist(uuid):
+        assert uuid == "0dfc3b10-fbdb-4419-bf54-11b90051fa6c"
+        return {"tracks": ["Kylie Cantrall - Carrie Bradshaw"], "playlist_name": "Chill Pop", "count": 1}
+
+    monkeypatch.setattr(watched_playlists, "fetch_tidal_playlist", fake_fetch_tidal_playlist)
+
+    tracks, name, warning, original_ids = watched_playlists.fetch_playlist_tracks(
+        "https://monochrome.tf/playlist/0dfc3b10-fbdb-4419-bf54-11b90051fa6c", "monochrome",
+    )
+
+    assert tracks == [("Kylie Cantrall", "Carrie Bradshaw")]
+    assert name == "Chill Pop"

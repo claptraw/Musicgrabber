@@ -395,11 +395,11 @@ DEFAULT_CONVERT_AUDIO = os.getenv(
     os.getenv("DEFAULT_CONVERT_TO_FLAC", "false"),
 ).lower() == "true"
 
-# Monochrome (Qobuz/Tidal), configurable so you can point at a self-hosted hifi-api
-MONOCHROME_HIFI_API_URL = os.getenv(
-    "MONOCHROME_HIFI_API_URL",
-    "https://us-west.monochrome.tf,https://monochrome-api.samidy.com",
-)
+# Monochrome (Qobuz/Tidal). The known public instances (us-west/api/eu-central
+# .monochrome.tf, monochrome-api.samidy.com) all stopped working once Tidal
+# revoked their OAuth client, so there is no honest public default any more;
+# this stays empty unless you point it at a self-hosted hifi-api of your own.
+MONOCHROME_HIFI_API_URL = os.getenv("MONOCHROME_HIFI_API_URL", "")
 # Current Monochrome playback is protected by a browser Turnstile exchange. A
 # short-lived JWT obtained by the real web app can be presented to the unified
 # playback API; SeleniumBase supplies the normal browser session only for that

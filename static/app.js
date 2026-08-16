@@ -1591,6 +1591,19 @@
             if (searchBtn.disabled) return;
             const query = searchInput.value.trim();
             if (!query) return;
+
+            // Links (playlists, albums, long videos worth splitting) belong in
+            // Bulk Import, which already knows what to do with every URL shape
+            // we support - send it there instead of searching Tracks for a URL.
+            if (/^https?:\/\//i.test(query)) {
+                searchInput.value = '';
+                hideSearchHistory();
+                document.querySelector('.tab[data-tab="bulk"]')?.click();
+                spotifyUrlInput.value = query;
+                await fetchSpotifyPlaylist();
+                return;
+            }
+
             const searchToken = ++currentSearchToken;
             currentSearchLogToken = null;
             lastCompletedSearchQuery = '';

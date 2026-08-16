@@ -3786,6 +3786,7 @@ h1 {
 
 .longform-split-panel {
     font-size: 13px;
+    margin-top: 12px;
 }
 
 .longform-video-header {
@@ -5425,7 +5426,7 @@ h1 {
 .input-action > textarea,
 .input-action > select {
     width: 100%;
-    padding-right: 130px;
+    padding-right: 180px;
 }
 
 .input-action > .input-action-btn {
@@ -5435,6 +5436,13 @@ h1 {
     transform: translateY(-50%);
     padding: 10px 20px;
     font-size: 15px;
+    /* Busy-state labels ("Hunting for a cue sheet…", "Scrolling playlist
+       (large lists take a minute)...") can run much longer than "Fetch" -
+       cap the button so it truncates instead of growing left over the
+       input's own text underneath it. */
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .input-action > .input-action-btn:active:not(:disabled) {

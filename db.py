@@ -1537,6 +1537,29 @@ def init_db():
             )
             print("DB migrated to version 13: obsolete Qobuz proxy setting removed")
 
+        # v14: the known public hifi-api instances (the shipped default) all stopped
+        # working once Tidal revoked their OAuth client, same fate as the Qobuz
+        # proxies in v13. Clear a stored value only if it still matches one of those
+        # now-dead defaults untouched; a value genuinely pointed at someone's own
+        # self-hosted hifi-api is left exactly as they set it.
+        if db_version < 14:
+            _dead_hifi_api_urls = {
+                "https://us-west.monochrome.tf",
+                "https://monochrome-api.samidy.com",
+                "https://api.monochrome.tf",
+                "https://eu-central.monochrome.tf",
+                "https://us-west.monochrome.tf,https://monochrome-api.samidy.com",
+            }
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'monochrome_hifi_api_url'"
+            ).fetchone()
+            if row and row[0] and row[0].strip() in _dead_hifi_api_urls:
+                conn.execute("DELETE FROM settings WHERE key = 'monochrome_hifi_api_url'")
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_version', '14')"
+            )
+            print("DB migrated to version 14: cleared dead default hifi-api URL, if it was still set to one")
+
         # Defensive backstop: early dev builds of v1 silently dropped custom_subdir
         # when recreating watched_playlists. Re-add it for any DB that already
         # passed through that mangled migration. Harmless if the column is present.
