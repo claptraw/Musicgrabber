@@ -1427,6 +1427,7 @@ def trigger_jellyfin_scan(user_id: str | None = None):
 def probe_audio_quality(
     file_path: Path,
     source_info: tuple[str, int] | None = None,
+    encoded_bitrate_kbps: int | None = None,
 ) -> tuple[str | None, int]:
     """Use ffprobe to extract audio quality info.
 
@@ -1438,6 +1439,14 @@ def probe_audio_quality(
     the source was lossy, the display string honestly notes the conversion
     (e.g. "FLAC (from MP3 128kbps)") and the returned bitrate is the SOURCE
     bitrate so the quality gate can reject lipstick-on-a-pig transcodes.
+
+    encoded_bitrate_kbps is the exact CBR rate we just told ffmpeg to encode
+    at (e.g. from an "-b:a 256k" conversion), used only as a fallback when
+    ffprobe can't read a bitrate back out of the file it just wrote. Ogg
+    Opus is the main offender: it doesn't declare a nominal stream bitrate,
+    so a lossless-sourced Opus file would otherwise report "OPUS (from
+    FLAC)" with no number anywhere, and every quality-tier comparison that
+    depends on a digit in this string sees an unknown, not an upgrade.
     """
     try:
         result = subprocess.run(
@@ -1474,6 +1483,7 @@ def probe_audio_quality(
                 parts.append(f"{bit_depth}bit")
             return " ".join(p for p in parts if p), 0  # Lossless  -  always passes
         else:
+            bitrate_kbps = bitrate_kbps or (encoded_bitrate_kbps or 0)
             kbps = f"{bitrate_kbps}kbps" if bitrate_kbps else ""
             label = " ".join(p for p in [codec, kbps] if p) or None
             if source_info:
@@ -2671,6 +2681,22 @@ def _get_lossy_codec_args(fmt: str, user_id: str | None = None) -> tuple[str, li
             return "alac", [], ".m4a"
         return "aac", ["-b:a", q], ".m4a"
     return _FORMAT_CODEC_MAP[fmt]
+
+
+def _cbr_target_kbps(fmt: str, user_id: str | None = None) -> int | None:
+    """The exact kbps we just told ffmpeg to encode at, for a fixed-rate format.
+
+    None for VBR (MP3 Vn presets) or a lossless target, where there's no single
+    number to offer as a fallback when ffprobe can't read one back out of the
+    file (see probe_audio_quality's encoded_bitrate_kbps).
+    """
+    _codec, extra_args, _ext = _get_lossy_codec_args(fmt, user_id=user_id)
+    if len(extra_args) == 2 and extra_args[0] == "-b:a":
+        try:
+            return int(extra_args[1].rstrip("kK"))
+        except ValueError:
+            return None
+    return None
 
 
 def _enforce_target_format(audio_file: Path, convert_audio: bool, user_id: str | None = None) -> Path:
@@ -4294,7 +4320,11 @@ def process_slskd_download(job_id: str, username: str, filename: str, artist: st
 
         # Probe audio quality (with source info so FLAC-from-lossy is reported honestly)
         _update_job(job_id, progress_stage="Probing quality")
-        audio_quality, bitrate_kbps = probe_audio_quality(final_file, source_info=source_format_info)
+        converted_ok = needs_convert and final_file.suffix.lower() == target_ext
+        audio_quality, bitrate_kbps = probe_audio_quality(
+            final_file, source_info=source_format_info,
+            encoded_bitrate_kbps=_cbr_target_kbps(audio_fmt, user_id=user_id) if converted_ok else None,
+        )
         min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             final_file.unlink(missing_ok=True)
@@ -4767,6 +4797,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
 
         # Convert to the user's chosen format if requested.
         _update_job(job_id, progress_stage="Converting audio")
+        converted = False
         if convert_audio:
             audio_fmt = get_setting("audio_format", "opus", user_id=user_id)
             if audio_fmt not in _FORMAT_CODEC_MAP:
@@ -4788,6 +4819,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
                 if result.returncode != 0 or not output_path.exists():
                     raise Exception(f"{audio_fmt.upper()} conversion failed: {(result.stderr or '').strip()}")
                 source_path.unlink(missing_ok=True)
+                converted = True
         else:
             output_path = source_path
 
@@ -4802,6 +4834,7 @@ def _process_direct_mp3_download(job_id: str, download_url: str, artist_hint: st
         audio_quality, bitrate_kbps = probe_audio_quality(
             output_path,
             source_info=source_format_info if convert_audio else None,
+            encoded_bitrate_kbps=_cbr_target_kbps(audio_fmt, user_id=user_id) if converted else None,
         )
         min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
@@ -5443,7 +5476,17 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
 
         # Probe audio quality (with source info so FLAC-from-lossy is reported honestly)
         _update_job(job_id, progress_stage="Probing quality")
-        audio_quality, bitrate_kbps = probe_audio_quality(audio_file, source_info=source_format_info)
+        encode_hint = None
+        if convert_audio:
+            audio_fmt = get_setting("audio_format", "opus", user_id=user_id)
+            if audio_fmt not in _FORMAT_CODEC_MAP:
+                audio_fmt = "opus"
+            _codec, _extra_args, target_ext = _get_lossy_codec_args(audio_fmt, user_id=user_id)
+            if audio_file.suffix.lower() == target_ext:
+                encode_hint = _cbr_target_kbps(audio_fmt, user_id=user_id)
+        audio_quality, bitrate_kbps = probe_audio_quality(
+            audio_file, source_info=source_format_info, encoded_bitrate_kbps=encode_hint,
+        )
         min_bitrate = get_setting_int("min_audio_bitrate", 0, user_id=user_id)
         if min_bitrate and bitrate_kbps and bitrate_kbps < min_bitrate:
             audio_file.unlink(missing_ok=True)

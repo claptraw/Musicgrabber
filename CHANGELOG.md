@@ -2,6 +2,11 @@
 
 ## v4.0.2 (DEV)
 
+### Fixed
+- **Soulseek track upgrades no longer fail after a successful download**: the upgrade worker's Soulseek call was missing the duplicate-check bypass its own sibling call (for every other source) already had, so it dutifully found the file being replaced, declared the download "already exists", and threw the freshly-fetched replacement away, reporting "Download failed or produced no file" despite Soulseek having done its job perfectly. It now skips that check the same way the rest of the upgrade path always has.
+- **Opus upgrades were being rejected as "not actually better" even when they very much were**: Ogg Opus doesn't declare a per-stream bitrate the way MP3 does, and neither ffprobe nor mutagen can read one back out, so a lossless-sourced Opus conversion picked up a quality label with no number in it at all ("OPUS (from FLAC)"), and the tier check, finding nothing to compare, defaulted it to the lowest possible tier alongside every other unnumbered Opus file in the library. Since we already know exactly what bitrate we told ffmpeg to encode at, that number now gets stamped into the label instead of leaving it to guesswork ffprobe can't do. New downloads and upgrades are unaffected either way; existing library files keep whatever label they already have until they're next replaced.
+- **Watched Upgrades no longer lists files it already knows it can't upgrade**: a candidate stays on the page forever once searched, even after that search turns up nothing, so the list slowly filled up with permanent "No better copy found" dead ends. Those now drop out once the search comes home empty, and reappear on their own if the file itself later changes.
+
 ## v4.0.1 - Fix of the Phoenix (2026-08-16)
 
 ### Added

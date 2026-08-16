@@ -551,6 +551,10 @@ def get_candidates_page(user_id: str | None, page: int = 1, per_page: int = 10,
     params: list = [uid]
     if not include_dismissed:
         clauses.append("dismissed=0")
+    # Once we've actually looked and found nothing, there's no path to an upgrade;
+    # keep the row out rather than showing a dead end forever. A not-yet-searched
+    # row (found_searched=0) still belongs here, we just don't know yet.
+    clauses.append("NOT (found_searched=1 AND found_source IS NULL)")
     where = " AND ".join(clauses)
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
@@ -683,6 +687,7 @@ def _download_candidate_to_staging(user_id: str | None, row, staging_dir: Path) 
                 job_id, row["found_slskd_username"], row["found_slskd_filename"],
                 artist, title, convert, user_id=user_id,
                 override_dir=str(staging_dir), slskd_size=row["found_slskd_size"],
+                skip_dupe_check=True,
             )
         else:
             process_download(

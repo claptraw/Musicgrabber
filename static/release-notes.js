@@ -9,7 +9,16 @@
 const RELEASE_NOTES = {
     "4.0.2": {
         title: "What's New in v4.0.2",
-        sections: []
+        sections: [
+            {
+                heading: "Track Upgrades fixes",
+                items: [
+                    "Soulseek upgrades no longer fail right after a successful download. The upgrade worker was mistaking the file it was about to replace for a duplicate and throwing the replacement away; it now knows better.",
+                    "Opus upgrades were being wrongly rejected as \"not actually better\" because Opus files don't carry a readable bitrate, so quality comparisons couldn't tell a fresh lossless-sourced copy from a mystery file. New downloads now stamp the real encode rate into the file so the comparison works properly.",
+                    "Watched Upgrades no longer keeps listing files it already searched and found nothing for. Those drop off the list instead of sitting there as a permanent dead end.",
+                ]
+            },
+        ]
     },
     "4.0.1": {
         title: "What's New in v4.0.1 - Fix of the Phoenix",

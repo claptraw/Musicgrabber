@@ -8384,6 +8384,12 @@
             if (rowEl) rowEl._foundSourceUrl = item.found_source_url || null;
             if (!item.found_source) {
                 cell.innerHTML = '<span class="upgrade-none">No better copy found</span>';
+                // Nothing to offer; the server won't list it again once this search is
+                // cached, so drop the row now instead of leaving a permanent dead end.
+                setTimeout(() => {
+                    if (rowEl) rowEl.remove();
+                    if (!document.querySelectorAll('#watchedUpgradesList .upgrade-row').length) loadWatchedUpgrades();
+                }, 1500);
                 return;
             }
             const badge = UPGRADE_SOURCE_BADGES[item.found_source] || item.found_source.toUpperCase().slice(0, 4);
