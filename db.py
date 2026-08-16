@@ -22,6 +22,7 @@ from constants import (
     STALE_BULK_IMPORT_TIMEOUT,
     STALE_BULK_IMPORT_MAX_RESUMES,
     STALE_BULK_IMPORT_ABANDON_AFTER,
+    STALE_LONGFORM_SPLIT_TIMEOUT,
     LIBRARY_RECONCILE_INTERVAL,
     SEARCH_LOG_RETENTION_DAYS,
     WATCHED_REFRESH_STALE_SECONDS,
@@ -415,6 +416,49 @@ def init_db():
             conn.execute("ALTER TABLE bulk_import_tracks ADD COLUMN original_youtube_video_id TEXT")
         except sqlite3.OperationalError:
             pass
+
+        # Long-form YouTube splitting: one master video cut into many tracks via
+        # ffmpeg, rather than N independent per-line searches, so it gets its own
+        # pair of tables instead of overloading bulk_imports/bulk_import_tracks.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS longform_splits (
+            id TEXT PRIMARY KEY,
+            source_url TEXT NOT NULL,
+            video_id TEXT,
+            video_title TEXT,
+            album_artist TEXT,
+            override_dir TEXT,
+            status TEXT DEFAULT 'pending',
+            detected_via TEXT,
+            total_segments INTEGER DEFAULT 0,
+            completed_segments INTEGER DEFAULT 0,
+            failed_segments INTEGER DEFAULT 0,
+            master_staging_path TEXT,
+            cancel_requested INTEGER DEFAULT 0,
+            user_id TEXT,
+            error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            progress_at TIMESTAMP,
+            completed_at TIMESTAMP
+        )
+    """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS longform_split_segments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            split_id TEXT NOT NULL,
+            segment_index INTEGER NOT NULL,
+            start_seconds REAL NOT NULL,
+            end_seconds REAL NOT NULL,
+            title TEXT NOT NULL,
+            artist TEXT,
+            status TEXT DEFAULT 'pending',
+            final_path TEXT,
+            error TEXT,
+            FOREIGN KEY (split_id) REFERENCES longform_splits(id)
+        )
+    """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_longform_split_segments_split_id ON longform_split_segments(split_id)")
 
         # Watched playlists - playlists to monitor for new tracks
         conn.execute("""
@@ -890,6 +934,19 @@ def init_db():
         )
         """)
 
+        # Reusable sibling of download_tokens, for <audio> playback. Not bound to
+        # a job: the stream endpoints already scope what they'll serve to the
+        # caller, so this only needs to say who the caller is.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS stream_tokens (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """)
+
         conn.execute("""
         CREATE TABLE IF NOT EXISTS user_settings (
             user_id TEXT NOT NULL,
@@ -906,6 +963,8 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_download_tokens_expires ON download_tokens(expires_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_download_tokens_user ON download_tokens(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_download_tokens_job ON download_tokens(job_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_stream_tokens_expires ON stream_tokens(expires_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_stream_tokens_user ON stream_tokens(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_user_settings_user ON user_settings(user_id)")
 
         # Multi-user: add user_id to all domain tables
@@ -1124,6 +1183,28 @@ def init_db():
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_atl_release_track "
             "ON album_track_locks (release_mbid, track_title)"
         )
+
+        # One live import per album folder, enforced by SQLite rather than by
+        # hopeful timing. queue_album_download() checks for an in-flight import
+        # and then creates one, and two impatient clicks can both pass the check
+        # before either insert lands, queueing the album twice into the same
+        # directory. A partial unique index makes the second insert lose, which
+        # the caller catches and reports as "already in progress".
+        #
+        # Wrapped because an install that already queued a duplicate cannot build
+        # the index; a warning beats refusing to boot, and the old check-then-act
+        # still catches the everyday case.
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_bulk_imports_active_album "
+                "ON bulk_imports (override_dir) "
+                "WHERE override_dir IS NOT NULL "
+                "AND completed_at IS NULL "
+                "AND status IN ('pending', 'processing')"
+            )
+        except sqlite3.DatabaseError as e:
+            print(f"DB: could not create idx_bulk_imports_active_album ({e}); "
+                  "duplicate active album imports may already exist")
 
         # --- convert_to_flac → convert_audio (v4.0.0) ---
         # The flag never meant "make me a FLAC"; it means "convert to whatever
@@ -1761,6 +1842,37 @@ def cleanup_stale_bulk_imports(orphaned: bool = False) -> tuple[int, int]:
     return len(resume_ids), len(fail_reasons)
 
 
+def cleanup_stale_longform_splits(orphaned: bool = False) -> int:
+    """Fail any long-form split whose worker thread is no longer with us.
+
+    Unlike bulk imports, a split doesn't resume mid-cut: ffmpeg either finished
+    a segment or it didn't, and re-driving that from a stale DB row is more
+    machinery than a feature nobody can retry-by-segment yet deserves. So a
+    quiet split just gets marked failed. `orphaned=True` is the boot pass:
+    nothing survives a restart, so every in-flight row is dead by definition.
+    Returns the number of rows failed.
+    """
+    cutoff = "-0 seconds" if orphaned else f"-{int(STALE_LONGFORM_SPLIT_TIMEOUT)} seconds"
+    with db_conn() as conn:
+        cursor = conn.execute(
+            f"""UPDATE longform_splits SET status = 'failed',
+               error = 'Worker interrupted; the split did not finish', completed_at = datetime('now')
+               WHERE status IN ('pending', 'downloading', 'splitting')
+                 AND COALESCE(progress_at, created_at) < datetime('now', '{cutoff}')"""
+        )
+        if cursor.rowcount > 0:
+            conn.execute(
+                """UPDATE longform_split_segments SET status = 'failed',
+                   error = 'Split abandoned before this segment was cut'
+                   WHERE status IN ('pending', 'cutting', 'tagging')
+                     AND split_id IN (SELECT id FROM longform_splits WHERE status = 'failed'
+                                      AND error = 'Worker interrupted; the split did not finish')"""
+            )
+            print(f"Cleaned up {cursor.rowcount} stale long-form split(s)")
+        conn.commit()
+        return cursor.rowcount
+
+
 def cleanup_stale_watched_refreshes():
     """Mark stuck watched playlist/artist refresh states as failed."""
     stale_arg = (str(WATCHED_REFRESH_STALE_SECONDS),)
@@ -1923,10 +2035,12 @@ def _boot_cleanup():
     # Nothing survives a restart, so every import still marked 'processing' is
     # orphaned by definition. No sense making it serve out the timeout first.
     cleanup_stale_bulk_imports(orphaned=True)
+    cleanup_stale_longform_splits(orphaned=True)
     reconcile_deleted_library_files()
-    from auth import cleanup_expired_download_tokens, cleanup_expired_sessions
+    from auth import cleanup_expired_download_tokens, cleanup_expired_sessions, cleanup_expired_stream_tokens
     cleanup_expired_sessions()
     cleanup_expired_download_tokens()
+    cleanup_expired_stream_tokens()
     # Downloads killed mid-flight leave their staging sandbox behind; nothing
     # survives a restart, so anything still there is scrap.
     from downloads import sweep_staging_dirs
@@ -1948,6 +2062,7 @@ def _stale_job_monitor():
             cleanup_stale_jobs()
             cleanup_stale_watched_refreshes()
             cleanup_stale_bulk_imports()
+            cleanup_stale_longform_splits()
             if LIBRARY_RECONCILE_INTERVAL > 0:
                 now = time.time()
                 if now - last_reconcile >= LIBRARY_RECONCILE_INTERVAL:
@@ -1955,9 +2070,10 @@ def _stale_job_monitor():
                     last_reconcile = now
             cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
             # Bin any sessions that have outstayed their welcome
-            from auth import cleanup_expired_download_tokens, cleanup_expired_sessions
+            from auth import cleanup_expired_download_tokens, cleanup_expired_sessions, cleanup_expired_stream_tokens
             cleanup_expired_sessions()
             cleanup_expired_download_tokens()
+            cleanup_expired_stream_tokens()
             # While we're here, evict any expired YouTube cookies so they don't
             # silently rot in settings causing mysterious 403s
             from youtube import clear_expired_cookies

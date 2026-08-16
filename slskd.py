@@ -248,6 +248,43 @@ def prune_empty_dirs(start: Path, roots: list[Path]) -> None:
         current = current.parent
 
 
+class AmbiguousSlskdMatch(Exception):
+    """Several files answer to the same name and size, so none of them get picked."""
+
+
+def _pick_sized_match(root: Path, filename: str, expected_size: int) -> Path | None:
+    """Find the one file under root called `filename` that is also the right size.
+
+    The basename alone is a terrible identifier on Soulseek; half the network has
+    an `01 - Intro.flac` knocking about. Matching on name alone used to hand back
+    whichever one rglob tripped over first, and with slskd_move_completed on that
+    unlucky stranger then got deleted from disk. So: the byte count has to agree
+    with what the peer promised, and if two files still both fit we refuse rather
+    than guess. A failed download is annoying; eating an unrelated one is worse.
+    """
+    matches = [
+        path for path in root.rglob(filename)
+        if path.is_file() and _size_or_none(path) == expected_size
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        listed = ", ".join(str(path) for path in sorted(matches)[:5])
+        raise AmbiguousSlskdMatch(
+            f"{len(matches)} files under {root} match '{filename}' at {expected_size} bytes "
+            f"({listed}). Refusing to guess which one is yours."
+        )
+    return matches[0]
+
+
+def _size_or_none(path: Path) -> int | None:
+    """st_size, or None if the file evaporated mid-scan. Races happen."""
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
 def deliver_slskd_file(source: Path, dest: Path, download_roots: list[Path] | None = None) -> Path:
     """Bring a completed slskd download into MusicGrabber's staging directory.
 
@@ -1134,25 +1171,26 @@ def download_from_slskd(username: str, filename: str, dest_dir: Path, timeout_se
                         return deliver_slskd_file(path_option, dest_path, slskd_download_dirs)
 
             # If not found, search recursively in the username folder
+            expected_size = int(size)
             for slskd_dir in slskd_download_dirs:
                 user_dir = slskd_dir / username
                 if user_dir.exists():
-                    for found_file in user_dir.rglob(source_filename):
-                        if found_file.is_file():
-                            dest_path = dest_dir / source_filename
-                            print(f"slskd: Found {found_file}")
-                            return deliver_slskd_file(found_file, dest_path, slskd_download_dirs)
+                    found_file = _pick_sized_match(user_dir, source_filename, expected_size)
+                    if found_file:
+                        dest_path = dest_dir / source_filename
+                        print(f"slskd: Found {found_file}")
+                        return deliver_slskd_file(found_file, dest_path, slskd_download_dirs)
 
             # Some slskd installs group completed downloads by remote folder or
             # album rather than by Soulseek username. Fall back to the whole
             # configured root after the stricter username lookup fails.
             for slskd_dir in slskd_download_dirs:
                 if slskd_dir.exists():
-                    for found_file in slskd_dir.rglob(source_filename):
-                        if found_file.is_file():
-                            dest_path = dest_dir / source_filename
-                            print(f"slskd: Found {found_file}")
-                            return deliver_slskd_file(found_file, dest_path, slskd_download_dirs)
+                    found_file = _pick_sized_match(slskd_dir, source_filename, expected_size)
+                    if found_file:
+                        dest_path = dest_dir / source_filename
+                        print(f"slskd: Found {found_file}")
+                        return deliver_slskd_file(found_file, dest_path, slskd_download_dirs)
 
             # List what's actually there for debugging
             for slskd_dir in slskd_download_dirs:

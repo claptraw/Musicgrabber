@@ -5,7 +5,9 @@ Environment variable > DB value > default hierarchy.
 Per-user settings layer sits between env vars and global DB values.
 """
 
+import contextlib
 import os
+import shutil
 from pathlib import Path
 
 from constants import (
@@ -323,6 +325,53 @@ def _is_env_override(key: str) -> bool:
     return bool(legacy_env_key and os.getenv(legacy_env_key) is not None)
 
 
+def _join_within_music_dir(music_dir: Path, subdir: str, label: str) -> Path:
+    """Join a user-supplied subfolder onto the music root, and insist it stays there.
+
+    Every one of these subdir strings is typed by a user, so "Singles" and
+    "../../etc" arrive through exactly the same door. pathlib is no help on its
+    own: joining an absolute path throws the root away entirely, and ".." hops
+    are cheerfully honoured.
+
+    Both sides are resolved before comparing, because a lexical prefix check
+    believes whatever a symlink tells it. The path handed back is the unresolved
+    join, though, so installs where /music is itself a symlink keep the paths
+    they already have in the database.
+
+    Raises ValueError rather than quietly rewriting the value; silently writing
+    somewhere other than where you were asked to is how libraries go missing.
+    """
+    candidate = music_dir / subdir
+    root_resolved = music_dir.resolve()
+    candidate_resolved = candidate.resolve()
+    if candidate_resolved != root_resolved and root_resolved not in candidate_resolved.parents:
+        raise ValueError(
+            f"{label} must stay inside the music directory "
+            f"({subdir!r} lands at {candidate_resolved})"
+        )
+    return candidate
+
+
+def _safe_library_dir(music_dir: Path, subdir: str, label: str, default: str) -> Path:
+    """Contained join for a *settings*-derived folder, falling back if it escapes.
+
+    These three run at import time (app.py makes the Singles directory before it
+    does anything else), so raising here would stop a container booting over a
+    setting nobody can reach the UI to fix. A stored value that escapes is a
+    misconfiguration rather than an attack in progress, so we grumble loudly and
+    use the default, which is still safely inside the music root.
+
+    A per-playlist custom folder is different: that one raises, because it
+    arrives with a specific job and that job should fail rather than land
+    somewhere else entirely.
+    """
+    try:
+        return _join_within_music_dir(music_dir, subdir, label)
+    except ValueError as e:
+        print(f"[settings] {e}; using the default {default!r} instead")
+        return music_dir / default
+
+
 def get_singles_dir(user_id: str | None = None) -> Path:
     """Get the singles download directory for a user (or global default).
 
@@ -332,14 +381,16 @@ def get_singles_dir(user_id: str | None = None) -> Path:
     subdir = get_setting("singles_subdir", "Singles", user_id=user_id).strip() or "Singles"
     if subdir == ".":
         return music_dir
-    return music_dir / subdir
+    return _safe_library_dir(music_dir, subdir, "Singles folder", "Singles")
 
 
 def resolve_custom_subdir(custom_subdir: str, user_id: str | None = None) -> Path:
     """Resolve a per-playlist custom subdir string to an absolute path under music_dir."""
     music_dir = Path(get_setting("music_dir", str(MUSIC_DIR), user_id=user_id))
     subdir = custom_subdir.strip()
-    return music_dir if subdir == "." else music_dir / subdir
+    if subdir in ("", "."):
+        return music_dir
+    return _join_within_music_dir(music_dir, subdir, "Custom playlist folder")
 
 
 def get_playlists_dir(user_id: str | None = None) -> Path | None:
@@ -350,16 +401,135 @@ def get_playlists_dir(user_id: str | None = None) -> Path | None:
         return None  # Feature disabled, fall back to Singles behaviour
     if subdir == ".":
         return music_dir
-    return music_dir / subdir
+    try:
+        return _join_within_music_dir(music_dir, subdir, "Playlists folder")
+    except ValueError as e:
+        # This one is opt-in, so the safe default is "off" rather than a guess
+        # at which folder was meant.
+        print(f"[settings] {e}; treating the playlists folder as disabled")
+        return None
+
+
+TRASH_ROOT = DB_PATH.parent / ".trash"
 
 
 def get_trash_dir(user_id: str | None = None) -> Path:
-    """Get the trash directory.
+    """Get the trash directory for a user.
 
     Lives under /data rather than the music volume to avoid FUSE/mergerfs
     filesystem quirks that prevent directory listing on some setups.
+
+    Each account gets its own bin. It used to be one shared heap, which meant
+    anyone with an account could browse, play, restore or permanently delete
+    somebody else's deleted music; restoring was the really cheeky one, since it
+    dropped their file into your library. In single-user mode there is no
+    user_id and no one to hide from, so the root itself is used, exactly as
+    before. migrate_trash_to_per_user() sorts out installs that grew a second
+    account after the fact.
     """
-    return DB_PATH.parent / ".trash"
+    if not user_id:
+        return TRASH_ROOT
+    return TRASH_ROOT / str(user_id)
+
+
+def _move_trash_files(src: Path, dst: Path) -> int:
+    """Move every file under src into the matching spot under dst, then tidy up.
+
+    shutil.move on a directory would nest it inside an existing destination, and
+    a trash bin full of `.trash/Singles/Singles/` helps nobody, so this walks
+    files instead. Existing destination files win; a duplicate in the bin is not
+    worth losing sleep, or the original, over.
+    """
+    moved = 0
+    for path in sorted(src.rglob("*")):
+        if not path.is_file():
+            continue
+        target = dst / path.relative_to(src)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            continue
+        try:
+            shutil.move(str(path), str(target))
+            moved += 1
+        except OSError as e:
+            print(f"[trash] Could not migrate {path}: {e}")
+    # Sweep up the empty shells left behind, deepest first.
+    for path in sorted(src.rglob("*"), reverse=True):
+        if path.is_dir():
+            with contextlib.suppress(OSError):
+                path.rmdir()
+    return moved
+
+
+def migrate_trash_to_per_user() -> None:
+    """Reshape the trash bin to match how many accounts the install has.
+
+    The bin used to be one shared pile. Now it is per-account, which leaves two
+    installs needing a nudge, both idempotent and both cheap enough to run at
+    every boot:
+
+    * grew a second account: loose files at the root predate the split and have
+      no owner recorded anywhere, so they go to the first admin. The alternative
+      is leaving them on disk but invisible to every single user, which looks
+      exactly like MusicGrabber ate them.
+    * shrank back to one account: single-user mode has no user_id, so a bin
+      tucked under one would be unreachable and restore paths would sprout a
+      stray ID folder. Flatten it back to the root.
+    """
+    if not TRASH_ROOT.exists():
+        return
+    try:
+        with db_conn() as conn:
+            # Every account, active or not, deliberately: middleware decides
+            # single-user mode on a plain COUNT(*), and if the two disagree we
+            # would tidy the bin into a shape the request path cannot find.
+            users = conn.execute(
+                "SELECT id, role, is_active FROM users ORDER BY created_at"
+            ).fetchall()
+    except Exception as e:
+        print(f"[trash] Skipping migration, could not read users: {e}")
+        return
+
+    user_ids = {str(row[0]) for row in users}
+
+    if len(users) <= 1:
+        # Single-user mode: everything belongs to the one account anyway.
+        for child in TRASH_ROOT.iterdir():
+            if child.is_dir() and child.name in user_ids:
+                moved = _move_trash_files(child, TRASH_ROOT)
+                with contextlib.suppress(OSError):
+                    child.rmdir()
+                if moved:
+                    print(f"[trash] Flattened {moved} file(s) back to the shared bin")
+        return
+
+    # Prefer an admin who can actually log in to come and collect them.
+    admin_id = next((str(row[0]) for row in users if row[1] == "admin" and row[2]), None)
+    admin_id = admin_id or next((str(row[0]) for row in users if row[1] == "admin"), None)
+    if not admin_id:
+        return
+    admin_dir = TRASH_ROOT / admin_id
+    orphans = [
+        child for child in TRASH_ROOT.iterdir()
+        if child.name not in user_ids and not child.name.startswith(".")
+    ]
+    if not orphans:
+        return
+    admin_dir.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for child in orphans:
+        if child.is_dir():
+            total += _move_trash_files(child, admin_dir)
+            with contextlib.suppress(OSError):
+                child.rmdir()
+        elif child.is_file():
+            target = admin_dir / child.name
+            if not target.exists():
+                with contextlib.suppress(OSError):
+                    shutil.move(str(child), str(target))
+                    total += 1
+    if total:
+        print(f"[trash] Moved {total} unowned file(s) into the admin's bin")
 
 
 def get_albums_dir(user_id: str | None = None) -> Path:
@@ -372,7 +542,7 @@ def get_albums_dir(user_id: str | None = None) -> Path:
     subdir = get_setting("albums_subdir", "Albums", user_id=user_id).strip() or "Albums"
     if subdir == ".":
         return music_dir
-    return music_dir / subdir
+    return _safe_library_dir(music_dir, subdir, "Albums folder", "Albums")
 
 
 def get_download_dir(artist: str, user_id: str | None = None) -> Path:

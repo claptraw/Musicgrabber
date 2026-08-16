@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import shutil
 
 from constants import (
-    AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH,
+    AUDIO_EXTENSIONS, MAX_FILENAME_LENGTH, MUSIC_DIR,
     MAX_FILENAME_BYTES, FILENAME_STEM_RESERVE_BYTES,
     EXCLUDED_SCAN_DIR_NAMES, EXCLUDED_SCAN_DIR_PREFIXES,
 )
@@ -409,6 +409,40 @@ def _find_audio_match_in_dir(directory: Path, stems: list[str]) -> Optional[Path
                     return file
 
     return None
+
+
+def authoritative_audio_file(raw_path: str | None, user_id: str | None = None) -> Optional[Path]:
+    """Vet a stored path before we serve, retag, move or delete whatever it points at.
+
+    `jobs.final_path` and `*.resolved_path` are the fast route to a file, and were
+    trusted on the strength of "absolute, and it exists". That is a low bar. It
+    says nothing about the file still living in the user's library, and a symlink
+    dropped in place of a track would happily lead a delete or a retag off into
+    the rest of the container.
+
+    So: it must be a real regular file (not a symlink, not a directory), carry an
+    extension we actually deal in, and resolve to somewhere inside this user's
+    music root. The unresolved path is handed back so downstream behaviour and
+    stored paths do not change on installs where /music is itself a symlink.
+    Returns None if anything looks off; callers fall back to check_duplicate().
+    """
+    if not raw_path:
+        return None
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        return None
+    try:
+        if candidate.is_symlink() or not candidate.is_file():
+            return None
+        resolved = candidate.resolve(strict=True)
+        music_root = Path(get_setting("music_dir", str(MUSIC_DIR), user_id=user_id)).resolve()
+    except OSError:
+        return None
+    if resolved.suffix.lower() not in AUDIO_EXTENSIONS:
+        return None
+    if music_root not in resolved.parents:
+        return None
+    return candidate
 
 
 def check_duplicate(artist: str, title: str, user_id: str | None = None) -> Optional[Path]:

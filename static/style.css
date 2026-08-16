@@ -2685,6 +2685,64 @@ h1 {
     color: var(--warning);
 }
 
+/* Step-by-step diagnostic output (Monochrome download test) */
+.diag-steps {
+    margin-top: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    font-size: 13px;
+}
+
+.diag-step {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.diag-step:last-child {
+    border-bottom: none;
+}
+
+.diag-step-status {
+    flex: 0 0 auto;
+    width: 46px;
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.diag-step.ok .diag-step-status { color: var(--accent); }
+.diag-step.fail .diag-step-status { color: var(--error); }
+.diag-step.warn .diag-step-status { color: var(--warning); }
+.diag-step.skip .diag-step-status { color: var(--text-secondary); }
+
+.diag-step-body {
+    min-width: 0;
+    flex: 1;
+}
+
+.diag-step-name {
+    font-weight: 600;
+}
+
+.diag-step-detail {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.diag-hint {
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+    background: rgba(234, 179, 8, 0.1);
+    color: var(--warning);
+}
+
 .user-mgmt-section {
     position: relative;
 }
@@ -3720,6 +3778,98 @@ h1 {
 
 .album-download-btn {
     margin-top: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   Long-form YouTube split panel (Bulk Import Fetch box)
+-------------------------------------------------------------------------- */
+
+.longform-split-panel {
+    font-size: 13px;
+}
+
+.longform-video-header {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.longform-video-thumb {
+    width: 80px;
+    height: 45px;
+    object-fit: cover;
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+
+.longform-video-title {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.longform-detected-via {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.longform-field-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.longform-rows-wrap {
+    overflow-x: auto;
+    margin-bottom: 8px;
+}
+
+.longform-row {
+    display: grid;
+    grid-template-columns: 90px 90px 1fr 1fr auto;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+    min-width: 480px;
+}
+
+.longform-row-input {
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: inherit;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    width: 100%;
+}
+
+.longform-row-remove {
+    padding: 4px 8px;
+}
+
+.longform-paste-wrap {
+    margin: 10px 0;
+}
+
+.longform-paste-textarea {
+    width: 100%;
+    min-height: 70px;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-family: inherit;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    resize: vertical;
+}
+
+.longform-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
 }
 
 /* --------------------------------------------------------------------------

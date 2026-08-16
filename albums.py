@@ -15,6 +15,7 @@ import contextlib
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import unicodedata
 from difflib import SequenceMatcher
@@ -257,7 +258,10 @@ def album_track_status(artist: str, album_title: str, tracks: list[dict], user_i
     track_status = []
     for t in tracks:
         title = (t.get("title") or "").strip()
-        stem = _album_track_stem(artist, title, user_id=user_id)
+        # The performer on this track, which is the release artist on a normal
+        # album and somebody else entirely on a compilation.
+        track_artist = (t.get("artist") or "").strip() or artist
+        stem = _album_track_stem(track_artist, title, user_id=user_id)
         exists_exact = any(
             (existing_dir / f"{stem}{ext}").exists()
             for existing_dir in matched_dirs
@@ -265,11 +269,12 @@ def album_track_status(artist: str, album_title: str, tracks: list[dict], user_i
         )
         exists = bool(
             exists_exact
-            or any(_album_file_matches_track(path, artist, title) for path in audio_files)
+            or any(_album_file_matches_track(path, track_artist, title) for path in audio_files)
         )
         track_status.append({
             "position": t.get("position"),
             "title": title,
+            "artist": track_artist,
             "isrc": t.get("isrc"),
             "exists": exists,
         })
@@ -359,7 +364,10 @@ def queue_album_download(
     # Queue only missing tracks; already-present tracks are left as-is.
     # ISRC list runs parallel to track_pairs (same list, same order) so the bulk
     # importer can try the exact studio recording before falling back to free text.
-    track_pairs = [(artist, t["title"]) for t in missing_tracks]
+    # Search for the credited performer, not the sleeve. On a Various Artists
+    # compilation the two are wildly different, and hunting for
+    # "Various Artists - Song" finds precisely nothing.
+    track_pairs = [(t.get("artist") or artist, t["title"]) for t in missing_tracks]
     track_isrcs = [t.get("isrc") for t in missing_tracks]
 
     if not track_pairs:
@@ -379,15 +387,39 @@ def queue_album_download(
         }
 
     from bulk_import import start_bulk_import_for_tracks
-    import_id = start_bulk_import_for_tracks(
-        tracks=track_pairs,
-        track_isrcs=track_isrcs,
-        convert_audio=convert_audio,
-        user_id=user_id,
-        override_dir=str(album_dir),
-        album_release_mbid=release_mbid,
-        album_total_tracks=len(tracks),
-    )
+    try:
+        import_id = start_bulk_import_for_tracks(
+            tracks=track_pairs,
+            track_isrcs=track_isrcs,
+            convert_audio=convert_audio,
+            user_id=user_id,
+            override_dir=str(album_dir),
+            album_release_mbid=release_mbid,
+            album_total_tracks=len(tracks),
+        )
+    except sqlite3.IntegrityError:
+        # Someone else got there between our check above and this insert. The
+        # partial unique index caught it, so report their import rather than
+        # queueing the same album into the same folder twice.
+        with db_conn() as conn:
+            winner = conn.execute(
+                """SELECT id FROM bulk_imports
+                   WHERE override_dir = ?
+                     AND status IN ('pending', 'processing')
+                     AND completed_at IS NULL
+                   LIMIT 1""",
+                (str(album_dir),),
+            ).fetchone()
+        return {
+            "import_id": winner[0] if winner else None,
+            "track_count": len(tracks),
+            "queued_count": len(missing_tracks),
+            "existing_count": len(status["existing_tracks"]),
+            "missing_count": len(missing_tracks),
+            "album_dir": str(album_dir),
+            "warning": "Download already in progress for this album.",
+            "already_queued": True,
+        }
 
     # If M3U requested, store the album details so create_bulk_playlist can pick it up.
     # We repurpose the existing create_playlist + playlist_name mechanism.

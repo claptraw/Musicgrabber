@@ -437,6 +437,7 @@
         const fetchSpotifyBtn = document.getElementById('fetchSpotifyBtn');
         const spotifyError = document.getElementById('spotifyError');
         const albumMatchPanel = document.getElementById('albumMatchPanel');
+        const longformSplitPanel = document.getElementById('longformSplitPanel');
         const queueTabContainer = document.getElementById('queueTabContainer');
         const queueTab = document.getElementById('queueTab');
         const queueLiveSummary = document.getElementById('queueLiveSummary');
@@ -1159,6 +1160,8 @@
         let allQueueJobs = [];
         let currentBulkImportId = null;
         let bulkImportPollInterval = null;
+        let longformSplitPollInterval = null;
+        let longformDetectedContext = null;
         let queuePollInterval = null;
         let queueElapsedInterval = null;
         let queueLoadInFlight = false;
@@ -3975,12 +3978,44 @@
         // =============================================================================
 
         let _libraryPlayingId = null;
+        let _streamToken = null; // { token, expiresAt }
 
-        function _startLibraryStream(id, url, btn) {
+        async function _getStreamToken() {
+            // An <audio> element cannot bolt on an Authorization header, so playback
+            // rides on a short-lived token in the URL instead. Cached until it is
+            // nearly stale, since one token covers a whole listening session.
+            if (_streamToken && Date.now() < _streamToken.expiresAt - 60000) {
+                return _streamToken.token;
+            }
+            const response = await apiFetch('/api/auth/stream-token', { method: 'POST' });
+            if (!response.ok) throw new Error('Could not authorise playback');
+            const data = await response.json();
+            // Single-user mode hands back an empty token and no expiry; nothing to
+            // refresh there, so just don't ask again for a while.
+            const ttl = data.expires_in ? data.expires_in * 1000 : 3600000;
+            _streamToken = { token: data.token || '', expiresAt: Date.now() + ttl };
+            return _streamToken.token;
+        }
+
+        async function _startLibraryStream(id, url, btn) {
             stopPreview();
             stopLibraryPlayback();
             _libraryPlayingId = id;
             if (btn) btn.innerHTML = '<i class="fa-solid fa-stop"></i>';
+
+            let src;
+            try {
+                const token = await _getStreamToken();
+                const separator = url.includes('?') ? '&' : '?';
+                src = withRootPath(token ? `${url}${separator}stream_token=${encodeURIComponent(token)}` : url);
+            } catch (error) {
+                stopLibraryPlayback();
+                showToast('Could not play file', true);
+                return;
+            }
+            // They may have hit stop, or started something else, while we were away.
+            if (_libraryPlayingId !== id) return;
+
             previewAudio.oncanplay = () => {
                 previewAudio.oncanplay = null;
                 previewAudio.play().catch(() => {});
@@ -3989,12 +4024,15 @@
             previewAudio.onerror = (e) => {
                 // Ignore aborted loads (caused by stopLibraryPlayback clearing src)
                 if (previewAudio.error && previewAudio.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+                    // Could be an expired token rather than a duff file; bin it so the
+                    // next attempt starts with a fresh one.
+                    _streamToken = null;
                     stopLibraryPlayback();
                     showToast('Could not play file', true);
                 }
             };
             previewAudio.volume = previewVolume;
-            previewAudio.src = url;
+            previewAudio.src = src;
             previewAudio.load();
         }
 
@@ -5936,6 +5974,391 @@
             }
         }
 
+        // =============================================================
+        // Long-form YouTube splitting (Bulk Import Fetch box only). A single
+        // video over the length threshold gets cut into tagged tracks via
+        // ffmpeg instead of downloaded whole. Detection never guesses blind:
+        // it prefers YouTube's own chapters, falls back to a cue sheet hunted
+        // out of the comments, and always lands on an editable table the user
+        // confirms before anything downloads.
+        // =============================================================
+
+        function hideLongformPanel() {
+            if (!longformSplitPanel) return;
+            longformSplitPanel.style.display = 'none';
+            longformSplitPanel.innerHTML = '';
+            longformDetectedContext = null;
+            if (longformSplitPollInterval) {
+                clearInterval(longformSplitPollInterval);
+                longformSplitPollInterval = null;
+            }
+        }
+
+        function _longformDetectedViaLabel(detectedVia) {
+            if (detectedVia === 'chapters') return 'Detected from YouTube chapters';
+            if (detectedVia === 'description') return 'Detected from a cue sheet in the video description';
+            if (detectedVia === 'comments') return 'Detected from a comment cue sheet';
+            return 'No cue points found automatically — enter them manually below';
+        }
+
+        function _formatTimestamp(totalSeconds) {
+            const s = Math.max(0, Math.round(totalSeconds || 0));
+            const h = Math.floor(s / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            const sec = s % 60;
+            const pad = n => String(n).padStart(2, '0');
+            return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+        }
+
+        function _parseTimestampInput(text) {
+            const parts = String(text || '').trim().split(':').map(p => parseInt(p, 10));
+            if (!parts.length || parts.some(isNaN)) return 0;
+            let seconds = 0;
+            for (const p of parts) seconds = seconds * 60 + p;
+            return seconds;
+        }
+
+        // Mirrors longform_split.py's parse_cue_sheet_text/_fill_end_times, for
+        // the "paste your own cue sheet" fallback so it doesn't need a round
+        // trip to re-parse text the user already typed.
+        function _parseCueSheetTextJs(text, duration) {
+            const lineRe = /^\s*(?:\d+[.)]\s*)?[\[(]?(\d{1,2}(?::\d{2}){1,2})[\])]?\s*[-–—:]?\s*(.+?)\s*$/;
+            const points = [];
+            for (const line of String(text || '').split('\n')) {
+                const m = lineRe.exec(line);
+                if (!m) continue;
+                const title = m[2].replace(/^[-–—:\s]+|[-–—:\s]+$/g, '');
+                if (!title) continue;
+                points.push({ start_seconds: _parseTimestampInput(m[1]), title });
+            }
+            const segments = [];
+            for (let i = 0; i < points.length; i++) {
+                const end = i + 1 < points.length ? points[i + 1].start_seconds : (duration || points[i].start_seconds);
+                segments.push({ start_seconds: points[i].start_seconds, end_seconds: end, title: points[i].title, artist: '' });
+            }
+            return segments;
+        }
+
+        function _buildLongformRow(segment) {
+            const row = document.createElement('div');
+            row.className = 'longform-row';
+
+            const startInput = document.createElement('input');
+            startInput.type = 'text';
+            startInput.className = 'longform-row-input longform-start';
+            startInput.placeholder = '0:00';
+            startInput.value = _formatTimestamp(segment.start_seconds || 0);
+
+            const endInput = document.createElement('input');
+            endInput.type = 'text';
+            endInput.className = 'longform-row-input longform-end';
+            endInput.placeholder = '0:00';
+            endInput.value = _formatTimestamp(segment.end_seconds || 0);
+
+            const titleInput = document.createElement('input');
+            titleInput.type = 'text';
+            titleInput.className = 'longform-row-input longform-title';
+            titleInput.placeholder = 'Track title';
+            titleInput.value = segment.title || '';
+
+            const artistInput = document.createElement('input');
+            artistInput.type = 'text';
+            artistInput.className = 'longform-row-input longform-artist';
+            artistInput.placeholder = 'Artist';
+            artistInput.value = segment.artist || '';
+
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'btn btn-ghost btn-sm longform-row-remove';
+            removeBtn.title = 'Remove this row';
+            removeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+            removeBtn.addEventListener('click', () => row.remove());
+
+            row.appendChild(startInput);
+            row.appendChild(endInput);
+            row.appendChild(titleInput);
+            row.appendChild(artistInput);
+            row.appendChild(removeBtn);
+            return row;
+        }
+
+        function _collectLongformSegments() {
+            if (!longformSplitPanel) return [];
+            const rows = longformSplitPanel.querySelectorAll('.longform-row');
+            const segments = [];
+            rows.forEach(row => {
+                const start = _parseTimestampInput(row.querySelector('.longform-start').value);
+                const end = _parseTimestampInput(row.querySelector('.longform-end').value);
+                const title = row.querySelector('.longform-title').value.trim();
+                const artist = row.querySelector('.longform-artist').value.trim();
+                if (!title) return;
+                segments.push({ start_seconds: start, end_seconds: end, title, artist: artist || null });
+            });
+            return segments;
+        }
+
+        function renderLongformPanel(data, sourceUrl) {
+            if (!longformSplitPanel) return;
+            hideAlbumMatchPanel();
+            longformDetectedContext = {
+                url: sourceUrl,
+                video_title: data.video_title,
+                thumbnail: data.thumbnail,
+                duration: data.duration,
+            };
+            longformSplitPanel.style.display = 'block';
+            longformSplitPanel.innerHTML = '';
+
+            const header = document.createElement('div');
+            header.className = 'longform-video-header';
+            if (data.thumbnail) {
+                const img = document.createElement('img');
+                img.className = 'longform-video-thumb';
+                img.src = data.thumbnail;
+                img.alt = '';
+                header.appendChild(img);
+            }
+            const titleWrap = document.createElement('div');
+            const titleEl = document.createElement('div');
+            titleEl.className = 'longform-video-title';
+            titleEl.textContent = data.video_title || 'Untitled';
+            const viaEl = document.createElement('div');
+            viaEl.className = 'longform-detected-via';
+            viaEl.textContent = _longformDetectedViaLabel(data.detected_via);
+            titleWrap.appendChild(titleEl);
+            titleWrap.appendChild(viaEl);
+            header.appendChild(titleWrap);
+            longformSplitPanel.appendChild(header);
+
+            const artistRow = document.createElement('div');
+            artistRow.className = 'longform-field-row';
+            const artistLabel = document.createElement('span');
+            artistLabel.textContent = 'Album Artist:';
+            const artistInput = document.createElement('input');
+            artistInput.type = 'text';
+            artistInput.id = 'longformAlbumArtist';
+            artistInput.className = 'longform-row-input';
+            artistInput.style.maxWidth = '260px';
+            const segArtists = new Set((data.segments || []).map(s => (s.artist || '').trim()).filter(Boolean));
+            artistInput.value = segArtists.size === 1 ? [...segArtists][0] : 'Various Artists';
+            artistRow.appendChild(artistLabel);
+            artistRow.appendChild(artistInput);
+            longformSplitPanel.appendChild(artistRow);
+
+            const rowsWrap = document.createElement('div');
+            rowsWrap.className = 'longform-rows-wrap';
+            const segments = (data.segments && data.segments.length)
+                ? data.segments
+                : [{ start_seconds: 0, end_seconds: data.duration || 0, title: '', artist: '' }];
+            for (const seg of segments) {
+                rowsWrap.appendChild(_buildLongformRow(seg));
+            }
+            longformSplitPanel.appendChild(rowsWrap);
+
+            const addRowBtn = document.createElement('button');
+            addRowBtn.type = 'button';
+            addRowBtn.className = 'btn btn-ghost btn-sm';
+            addRowBtn.textContent = '+ Add row';
+            addRowBtn.addEventListener('click', () => {
+                rowsWrap.appendChild(_buildLongformRow({ start_seconds: 0, end_seconds: 0, title: '', artist: '' }));
+            });
+            longformSplitPanel.appendChild(addRowBtn);
+
+            const pasteWrap = document.createElement('div');
+            pasteWrap.className = 'longform-paste-wrap';
+            const pasteLabel = document.createElement('p');
+            pasteLabel.className = 'bulk-intro-text';
+            pasteLabel.textContent = 'Or paste your own cue sheet (one "0:00 Track Title" per line) to replace the rows above:';
+            const pasteTextarea = document.createElement('textarea');
+            pasteTextarea.className = 'longform-paste-textarea';
+            pasteTextarea.placeholder = '0:00 Track One\n3:45 Track Two';
+            const pasteBtn = document.createElement('button');
+            pasteBtn.type = 'button';
+            pasteBtn.className = 'btn btn-ghost btn-sm';
+            pasteBtn.textContent = 'Use this cue sheet';
+            pasteBtn.addEventListener('click', () => {
+                const parsed = _parseCueSheetTextJs(pasteTextarea.value, data.duration || 0);
+                if (!parsed.length) {
+                    showToast('Could not find any cue points in that text', true);
+                    return;
+                }
+                rowsWrap.innerHTML = '';
+                for (const seg of parsed) rowsWrap.appendChild(_buildLongformRow(seg));
+            });
+            pasteWrap.appendChild(pasteLabel);
+            pasteWrap.appendChild(pasteTextarea);
+            pasteWrap.appendChild(pasteBtn);
+            longformSplitPanel.appendChild(pasteWrap);
+
+            const actions = document.createElement('div');
+            actions.className = 'longform-actions';
+            const confirmBtn = document.createElement('button');
+            confirmBtn.type = 'button';
+            confirmBtn.className = 'btn btn-primary';
+            confirmBtn.textContent = 'Split & Download';
+            confirmBtn.addEventListener('click', () => confirmLongformSplit(confirmBtn));
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'btn btn-ghost';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.addEventListener('click', hideLongformPanel);
+            actions.appendChild(confirmBtn);
+            actions.appendChild(cancelBtn);
+            longformSplitPanel.appendChild(actions);
+        }
+
+        async function confirmLongformSplit(btnEl) {
+            if (!longformDetectedContext) return;
+            const segments = _collectLongformSegments();
+            if (!segments.length) {
+                showToast('Add at least one track with a title first', true);
+                return;
+            }
+            const albumArtistInput = document.getElementById('longformAlbumArtist');
+            const albumArtist = (albumArtistInput && albumArtistInput.value.trim()) || 'Various Artists';
+
+            if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Starting…'; }
+            try {
+                const response = await apiFetch('/api/longform/split', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: longformDetectedContext.url,
+                        video_title: longformDetectedContext.video_title,
+                        album_artist: albumArtist,
+                        segments,
+                    }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Could not start the split');
+                }
+                showLongformSplitProgress({
+                    status: 'pending', total_segments: data.total_segments,
+                    completed_segments: 0, failed_segments: 0,
+                    video_title: longformDetectedContext.video_title, complete: false,
+                }, data.split_id);
+                startLongformSplitPolling(data.split_id);
+                spotifyUrlInput.value = '';
+            } catch (error) {
+                showToast(error.message || 'Could not start the split', true);
+                if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Split & Download'; }
+            }
+        }
+
+        function startLongformSplitPolling(splitId) {
+            if (longformSplitPollInterval) {
+                clearInterval(longformSplitPollInterval);
+            }
+            longformSplitPollInterval = setInterval(async () => {
+                try {
+                    const response = await apiFetch(`/api/longform/${splitId}/status`);
+                    if (!response.ok) throw new Error('Failed to get status');
+                    const data = await response.json();
+                    showLongformSplitProgress(data, splitId);
+                    if (data.complete) {
+                        clearInterval(longformSplitPollInterval);
+                        longformSplitPollInterval = null;
+                    }
+                } catch (error) {
+                    console.error('Long-form split polling error:', error);
+                }
+            }, 2000);
+        }
+
+        function showLongformSplitProgress(data, splitId) {
+            if (!longformSplitPanel) return;
+            longformSplitPanel.style.display = 'block';
+            longformSplitPanel.innerHTML = '';
+
+            const total = data.total_segments || 0;
+            const done = (data.completed_segments || 0) + (data.failed_segments || 0);
+            const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+
+            let statusText = 'Downloading and splitting…';
+            let statusColor = 'var(--accent)';
+            if (data.status === 'completed') {
+                statusText = 'Complete';
+            } else if (data.status === 'completed_with_errors') {
+                statusText = 'Complete, with some failures';
+                statusColor = 'var(--warning)';
+            } else if (data.status === 'failed') {
+                statusText = data.error || 'Failed';
+                statusColor = 'var(--error)';
+            }
+
+            const wrap = document.createElement('div');
+            wrap.innerHTML = `
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <div style="font-weight:600;">${escapeHtml(data.video_title || 'Splitting video')}</div>
+                    <div style="font-size:12px;color:${statusColor};">${escapeHtml(statusText)}</div>
+                </div>
+                <div style="background: var(--bg-tertiary); border-radius: 4px; height: 8px; margin-bottom: 10px; overflow: hidden;">
+                    <div style="background: ${statusColor}; height: 100%; width: ${percent}%; transition: width 0.3s ease;"></div>
+                </div>
+                <div style="font-size:12px;color:var(--text-secondary);">${done} / ${total} segment${total === 1 ? '' : 's'} processed</div>
+            `;
+            longformSplitPanel.appendChild(wrap);
+
+            if (!data.complete && splitId) {
+                const cancelBtn = document.createElement('button');
+                cancelBtn.type = 'button';
+                cancelBtn.className = 'btn btn-ghost btn-sm';
+                cancelBtn.style.marginTop = '8px';
+                cancelBtn.textContent = 'Cancel';
+                cancelBtn.addEventListener('click', async () => {
+                    cancelBtn.disabled = true;
+                    try {
+                        await apiFetch(`/api/longform/${splitId}/cancel`, { method: 'POST' });
+                        showToast('Cancellation requested. The current segment may finish.');
+                    } catch (error) {
+                        showToast('Could not cancel', true);
+                    }
+                });
+                longformSplitPanel.appendChild(cancelBtn);
+            } else if (data.complete) {
+                const dismissBtn = document.createElement('button');
+                dismissBtn.type = 'button';
+                dismissBtn.className = 'btn btn-ghost btn-sm';
+                dismissBtn.style.marginTop = '8px';
+                dismissBtn.textContent = 'Dismiss';
+                dismissBtn.addEventListener('click', hideLongformPanel);
+                longformSplitPanel.appendChild(dismissBtn);
+            }
+        }
+
+        // Only the Bulk Import Fetch box triggers long-form detection - never
+        // Search, never bulk-textarea lines. Returns true when the panel took
+        // over (caller should stop), false when the caller should fall through
+        // to its normal handling for this URL.
+        async function tryLongformDetect(url) {
+            fetchSpotifyBtn.disabled = true;
+            fetchSpotifyBtn.textContent = 'Checking video…';
+            const slowHint = setTimeout(() => {
+                fetchSpotifyBtn.textContent = 'Hunting for a cue sheet…';
+            }, 4000);
+            try {
+                const response = await apiFetch('/api/longform/detect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.eligible) {
+                    return false;
+                }
+                spotifyError.style.display = 'none';
+                renderLongformPanel(data, url);
+                return true;
+            } catch (error) {
+                return false;
+            } finally {
+                clearTimeout(slowHint);
+                fetchSpotifyBtn.disabled = false;
+                fetchSpotifyBtn.textContent = 'Fetch';
+            }
+        }
+
         // The ordinary playlist scrape (/api/fetch-playlist), factored out of
         // fetchSpotifyPlaylist so both the normal routing path and the "turned
         // out not to be an album after all" fallback from fetchAlbumUrl can
@@ -6048,6 +6471,28 @@
                 spotifyError.textContent = 'Please enter a URL, or an album name to search';
                 spotifyError.style.display = 'block';
                 return;
+            }
+            hideLongformPanel();
+
+            // Long-form YouTube splitting: only for a single video, so it never
+            // touches a genuine curated playlist (list=PL.../OLAK5uy...). A bare
+            // watch URL (no list=) or YouTube's own auto-generated "RD..." radio
+            // list both qualify - RD gets appended to normal watch URLs and isn't
+            // something a user deliberately curated. When the video turns out
+            // not to be a split candidate (too short, or lookup failed), this
+            // falls straight through to the unchanged behaviour below: a bare
+            // watch URL hits "Unsupported URL", an RD-list URL goes through the
+            // ordinary playlist-import path.
+            if (/^https?:\/\/(?:www\.|music\.)?youtube\.com\/watch\?/i.test(url)) {
+                let listParam = null;
+                try {
+                    listParam = new URL(url).searchParams.get('list');
+                } catch (e) { /* not a parseable absolute URL; fall through */ }
+                const isRealPlaylist = listParam && !listParam.startsWith('RD');
+                if (!isRealPlaylist) {
+                    const handled = await tryLongformDetect(url);
+                    if (handled) return;
+                }
             }
 
             // URL validation - Spotify playlists/albums, Amazon Music playlists, Apple Music, YouTube/YT Music playlists, SoundCloud sets/likes, ListenBrainz, Tidal/Monochrome, Beatport
@@ -10313,6 +10758,80 @@
             }
         }
 
+        // The Monochrome test reports a whole ladder of legs rather than a single
+        // yes/no, so it gets its own renderer instead of squeezing into testConnection.
+        async function testMonochromeDownloads() {
+            const btn = document.getElementById('testMonochromeBtn');
+            const resultDiv = document.getElementById('monochromeTestResult');
+            const stepsDiv = document.getElementById('monochromeTestSteps');
+
+            btn.disabled = true;
+            btn.textContent = 'Testing (this can take a minute)...';
+            resultDiv.className = 'test-result';
+            resultDiv.style.display = 'none';
+            stepsDiv.hidden = true;
+            stepsDiv.innerHTML = '';
+
+            try {
+                const response = await apiFetch('/api/settings/test/monochrome', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}'
+                });
+                const data = await response.json();
+
+                const steps = Array.isArray(data.steps) ? data.steps : [];
+                const anyWarning = steps.some(step => step.status === 'warn');
+                resultDiv.textContent = data.elapsed
+                    ? `${data.message} (${data.elapsed}s)`
+                    : (data.message || 'Test failed');
+                resultDiv.className = data.success
+                    ? (anyWarning ? 'test-result warning' : 'test-result success')
+                    : 'test-result error';
+                resultDiv.style.display = 'block';
+
+                if (steps.length || data.hint) {
+                    stepsDiv.innerHTML = '';
+                    steps.forEach(step => {
+                        const row = document.createElement('div');
+                        row.className = `diag-step ${step.status || 'skip'}`;
+                        const status = document.createElement('span');
+                        status.className = 'diag-step-status';
+                        status.textContent = step.status || '';
+                        const body = document.createElement('div');
+                        body.className = 'diag-step-body';
+                        const name = document.createElement('span');
+                        name.className = 'diag-step-name';
+                        name.textContent = step.name || '';
+                        body.appendChild(name);
+                        if (step.detail) {
+                            const detail = document.createElement('span');
+                            detail.className = 'diag-step-detail';
+                            detail.textContent = step.detail;
+                            body.appendChild(detail);
+                        }
+                        row.appendChild(status);
+                        row.appendChild(body);
+                        stepsDiv.appendChild(row);
+                    });
+                    if (data.hint) {
+                        const hint = document.createElement('div');
+                        hint.className = 'diag-hint';
+                        hint.textContent = `Likely cause: ${data.hint}`;
+                        stepsDiv.appendChild(hint);
+                    }
+                    stepsDiv.hidden = false;
+                }
+            } catch (error) {
+                resultDiv.textContent = 'Monochrome test failed to run  -  check the server logs';
+                resultDiv.className = 'test-result error';
+                resultDiv.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Test Downloads';
+            }
+        }
+
         // Password field toggle
         document.querySelectorAll('.password-toggle').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -10338,6 +10857,7 @@
         document.getElementById('testLidarrBtn').addEventListener('click', () => testConnection('lidarr'));
         document.getElementById('testYoutubeCookiesBtn').addEventListener('click', () => testConnection('youtube-cookies'));
         document.getElementById('testSpotifyCookiesBtn').addEventListener('click', () => testConnection('spotify-cookies'));
+        document.getElementById('testMonochromeBtn').addEventListener('click', testMonochromeDownloads);
         document.getElementById('testAppriseBtn').addEventListener('click', () => testConnection('apprise'));
         document.getElementById('testEmailBtn').addEventListener('click', () => testConnection('email'));
         const uploadYoutubeCookiesBtn = document.getElementById('uploadYoutubeCookiesBtn');

@@ -17,6 +17,7 @@ from constants import (
     LOGIN_ATTEMPT_WINDOW,
     LOGIN_LOCKOUT_SECONDS,
     LOGIN_MAX_ATTEMPTS,
+    STREAM_TOKEN_TTL_SECONDS,
 )
 from db import db_conn
 
@@ -172,6 +173,58 @@ def cleanup_expired_download_tokens() -> int:
     with db_conn() as conn:
         cursor = conn.execute(
             "DELETE FROM download_tokens WHERE used_at IS NOT NULL OR expires_at <= datetime('now')"
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+    return deleted
+
+
+def create_stream_token(user_id: str, ttl_seconds: int = STREAM_TOKEN_TTL_SECONDS) -> str:
+    """Mint a reusable playback token for an <audio> element.
+
+    Reusable because players make range requests and seek about; a single-use
+    token would die somewhere in the first second of the track. It carries no
+    authority of its own beyond "this is who's asking", so the stream endpoints
+    still do their usual ownership checks.
+    """
+    token = str(uuid.uuid4())
+    ttl = max(5, int(ttl_seconds))
+    with db_conn() as conn:
+        conn.execute(
+            "INSERT INTO stream_tokens (token, user_id, expires_at) "
+            "VALUES (?, ?, datetime('now', '+' || ? || ' seconds'))",
+            (token, user_id, str(ttl)),
+        )
+        conn.commit()
+    return token
+
+
+def resolve_stream_token(token: str) -> dict | None:
+    """The user context a live stream token belongs to, for the auth middleware."""
+    if not token:
+        return None
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """SELECT u.id, u.username, u.role, u.force_password_change, u.is_active
+               FROM stream_tokens st
+               JOIN users u ON u.id = st.user_id
+               WHERE st.token = ?
+                 AND st.expires_at > datetime('now')""",
+            (token,),
+        ).fetchone()
+    if row is None:
+        return None
+    user = dict(row)
+    if not user.get("is_active"):
+        return None
+    return user
+
+
+def cleanup_expired_stream_tokens() -> int:
+    with db_conn() as conn:
+        cursor = conn.execute(
+            "DELETE FROM stream_tokens WHERE expires_at <= datetime('now')"
         )
         deleted = cursor.rowcount
         conn.commit()

@@ -348,7 +348,9 @@ def refresh_watched_artist(artist_id: str) -> dict:
                 if not existing:
                     # New track  -  check disk before inserting so pre-existing
                     # library files are recognised immediately rather than queued.
-                    existing_file = check_duplicate(track_artist, track_title)
+                    # Scoped to the watch's owner: on a multi-user box the wrong
+                    # library is worse than no library at all.
+                    existing_file = check_duplicate(track_artist, track_title, user_id=user_id)
                     pending_writes.append((
                         """INSERT OR IGNORE INTO watched_artist_tracks
                            (artist_id, track_hash, artist, title, release_date, release_mbid,
@@ -372,7 +374,8 @@ def refresh_watched_artist(artist_id: str) -> dict:
                 if existing.get("downloaded_at"):
                     if not check_duplicate(
                         existing.get("artist") or track_artist,
-                        existing.get("title") or track_title
+                        existing.get("title") or track_title,
+                        user_id=user_id,
                     ):
                         # File has vanished  -  clear downloaded_at so it re-queues
                         pending_writes.append((
@@ -385,7 +388,7 @@ def refresh_watched_artist(artist_id: str) -> dict:
                     continue
 
                 # Not downloaded  -  check disk in case the file arrived via another route
-                existing_file = check_duplicate(track_artist, track_title)
+                existing_file = check_duplicate(track_artist, track_title, user_id=user_id)
                 if existing_file:
                     pending_writes.append((
                         """UPDATE watched_artist_tracks

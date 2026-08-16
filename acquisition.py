@@ -179,25 +179,39 @@ def ensure_acquisition_target(
         return result
 
 
-def begin_acquisition_cycle(target_id: str) -> int:
-    """Open the next bounded source pass for a target."""
-    with db_conn() as conn:
-        row = conn.execute(
-            "SELECT cycle_count FROM acquisition_targets WHERE id = ?",
+def begin_acquisition_cycle(target_id: str, conn=None) -> int:
+    """Open the next bounded source pass for a target.
+
+    One statement, not read-then-write: two threads retrying the same target at
+    the same moment used to read the same cycle_count and both claim to be
+    cycle 3, which quietly doubles the source budget the cycle limit exists to
+    enforce. UPDATE ... RETURNING increments and reports back atomically, so the
+    two callers get 3 and 4 like grown-ups.
+
+    Pass `conn` to enlist in a caller's open transaction, so admitting a rescue
+    and claiming its cycle number happen as one indivisible act.
+    """
+    def _write(db):
+        row = db.execute(
+            """UPDATE acquisition_targets
+               SET cycle_count = COALESCE(cycle_count, 0) + 1,
+                   status = 'processing',
+                   updated_at = datetime('now'),
+                   completed_at = NULL
+               WHERE id = ?
+               RETURNING cycle_count""",
             (target_id,),
         ).fetchone()
         if not row:
             raise ValueError(f"Unknown acquisition target: {target_id}")
-        cycle = int(row[0] or 0) + 1
-        conn.execute(
-            """UPDATE acquisition_targets
-               SET cycle_count = ?, status = 'processing', updated_at = datetime('now'),
-                   completed_at = NULL
-               WHERE id = ?""",
-            (cycle, target_id),
-        )
-        conn.commit()
-    return cycle
+        return int(row[0])
+
+    if conn is not None:
+        return _write(conn)
+    with db_conn() as db:
+        cycle = _write(db)
+        db.commit()
+        return cycle
 
 
 def attach_job_to_acquisition(job_id: str, target_id: str, cycle: int) -> None:

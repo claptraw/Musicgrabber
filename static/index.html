@@ -259,6 +259,7 @@
                     </div>
                     <div id="spotifyError" style="display: none;" class="form-error"></div>
                     <div id="albumMatchPanel" style="display: none;" class="album-match-panel"></div>
+                    <div id="longformSplitPanel" style="display: none;" class="album-existing-warning longform-split-panel"></div>
                     <div class="bulk-services-row">
                         <span id="playlistServicesHint" class="bulk-services-hint">Supported services: Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, Tidal, ListenBrainz, MusicBrainz (release URLs and Spotify/Apple Music album URLs download as proper albums). No URL? Type an artist and album name (e.g. "Portishead - Dummy") or just an album name to search MusicBrainz.</span>
                         <span
@@ -1361,6 +1362,10 @@
                         </label>
                         <span class="settings-hint-sm">Primary Monochrome playback route. Keeps one SeleniumBase Chrome session alive to complete Monochrome's Turnstile flow and resolve authorised resources; media still downloads normally outside Chrome.</span>
                     </div>
+                    <button type="button" class="btn test-btn" id="testMonochromeBtn">Test Downloads</button>
+                    <span class="settings-hint-sm">Downloads a real track end to end, checks the audio, then deletes it. Tests your <strong>saved</strong> settings, so save first. Can take a minute or two while the browser session warms up.</span>
+                    <div id="monochromeTestResult" class="test-result"></div>
+                    <div id="monochromeTestSteps" class="diag-steps" hidden></div>
                 </div>
             </div>
 

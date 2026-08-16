@@ -2431,15 +2431,24 @@ def fetch_artist_albums(mbid: str) -> list[dict]:
 def fetch_album_tracks(release_mbid: str) -> list[dict]:
     """Fetch the tracklist for a specific release from MusicBrainz.
 
-    Returns [{position, title, isrc, recording_mbid}, ...] in track order.
+    Returns [{position, title, artist, isrc, recording_mbid}, ...] in track order.
     Position is a string (e.g. "1", "A1") as MusicBrainz provides it.
     The ISRC pins the exact studio recording so the album download path can grab
     that specific cut rather than a live take; recording_mbid is for the
     post-download fingerprint check. Both are None when MusicBrainz has nothing.
+
+    `artist` is the performer credited on that track, which on a normal album is
+    just the album artist repeated, and on a compilation is the entire point.
+    Without it every track on a soundtrack goes looking for "Various Artists -
+    Whatever", which is not a recording anyone has ever released, and album
+    mode's strict artist gate then rejects the real one when it turns up.
+    Empty when MusicBrainz declines to say; callers fall back to the release
+    credit.
+
     Raises MusicBrainzUnavailable when MB is unreachable after retries.
     """
     headers = {"User-Agent": f"MusicGrabber/{VERSION} (https://gitlab.com/g33kphr33k/musicgrabber)"}
-    params = {"inc": "recordings+isrcs", "fmt": "json"}
+    params = {"inc": "recordings+isrcs+artist-credits", "fmt": "json"}
     response = _mb_get_with_retry(
         f"https://musicbrainz.org/ws/2/release/{release_mbid}",
         params=params, headers=headers, timeout=TIMEOUT_MUSICBRAINZ_ARTIST,
@@ -2452,12 +2461,28 @@ def fetch_album_tracks(release_mbid: str) -> list[dict]:
     except Exception as e:
         print(f"MusicBrainz tracklist parse error for {release_mbid}: {e}")
         return []
+    release_credit = data.get("artist-credit") or []
     tracks: list[dict] = []
     for medium in data.get("media", []):
         for track in medium.get("tracks", []):
             recording = track.get("recording") or {}
             title = recording.get("title") or track.get("title", "")
             position = str(track.get("position") or track.get("number") or "")
+            # Track-level credit first: it is the one specific to this pressing,
+            # and it is what differs on a compilation. Recording, then release,
+            # pick up the slack.
+            credits = (
+                track.get("artist-credit")
+                or recording.get("artist-credit")
+                or release_credit
+                or []
+            )
+            artist = "".join(
+                (ac.get("name") or ac.get("artist", {}).get("name", ""))
+                + (ac.get("joinphrase") or "")
+                for ac in credits
+                if isinstance(ac, dict)
+            ).strip()
             # MusicBrainz hands back a list of ISRCs per recording; take the first
             # populated one. Most studio recordings have exactly one.
             isrc = next((code.strip() for code in (recording.get("isrcs") or []) if (code or "").strip()), None)
@@ -2465,6 +2490,7 @@ def fetch_album_tracks(release_mbid: str) -> list[dict]:
                 tracks.append({
                     "position": position,
                     "title": title,
+                    "artist": artist,
                     "isrc": isrc,
                     "recording_mbid": recording.get("id") or None,
                 })

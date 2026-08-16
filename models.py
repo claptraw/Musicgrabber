@@ -29,6 +29,33 @@ def _validate_mbid(v: str | None) -> str | None:
     return v
 
 
+def _validate_subdir(v: str | None) -> str | None:
+    """Keep a custom destination relative, and pointing inwards.
+
+    "Subdir" is doing a lot of quiet work in that field name: an absolute path or
+    a couple of ".." hops walks straight out of the music library and into the
+    rest of the container. Refuse both here so the user is told immediately,
+    rather than discovering it when a download lands somewhere surprising.
+    settings._join_within_music_dir() checks containment again at write time,
+    which is what catches values stored before this validator existed.
+    """
+    if v is None:
+        return v
+    cleaned = v.strip()
+    if not cleaned:
+        # Empty stays empty rather than becoming None: callers treat None as
+        # "field not supplied", so folding the two together would quietly remove
+        # the user's ability to clear the setting again.
+        return cleaned
+    # Windows-style separators get normalised first, otherwise "..\\.." sails past.
+    parts = cleaned.replace("\\", "/").split("/")
+    if cleaned.startswith(("/", "~")):
+        raise ValueError("Folder must be relative to your music directory, not an absolute path")
+    if ".." in parts:
+        raise ValueError("Folder cannot contain '..'")
+    return cleaned
+
+
 def _validate_from_date(v: str | None) -> str | None:
     """A from_date is compared against MusicBrainz release dates as a plain string,
     so anything that is not a real ISO date sorts somewhere daft and quietly filters
@@ -83,6 +110,24 @@ class PlaylistFetchRequest(BaseModel):
     url: str  # Spotify, YouTube, Apple Music, Amazon Music, SoundCloud, etc. playlist URL
 
 
+class LongformDetectRequest(BaseModel):
+    url: str  # A single YouTube video URL, checked for chapters/cue-sheet-comment split candidacy
+
+
+class LongformSegmentInput(BaseModel):
+    start_seconds: float
+    end_seconds: float
+    title: str
+    artist: Optional[str] = None
+
+
+class LongformSplitRequest(BaseModel):
+    url: str
+    video_title: str
+    album_artist: str
+    segments: list[LongformSegmentInput]
+
+
 class AsyncBulkImportRequest(BaseModel):
     songs: str  # Multi-line text with "Artist - Song" format
     create_playlist: bool = False
@@ -105,6 +150,8 @@ class WatchedPlaylistRequest(BaseModel):
     priority_source: Optional[str] = None  # Tie-breaker within the same automatic quality tier
     custom_subdir: Optional[str] = None  # Override destination folder (relative to music_dir)
 
+    _validate_custom_subdir = field_validator("custom_subdir")(_validate_subdir)
+
 class WatchedPlaylistUpdate(BaseModel):
     refresh_interval_hours: Optional[float] = None
     enabled: Optional[bool] = None
@@ -115,6 +162,8 @@ class WatchedPlaylistUpdate(BaseModel):
     preferred_sources: Optional[str] = None  # Comma-separated source IDs or "all"
     priority_source: Optional[str] = None  # Same-tier tie-breaker; empty string clears it
     custom_subdir: Optional[str] = None  # Override destination folder (relative to music_dir)
+
+    _validate_custom_subdir = field_validator("custom_subdir")(_validate_subdir)
 
 class SettingsUpdate(BaseModel):
     """Settings that can be updated via the UI"""
@@ -140,6 +189,11 @@ class SettingsUpdate(BaseModel):
     singles_subdir: Optional[str] = None
     playlists_subdir: Optional[str] = None
     albums_subdir: Optional[str] = None
+    # These three are user-scoped, so they are every bit as user-supplied as a
+    # watched playlist's custom folder, and get the same treatment.
+    _validate_library_subdirs = field_validator(
+        "singles_subdir", "playlists_subdir", "albums_subdir"
+    )(_validate_subdir)
     organise_by_artist: Optional[bool] = None
     include_track_number_in_filename: Optional[bool] = None
     auto_album_singles: Optional[bool] = None

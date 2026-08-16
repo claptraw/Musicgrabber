@@ -105,7 +105,8 @@ def test_singles_follow_still_fetches_singles(fresh_db, monkeypatch):
         {"artist": "Radiohead", "title": "Creep", "release_date": "2020-01-01",
          "release_mbid": "rel-single"},
     ]))
-    monkeypatch.setattr(wa, "check_duplicate", lambda artist, title: None)
+    # Takes user_id since CR-004: the library scan is scoped to the watch's owner.
+    monkeypatch.setattr(wa, "check_duplicate", lambda artist, title, user_id=None: None)
     monkeypatch.setattr(wa, "start_bulk_import_for_tracks", lambda *a, **kw: "import-singles")
 
     result = wa.refresh_watched_artist("a1")

@@ -8,8 +8,42 @@
 
 const RELEASE_NOTES = {
     "4.0.1": {
-        title: "What's New in v4.0.1",
+        title: "What's New in v4.0.1 - Fix of the Phoenix",
         sections: [
+            {
+                heading: "Play buttons play things again",
+                items: [
+                    "The play buttons in the Queue and the Trash used to answer \"Could not play file\" no matter how healthy the file was. The browser's audio player cannot send a login header, so its request arrived unauthenticated, was refused, and the player blamed the file. Playback now carries its own short-lived key and works properly, seeking included.",
+                    "This only ever affected installs with two or more accounts. Single-user installs skip logins entirely, so it quietly worked there the whole time.",
+                ]
+            },
+            {
+                heading: "Security and multi-user fixes",
+                items: [
+                    "Download and preview requests now verify that the URL genuinely belongs to the source it claims to come from. Previously the server would fetch whatever URL it was handed, which on a shared or internet-facing install was rather more trusting than it should have been.",
+                    "Custom playlist folders, and the per-user Singles, Playlists and Albums folder settings, can no longer point outside your music directory. Absolute paths and \"..\" are refused with a clear message rather than quietly writing somewhere unexpected.",
+                    "The trash bin is now per-account. It used to be shared, meaning anyone with an account could browse, play, restore or permanently delete anyone else's deleted music. Existing trash is moved into the first admin's bin on upgrade, so nothing is lost; single-user installs are unaffected.",
+                    "Watched Artists now checks the correct user's library when deciding whether a track is already on disk, and Soulseek will no longer deliver, or in move mode delete, a same-named file of the wrong size.",
+                    "Force Accept checks who owns the job before changing anything.",
+                ]
+            },
+            {
+                heading: "Albums, queueing and file handling",
+                items: [
+                    "Various Artists compilations now search for the artist who actually performed each track, instead of looking for songs by \"Various Artists\". The album artist is still recorded as the album artist.",
+                    "Double-clicking an album download or a retry no longer queues the same thing twice; the second one is told an import is already in progress.",
+                    "Serving, retagging, moving or deleting a track now confirms the file is still a real file inside your library first, rather than trusting a stored path that may no longer point anywhere sensible.",
+                    "Rebuilding the library path index no longer risks aborting partway through on very large libraries.",
+                ]
+            },
+            {
+                heading: "Monochrome can now be tested from Settings",
+                items: [
+                    "A new \"Test Downloads\" button in the Monochrome settings section downloads a real track end to end, checks the audio is genuine, then deletes it. Every step is reported separately, so you can see exactly which route failed instead of guessing.",
+                    "Common causes get a plain-English suggestion: not enough shared memory for Chromium, a missing browser, a Turnstile timeout, an exhausted token pool, or a container that cannot reach the internet.",
+                    "It tests your saved settings, so save any changes first. Around ten seconds when everything is healthy, a minute or two if the browser session has to start from cold.",
+                ]
+            },
             {
                 heading: "Monochrome previews are back",
                 items: [
@@ -18,6 +52,13 @@ const RELEASE_NOTES = {
                     "The browser session is warmed once in the background at startup, so a hover never waits for Chrome to start and never queues behind a download in progress. That warm-up only runs when Monochrome is an enabled source with the browser fallback switched on; turn either off and no browser is started at all.",
                     "Downloads now try Monochrome's own infrastructure before the shared Qobuz token pool (qbdlx) rather than after, since that pool has been running thin. qbdlx remains the fallback for when Monochrome's own route comes up empty.",
                     "The search box's clear cross is no longer sat on by the Search button when it widens to say \"Searching…\".",
+                ]
+            },
+            {
+                heading: "Split long DJ mixes into proper tracks",
+                items: [
+                    "Paste a single YouTube video into Bulk Import's Fetch box and, if it's over 12 minutes, MusicGrabber checks whether it looks like a mix or compilation. It never guesses where one track ends and the next begins: it uses YouTube's own chapters when they exist, then a hand-typed cue sheet in the video's description, then one in the comments, and otherwise gives you a blank table (or a box to paste your own cue sheet into).",
+                    "Either way you always get an editable preview, start time, end time, title and artist per track, before anything downloads. Confirming it cuts each track with ffmpeg, tags it from what's in the table, and files the lot under Albums with cover art from the video thumbnail.",
                 ]
             },
         ]

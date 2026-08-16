@@ -31,6 +31,7 @@ from constants import (
     SEARCH_LOG_RETENTION_DAYS,
     STALE_JOB_TIMEOUT,
     DOWNLOAD_TOKEN_TTL_SECONDS,
+    STREAM_TOKEN_TTL_SECONDS,
     AUDIO_EXTENSIONS,
     SEARCH_SLOT_WAIT_INTERACTIVE,
     SEARCH_SLOT_WAIT_AUTOMATED,
@@ -42,9 +43,10 @@ from db import (
 )
 from settings import (
     get_setting, get_setting_bool, set_setting, set_user_setting, get_singles_dir, get_playlists_dir,
-    get_albums_dir,
+    get_albums_dir, migrate_trash_to_per_user,
     SETTINGS_SCHEMA, SENSITIVE_SETTINGS, USER_SETTINGS_KEYS, _get_typed_setting, _is_env_override,
 )
+from source_urls import is_valid_source_url, validate_source_url
 from models import (
     SearchRequest, DownloadRequest, PlaylistFetchRequest,
     AsyncBulkImportRequest, WatchedPlaylistRequest, WatchedPlaylistUpdate,
@@ -58,12 +60,13 @@ from models import (
     LoginRequest, ChangePasswordRequest, CreateUserRequest,
     SetUserPasswordRequest, SetUserRoleRequest,
     DownloadTokenRequest,
+    LongformDetectRequest, LongformSplitRequest,
 )
 from middleware import AuthMiddleware, invalidate_users_cache
 from auth import (
     verify_password, create_session, delete_session, get_user_by_username,
     get_user_by_id, list_users, create_user, update_password, delete_user,
-    clear_failed_login, create_download_token, is_login_allowed,
+    clear_failed_login, create_download_token, create_stream_token, is_login_allowed,
     password_hash_for_timing, record_failed_login,
 )
 from youtube import (
@@ -135,9 +138,12 @@ from albums import (
     AlbumTracklistUnavailable,
     _normalise_album_match_text,
 )
-from utils import hash_track, is_valid_youtube_id, iter_library_audio_files, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
+from utils import authoritative_audio_file, hash_track, is_valid_youtube_id, iter_library_audio_files, sanitize_filename, sanitize_playlist_name, set_file_permissions, spawn_daemon_thread, subsonic_auth_params
 from coverart import fetch_cover_art_url
 from notifications import send_test_email
+from longform_split import (
+    detect_longform_candidate, validate_segments, create_longform_split, cancel_longform_split,
+)
 
 URL_BASED_SOURCES = {"soundcloud", "mp3phoenix", "zvu4no", "freemp3cloud", "monochrome"}
 DIRECT_PREVIEW_SOURCES = {"zvu4no", "freemp3cloud"}
@@ -207,6 +213,7 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Initialise database and start background monitors
 init_db()
+migrate_trash_to_per_user()  # Reshape the bin if the account count has changed
 cleanup_old_search_logs(SEARCH_LOG_RETENTION_DAYS)
 start_stale_job_monitor()
 start_scheduler()
@@ -543,6 +550,23 @@ def issue_download_token(request: Request, body: DownloadTokenRequest):
         "url": _app_path(f"/api/jobs/{job_id}/download?download_token={token}", request),
         "expires_in": DOWNLOAD_TOKEN_TTL_SECONDS,
     }
+
+
+@app.post("/api/auth/stream-token")
+def issue_stream_token(request: Request):
+    """Issue a short-lived reusable token so an <audio> element can play a file.
+
+    The browser cannot bolt an Authorization header onto `audio.src`, so without
+    this every play button gets a cheerful 401 and the UI mutters "Could not play
+    file". The token says who is asking and nothing more; the stream endpoints
+    still scope what they will serve.
+    """
+    # Single-user mode has no session token in play; the endpoints are open anyway.
+    if request.state.user_id is None:
+        return {"token": "", "expires_in": 0}
+
+    token = create_stream_token(request.state.user_id)
+    return {"token": token, "expires_in": STREAM_TOKEN_TTL_SECONDS}
 
 
 @app.put("/api/auth/password")
@@ -908,7 +932,12 @@ def _rebuild_library_index() -> int:
                 artist = relative.parts[-2] if len(relative.parts) > 1 else "Unknown"
             except ValueError:
                 artist = "Unknown"
-            rebuilt.append((str(uuid.uuid4())[:8], audio_path.stem, artist, resolved))
+            # Full UUID here, not the usual 8-char job ID. A rebuild can mint tens
+            # of thousands of rows in one batch, and 32 bits of birthday paradox
+            # says a collision around 50k is a coin toss  -  which would abort the
+            # whole insert. Nobody types these IDs, so the extra characters cost us
+            # nothing.
+            rebuilt.append((str(uuid.uuid4()), audio_path.stem, artist, resolved))
     if rebuilt:
         with db_conn() as conn:
             conn.executemany(
@@ -1186,6 +1215,25 @@ def test_lidarr_connection(http_request: Request, body: TestLidarrRequest = None
     except Exception as e:
         print(f"Lidarr connection test error: {type(e).__name__}: {e}")
         return {"success": False, "message": "Connection failed  -  check server logs for details"}
+
+
+@app.post("/api/settings/test/monochrome")
+def test_monochrome_downloads(http_request: Request):
+    """Run the full Monochrome download diagnostic and report it step by step.
+
+    Deliberately end-to-end: it searches, resolves through every leg, downloads
+    a real track to a temp file, probes the bytes, then bins the lot. Slow, but
+    the only way to answer "does Monochrome actually work here?" honestly.
+
+    Tests the SAVED settings, not whatever is currently typed into the form, so
+    save before testing. The hifi-api URL and fallback toggles are read deep
+    inside the resolution ladder; smuggling unsaved values down there would mean
+    threading overrides through a dozen call sites for very little gain.
+    """
+    if not http_request.state.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    from monochrome import run_download_diagnostic
+    return run_download_diagnostic()
 
 
 @app.post("/api/settings/test/youtube-cookies")
@@ -1882,6 +1930,12 @@ def get_preview_url(http_request: Request, video_id: str, source: str = "youtube
         elif source in URL_BASED_SOURCES:
             if not url:
                 raise HTTPException(status_code=400, detail=f"{source.capitalize()} preview requires url parameter")
+            # Same trust boundary as /api/download: preview fetches from inside
+            # the container too, so it gets the same doorman.
+            try:
+                validate_source_url(source, url)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
             target_url = url
             base_args = []  # No cookies needed for URL-based non-YouTube sources
         else:
@@ -2244,6 +2298,12 @@ def download(body: DownloadRequest, http_request: Request):
         elif source in URL_BASED_SOURCES:
             if not body.source_url:
                 raise HTTPException(status_code=400, detail=f"{source.capitalize()} download requires source_url")
+            # The caller picks both the source and the URL, so the two agreeing is
+            # something we check, not something we assume.
+            try:
+                validate_source_url(source, body.source_url)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
 
         # Build source URL for tracking
         if source == "soulseek":
@@ -2649,17 +2709,10 @@ def download_job_file(job_id: str, http_request: Request):
 
     from utils import check_duplicate, sanitize_filename
 
-    file_path = None
-
     # Prefer the job's authoritative final path, then the older watched-row path.
-    if job.get("final_path"):
-        candidate = Path(job["final_path"])
-        if candidate.is_absolute() and candidate.exists():
-            file_path = candidate
-    if file_path is None and rp_row and rp_row["resolved_path"]:
-        candidate = Path(rp_row["resolved_path"])
-        if candidate.is_absolute() and candidate.exists():
-            file_path = candidate
+    file_path = authoritative_audio_file(job.get("final_path"), user_id)
+    if file_path is None and rp_row:
+        file_path = authoritative_audio_file(rp_row["resolved_path"], user_id)
 
     # Fall back to walking the Singles layout (covers non-watched single downloads).
     if file_path is None:
@@ -2707,11 +2760,7 @@ def stream_job_file(job_id: str, http_request: Request):
 
     from utils import check_duplicate
 
-    file_path = None
-    if job.get("final_path"):
-        candidate = Path(job["final_path"])
-        if candidate.is_absolute() and candidate.exists():
-            file_path = candidate
+    file_path = authoritative_audio_file(job.get("final_path"), user_id)
     if file_path is None:
         file_path = check_duplicate(artist, title, user_id=user_id)
     if not file_path or not file_path.exists():
@@ -2882,7 +2931,10 @@ def _candidate_can_download(candidate: dict) -> bool:
     if source == "soulseek":
         return bool(candidate.get("slskd_username") and candidate.get("slskd_filename"))
     if source in URL_BASED_SOURCES:
-        return bool(candidate.get("source_url"))
+        # Rescue candidates are replayed automatically later, well away from any
+        # human, so a bogus URL that slipped into storage must not get a second
+        # chance at being fetched.
+        return is_valid_source_url(source, candidate.get("source_url"))
     return False
 
 
@@ -2971,17 +3023,6 @@ def _search_rescue_candidates(job: dict, slot_wait: float) -> list[dict]:
 def _create_rescue_job(job: dict, destination: dict, candidate: dict | None = None) -> tuple[str, int]:
     """Append a new Queue row without erasing the failed attempt it rescues."""
     target_id = job["acquisition_target_id"]
-    with db_conn() as conn:
-        active = conn.execute(
-            """SELECT 1 FROM jobs
-               WHERE acquisition_target_id = ? AND status IN ('queued', 'downloading')
-               LIMIT 1""",
-            (target_id,),
-        ).fetchone()
-    if active:
-        raise HTTPException(status_code=409, detail="A rescue attempt is already running")
-
-    cycle = begin_acquisition_cycle(target_id)
     new_job_id = str(uuid.uuid4())[:8]
     candidate = candidate or {}
     source = (candidate.get("source") or job.get("source") or "youtube").strip().lower()
@@ -2993,6 +3034,24 @@ def _create_rescue_job(job: dict, destination: dict, candidate: dict | None = No
         source_url = f"soulseek://{candidate['slskd_username']}/{candidate.get('slskd_filename') or ''}"
 
     with db_conn() as conn:
+        # BEGIN IMMEDIATE takes the write lock before we look, so the "is one
+        # already running?" check and the row that answers it cannot be separated.
+        # Two clicks on Retry used to both find nothing running and both queue a
+        # rescue, doubling up on a target that is only allowed one at a time.
+        conn.execute("BEGIN IMMEDIATE")
+        active = conn.execute(
+            """SELECT 1 FROM jobs
+               WHERE acquisition_target_id = ? AND status IN ('queued', 'downloading')
+               LIMIT 1""",
+            (target_id,),
+        ).fetchone()
+        if active:
+            conn.execute("ROLLBACK")
+            raise HTTPException(status_code=409, detail="A rescue attempt is already running")
+
+        # Claiming the cycle inside the same transaction means a rescue that
+        # loses the race does not quietly burn a cycle on its way out.
+        cycle = begin_acquisition_cycle(target_id, conn=conn)
         conn.execute(
             """INSERT INTO jobs
                (id, video_id, title, artist, status, download_type, playlist_name,
@@ -3240,8 +3299,21 @@ def queue_job_rescue_candidate(
 
 @app.post("/api/jobs/{job_id}/force-accept")
 def force_accept_job(job_id: str, http_request: Request):
-    """Set skip_mismatch_check on a job and retry it. Handy shortcut from the queue card."""
+    """Set skip_mismatch_check on a job and retry it. Handy shortcut from the queue card.
+
+    Ownership is checked before anything is written. Knowing someone else's
+    eight-character job ID should not be enough to wipe their mismatch evidence,
+    even if the retry itself would have been refused a moment later.
+    """
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    scope_frag, scope_params = _user_scope(user_id, is_admin)
     with db_conn() as conn:
+        owned = conn.execute(
+            f"SELECT 1 FROM jobs WHERE id = ? AND {scope_frag}", (job_id, *scope_params)
+        ).fetchone()
+        if not owned:
+            raise HTTPException(status_code=404, detail="Job not found")
         conn.execute(
             "UPDATE jobs SET skip_mismatch_check = 1 WHERE id = ?", (job_id,)
         )
@@ -3281,11 +3353,7 @@ def delete_job_file(job_id: str, http_request: Request):
         raise HTTPException(status_code=400, detail="Job has no artist/title metadata")
 
     from utils import check_duplicate, move_to_trash
-    existing = None
-    if job.get("final_path"):
-        candidate = Path(job["final_path"])
-        if candidate.is_absolute() and candidate.exists():
-            existing = candidate
+    existing = authoritative_audio_file(job.get("final_path"), user_id)
     if existing is None:
         existing = check_duplicate(artist, title, user_id=user_id)
     if not existing:
@@ -3405,19 +3473,12 @@ def patch_job_tags(job_id: str, body: PatchTagsRequest, http_request: Request):
 
     # Resolve the file on disk, same priority order as delete_job_file
     from utils import check_duplicate
-    file_path = None
-    if job.get("final_path"):
-        candidate = Path(job["final_path"])
-        if candidate.is_absolute() and candidate.exists():
-            file_path = candidate
+    file_path = authoritative_audio_file(job.get("final_path"), user_id)
     for rp_row in (rp_playlist, rp_artist):
         if file_path is not None:
             break
-        if rp_row and rp_row["resolved_path"]:
-            candidate = Path(rp_row["resolved_path"])
-            if candidate.is_absolute() and candidate.exists():
-                file_path = candidate
-                break
+        if rp_row:
+            file_path = authoritative_audio_file(rp_row["resolved_path"], user_id)
     if file_path is None:
         file_path = check_duplicate(old_artist, old_title, user_id=user_id)
     if not file_path or not file_path.exists():
@@ -3531,11 +3592,7 @@ def get_job_musicbrainz_guess(job_id: str, artist: str, title: str, http_request
 
     from utils import check_duplicate
 
-    file_path = None
-    if row["final_path"]:
-        candidate = Path(row["final_path"])
-        if candidate.is_absolute() and candidate.exists():
-            file_path = candidate
+    file_path = authoritative_audio_file(row["final_path"], user_id)
     if file_path is None:
         candidate = check_duplicate(artist, title, user_id=user_id)
         if candidate and candidate.exists():
@@ -3729,7 +3786,10 @@ def restore_trash_file(http_request: Request, path: str = ""):
 
 @app.delete("/api/trash")
 def empty_trash(http_request: Request):
-    """Permanently delete everything in the trash bin. No coming back from this one."""
+    """Permanently delete everything in your own trash bin. No coming back from this one.
+
+    Bins are per-account now, so this empties the caller's, not the whole house's.
+    """
     if not http_request.state.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
 
@@ -4136,6 +4196,84 @@ def fetch_playlist(request: Request, body: PlaylistFetchRequest):
     if warning:
         resp["warning"] = warning
     return resp
+
+
+# =============================================================================
+# Long-form YouTube Splitting API
+# =============================================================================
+
+@app.post("/api/longform/detect")
+def longform_detect(body: LongformDetectRequest, request: Request):
+    """Probe a single YouTube video for long-form split eligibility. No download."""
+    user_id = request.state.user_id
+    return detect_longform_candidate(body.url.strip(), user_id=user_id)
+
+
+@app.post("/api/longform/split")
+def longform_split(body: LongformSplitRequest, request: Request):
+    """Confirm a split: download the video once, then cut/tag each segment."""
+    user_id = request.state.user_id
+    segments = [s.model_dump() for s in body.segments]
+    error = validate_segments(segments)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    split_id = create_longform_split(
+        body.url.strip(), body.video_title.strip(), body.album_artist.strip(), segments, user_id=user_id,
+    )
+    return {"split_id": split_id, "total_segments": len(segments), "status": "pending"}
+
+
+@app.get("/api/longform/{split_id}/status")
+def longform_status(split_id: str, http_request: Request):
+    """Poll a long-form split's progress."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        scope_frag, scope_params = _user_scope(user_id, is_admin)
+        split_row = conn.execute(
+            f"SELECT * FROM longform_splits WHERE id = ? AND {scope_frag}",
+            (split_id, *scope_params),
+        ).fetchone()
+        if not split_row:
+            raise HTTPException(status_code=404, detail="Split not found")
+        segments = conn.execute(
+            "SELECT segment_index, title, artist, status, error, final_path FROM longform_split_segments "
+            "WHERE split_id = ? ORDER BY segment_index",
+            (split_id,),
+        ).fetchall()
+
+    split_row = dict(split_row)
+    complete = split_row["status"] in ("completed", "completed_with_errors", "failed", "cancelled")
+    return {
+        "split_id": split_id,
+        "status": split_row["status"],
+        "video_title": split_row["video_title"],
+        "total_segments": split_row["total_segments"],
+        "completed_segments": split_row["completed_segments"],
+        "failed_segments": split_row["failed_segments"],
+        "error": split_row["error"],
+        "segments": [dict(s) for s in segments],
+        "complete": complete,
+    }
+
+
+@app.post("/api/longform/{split_id}/cancel")
+def longform_cancel(split_id: str, http_request: Request):
+    """Ask an in-progress split to stop before its next segment."""
+    user_id = http_request.state.user_id
+    is_admin = http_request.state.is_admin
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        scope_frag, scope_params = _user_scope(user_id, is_admin)
+        split_row = conn.execute(
+            f"SELECT id FROM longform_splits WHERE id = ? AND {scope_frag}",
+            (split_id, *scope_params),
+        ).fetchone()
+    if not split_row:
+        raise HTTPException(status_code=404, detail="Split not found")
+    cancelled = cancel_longform_split(split_id)
+    return {"split_id": split_id, "cancelled": cancelled}
 
 
 # =============================================================================
@@ -4762,6 +4900,10 @@ def queue_watched_playlist_track_candidate(
     elif source in URL_BASED_SOURCES:
         if not request.source_url:
             raise HTTPException(status_code=400, detail=f"{source.capitalize()} candidate requires source_url")
+        try:
+            validate_source_url(source, request.source_url)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     elif source == "soulseek":
         if not (request.slskd_username and request.slskd_filename):
             raise HTTPException(status_code=400, detail="Soulseek candidate requires username and filename")

@@ -68,6 +68,7 @@ from utils import (
     artist_credits_match,
 )
 from monochrome import download_monochrome_track
+from source_urls import is_valid_source_url
 from zvu4no import download_zvu4no_track, is_zvu4no_url
 from freemp3cloud import download_freemp3cloud_track
 from mp3phoenix import download_mp3phoenix_track, is_mp3phoenix_url
@@ -5032,6 +5033,29 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
     is_freemp3cloud = source_url and "meln.top" in source_url
     is_monochrome  = source_url and source_url.startswith("monochrome://")
     is_url_source  = bool(source_url)
+
+    # Belt and braces behind the API's own check. If a source_url arrived that
+    # belongs to none of the providers we deal with, the old code shrugged and
+    # handed it to yt-dlp anyway, which would happily fetch a router admin page
+    # from inside the container. Nothing legitimate lands here, so refuse.
+    #
+    # YouTube has to be in this list even though it is not a URL-backed source at
+    # the API: its search results carry a webpage_url, so ordinary YouTube jobs
+    # arrive here with one set, and refusing those would be an exciting way to
+    # break every download in the application.
+    is_youtube_url = is_valid_source_url("youtube", source_url)
+    if is_url_source and not (is_soundcloud or is_mp3phoenix or is_zvu4no
+                              or is_freemp3cloud or is_monochrome or is_youtube_url):
+        _update_job(
+            job_id,
+            status="failed",
+            error="Refused: source_url does not belong to any known source",
+            progress_stage=None,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        print(f"[download] Refused unrecognised source_url for job {job_id}")
+        return
+
     fallback_allowed_sources = _normalise_source_allowlist(fallback_allowed_sources)
 
     attempted_ids = set(attempted_ids or [])

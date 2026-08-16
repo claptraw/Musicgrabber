@@ -1,0 +1,251 @@
+"""Tests for the Settings "Test Downloads" Monochrome diagnostic.
+
+The diagnostic is the thing users will lean on when Monochrome sulks, so it had
+better be honest about which leg broke, and it had better not leave temp FLACs
+scattered around the container when it does.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pytest
+
+
+TEST_RESULT = {
+    "video_id": "mono_test",
+    "title": "Creep",
+    "channel": "Radiohead",
+    "source": "monochrome",
+    "source_url": "monochrome://12345?isrc=GBAYE9200070&quality=LOSSLESS&src=tidal",
+    "quality": "LOSSLESS",
+}
+
+
+def _statuses(report):
+    return {step["name"]: step["status"] for step in report["steps"]}
+
+
+@pytest.fixture
+def happy_monochrome(monkeypatch, tmp_path):
+    """Stub every external leg so the diagnostic can run offline and pass."""
+    import monochrome
+
+    monkeypatch.setattr(monochrome, "monochrome_enabled", lambda: True)
+    monkeypatch.setattr("monochrome_browser.browser_fallback_enabled", lambda: True)
+    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: True)
+    monkeypatch.setattr(monochrome, "_hifi_api_urls", lambda: ["https://hifi.example"])
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(monochrome.httpx, "get", lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(monochrome, "search_monochrome", lambda q, limit: [dict(TEST_RESULT)])
+    monkeypatch.setattr(
+        monochrome,
+        "_resolve_monochrome_stream_url",
+        lambda url, artist_hint="", title_hint="", trace=None, **kw: (
+            trace.append({"leg": "Browser-authenticated playback", "ok": True, "detail": "stream URL"})
+            if trace is not None else None
+        ) or "https://cdn.example/track.flac",
+    )
+
+    def fake_download(source_url, output_path, artist_hint="", title_hint=""):
+        output_path.write_bytes(b"x" * 4096)
+
+    monkeypatch.setattr(monochrome, "download_monochrome_track", fake_download)
+    monkeypatch.setattr("downloads._validate_audio_integrity", lambda p: (True, "", 238.0))
+    monkeypatch.setattr("downloads.probe_audio_quality", lambda p, source_info=None: ("FLAC 44.1kHz 16bit", 0))
+    return monochrome
+
+
+# ---------------------------------------------------------------------------
+# The happy path
+# ---------------------------------------------------------------------------
+
+def test_diagnostic_passes_when_every_leg_behaves(happy_monochrome):
+    report = happy_monochrome.run_download_diagnostic()
+    assert report["success"] is True
+    assert report["hint"] == ""
+    statuses = _statuses(report)
+    assert statuses["Test track found"] == "ok"
+    assert statuses["Audio downloaded"] == "ok"
+    assert statuses["Audio verified"] == "ok"
+
+
+def test_diagnostic_cleans_up_its_temp_file(happy_monochrome, monkeypatch):
+    downloaded = []
+
+    def capture(source_url, output_path, artist_hint="", title_hint=""):
+        downloaded.append(output_path)
+        output_path.write_bytes(b"x" * 4096)
+
+    monkeypatch.setattr(happy_monochrome, "download_monochrome_track", capture)
+    happy_monochrome.run_download_diagnostic()
+    assert downloaded, "diagnostic never attempted a download"
+    assert not downloaded[0].exists(), "diagnostic left its test download behind"
+
+
+# ---------------------------------------------------------------------------
+# Failures, which are the entire point of the exercise
+# ---------------------------------------------------------------------------
+
+def test_diagnostic_reports_the_leg_that_failed(happy_monochrome, monkeypatch):
+    def resolve_with_dead_legs(url, artist_hint="", title_hint="", trace=None, **kw):
+        if trace is not None:
+            trace.append({
+                "leg": "Browser-authenticated playback",
+                "ok": False,
+                "detail": "WebDriverException: chrome not reachable",
+            })
+            trace.append({"leg": "qbdlx direct Qobuz", "ok": False, "detail": "401 Unauthorized"})
+        raise RuntimeError("Monochrome: no stream available for ISRC GBAYE9200070")
+
+    monkeypatch.setattr(happy_monochrome, "_resolve_monochrome_stream_url", resolve_with_dead_legs)
+    report = happy_monochrome.run_download_diagnostic()
+
+    assert report["success"] is False
+    statuses = _statuses(report)
+    assert statuses["Browser-authenticated playback"] == "fail"
+    assert statuses["qbdlx direct Qobuz"] == "fail"
+    assert statuses["Stream URL"] == "fail"
+    # No point downloading anything once no leg produced a URL.
+    assert "Audio downloaded" not in statuses
+
+
+def test_diagnostic_hints_at_shm_size_when_chrome_will_not_start(happy_monochrome, monkeypatch):
+    def resolve_no_chrome(url, artist_hint="", title_hint="", trace=None, **kw):
+        if trace is not None:
+            trace.append({
+                "leg": "Browser-authenticated playback",
+                "ok": False,
+                "detail": "SessionNotCreatedException: session not created: DevToolsActivePort file doesn't exist",
+            })
+        return ""
+
+    monkeypatch.setattr(happy_monochrome, "_resolve_monochrome_stream_url", resolve_no_chrome)
+    report = happy_monochrome.run_download_diagnostic()
+    assert report["success"] is False
+    assert "shm_size" in report["hint"]
+
+
+def test_a_network_timeout_is_not_blamed_on_turnstile(happy_monochrome, monkeypatch):
+    """DNS failure and Turnstile impatience both mention timeouts; order matters."""
+    def resolve_no_network(url, artist_hint="", title_hint="", trace=None, **kw):
+        if trace is not None:
+            trace.append({
+                "leg": "qbdlx direct Qobuz",
+                "ok": False,
+                "detail": "ConnectError: [Errno -2] Name or service not known (timed out)",
+            })
+        return ""
+
+    monkeypatch.setattr(happy_monochrome, "_resolve_monochrome_stream_url", resolve_no_network)
+    report = happy_monochrome.run_download_diagnostic()
+    assert "DNS" in report["hint"]
+    assert "MONOCHROME_BROWSER_AUTH_TIMEOUT" not in report["hint"]
+
+
+def test_diagnostic_fails_loudly_when_the_bytes_are_not_audio(happy_monochrome, monkeypatch):
+    monkeypatch.setattr("downloads._validate_audio_integrity", lambda p: (False, "No audio stream found", 0.0))
+    report = happy_monochrome.run_download_diagnostic()
+    assert report["success"] is False
+    assert _statuses(report)["Audio verified"] == "fail"
+
+
+def test_diagnostic_survives_a_download_that_explodes(happy_monochrome, monkeypatch):
+    def boom(source_url, output_path, artist_hint="", title_hint=""):
+        raise RuntimeError("Monochrome: CENC audio decryption failed: ffmpeg produced no audio")
+
+    monkeypatch.setattr(happy_monochrome, "download_monochrome_track", boom)
+    report = happy_monochrome.run_download_diagnostic()
+    assert report["success"] is False
+    assert _statuses(report)["Audio downloaded"] == "fail"
+    assert "ffmpeg" in report["hint"]
+
+
+def test_diagnostic_warns_when_monochrome_is_switched_off(happy_monochrome, monkeypatch):
+    monkeypatch.setattr(happy_monochrome, "monochrome_enabled", lambda: False)
+    report = happy_monochrome.run_download_diagnostic()
+    assert report["success"] is True  # the download path still works, it's just hidden from search
+    assert _statuses(report)["Monochrome source"] == "warn"
+
+
+def test_diagnostic_warns_when_both_fallback_legs_are_disabled(happy_monochrome, monkeypatch):
+    monkeypatch.setattr("monochrome_browser.browser_fallback_enabled", lambda: False)
+    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: False)
+    report = happy_monochrome.run_download_diagnostic()
+    assert _statuses(report)["Download routes"] == "warn"
+
+
+def test_disabled_legs_are_skipped_not_blamed(happy_monochrome, monkeypatch):
+    """A route the user turned off should not be reported as a broken route."""
+    monkeypatch.setattr("monochrome_browser.browser_fallback_enabled", lambda: False)
+    monkeypatch.setattr("qbdlx.qbdlx_enabled", lambda: False)
+
+    def resolve_nothing(url, artist_hint="", title_hint="", trace=None, **kw):
+        if trace is not None:
+            trace.append({"leg": "Browser-authenticated playback", "ok": False, "detail": "no stream returned"})
+            trace.append({"leg": "qbdlx direct Qobuz", "ok": False, "detail": "no Qobuz stream"})
+        return ""
+
+    monkeypatch.setattr(happy_monochrome, "_resolve_monochrome_stream_url", resolve_nothing)
+    report = happy_monochrome.run_download_diagnostic()
+
+    statuses = _statuses(report)
+    assert statuses["Browser-authenticated playback"] == "skip"
+    assert statuses["qbdlx direct Qobuz"] == "skip"
+    assert "switched off" in report["hint"].lower()
+
+
+def test_diagnostic_fails_cleanly_when_search_finds_nothing(happy_monochrome, monkeypatch):
+    monkeypatch.setattr(happy_monochrome, "search_monochrome", lambda q, limit: [])
+    report = happy_monochrome.run_download_diagnostic()
+    assert report["success"] is False
+    assert _statuses(report)["Test track found"] == "fail"
+
+
+def test_diagnostic_refuses_to_run_twice_at_once(happy_monochrome, monkeypatch):
+    """Second caller gets told to wait rather than warming a second browser."""
+    happy_monochrome._diagnostic_lock.acquire()
+    try:
+        report = happy_monochrome.run_download_diagnostic()
+    finally:
+        happy_monochrome._diagnostic_lock.release()
+    assert report["success"] is False
+    assert report.get("busy") is True
+    assert report["steps"] == []
+
+
+# ---------------------------------------------------------------------------
+# The trace plumbing the diagnostic depends on
+# ---------------------------------------------------------------------------
+
+def test_resolver_records_each_leg_it_tries(monkeypatch):
+    import monochrome
+
+    monkeypatch.setattr(
+        "monochrome_browser.resolve_unified_stream_url",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("chrome not reachable")),
+    )
+    monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", lambda isrc, fmt: "https://cdn.example/x.flac")
+
+    trace = []
+    url = monochrome._resolve_monochrome_stream_url(
+        TEST_RESULT["source_url"], artist_hint="Radiohead", title_hint="Creep", trace=trace,
+    )
+    assert url == "https://cdn.example/x.flac"
+    legs = {entry["leg"]: entry["ok"] for entry in trace}
+    assert legs["Browser-authenticated playback"] is False
+    assert legs["qbdlx direct Qobuz"] is True
+
+
+def test_resolver_trace_is_optional():
+    """Everyday callers pass no trace and must not notice it exists."""
+    import inspect
+    import monochrome
+
+    sig = inspect.signature(monochrome._resolve_monochrome_stream_url)
+    assert sig.parameters["trace"].default is None

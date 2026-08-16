@@ -26,7 +26,10 @@ import base64
 import hashlib
 import json
 import re
+import shutil
 import subprocess
+import tempfile
+import threading
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -1168,13 +1171,22 @@ def _tidal_stream_url(tidal_id: str, quality: str) -> str:
 
 def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
                                    title_hint: str = "", *,
-                                   lossless_only: bool = False) -> str:
+                                   lossless_only: bool = False,
+                                   trace: list | None = None) -> str:
     """Resolve a Monochrome result through the shared stream fallback ladder.
 
     Browser-authenticated Monochrome playback is primary; direct qbdlx and Tidal
     streams are fallbacks. Previews use ``lossless_only=True`` so they never
     quietly step down to a lossy tier.
+
+    Pass ``trace`` (a list) to collect a per-leg record of what was tried and
+    what it said. The Settings diagnostic uses it to tell a user which leg
+    actually broke, rather than the usual "computer says no".
     """
+    def _note(leg: str, ok: bool, detail: str) -> None:
+        if trace is not None:
+            trace.append({"leg": leg, "ok": ok, "detail": str(detail)[:500]})
+
     parsed = urlparse(source_url)
     if parsed.scheme != "monochrome":
         raise RuntimeError(f"Invalid Monochrome source URL {source_url!r}")
@@ -1214,16 +1226,21 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
 
     def _resolve_via_qbdlx() -> str:
         from qbdlx import resolve_qobuz_stream_url
+        errors = []
         for tier in candidates:
             fmt = _SOURCE_QUALITY_TO_QOBUZ_FORMAT.get(tier, 7)
             try:
                 fallback_url = resolve_qobuz_stream_url(isrc, fmt)
             except Exception as exc:
                 print(f"Monochrome: qbdlx fallback errored for ISRC {isrc}: {exc}")
+                errors.append(f"{tier}: {exc}")
                 fallback_url = None
             if fallback_url:
                 print(f"Monochrome: served ISRC {isrc} via qbdlx direct Qobuz")
+                _note("qbdlx direct Qobuz", True, f"stream URL for ISRC {isrc} at {tier}")
                 return fallback_url
+        _note("qbdlx direct Qobuz", False,
+              "; ".join(errors) or f"no Qobuz stream for ISRC {isrc} at any allowed tier")
         return ""
 
     def _resolve_via_browser() -> str:
@@ -1247,9 +1264,14 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
             ) or ""
             if url:
                 print(f"Monochrome: served ISRC {isrc} via browser-authenticated unified playback")
+                _note("Browser-authenticated playback", True, f"stream URL for ISRC {isrc} at {quality}")
+            else:
+                _note("Browser-authenticated playback", False,
+                      f"no stream returned for ISRC {isrc} at {quality}")
             return url
         except Exception as exc:
             print(f"Monochrome: browser-authenticated fallback errored for ISRC {isrc}: {exc}")
+            _note("Browser-authenticated playback", False, f"{type(exc).__name__}: {exc}")
             return ""
 
     cdn_url = _resolve_via_browser()
@@ -1264,6 +1286,7 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
         rescue_isrc = _deezer_isrc_rescue(artist_hint, title_hint, isrc)
         if rescue_isrc and rescue_isrc != isrc.upper():
             print(f"Monochrome: Qobuz had nothing for ISRC {isrc}; retrying with Deezer's {rescue_isrc}")
+            _note("Deezer ISRC rescue", True, f"swapped ISRC {isrc} -> {rescue_isrc}, retrying")
             isrc = rescue_isrc
             cdn_url = _resolve_via_browser()
             if not cdn_url:
@@ -1278,13 +1301,18 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
         tidal_candidates = ["LOSSLESS"] if lossless_only else [
             tier for tier in candidates if tier in ("LOSSLESS", "HIGH")
         ]
+        tidal_errors = []
         for tier in tidal_candidates:
             try:
                 cdn_url = _tidal_stream_url(tidal_id, tier)
                 print(f"Monochrome: browser and Qobuz routes exhausted, streaming tidal/{tidal_id} at {tier} via hifi-api")
+                _note("Tidal stream via hifi-api", True, f"tidal/{tidal_id} at {tier}")
                 break
             except Exception as exc:
                 last_error = exc
+                tidal_errors.append(f"{tier}: {exc}")
+        if not cdn_url:
+            _note("Tidal stream via hifi-api", False, "; ".join(tidal_errors) or "no stream")
 
     if not cdn_url:
         raise RuntimeError(
@@ -1377,6 +1405,248 @@ def get_monochrome_preview_url(source_url: str, artist_hint: str = "",
         title_hint=(title_hint or "").strip()[:300],
         lossless_only=True,
     )
+
+
+# =============================================================================
+# Settings diagnostic: does Monochrome actually download, right here, right now?
+# =============================================================================
+
+# One diagnostic at a time. It warms Chrome and pulls a whole FLAC; a settings
+# page with an itchy trigger finger should not get to do that four times over.
+_diagnostic_lock = threading.Lock()
+
+# Fingerprints of the failures people actually hit, and what to do about them.
+# Matched against the whole failure text, lowercased, first match wins.
+_DIAGNOSTIC_HINTS = [
+    (("devtoolsactiveport", "session not created", "chrome failed to start", "crashed"),
+     "Chromium could not start. In Docker this is almost always shared memory: set "
+     "shm_size: '2gb' on the musicgrabber service in docker-compose.yml and recreate the container."),
+    (("no such file or directory: 'chrome'", "chromedriver", "cannot find chrome binary"),
+     "No Chrome/Chromedriver in the container. Pull a current image; the browser leg needs the "
+     "bundled Chromium. Failing that, untick browser-authenticated playback and rely on qbdlx."),
+    (("ffmpeg", "decryption"),
+     "The audio downloaded but could not be decrypted. Check that ffmpeg is present and working "
+     "inside the container (docker exec into it and run 'ffmpeg -version')."),
+    # Checked before the timeout rule below: a container with no route out times
+    # out too, and sending those people off to tune a browser setting is unkind.
+    (("name or service not known", "temporary failure in name resolution", "connection refused",
+      "network is unreachable", "certificate"),
+     "The container cannot reach the outside world properly. Check DNS, egress and, if the "
+     "container is behind a VPN, that the VPN is actually up."),
+    (("0 usable", "no usable", "401", "403", "token"),
+     "The shared qbdlx Qobuz token pool is dry or refusing us, and the browser leg did not cover "
+     "for it. This one is out of your hands; keep browser-authenticated playback enabled so it "
+     "does not depend on those tokens."),
+    (("timed out", "timeout", "turnstile"),
+     "Something ran out of patience. If it was browser-authenticated playback, Monochrome's "
+     "Turnstile check needs longer on slow or CPU-starved hosts: raise "
+     "MONOCHROME_BROWSER_AUTH_TIMEOUT (default 75s). Otherwise check the container's network."),
+]
+
+
+def _diagnostic_hint(failure_text: str) -> str:
+    lowered = (failure_text or "").lower()
+    for needles, hint in _DIAGNOSTIC_HINTS:
+        if any(needle in lowered for needle in needles):
+            return hint
+    return ""
+
+
+def run_download_diagnostic(query: str = "") -> dict:
+    """Prove (or disprove) that Monochrome can put a real FLAC on disk.
+
+    Walks the whole path an ordinary download takes: hifi-api reachability,
+    search, the full stream-resolution ladder, a genuine download to a temp
+    file, and an ffprobe of the bytes that arrived. The file is deleted
+    afterwards, so this costs bandwidth and a minute of patience, nothing else.
+
+    Returns a dict of {success, message, hint, elapsed, steps[]} where each step
+    is {name, status: ok|warn|fail|skip, detail}.
+    """
+    from constants import MONOCHROME_TEST_QUERY
+
+    if not _diagnostic_lock.acquire(blocking=False):
+        return {
+            "success": False,
+            "busy": True,
+            "message": "A Monochrome test is already running. Give it a minute.",
+            "steps": [],
+            "hint": "",
+            "elapsed": 0.0,
+        }
+
+    query = (query or MONOCHROME_TEST_QUERY).strip()
+    steps: list[dict] = []
+    started = time.monotonic()
+    complaints: list[str] = []
+    # Populated by step 1; finish() uses it to explain a very common own-goal.
+    state = {"legs_enabled": True}
+
+    def add(name: str, status: str, detail: str = "") -> None:
+        steps.append({"name": name, "status": status, "detail": str(detail)[:600]})
+        if status in ("fail", "warn"):
+            complaints.append(f"{name}: {detail}")
+
+    def finish(success: bool, message: str) -> dict:
+        if success:
+            hint = ""
+        elif not state["legs_enabled"]:
+            hint = ("Both download routes are switched off above. Tick "
+                    "browser-authenticated playback (and ideally qbdlx too) and test again.")
+        else:
+            hint = _diagnostic_hint(" ".join(complaints))
+        return {
+            "success": success,
+            "message": message,
+            "hint": hint,
+            "elapsed": round(time.monotonic() - started, 1),
+            "steps": steps,
+        }
+
+    temp_dir = None
+    try:
+        # ---- 1. What is even switched on ----------------------------------
+        try:
+            from monochrome_browser import browser_fallback_enabled
+            browser_on = browser_fallback_enabled()
+        except Exception as exc:
+            browser_on = False
+            print(f"Monochrome diagnostic: browser fallback check errored: {exc}")
+        try:
+            from qbdlx import qbdlx_enabled
+            qbdlx_on = qbdlx_enabled()
+        except Exception as exc:
+            qbdlx_on = False
+            print(f"Monochrome diagnostic: qbdlx check errored: {exc}")
+
+        enabled_legs = [
+            name for name, on in
+            (("browser-authenticated playback", browser_on), ("qbdlx direct Qobuz", qbdlx_on))
+            if on
+        ]
+        if not monochrome_enabled():
+            add("Monochrome source", "warn",
+                "Disabled in Search Sources, so results never appear in a search. Testing the "
+                "download path anyway.")
+        else:
+            add("Monochrome source", "ok", "Enabled in Search Sources")
+
+        state["legs_enabled"] = bool(enabled_legs)
+        if enabled_legs:
+            add("Download routes", "ok", "Enabled: " + ", ".join(enabled_legs))
+        else:
+            add("Download routes", "warn",
+                "Both browser-authenticated playback and qbdlx are switched off. Only the "
+                "last-ditch Tidal stream remains, and it cannot serve most tracks.")
+
+        # ---- 2. Can we reach a hifi-api at all ----------------------------
+        endpoints = _hifi_api_urls()
+        reachable, endpoint_errors = "", []
+        for base in endpoints:
+            probe_started = time.monotonic()
+            try:
+                resp = httpx.get(
+                    f"{base}/search",
+                    params={"s": query, "limit": 1},
+                    headers=_HEADERS,
+                    timeout=TIMEOUT_MONOCHROME_SEARCH,
+                    follow_redirects=True,
+                )
+                resp.raise_for_status()
+                reachable = f"{base} ({int((time.monotonic() - probe_started) * 1000)}ms)"
+                _remember_hifi_api_url(base)
+                break
+            except Exception as exc:
+                endpoint_errors.append(f"{base}: {exc}")
+        if reachable:
+            add("hifi-api reachable", "ok", reachable)
+        else:
+            # Not fatal on its own: Deezer is the primary search leg these days.
+            add("hifi-api reachable", "warn",
+                "; ".join(endpoint_errors) or "no hifi-api endpoints configured")
+
+        # ---- 3. Find the test track ---------------------------------------
+        try:
+            results = search_monochrome(query, 1)
+        except Exception as exc:
+            add("Test track found", "fail", f"{type(exc).__name__}: {exc}")
+            return finish(False, f"Monochrome could not search for {query!r}.")
+        if not results:
+            add("Test track found", "fail", f"No Monochrome result for {query!r}")
+            return finish(False, f"Monochrome returned no results for {query!r}.")
+
+        track = results[0]
+        source_url = track.get("source_url") or ""
+        artist_hint = track.get("channel") or ""
+        title_hint = track.get("title") or ""
+        isrc = _result_isrc(track) or "unknown"
+        add("Test track found", "ok",
+            f"{artist_hint} - {title_hint} [ISRC {isrc}, "
+            f"{track.get('quality') or 'unknown quality'}]")
+
+        # ---- 4. Walk the stream-resolution ladder -------------------------
+        trace: list[dict] = []
+        cdn_url = ""
+        resolve_error = ""
+        try:
+            cdn_url = _resolve_monochrome_stream_url(
+                source_url, artist_hint=artist_hint, title_hint=title_hint, trace=trace,
+            )
+        except Exception as exc:
+            resolve_error = f"{type(exc).__name__}: {exc}"
+
+        # A leg the user switched off did not "fail", it simply never ran. Saying
+        # otherwise sends people hunting for a bug they created on purpose.
+        switched_off = {
+            "Browser-authenticated playback": not browser_on,
+            "qbdlx direct Qobuz": not qbdlx_on,
+        }
+        for entry in trace:
+            if not entry["ok"] and switched_off.get(entry["leg"]):
+                add(entry["leg"], "skip", "Switched off in settings, so this route was not tried")
+            else:
+                add(entry["leg"], "ok" if entry["ok"] else "fail", entry["detail"])
+        if not cdn_url:
+            add("Stream URL", "fail", resolve_error or "No leg produced a playable stream")
+            return finish(False, "No Monochrome download route could resolve a stream.")
+        add("Stream URL", "ok", urlparse(cdn_url).netloc or "resolved")
+
+        # ---- 5. Actually download it --------------------------------------
+        temp_dir = Path(tempfile.mkdtemp(prefix="mg-monochrome-test-"))
+        target = temp_dir / "monochrome-test.flac"
+        download_started = time.monotonic()
+        try:
+            download_monochrome_track(
+                source_url, target, artist_hint=artist_hint, title_hint=title_hint,
+            )
+        except Exception as exc:
+            add("Audio downloaded", "fail", f"{type(exc).__name__}: {exc}")
+            return finish(False, "Monochrome resolved a stream but the download failed.")
+        size_mb = target.stat().st_size / (1024 * 1024)
+        add("Audio downloaded", "ok",
+            f"{size_mb:.1f} MB in {time.monotonic() - download_started:.1f}s "
+            f"(decrypted where Monochrome served encrypted audio)")
+
+        # ---- 6. Is it real audio, or a very confident 404 page -------------
+        from downloads import _validate_audio_integrity, probe_audio_quality
+        ok, reason, duration = _validate_audio_integrity(target)
+        if not ok:
+            add("Audio verified", "fail", reason)
+            return finish(False, "Monochrome downloaded a file, but it is not usable audio.")
+        quality_label, _bitrate = probe_audio_quality(target)
+        add("Audio verified", "ok",
+            f"{quality_label or 'audio'}, {int(duration // 60)}m {int(duration % 60):02d}s")
+
+        return finish(True, "Monochrome downloads are working.")
+    except Exception as exc:
+        # Belt and braces: a diagnostic that crashes is a poor sort of diagnostic.
+        print(f"Monochrome diagnostic: unexpected error: {type(exc).__name__}: {exc}")
+        add("Diagnostic", "fail", f"{type(exc).__name__}: {exc}")
+        return finish(False, "The Monochrome test itself fell over; see the steps below.")
+    finally:
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        _diagnostic_lock.release()
 
 
 def fetch_tidal_playlist_tracks(playlist_uuid: str) -> tuple[list[tuple[str, str]], str]:

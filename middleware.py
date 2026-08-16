@@ -66,6 +66,24 @@ def _download_job_id_from_path(path: str) -> str | None:
     return None
 
 
+def _is_audio_stream_path(path: str) -> bool:
+    """The two endpoints an <audio> element points its src straight at.
+
+    Deliberately exact rather than a tidy `endswith("/stream")`, because
+    /api/search/stream is a very different animal and has no business
+    accepting a playback token.
+    """
+    parts = path.strip("/").split("/")
+    if parts == ["api", "trash", "stream"]:
+        return True
+    return (
+        len(parts) == 4
+        and parts[0] == "api"
+        and parts[1] == "jobs"
+        and parts[3] == "stream"
+    )
+
+
 def _apply_security_headers(request: Request, response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -205,6 +223,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 if download_token and job_id:
                     from auth import consume_download_token
                     user = consume_download_token(download_token, job_id)
+
+            # Library and trash playback: same headerless <audio> problem as the
+            # download button below, but a player range-requests and seeks its
+            # way through a track, so this token is reusable rather than single
+            # use. It only identifies the caller; the endpoints themselves still
+            # decide what that caller is allowed to hear.
+            if user is None and _is_audio_stream_path(path):
+                stream_token = request.query_params.get("stream_token", "")
+                if stream_token:
+                    from auth import resolve_stream_token
+                    user = resolve_stream_token(stream_token)
 
             # Preview snippets: an <audio> element cannot send a Bearer header,
             # so the unguessable token in the path stands in for one and resolves

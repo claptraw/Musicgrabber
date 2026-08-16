@@ -46,6 +46,11 @@ TIMEOUT_YTDLP_PREVIEW = 15       # Getting preview URL
 TIMEOUT_YTDLP_PLAYLIST = 60      # Getting playlist contents
 TIMEOUT_FFMPEG_CONVERT = int(os.getenv("TIMEOUT_FFMPEG_CONVERT", "120"))  # Converting audio formats
 
+# Long-form YouTube splitting (DJ mixes, "CD1/CD2" compilation uploads, etc.)
+LONGFORM_SPLIT_THRESHOLD_SECONDS = 720  # 12 minutes; videos shorter than this aren't split candidates
+TIMEOUT_YTDLP_COMMENTS = 45      # Bounded comment fetch when hunting for a cue sheet
+TIMEOUT_LONGFORM_DOWNLOAD = 900  # Audio-only download of a long mix wants more headroom than a normal track
+
 # Loudness normalisation (EBU R128, two-pass ffmpeg loudnorm; lossy web sources only).
 # -14 LUFS is what Spotify and YouTube level to, so normalised grabs sit comfortably
 # next to streamed stuff instead of alternating between whisper and jet engine.
@@ -147,6 +152,10 @@ STALE_BULK_IMPORT_MAX_RESUMES = int(os.getenv("STALE_BULK_IMPORT_MAX_RESUMES", "
 # Past this age we stop trying to be helpful. Resuming a months-old import means
 # downloading a pile of music you had almost certainly stopped waiting for.
 STALE_BULK_IMPORT_ABANDON_AFTER = int(os.getenv("STALE_BULK_IMPORT_ABANDON_AFTER", str(7 * 24 * 3600)))
+
+# Long-form splits don't resume mid-cut (unlike bulk imports); a quiet one just
+# gets marked failed once its heartbeat goes stale for this long.
+STALE_LONGFORM_SPLIT_TIMEOUT = int(os.getenv("STALE_LONGFORM_SPLIT_TIMEOUT", "3600"))
 
 # SQLite locking. busy_timeout is how long sqlite itself will queue behind
 # another writer before giving up; the retry settings are our own second chance
@@ -275,6 +284,11 @@ LOGIN_ATTEMPT_WINDOW = int(os.getenv("LOGIN_ATTEMPT_WINDOW", "900"))
 # Download token auth (for browser file downloads without exposing session tokens in URLs)
 DOWNLOAD_TOKEN_TTL_SECONDS = int(os.getenv("DOWNLOAD_TOKEN_TTL_SECONDS", "60"))
 
+# Stream token auth. Same idea, but an <audio> element makes range requests as it
+# plays and seeks, so this one is reusable and has to outlive the longest track
+# anyone is likely to sit through. An hour should cover even the prog rock.
+STREAM_TOKEN_TTL_SECONDS = int(os.getenv("STREAM_TOKEN_TTL_SECONDS", "3600"))
+
 # Transport security
 HTTPS_ONLY = os.getenv("HTTPS_ONLY", "false").lower() == "true"
 HSTS_MAX_AGE = int(os.getenv("HSTS_MAX_AGE", "31536000"))
@@ -395,6 +409,10 @@ MONOCHROME_BROWSER_FALLBACK_ENABLED = os.getenv(
 ).lower() == "true"
 MONOCHROME_WEB_URL = os.getenv("MONOCHROME_WEB_URL", "https://monochrome.tf")
 MONOCHROME_BROWSER_AUTH_TIMEOUT = int(os.getenv("MONOCHROME_BROWSER_AUTH_TIMEOUT", "75"))
+# The Settings "Test Monochrome" diagnostic downloads this for real, then throws
+# it away. Radiohead's Creep is already the qbdlx probe track: old, everywhere,
+# and staying everywhere. Keep it to something no catalogue is likely to lose.
+MONOCHROME_TEST_QUERY = os.getenv("MONOCHROME_TEST_QUERY", "Radiohead - Creep")
 
 # Deezer public API: no key, no auth, no CAPTCHA, and remarkably typo-tolerant.
 # Used as the primary ISRC oracle for Monochrome search, and to rescue tracks
