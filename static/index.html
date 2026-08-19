@@ -563,6 +563,23 @@
                         </select>
                     </label>
                 </div>
+                <div class="watched-controls-row" id="watchedQualityRow">
+                    <label class="watched-control-label" title="Native FLAC quality requested from Monochrome/Qobuz for tracks added by this playlist.">
+                        FLAC quality:
+                        <select id="watchedQualityProfile" class="watched-card-select" onchange="syncWatchedQualityFallbackVisibility()">
+                            <option value="best">Best available</option>
+                            <option value="hires">Hi-Res (native 24-bit)</option>
+                            <option value="cd_16_44">CD (16-bit / 44.1 kHz)</option>
+                        </select>
+                    </label>
+                    <label id="watchedQualityFallbackLabel" class="watched-control-label" style="display:none;" title="If no native 24-bit stream is available, accept native CD-quality FLAC instead of leaving the track missing.">
+                        Allow CD fallback
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="watchedQualityFallback" checked>
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
+                </div>
                 <div class="watched-controls-row" id="watchedDestRow">
                     <div class="watched-dest-add-row">
                         <span class="watched-dest-hint">To save to a different folder than the default playlist location:</span>

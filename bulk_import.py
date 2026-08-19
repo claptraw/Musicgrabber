@@ -28,6 +28,7 @@ from acquisition import (
     rank_automatic_candidates,
 )
 from notifications import send_notification
+from quality_profiles import normalise_quality_profile
 from search import search_all_cached, log_ranked_results
 from settings import get_setting_int
 from utils import hash_track, spawn_daemon_thread
@@ -297,6 +298,8 @@ def start_bulk_import_for_tracks(
     album_total_tracks: Optional[int] = None,
     custom_subdir: Optional[str] = None,
     priority_source: Optional[str] = None,
+    quality_profile: str = "best",
+    quality_fallback: bool = True,
     *,
     track_isrcs: Optional[list[str | None]] = None,
     original_youtube_video_ids: Optional[list[str | None]] = None,
@@ -318,18 +321,20 @@ def start_bulk_import_for_tracks(
     _priority = (priority_source or "").strip().lower() or None
     if _priority in ("any", "all", "none"):
         _priority = None
+    quality_profile = normalise_quality_profile(quality_profile)
 
     with db_conn() as conn:
         conn.execute(
             """INSERT INTO bulk_imports
                (id, status, total_tracks, create_playlist, playlist_name, convert_audio,
                 watch_playlist_id, use_playlists_dir, watch_artist_id, user_id, preferred_sources,
-                override_dir, album_release_mbid, album_total_tracks, custom_subdir, priority_source)
-               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                override_dir, album_release_mbid, album_total_tracks, custom_subdir, priority_source,
+                quality_profile, quality_fallback)
+               VALUES (?, 'pending', ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (import_id, len(tracks), int(convert_audio), watch_playlist_id,
              int(use_playlists_dir), watch_artist_id, user_id, preferred_sources or "all",
              override_dir, album_release_mbid, album_total_tracks, custom_subdir or None,
-             _priority)
+             _priority, quality_profile, int(quality_fallback))
         )
 
         for line_num, (artist, song) in enumerate(tracks, 1):
@@ -376,6 +381,8 @@ def start_bulk_import_for_tracks(
                     "custom_subdir": custom_subdir,
                     "override_dir": override_dir,
                     "album_release_mbid": album_release_mbid,
+                    "quality_profile": quality_profile,
+                    "quality_fallback": bool(quality_fallback),
                 },
                 conn=conn,
             )
@@ -490,6 +497,8 @@ def process_bulk_import_worker(import_id: str):
         except (IndexError, KeyError):
             _priority_source = None  # Pre-migration row, column missing
         priority_source = (_priority_source or "").strip().lower() or None
+        quality_profile = normalise_quality_profile(import_row["quality_profile"])
+        quality_fallback = bool(import_row["quality_fallback"])
 
         # For watched playlist imports, playlist_name is stored as NULL in bulk_imports.
         # Fetch the actual name from watched_playlists so folder routing works correctly.
@@ -579,6 +588,8 @@ def process_bulk_import_worker(import_id: str):
                         "custom_subdir": custom_subdir,
                         "override_dir": override_dir,
                         "album_release_mbid": album_release_mbid,
+                        "quality_profile": quality_profile,
+                        "quality_fallback": bool(quality_fallback),
                     },
                 )
             acquisition_cycle = begin_acquisition_cycle(target_id)

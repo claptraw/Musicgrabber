@@ -351,6 +351,8 @@ def init_db():
             user_id TEXT,
             preferred_sources TEXT DEFAULT 'all',
             priority_source TEXT,
+            quality_profile TEXT NOT NULL DEFAULT 'best',
+            quality_fallback INTEGER NOT NULL DEFAULT 1,
             override_dir TEXT,
             album_release_mbid TEXT,
             album_total_tracks INTEGER,
@@ -478,6 +480,8 @@ def init_db():
             stale_navidrome_paths INTEGER DEFAULT 0,
             preferred_sources TEXT DEFAULT 'all',
             priority_source TEXT,
+            quality_profile TEXT NOT NULL DEFAULT 'best',
+            quality_fallback INTEGER NOT NULL DEFAULT 1,
             lb_username TEXT,
             refresh_state TEXT DEFAULT 'idle',
             refresh_stage TEXT,
@@ -1004,8 +1008,41 @@ def init_db():
             conn.execute("ALTER TABLE watched_playlists ADD COLUMN priority_source TEXT")
         except sqlite3.OperationalError:
             pass
+
+        # Per-playlist native FLAC delivery policy. These remain idempotent
+        # backstops instead of a table rebuild so existing installations keep
+        # every watched track and acquisition link intact. The legacy behaviour
+        # is exactly the new ``best`` default.
+        try:
+            conn.execute(
+                "ALTER TABLE watched_playlists "
+                "ADD COLUMN quality_profile TEXT NOT NULL DEFAULT 'best'"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE watched_playlists "
+                "ADD COLUMN quality_fallback INTEGER NOT NULL DEFAULT 1"
+            )
+        except sqlite3.OperationalError:
+            pass
         try:
             conn.execute("ALTER TABLE bulk_imports ADD COLUMN priority_source TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE bulk_imports "
+                "ADD COLUMN quality_profile TEXT NOT NULL DEFAULT 'best'"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE bulk_imports "
+                "ADD COLUMN quality_fallback INTEGER NOT NULL DEFAULT 1"
+            )
         except sqlite3.OperationalError:
             pass
         try:
@@ -1573,6 +1610,24 @@ def init_db():
         # Idempotent; harmless on DBs that already have it.
         try:
             conn.execute("ALTER TABLE watched_playlists ADD COLUMN priority_source TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # The same v1 recreation also predates playlist quality policies. Keep
+        # these final backstops after every versioned migration so a brand-new
+        # database and a long-lived upgraded database end with the same schema.
+        try:
+            conn.execute(
+                "ALTER TABLE watched_playlists "
+                "ADD COLUMN quality_profile TEXT NOT NULL DEFAULT 'best'"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE watched_playlists "
+                "ADD COLUMN quality_fallback INTEGER NOT NULL DEFAULT 1"
+            )
         except sqlite3.OperationalError:
             pass
 

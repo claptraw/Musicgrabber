@@ -48,6 +48,7 @@ from metadata import (
     apply_replaygain_tags, read_replaygain_tags, read_artist_title,
 )
 from notifications import send_notification
+from quality_profiles import normalise_quality_profile
 from settings import get_setting, get_setting_bool, get_setting_int, get_singles_dir, get_download_dir, get_playlists_dir, get_albums_dir, resolve_custom_subdir
 from slskd import (
     download_from_slskd, extract_track_info_from_path,
@@ -86,6 +87,28 @@ from acquisition import (
 
 _AUDIO_RECHECK_MAX_ATTEMPTS = 2
 _AUDIO_RESEARCH_MAX_ALTERNATES = 2
+
+
+def _job_playlist_quality_policy(job_id: str) -> tuple[str | None, bool]:
+    """Return the immutable per-acquisition quality snapshot for a Queue job."""
+    with db_conn() as conn:
+        row = conn.execute(
+            """SELECT at.owner_type, at.destination_json
+               FROM jobs j
+               LEFT JOIN acquisition_targets at ON at.id = j.acquisition_target_id
+               WHERE j.id = ?""",
+            (job_id,),
+        ).fetchone()
+    if not row or row[0] != "watched_playlist":
+        return None, True
+    try:
+        destination = json.loads(row[1] or "{}")
+    except (TypeError, ValueError):
+        destination = {}
+    return (
+        normalise_quality_profile(destination.get("quality_profile")),
+        bool(destination.get("quality_fallback", True)),
+    )
 
 
 def _default_metadata_source(source: str) -> str:
@@ -5135,9 +5158,12 @@ def process_download(job_id: str, video_id: str, convert_audio: bool = True, sou
         title_hint  = (row["title"]  or "") if row else ""
         if is_monochrome:
             # The hints feed the Deezer ISRC rescue when Tidal's ISRC is junk.
+            quality_profile, quality_fallback = _job_playlist_quality_policy(job_id)
             direct_label = "monochrome"
             direct_fn = partial(download_monochrome_track,
-                                artist_hint=artist_hint, title_hint=title_hint)
+                                artist_hint=artist_hint, title_hint=title_hint,
+                                quality_profile=quality_profile,
+                                allow_quality_fallback=quality_fallback)
         elif is_mp3phoenix:
             direct_label, direct_fn = "mp3phoenix", download_mp3phoenix_track
         elif is_zvu4no:

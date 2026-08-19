@@ -1,5 +1,20 @@
 # Changelog
 
+## Playlist-quality build 1 (fork of v4.0.2)
+
+### Added
+- Watched Playlists now store an independent native-FLAC profile: exact CD
+  16-bit/44.1 kHz, native 24-bit Hi-Res at the provider's source sample rate,
+  or best available native lossless.
+- Hi-Res playlists can explicitly allow or reject a CD fallback.
+- Quality choices survive scheduler refreshes, missing-track retries, process
+  restarts, and acquisition rescue cycles through immutable import/target
+  snapshots.
+- Monochrome/Qobuz downloads request lossless format IDs 27 then 7 as required
+  and probe the delivered bytes before accepting them. No resampling is used to
+  manufacture a matching profile.
+- Existing databases migrate safely to `best` with CD fallback enabled.
+
 ## v4.0.2 (2026-08-16)
 
 ### Fixed

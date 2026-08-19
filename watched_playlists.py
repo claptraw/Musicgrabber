@@ -1529,6 +1529,8 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     preferred_sources=playlist.get("preferred_sources") or "all",
                     priority_source=playlist.get("priority_source"),
                     custom_subdir=custom_subdir,
+                    quality_profile=playlist.get("quality_profile") or "best",
+                    quality_fallback=bool(playlist.get("quality_fallback", True)),
                     original_youtube_video_ids=[
                         original_video_by_hash.get(track_hash)
                         for _, _, track_hash in new_tracks + missing_tracks
