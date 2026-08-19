@@ -3,7 +3,11 @@
 
 A self-hosted music acquisition service. Search YouTube, SoundCloud, zvu4no, FreeMp3Cloud, Monochrome/Qobuz, optional MP3Phoenix, and optional Soulseek, tap a result and it downloads the best quality audio straight into your music library. You'll have a choice to convert to a common format, or store as is.
 
-If you find it useful, consider buying me a coffee: https://ko-fi.com/geekphreek
+This fork is based on the original build by g33kphr33k: https://gitlab.com/g33kphr33k/musicgrabber
+
+All credits go to g33kphr33k!
+
+If you find it useful, consider buying the original dev a coffee: https://ko-fi.com/geekphreek
 
 ## Why?
 
