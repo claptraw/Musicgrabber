@@ -6774,6 +6774,22 @@
                                     ${renderPrioritySourceOptions(p.priority_source || '')}
                                 </select>
                             </label>
+                            <label class="watched-card-toggle" title="Native FLAC quality requested from Monochrome/Qobuz for this playlist.">
+                                FLAC quality
+                                <select onchange="updateWatchedPlaylistQualityProfile('${p.id}', this.value)" class="watched-card-select">
+                                    <option value="best" ${(p.quality_profile || 'best') === 'best' ? 'selected' : ''}>Best available</option>
+                                    <option value="hires" ${p.quality_profile === 'hires' ? 'selected' : ''}>Hi-Res (24-bit)</option>
+                                    <option value="cd_16_44" ${p.quality_profile === 'cd_16_44' ? 'selected' : ''}>CD (16/44.1)</option>
+                                </select>
+                            </label>
+                            ${p.quality_profile === 'hires' ? `
+                            <label class="watched-card-toggle" title="Accept native CD FLAC if this track is not available in 24-bit Hi-Res.">
+                                CD fallback
+                                <div class="toggle-switch">
+                                    <input type="checkbox" ${p.quality_fallback ? 'checked' : ''} onchange="updateWatchedPlaylistQualityFallback('${p.id}', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                            </label>` : ''}
                         </div>
                         ${p.stale_navidrome_paths > 0 ? `
                         <div class="watched-card-stale-warning">
@@ -6919,7 +6935,9 @@
                         sync_mode: document.getElementById('watchedSyncModeSelect') ? document.getElementById('watchedSyncModeSelect').value : 'append',
                         preferred_sources: getWatchedPreferredSources(),
                         priority_source: (document.getElementById('watchedPrioritySource')?.value || '') || null,
-                        custom_subdir: (document.getElementById('watchedCustomSubdir')?.value || '').trim() || null
+                        custom_subdir: (document.getElementById('watchedCustomSubdir')?.value || '').trim() || null,
+                        quality_profile: document.getElementById('watchedQualityProfile')?.value || 'best',
+                        quality_fallback: document.getElementById('watchedQualityFallback')?.checked ?? true
                     })
                 });
 
@@ -7072,7 +7090,9 @@
                         make_m3u: document.getElementById('watchedMakeM3u') ? document.getElementById('watchedMakeM3u').checked : false,
                         use_playlists_dir: document.getElementById('watchedUsePlaylistsDir') ? document.getElementById('watchedUsePlaylistsDir').checked : false,
                         sync_mode: 'mirror',
-                        custom_subdir: (document.getElementById('watchedCustomSubdir')?.value || '').trim() || null
+                        custom_subdir: (document.getElementById('watchedCustomSubdir')?.value || '').trim() || null,
+                        quality_profile: document.getElementById('watchedQualityProfile')?.value || 'best',
+                        quality_fallback: document.getElementById('watchedQualityFallback')?.checked ?? true
                     })
                 });
 
@@ -7807,6 +7827,48 @@
                 showToast(priority ? `Preferred source: ${priority}` : 'Preferred source cleared');
             } catch (error) {
                 showToast('Failed to update preferred source', true);
+                loadWatchedPlaylists();
+            }
+        }
+
+        function syncWatchedQualityFallbackVisibility() {
+            const profile = document.getElementById('watchedQualityProfile')?.value || 'best';
+            const label = document.getElementById('watchedQualityFallbackLabel');
+            if (label) label.style.display = profile === 'hires' ? 'flex' : 'none';
+        }
+
+        async function updateWatchedPlaylistQualityProfile(playlistId, qualityProfile) {
+            try {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ quality_profile: qualityProfile })
+                });
+                if (!response.ok) throw new Error('Update failed');
+                const labels = {
+                    best: 'Best available',
+                    hires: 'Hi-Res (native 24-bit)',
+                    cd_16_44: 'CD (16-bit / 44.1 kHz)'
+                };
+                showToast(`FLAC quality: ${labels[qualityProfile] || qualityProfile}`);
+                loadWatchedPlaylists();
+            } catch (error) {
+                showToast('Failed to update FLAC quality', true);
+                loadWatchedPlaylists();
+            }
+        }
+
+        async function updateWatchedPlaylistQualityFallback(playlistId, enabled) {
+            try {
+                const response = await apiFetch(`/api/watched-playlists/${playlistId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ quality_fallback: enabled })
+                });
+                if (!response.ok) throw new Error('Update failed');
+                showToast(enabled ? 'CD fallback enabled' : 'CD fallback disabled');
+            } catch (error) {
+                showToast('Failed to update CD fallback', true);
                 loadWatchedPlaylists();
             }
         }

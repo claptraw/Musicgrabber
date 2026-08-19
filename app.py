@@ -4326,13 +4326,14 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                     _lb_priority = None
                 conn.execute("""
                     INSERT INTO watched_playlists
-                    (id, url, name, platform, refresh_interval_hours, last_checked, convert_audio, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, lb_username, custom_subdir)
-                    VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, url, name, platform, refresh_interval_hours, last_checked, convert_audio, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, lb_username, custom_subdir, quality_profile, quality_fallback)
+                    VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (playlist_id, lb["playlist_url"], lb["name"], "listenbrainz",
                       refresh_hours, int(body.convert_audio),
                       int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(lb["tracks"]), user_id,
                       body.preferred_sources or "all", _lb_priority, platform_id,
-                      (body.custom_subdir or "").strip() or None))
+                      (body.custom_subdir or "").strip() or None,
+                      body.quality_profile, int(body.quality_fallback)))
 
                 for artist, title in lb["tracks"]:
                     track_hash = hash_track(artist, title)
@@ -4362,6 +4363,8 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
                     preferred_sources=body.preferred_sources or "all",
                     priority_source=body.priority_source,
                     custom_subdir=(body.custom_subdir or "").strip() or None,
+                    quality_profile=body.quality_profile,
+                    quality_fallback=body.quality_fallback,
                 )
 
         wake_scheduler()
@@ -4410,14 +4413,15 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
         )
         conn.execute("""
             INSERT INTO watched_playlists
-            (id, url, name, platform, refresh_interval_hours, last_checked, convert_audio, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, custom_subdir)
-            VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, url, name, platform, refresh_interval_hours, last_checked, convert_audio, make_m3u, use_playlists_dir, sync_mode, last_track_count, user_id, preferred_sources, priority_source, custom_subdir, quality_profile, quality_fallback)
+            VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (playlist_id, body.url, playlist_name, platform,
               body.refresh_interval_hours, int(body.convert_audio),
               int(body.make_m3u), int(body.use_playlists_dir), sync_mode, len(tracks), user_id,
               _new_preferred_sources,
               _new_priority,
-              (body.custom_subdir or "").strip() or None))
+              (body.custom_subdir or "").strip() or None,
+              body.quality_profile, int(body.quality_fallback)))
 
         # Insert all current tracks as "seen"
         for index, (artist, title) in enumerate(tracks):
@@ -4441,6 +4445,8 @@ def add_watched_playlist(body: WatchedPlaylistRequest, http_request: Request):
             preferred_sources=_new_preferred_sources,
             priority_source=body.priority_source,
             custom_subdir=(body.custom_subdir or "").strip() or None,
+            quality_profile=body.quality_profile,
+            quality_fallback=body.quality_fallback,
             original_youtube_video_ids=original_video_ids,
         )
 
@@ -4641,6 +4647,14 @@ def update_watched_playlist(playlist_id: str, request: WatchedPlaylistUpdate, ht
             updates.append("custom_subdir = ?")
             params.append((request.custom_subdir or "").strip() or None)
 
+        if request.quality_profile is not None:
+            updates.append("quality_profile = ?")
+            params.append(request.quality_profile)
+
+        if request.quality_fallback is not None:
+            updates.append("quality_fallback = ?")
+            params.append(int(request.quality_fallback))
+
         if updates:
             params.append(playlist_id)
             conn.execute(
@@ -4811,7 +4825,7 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"SELECT id, name, convert_audio, use_playlists_dir, preferred_sources, priority_source, custom_subdir FROM watched_playlists WHERE id = ? AND {_scope_frag}",
+            f"SELECT id, name, convert_audio, use_playlists_dir, preferred_sources, priority_source, custom_subdir, quality_profile, quality_fallback FROM watched_playlists WHERE id = ? AND {_scope_frag}",
             (playlist_id, *_scope_params)
         ).fetchone()
 
@@ -4830,6 +4844,8 @@ def retry_missing_track(playlist_id: str, request: RetryMissingTrackRequest, htt
         preferred_sources=playlist["preferred_sources"] or "all",
         priority_source=playlist["priority_source"],
         custom_subdir=custom_subdir,
+        quality_profile=playlist["quality_profile"],
+        quality_fallback=bool(playlist["quality_fallback"]),
     )
 
     return {"import_id": import_id, "status": "queued", "message": f"Searching for {request.artist} - {request.title}"}
@@ -4855,7 +4871,7 @@ def get_watched_playlist_track_candidates(
         conn.row_factory = sqlite3.Row
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
-            f"""SELECT id, preferred_sources
+            f"""SELECT id, preferred_sources, quality_profile, quality_fallback
                 FROM watched_playlists
                 WHERE id = ? AND {_scope_frag}""",
             (playlist_id, *_scope_params)
@@ -4915,7 +4931,8 @@ def queue_watched_playlist_track_candidate(
         _scope_frag, _scope_params = _user_scope(user_id, is_admin)
         playlist = conn.execute(
             f"""SELECT id, name, convert_audio, use_playlists_dir, custom_subdir,
-                       preferred_sources, priority_source
+                       preferred_sources, priority_source, quality_profile,
+                       quality_fallback
                 FROM watched_playlists
                 WHERE id = ? AND {_scope_frag}""",
             (playlist_id, *_scope_params)
@@ -4953,6 +4970,8 @@ def queue_watched_playlist_track_candidate(
                 "watch_playlist_id": playlist_id,
                 "use_playlists_dir": bool(playlist["use_playlists_dir"]),
                 "custom_subdir": playlist["custom_subdir"],
+                "quality_profile": playlist["quality_profile"],
+                "quality_fallback": bool(playlist["quality_fallback"]),
             },
             conn=conn,
         )

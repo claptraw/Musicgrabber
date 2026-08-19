@@ -47,6 +47,15 @@ from constants import (
     TIMEOUT_DEEZER,
 )
 from matching import compute_match_confidence
+from quality_profiles import (
+    QUALITY_BEST,
+    QUALITY_CD_16_44,
+    QUALITY_HIRES,
+    normalise_quality_profile,
+    requested_monochrome_quality,
+    requested_qobuz_formats,
+    validate_native_quality,
+)
 from settings import get_setting_bool
 from youtube import score_search_result_with_breakdown, parse_duration, _parse_query_artist_title
 
@@ -1172,6 +1181,9 @@ def _tidal_stream_url(tidal_id: str, quality: str) -> str:
 def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
                                    title_hint: str = "", *,
                                    lossless_only: bool = False,
+                                   quality_profile: str | None = None,
+                                   allow_quality_fallback: bool = True,
+                                   skip_browser: bool = False,
                                    trace: list | None = None) -> str:
     """Resolve a Monochrome result through the shared stream fallback ladder.
 
@@ -1195,6 +1207,8 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
     isrc    = (params.get("isrc") or [""])[0]
     quality = (params.get("quality") or ["LOSSLESS"])[0]
     src_leg = (params.get("src") or [""])[0]
+    explicit_profile = quality_profile is not None
+    quality_profile = normalise_quality_profile(quality_profile)
 
     if not isrc:
         raise RuntimeError(f"Monochrome: no ISRC in source_url {source_url!r}")
@@ -1212,11 +1226,27 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
             rescued = True
 
     # Previewing a few seconds should not pull hi-res audio or quietly fall back
-    # to the lossy HIGH tier. Format 7 is 16-bit FLAC, our strict preview floor.
+    # to the lossy HIGH tier. Qobuz format 7 is our strict CD-FLAC floor.
     tier_order = ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH"]
+    profile_qobuz_formats = None
     if lossless_only:
         candidates = ["LOSSLESS"]
         quality = "LOSSLESS"
+    elif quality_profile in (QUALITY_CD_16_44, QUALITY_HIRES):
+        quality = requested_monochrome_quality(quality_profile) or quality
+        candidates = [quality]
+        if quality_profile == QUALITY_HIRES and allow_quality_fallback:
+            candidates.append("LOSSLESS")
+        profile_qobuz_formats = requested_qobuz_formats(
+            quality_profile, allow_quality_fallback
+        )
+    elif explicit_profile and quality_profile == QUALITY_BEST:
+        # Best is an explicit native-lossless ladder: highest available Hi-Res,
+        # then CD FLAC. It must never inherit a catalogue result's lossy HIGH
+        # ceiling merely because that one source advertised it.
+        quality = "HI_RES_LOSSLESS"
+        candidates = ["HI_RES_LOSSLESS", "LOSSLESS"]
+        profile_qobuz_formats = requested_qobuz_formats(QUALITY_BEST, True)
     elif quality in tier_order:
         candidates = tier_order[tier_order.index(quality):]
     else:
@@ -1227,8 +1257,11 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
     def _resolve_via_qbdlx() -> str:
         from qbdlx import resolve_qobuz_stream_url
         errors = []
-        for tier in candidates:
-            fmt = _SOURCE_QUALITY_TO_QOBUZ_FORMAT.get(tier, 7)
+        qobuz_requests = profile_qobuz_formats or [
+            (tier, _SOURCE_QUALITY_TO_QOBUZ_FORMAT.get(tier, 7))
+            for tier in candidates
+        ]
+        for tier, fmt in qobuz_requests:
             try:
                 fallback_url = resolve_qobuz_stream_url(isrc, fmt)
             except Exception as exc:
@@ -1274,7 +1307,7 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
             _note("Browser-authenticated playback", False, f"{type(exc).__name__}: {exc}")
             return ""
 
-    cdn_url = _resolve_via_browser()
+    cdn_url = "" if skip_browser else _resolve_via_browser()
 
     if not cdn_url:
         cdn_url = _resolve_via_qbdlx()
@@ -1288,7 +1321,7 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
             print(f"Monochrome: Qobuz had nothing for ISRC {isrc}; retrying with Deezer's {rescue_isrc}")
             _note("Deezer ISRC rescue", True, f"swapped ISRC {isrc} -> {rescue_isrc}, retrying")
             isrc = rescue_isrc
-            cdn_url = _resolve_via_browser()
+            cdn_url = "" if skip_browser else _resolve_via_browser()
             if not cdn_url:
                 cdn_url = _resolve_via_qbdlx()
 
@@ -1298,9 +1331,17 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
     # netloc really is a Tidal ID; hi-res is DRM-locked there, so LOSSLESS is
     # the honest ceiling.
     if not cdn_url and src_leg == "tidal" and tidal_id.isdigit():
-        tidal_candidates = ["LOSSLESS"] if lossless_only else [
-            tier for tier in candidates if tier in ("LOSSLESS", "HIGH")
-        ]
+        if lossless_only or quality_profile == QUALITY_CD_16_44:
+            tidal_candidates = ["LOSSLESS"]
+        elif quality_profile == QUALITY_HIRES:
+            # The surviving hifi-api leg cannot deliver native Hi-Res. It is
+            # therefore a valid leg only when this playlist explicitly permits
+            # the CD fallback.
+            tidal_candidates = ["LOSSLESS"] if allow_quality_fallback else []
+        else:
+            tidal_candidates = [
+                tier for tier in candidates if tier in ("LOSSLESS", "HIGH")
+            ]
         tidal_errors = []
         for tier in tidal_candidates:
             try:
@@ -1324,17 +1365,8 @@ def _resolve_monochrome_stream_url(source_url: str, artist_hint: str = "",
     return cdn_url
 
 
-def download_monochrome_track(source_url: str, output_path: Path,
-                              artist_hint: str = "", title_hint: str = "") -> None:
-    """Resolve a monochrome:// source URL and stream the audio to output_path."""
-    parsed = urlparse(source_url)
-    tidal_id = parsed.netloc
-    cdn_url = _resolve_monochrome_stream_url(
-        source_url,
-        artist_hint=artist_hint,
-        title_hint=title_hint,
-    )
-
+def _download_monochrome_resource(cdn_url: str, output_path: Path, tidal_id: str) -> None:
+    """Stream and, when needed, decrypt one already-resolved resource."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     decryption_key = None
     try:
@@ -1390,6 +1422,107 @@ def download_monochrome_track(source_url: str, output_path: Path,
                 raise RuntimeError(f"Monochrome: CENC audio decryption failed: {detail}")
         finally:
             download_path.unlink(missing_ok=True)
+
+
+def download_monochrome_track(
+    source_url: str,
+    output_path: Path,
+    artist_hint: str = "",
+    title_hint: str = "",
+    quality_profile: str | None = None,
+    allow_quality_fallback: bool = True,
+) -> None:
+    """Resolve and download a Monochrome track under an optional playlist policy.
+
+    ``quality_profile=None`` is the legacy/manual contract. Watched playlists
+    pass an explicit profile and the received FLAC is probed before the caller
+    can move or tag it.
+    """
+    tidal_id = urlparse(source_url).netloc
+    enforce_profile = quality_profile is not None
+    profile = normalise_quality_profile(quality_profile)
+
+    def _attempt(
+        *,
+        requested_profile: str | None,
+        skip_browser: bool = False,
+        resolver_fallback: bool = False,
+        validation_profile: str | None = None,
+    ) -> tuple[bool, str]:
+        cdn_url = _resolve_monochrome_stream_url(
+            source_url,
+            artist_hint=artist_hint,
+            title_hint=title_hint,
+            quality_profile=requested_profile,
+            allow_quality_fallback=resolver_fallback,
+            skip_browser=skip_browser,
+        )
+        _download_monochrome_resource(cdn_url, output_path, tidal_id)
+        if not enforce_profile:
+            return True, "legacy best-available download"
+        valid, reason, _info = validate_native_quality(
+            output_path, validation_profile or profile, False
+        )
+        return valid, reason
+
+    if not enforce_profile:
+        _attempt(requested_profile=None)
+        return
+
+    # Validate the selected tier strictly first. In particular, an allowed CD
+    # fallback must not make us accept the browser's CD bytes before Qobuz has
+    # had a chance to supply a native 24-bit master.
+    try:
+        valid, reason = _attempt(
+            requested_profile=profile,
+            resolver_fallback=False,
+        )
+    except Exception as exc:
+        valid, reason = False, str(exc)
+    if valid:
+        print(f"Monochrome: playlist quality accepted ({reason})")
+        return
+
+    output_path.unlink(missing_ok=True)
+
+    # Browser quality labels are advisory. Retry through Qobuz only and inspect
+    # those bytes as well; this also repairs the case where a browser CDN URL
+    # itself failed during transfer.
+    try:
+        valid, qobuz_reason = _attempt(
+            requested_profile=profile,
+            skip_browser=True,
+            resolver_fallback=False,
+        )
+    except Exception as exc:
+        valid, qobuz_reason = False, str(exc)
+    if valid:
+        print(f"Monochrome: playlist quality accepted ({qobuz_reason})")
+        return
+    output_path.unlink(missing_ok=True)
+    reason = f"{reason}; Qobuz native-quality retry: {qobuz_reason}"
+
+    if profile == QUALITY_HIRES and allow_quality_fallback:
+        try:
+            valid, cd_reason = _attempt(
+                requested_profile=QUALITY_CD_16_44,
+                validation_profile=QUALITY_CD_16_44,
+            )
+        except Exception as exc:
+            valid, cd_reason = False, str(exc)
+        if valid:
+            # Record that the original Hi-Res policy, rather than the CD
+            # profile alone, explicitly allowed this result.
+            accepted, accepted_reason, _ = validate_native_quality(
+                output_path, profile, True
+            )
+            if accepted:
+                print(f"Monochrome: playlist quality accepted ({accepted_reason})")
+                return
+        output_path.unlink(missing_ok=True)
+        reason = f"{reason}; CD fallback: {cd_reason}"
+
+    raise RuntimeError(f"Monochrome: downloaded FLAC failed playlist quality policy: {reason}")
 
 
 def get_monochrome_preview_url(source_url: str, artist_hint: str = "",

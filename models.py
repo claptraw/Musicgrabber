@@ -4,7 +4,7 @@ MusicGrabber - Pydantic Request/Response Models
 
 import re
 from datetime import date as _date
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 from constants import DEFAULT_CONVERT_AUDIO, MAX_SEARCH_QUERY_LENGTH
 
@@ -149,6 +149,8 @@ class WatchedPlaylistRequest(BaseModel):
     preferred_sources: str = "all"  # Comma-separated source IDs or "all"
     priority_source: Optional[str] = None  # Tie-breaker within the same automatic quality tier
     custom_subdir: Optional[str] = None  # Override destination folder (relative to music_dir)
+    quality_profile: Literal["cd_16_44", "hires", "best"] = "best"
+    quality_fallback: bool = True  # For Hi-Res, accept native CD FLAC when 24-bit is unavailable
 
     _validate_custom_subdir = field_validator("custom_subdir")(_validate_subdir)
 
@@ -162,6 +164,8 @@ class WatchedPlaylistUpdate(BaseModel):
     preferred_sources: Optional[str] = None  # Comma-separated source IDs or "all"
     priority_source: Optional[str] = None  # Same-tier tie-breaker; empty string clears it
     custom_subdir: Optional[str] = None  # Override destination folder (relative to music_dir)
+    quality_profile: Optional[Literal["cd_16_44", "hires", "best"]] = None
+    quality_fallback: Optional[bool] = None
 
     _validate_custom_subdir = field_validator("custom_subdir")(_validate_subdir)
 
