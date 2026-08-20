@@ -9,9 +9,9 @@ beibehalten.
 
 | Profil | Anforderung | Provider-Reihenfolge |
 |---|---|---|
-| CD (16/44,1) | exakt 16 Bit und 44.100 Hz, nativ lossless | Monochrome `LOSSLESS`, Qobuz Format 7 |
+| CD (16/44,1) | exakt 16 Bit und 44.100 Hz, nativ lossless | Monochrome `LOSSLESS`, Qobuz Format 6 |
 | Hi-Res (24 Bit) | mindestens 24 Bit; 44,1/48/88,2/96/176,4/192 kHz werden in der tatsächlich gelieferten Source-Rate akzeptiert | Monochrome `HI_RES_LOSSLESS`, Qobuz Format 27 |
-| Beste verfügbare Qualität | höchste verfügbare native Lossless-Qualität; Hi-Res zuerst, CD automatisch danach | Qobuz Format 27, danach Format 7 |
+| Beste verfügbare Qualität | höchste verfügbare native Lossless-Qualität; Hi-Res zuerst, CD automatisch danach | Qobuz Format 27, danach Format 6 |
 
 Hi-Res besitzt zusätzlich die Option **CD fallback**. Ist sie aktiv, wird CD
 erst akzeptiert, nachdem Browser- und direkter Qobuz-Hi-Res-Versuch kein
@@ -108,7 +108,7 @@ ffprobe -v error -select_streams a:0 \
 
 ## Technische Leitplanken
 
-- Qobuz Format 7 wird nur als CD-FLAC angefragt.
+- Qobuz Format 6 wird als CD-FLAC angefragt.
 - Qobuz Format 27 wird als höchste verfügbare Hi-Res-Stufe angefragt; die
   empfangenen Bytes entscheiden, nicht das Provider-Label.
 - Tidal-hifi-api kann im vorhandenen Upstream-Pfad höchstens CD-Lossless

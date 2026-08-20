@@ -1,5 +1,12 @@
 # Changelog
 
+## Playlist-quality build 2 (fork of v4.0.2)
+
+### Fixed
+- The exact CD profile now requests Qobuz format 6 (16-bit/44.1 kHz) instead
+  of format 7 (24-bit/up to 96 kHz). The same correction applies to the CD
+  fallback used by Hi-Res and Best Available profiles.
+
 ## Playlist-quality build 1 (fork of v4.0.2)
 
 ### Added
@@ -10,7 +17,7 @@
 - Quality choices survive scheduler refreshes, missing-track retries, process
   restarts, and acquisition rescue cycles through immutable import/target
   snapshots.
-- Monochrome/Qobuz downloads request lossless format IDs 27 then 7 as required
+- Monochrome/Qobuz downloads request lossless format IDs 27 then 6 as required
   and probe the delivered bytes before accepting them. No resampling is used to
   manufacture a matching profile.
 - Existing databases migrate safely to `best` with CD fallback enabled.

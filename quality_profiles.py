@@ -49,18 +49,18 @@ def requested_monochrome_quality(profile: str | None) -> str | None:
 def requested_qobuz_formats(profile: str | None, allow_fallback: bool) -> list[tuple[str, int]] | None:
     """Return the ordered Qobuz format requests for a profile.
 
-    Qobuz format 7 is CD FLAC and format 27 is the highest Hi-Res tier exposed
+    Qobuz format 6 is CD FLAC and format 27 is the highest Hi-Res tier exposed
     by this resolver. ``best`` tries both in descending order.
     """
     profile = normalise_quality_profile(profile)
     if profile == QUALITY_CD_16_44:
-        return [("CD_16_44", 7)]
+        return [("CD_16_44", 6)]
     if profile == QUALITY_HIRES:
         formats = [("HI_RES", 27)]
         if allow_fallback:
-            formats.append(("CD_16_44", 7))
+            formats.append(("CD_16_44", 6))
         return formats
-    return [("BEST_HI_RES", 27), ("BEST_CD", 7)]
+    return [("BEST_HI_RES", 27), ("BEST_CD", 6)]
 
 
 def inspect_native_quality(path: Path) -> dict | None:
@@ -100,7 +100,7 @@ def validate_native_quality(
         return False, f"CD profile requires 16-bit/44100 Hz, received {actual}", info
 
     # Providers expose different Hi-Res ladders. Qobuz can distinguish its
-    # format-7 and format-27 tiers; Monochrome/Tidal expose one generic Hi-Res
+    # format-6 and format-27 tiers; Monochrome/Tidal expose one generic Hi-Res
     # request. The playlist contract is therefore native 24-bit, at whatever
     # sample rate that source actually supplies (44.1 through 192 kHz today).
     is_hires = bits >= 24 and rate >= 44_100

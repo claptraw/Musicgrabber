@@ -57,15 +57,15 @@ def test_lossy_audio_never_satisfies_a_playlist_profile(monkeypatch, tmp_path):
 
 
 def test_qobuz_profile_format_ladders_are_lossless_only():
-    assert qp.requested_qobuz_formats("cd_16_44", True) == [("CD_16_44", 7)]
+    assert qp.requested_qobuz_formats("cd_16_44", True) == [("CD_16_44", 6)]
     assert qp.requested_qobuz_formats("hires", False) == [("HI_RES", 27)]
     assert qp.requested_qobuz_formats("hires", True) == [
         ("HI_RES", 27),
-        ("CD_16_44", 7),
+        ("CD_16_44", 6),
     ]
     assert qp.requested_qobuz_formats("best", True) == [
         ("BEST_HI_RES", 27),
-        ("BEST_CD", 7),
+        ("BEST_CD", 6),
     ]
 
 
@@ -120,7 +120,7 @@ def test_schema_and_import_snapshot_preserve_playlist_policy(monkeypatch, tmp_pa
     assert destination["quality_fallback"] is False
 
 
-def test_monochrome_resolver_requests_cd_format_7(monkeypatch):
+def test_monochrome_resolver_requests_cd_format_6(monkeypatch):
     import monochrome
 
     calls = []
@@ -134,7 +134,7 @@ def test_monochrome_resolver_requests_cd_format_7(monkeypatch):
         quality_profile="cd_16_44",
     )
     assert url == "https://qobuz.test/cd.flac"
-    assert calls == [7]
+    assert calls == [6]
 
 
 def test_monochrome_hires_strict_never_steps_down_to_cd(monkeypatch):
@@ -169,7 +169,7 @@ def test_monochrome_best_tries_hires_then_cd_without_lossy(monkeypatch):
 
     def qobuz(_isrc, fmt):
         qobuz_formats.append(fmt)
-        return "https://qobuz.test/best.flac" if fmt == 7 else None
+        return "https://qobuz.test/best.flac" if fmt == 6 else None
 
     monkeypatch.setattr("qbdlx.resolve_qobuz_stream_url", qobuz)
     url = monochrome._resolve_monochrome_stream_url(
@@ -177,7 +177,7 @@ def test_monochrome_best_tries_hires_then_cd_without_lossy(monkeypatch):
         quality_profile="best",
     )
     assert url == "https://qobuz.test/best.flac"
-    assert qobuz_formats == [27, 7]
+    assert qobuz_formats == [27, 6]
 
 
 def test_manual_resolver_keeps_legacy_advertised_quality(monkeypatch):
