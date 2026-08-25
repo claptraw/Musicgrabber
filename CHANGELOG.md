@@ -1,5 +1,15 @@
 # Changelog
 
+## Playlist-quality build 3 (fork of v4.0.2)
+
+### Added
+- A new `PRESERVE_WATCHED_DOWNLOAD_HISTORY` mode supports Beets, SmartImport,
+  and similar hand-off workflows. Successfully downloaded watched tracks remain
+  completed after the importer moves their files out of MusicGrabber's incoming
+  directory, preventing the next scheduled playlist refresh from downloading
+  them again. Stale stored paths are cleared, and explicit manual retries remain
+  available.
+
 ## Playlist-quality build 2 (fork of v4.0.2)
 
 ### Fixed

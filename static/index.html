@@ -800,6 +800,14 @@
                         </div>
                         <span class="settings-hint settings-hint-full">Writes the watched-playlist name(s) a track belongs to into its Comment tag, so macOS Music can build smart playlists from them. A track on several playlists gets all their names. Off by default; use the one-shot backfill to tag your existing library.</span>
                     </label>
+                    <label class="settings-label settings-label-wrap admin-only">
+                        <span>Keep watched tracks completed after files move</span>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="settingPreserveWatchedDownloadHistory">
+                            <span class="toggle-slider"></span>
+                        </div>
+                        <span class="settings-hint settings-hint-full">Use this when Beets, SmartImport, or another external importer moves finished downloads out of MusicGrabber's incoming folder. A successful watched track remains completed and is not downloaded again merely because its original file path disappeared. Explicit manual retries still work.</span>
+                    </label>
                     <label class="settings-label settings-label-top admin-only">
                         <span>Search Sources</span>
                         <div class="source-toggle-list">

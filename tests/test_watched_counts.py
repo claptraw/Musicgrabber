@@ -84,6 +84,61 @@ def _refresh(monkeypatch, upstream):
     return wp.refresh_watched_playlist("pl1")
 
 
+def test_handoff_mode_does_not_requeue_downloaded_tracks_moved_by_importer(
+    fresh_db, monkeypatch
+):
+    import watched_playlists as wp
+
+    _seed(fresh_db, "append")
+    monkeypatch.setattr(
+        wp, "fetch_playlist_tracks",
+        lambda *a, **kw: (list(UPSTREAM_NOW + DEPARTED), "Britpop Chart", None),
+    )
+    monkeypatch.setattr(wp, "_locate_local_track_file", lambda *a, **kw: (False, None))
+    monkeypatch.setattr(
+        wp, "start_bulk_import_for_tracks",
+        lambda *a, **kw: pytest.fail("completed hand-off tracks must not be queued again"),
+    )
+    monkeypatch.setattr(
+        wp, "get_setting_bool",
+        lambda key, default=False: True
+        if key == "preserve_watched_download_history" else default,
+    )
+
+    result = wp.refresh_watched_playlist("pl1")
+
+    assert result["missing_tracks"] == 0
+    assert result["queued"] == 0
+    assert _counts(fresh_db)["downloaded"] == len(UPSTREAM_NOW + DEPARTED)
+
+
+def test_missing_downloaded_tracks_still_requeue_when_handoff_mode_is_off(
+    fresh_db, monkeypatch
+):
+    import watched_playlists as wp
+
+    upstream = UPSTREAM_NOW + DEPARTED
+    _seed(fresh_db, "append")
+    queued = []
+    monkeypatch.setattr(
+        wp, "fetch_playlist_tracks",
+        lambda *a, **kw: (list(upstream), "Britpop Chart", None),
+    )
+    monkeypatch.setattr(wp, "_locate_local_track_file", lambda *a, **kw: (False, None))
+    monkeypatch.setattr(
+        wp, "start_bulk_import_for_tracks",
+        lambda tracks, *_a, **_kw: queued.extend(tracks) or "import01",
+    )
+    monkeypatch.setattr(wp, "get_setting_bool", lambda _key, default=False: default)
+
+    result = wp.refresh_watched_playlist("pl1")
+
+    assert result["missing_tracks"] == len(upstream)
+    assert result["queued"] == len(upstream)
+    assert queued == upstream
+    assert _counts(fresh_db)["downloaded"] == 0
+
+
 @pytest.mark.parametrize("sync_mode", ["mirror", "append"])
 def test_departures_are_recorded_in_both_sync_modes(fresh_db, monkeypatch, sync_mode):
     """The count of live rows must equal the upstream playlist, not its whole history."""

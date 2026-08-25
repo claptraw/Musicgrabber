@@ -404,6 +404,7 @@ Settings are stored in the database and persist across container restarts.
 | `WATCHED_PLAYLIST_CHECK_HOURS` | `24` | Maximum time between scheduler sweeps. Shorter per-playlist/per-artist intervals wake sooner; `0` disables automatic checks |
 | `WATCHED_HISTORY_RECHECK_HOURS` | `24` | Minimum interval before retrying unresolved append-mode tracks that have left the upstream playlist |
 | `WATCHED_REFRESH_STALE_SECONDS` | `1800` | How long before a stuck `running` refresh is auto-failed (seconds) |
+| `PRESERVE_WATCHED_DOWNLOAD_HISTORY` | `false` | Keep successfully downloaded watched playlist/artist tracks completed after an external importer such as Beets moves the file out of MusicGrabber's incoming directory |
 | `LIBRARY_RECONCILE_INTERVAL` | `1800` | How often MusicGrabber reconciles deleted/renamed files against the job database (seconds) |
 | `SPOTIFY_BROWSER_TIMEOUT_SECONDS` | `180` | Maximum runtime for the headless Spotify playlist browser fallback |
 | `SPOTIFY_BROWSER_STALL_SECONDS` | `30` | Abort Spotify browser scrolling after this many seconds without finding more tracks |
