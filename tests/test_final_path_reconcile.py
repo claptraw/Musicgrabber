@@ -43,6 +43,33 @@ def _job(job_id):
         ).fetchone()
 
 
+def _add_watched_playlist_track(job_id, final_path):
+    with db.db_conn() as conn:
+        conn.execute(
+            """INSERT INTO watched_playlists
+               (id, url, name, platform)
+               VALUES ('playlist-1', 'https://example.test/list', 'Incoming', 'spotify')"""
+        )
+        conn.execute(
+            """INSERT INTO watched_playlist_tracks
+               (playlist_id, track_hash, artist, title, downloaded_at,
+                resolved_path, job_id)
+               VALUES ('playlist-1', 'knife-party-ghost-train', 'Knife Party',
+                       'Ghost Train', datetime('now'), ?, ?)""",
+            (final_path, job_id),
+        )
+        conn.commit()
+
+
+def _watched_track():
+    with db.db_conn() as conn:
+        return conn.execute(
+            """SELECT downloaded_at, resolved_path
+               FROM watched_playlist_tracks
+               WHERE playlist_id = 'playlist-1'"""
+        ).fetchone()
+
+
 def test_existing_exact_final_path_keeps_job_completed(fresh_db, tmp_path):
     delivered = tmp_path / "Albums" / "Knife Party" / "Ghost Train.flac"
     delivered.parent.mkdir(parents=True)
@@ -65,6 +92,30 @@ def test_missing_exact_path_is_not_replaced_by_a_lookalike(fresh_db, monkeypatch
 
     assert db.reconcile_deleted_library_files() == (1, 0)
     assert _job("gone") == (1, str(missing))
+
+
+def test_missing_handoff_file_preserves_watched_completion(fresh_db, monkeypatch, tmp_path):
+    missing = tmp_path / "Incoming" / "Knife Party" / "Ghost Train.flac"
+    _add_completed("handed-off", final_path=str(missing))
+    _add_watched_playlist_track("handed-off", str(missing))
+    monkeypatch.setenv("PRESERVE_WATCHED_DOWNLOAD_HISTORY", "true")
+
+    assert db.reconcile_deleted_library_files() == (1, 0)
+    assert _job("handed-off") == (1, str(missing))
+    downloaded_at, resolved_path = _watched_track()
+    assert downloaded_at is not None
+    assert resolved_path is None
+
+
+def test_missing_watched_file_still_unlinks_by_default(fresh_db, tmp_path):
+    missing = tmp_path / "Singles" / "Knife Party" / "Ghost Train.flac"
+    _add_completed("deleted", final_path=str(missing))
+    _add_watched_playlist_track("deleted", str(missing))
+
+    assert db.reconcile_deleted_library_files() == (1, 1)
+    downloaded_at, resolved_path = _watched_track()
+    assert downloaded_at is None
+    assert resolved_path is None
 
 
 def test_legacy_album_job_backfills_safe_album_match(fresh_db, monkeypatch, tmp_path):

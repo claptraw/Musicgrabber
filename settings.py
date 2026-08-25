@@ -209,6 +209,10 @@ SETTINGS_SCHEMA = {
     # Stamp watched-playlist names into the COMMENT tag so macOS Music can build
     # smart playlists off them. Off by default; it writes to every playlist file.
     "playlist_comment_tagging": {"type": "bool", "default": False, "env": "PLAYLIST_COMMENT_TAGGING"},
+    # External importers such as Beets commonly move completed downloads out of
+    # MusicGrabber's incoming directory. In that workflow the durable completion
+    # record, rather than continued local file presence, prevents repeat downloads.
+    "preserve_watched_download_history": {"type": "bool", "default": False, "env": "PRESERVE_WATCHED_DOWNLOAD_HISTORY"},
     # Track upgrades (Lidarr-style). Off by default; opt-in. The scan flags library
     # files sitting below the quality you already download at, ready for a manual upgrade.
     "enable_track_upgrades": {"type": "bool", "default": False, "env": "ENABLE_TRACK_UPGRADES"},

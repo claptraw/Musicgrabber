@@ -116,6 +116,50 @@ def test_singles_follow_still_fetches_singles(fresh_db, monkeypatch):
     assert result["queued"] == 1
 
 
+def test_handoff_mode_does_not_requeue_moved_watched_artist_track(
+    fresh_db, monkeypatch
+):
+    import watched_artists as wa
+
+    _seed_artist(fresh_db, "a1", "Radiohead", "mbid-1")
+    with fresh_db() as conn:
+        conn.execute(
+            """INSERT INTO watched_artist_tracks
+               (artist_id, track_hash, artist, title, release_date, downloaded_at)
+               VALUES ('a1', ?, 'Radiohead', 'Creep', '2020-01-01', datetime('now'))""",
+            (wa.hash_track("Radiohead", "Creep"),),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(wa, "fetch_artist_singles", lambda _mbid: [
+        {"artist": "Radiohead", "title": "Creep", "release_date": "2020-01-01",
+         "release_mbid": "rel-single"},
+    ])
+    monkeypatch.setattr(
+        wa, "check_duplicate",
+        lambda *_a, **_kw: pytest.fail("handoff mode must not require the old path"),
+    )
+    monkeypatch.setattr(
+        wa, "start_bulk_import_for_tracks",
+        lambda *_a, **_kw: pytest.fail("completed hand-off tracks must not be queued again"),
+    )
+    monkeypatch.setattr(
+        wa, "get_setting_bool",
+        lambda key, default=False: True
+        if key == "preserve_watched_download_history" else default,
+    )
+
+    result = wa.refresh_watched_artist("a1")
+
+    assert result["new_tracks"] == 0
+    assert result["queued"] == 0
+    with fresh_db() as conn:
+        downloaded_at = conn.execute(
+            "SELECT downloaded_at FROM watched_artist_tracks WHERE artist_id = 'a1'"
+        ).fetchone()[0]
+    assert downloaded_at is not None
+
+
 def test_albums_only_refresh_leaves_existing_single_counts_alone(fresh_db, monkeypatch):
     """Switching an artist to albums-only must not wipe the singles they already
     have tracked. The tracks stay in the table and the count keeps counting them,

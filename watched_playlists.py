@@ -32,7 +32,10 @@ from apple import fetch_apple_music_playlist
 from beatport import fetch_beatport_playlist
 from tidal import fetch_tidal_playlist
 from downloads import rebuild_watched_playlist_m3u
-from settings import get_playlists_dir, get_setting, get_download_dir, resolve_custom_subdir
+from settings import (
+    get_playlists_dir, get_setting, get_setting_bool, get_download_dir,
+    resolve_custom_subdir,
+)
 from spotify import fetch_spotify_playlist_via_browser
 from utils import (
     extract_artist_title, hash_track, spawn_daemon_thread, sanitize_filename,
@@ -1388,6 +1391,9 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
             removed_count = 0
             healed_history_count = 0
             lidarr_refresh_cache = {}
+            preserve_download_history = get_setting_bool(
+                "preserve_watched_download_history", False
+            )
 
             for position, (artist, title) in enumerate(tracks):
                 track_hash = hash_track(artist, title)
@@ -1411,8 +1417,9 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                     )
 
                 if existing["downloaded_at"]:
-                    # File was deleted manually after being marked downloaded.
-                    # If we cannot resolve it locally anymore, treat it as missing and re-queue.
+                    # Ordinarily a vanished file becomes missing again. External
+                    # importers such as Beets intentionally move completed files,
+                    # so history mode preserves the successful hand-off instead.
                     found, local_file = _locate_local_track_file(
                         playlist["name"],
                         bool(playlist.get("use_playlists_dir", False)),
@@ -1424,6 +1431,17 @@ def refresh_watched_playlist(playlist_id: str) -> dict:
                         resolved_path=existing["resolved_path"],
                     )
                     if not found:
+                        if preserve_download_history:
+                            # Do not leave an exact path pointing at a file that the
+                            # external importer has already taken ownership of.
+                            if existing["resolved_path"]:
+                                conn.execute(
+                                    """UPDATE watched_playlist_tracks
+                                       SET resolved_path = NULL
+                                       WHERE playlist_id = ? AND track_hash = ?""",
+                                    (playlist_id, track_hash),
+                                )
+                            continue
                         conn.execute(
                             "UPDATE watched_playlist_tracks SET downloaded_at = NULL WHERE playlist_id = ? AND track_hash = ?",
                             (playlist_id, track_hash)

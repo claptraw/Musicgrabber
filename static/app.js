@@ -9782,6 +9782,7 @@
             'min_audio_bitrate': 'settingMinBitrate',
             'reject_live_versions': 'settingRejectLiveVersions',
             'playlist_comment_tagging': 'settingPlaylistCommentTagging',
+            'preserve_watched_download_history': 'settingPreserveWatchedDownloadHistory',
             'enable_track_upgrades': 'settingEnableTrackUpgrades',
             'upgrade_scan_interval_hours': 'settingUpgradeScanInterval',
             'singles_subdir': 'settingSinglesSubdir',

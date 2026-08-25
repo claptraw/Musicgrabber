@@ -434,3 +434,12 @@ def test_replaygain_settings_are_present_and_default_off():
         assert key in SETTINGS_SCHEMA, f"{key} missing from SETTINGS_SCHEMA"
         assert SETTINGS_SCHEMA[key]["default"] is False, f"{key} must be opt-in"
         assert key in SettingsUpdate.model_fields, f"{key} not writable via the API"
+
+
+def test_preserve_watched_download_history_is_opt_in_and_writable():
+    from models import SettingsUpdate
+    key = "preserve_watched_download_history"
+    assert key in SETTINGS_SCHEMA
+    assert SETTINGS_SCHEMA[key]["default"] is False
+    assert SETTINGS_SCHEMA[key]["env"] == "PRESERVE_WATCHED_DOWNLOAD_HISTORY"
+    assert key in SettingsUpdate.model_fields

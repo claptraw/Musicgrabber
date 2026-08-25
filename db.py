@@ -1974,13 +1974,20 @@ def cleanup_stale_watched_refreshes():
 def reconcile_deleted_library_files(batch_size: int = 500) -> tuple[int, int]:
     """Mark completed jobs as deleted when their files no longer exist.
 
-    This keeps `file_deleted` and watched playlist track state in sync even when
-    files are removed or renamed directly on disk (outside MusicGrabber APIs).
+    This keeps `file_deleted` and watched track state in sync even when files are
+    removed or renamed directly on disk (outside MusicGrabber APIs). Deployments
+    that hand completed files to an external importer can preserve the durable
+    watched completion timestamp while still clearing the stale exact path.
 
     Returns (jobs_marked_deleted, watched_rows_unlinked).
     """
     # Local import avoids circular import: utils -> settings -> db
+    from settings import get_setting_bool
     from utils import check_duplicate
+
+    preserve_download_history = get_setting_bool(
+        "preserve_watched_download_history", False
+    )
 
     with db_conn() as conn:
         conn.row_factory = sqlite3.Row
@@ -2079,24 +2086,38 @@ def reconcile_deleted_library_files(batch_size: int = 500) -> tuple[int, int]:
         )
         watched_rows = 0
         for jid in stale_ids:
-            cursor = conn.execute(
-                """UPDATE watched_playlist_tracks
-                   SET downloaded_at = NULL,
-                       resolved_path = NULL
-                   WHERE job_id = ?
-                     AND downloaded_at IS NOT NULL""",
-                (jid,),
-            )
-            watched_rows += cursor.rowcount
-            cursor = conn.execute(
-                """UPDATE watched_artist_tracks
-                   SET downloaded_at = NULL,
-                       resolved_path = NULL
-                   WHERE job_id = ?
-                     AND downloaded_at IS NOT NULL""",
-                (jid,),
-            )
-            watched_rows += cursor.rowcount
+            if preserve_download_history:
+                conn.execute(
+                    """UPDATE watched_playlist_tracks
+                       SET resolved_path = NULL
+                       WHERE job_id = ?""",
+                    (jid,),
+                )
+                conn.execute(
+                    """UPDATE watched_artist_tracks
+                       SET resolved_path = NULL
+                       WHERE job_id = ?""",
+                    (jid,),
+                )
+            else:
+                cursor = conn.execute(
+                    """UPDATE watched_playlist_tracks
+                       SET downloaded_at = NULL,
+                           resolved_path = NULL
+                       WHERE job_id = ?
+                         AND downloaded_at IS NOT NULL""",
+                    (jid,),
+                )
+                watched_rows += cursor.rowcount
+                cursor = conn.execute(
+                    """UPDATE watched_artist_tracks
+                       SET downloaded_at = NULL,
+                           resolved_path = NULL
+                       WHERE job_id = ?
+                         AND downloaded_at IS NOT NULL""",
+                    (jid,),
+                )
+                watched_rows += cursor.rowcount
         conn.commit()
 
     print(
